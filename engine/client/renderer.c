@@ -325,11 +325,19 @@ rendererstate_t currentrendererstate;
 
 #if defined(GLQUAKE)
 cvar_t	gl_workaround_ati_shadersource		= CVARD	 ("gl_workaround_ati_shadersource", "1", "Work around ATI driver bugs in the glShaderSource function. Can safely be enabled with other drivers too.");
-cvar_t	vid_gl_context_version				= CVARD  ("vid_gl_context_version", "", "Specifies the version of OpenGL to try to create.");
+#ifdef __ANDROID__
+cvar_t	vid_gl_context_version				= CVARD  ("vid_gl_context_version", "1", "Specifies the version of OpenGL to try to create.");
+#else
+cvar_t	vid_gl_context_version				= CVARD  ("vid_gl_context_version", "0", "Specifies the version of OpenGL to try to create.");
+#endif
 cvar_t	vid_gl_context_forwardcompatible	= CVARD  ("vid_gl_context_forwardcompatible", "0", "Requests an opengl context with no depricated features enabled.");
 cvar_t	vid_gl_context_compatibility		= CVARD  ("vid_gl_context_compatibility", "1", "Requests an OpenGL context with fixed-function backwards compat.");
 cvar_t	vid_gl_context_debug				= CVARD  ("vid_gl_context_debug", "0", "Requests a debug opengl context. This provides better error oreporting.");	//for my ati drivers, debug 1 only works if version >= 3
+#ifdef __ANDROID__
+cvar_t	vid_gl_context_es					= CVARD  ("vid_gl_context_es", "1", "Requests an OpenGLES context. Be sure to set vid_gl_context_version to 2 or so."); //requires version set correctly, no debug, no compat
+#else
 cvar_t	vid_gl_context_es					= CVARD  ("vid_gl_context_es", "0", "Requests an OpenGLES context. Be sure to set vid_gl_context_version to 2 or so."); //requires version set correctly, no debug, no compat
+#endif
 cvar_t	vid_gl_context_robustness			= CVARD	("vid_gl_context_robustness", "1", "Attempt to enforce extra buffer protection in the gl driver, but can be slower with pre-gl3 hardware.");
 cvar_t	vid_gl_context_selfreset			= CVARD	("vid_gl_context_selfreset", "1", "Upon hardware failure, have the engine create a new context instead of depending on the drivers to restore everything. This can help to avoid graphics drivers randomly killing your game, and can help reduce memory requirements.");
 cvar_t	vid_gl_context_noerror				= CVARD	("vid_gl_context_noerror", "", "Disables OpenGL's error checks for a small performance speedup. May cause segfaults if stuff wasn't properly implemented/tested.");

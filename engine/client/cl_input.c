@@ -1933,14 +1933,22 @@ void CL_SendCmd (double frametime, qboolean mainloop)
 		VectorClear(mousemovements);
 		IN_Move (mousemovements, plnum, frametime);
 		CL_ClampPitch(plnum);
+#ifndef __ANDROID__
 		cl_pendingcmd[plnum].forwardmove += mousemovements[0];	//FIXME: this will get nuked by CL_BaseMove.
 		cl_pendingcmd[plnum].sidemove += mousemovements[1];
 		cl_pendingcmd[plnum].upmove += mousemovements[2];
-
+#endif
 		for (i=0 ; i<3 ; i++)
 			cl_pendingcmd[plnum].angles[i] = ((int)(cl.playerview[plnum].viewangles[i]*65536.0/360)&65535);
 
 		CL_BaseMove (&cl_pendingcmd[plnum], plnum, cl_pendingcmd[plnum].msec, framemsecs);
+
+#ifdef __ANDROID__ // As above gets nuked by BaseMove, do it here instead..
+		cl_pendingcmd[plnum].forwardmove += mousemovements[0];
+		cl_pendingcmd[plnum].sidemove += mousemovements[1];
+		cl_pendingcmd[plnum].upmove += mousemovements[2];
+#endif
+
 		if (!cl_pendingcmd[plnum].msec)
 		{
 			CL_FinishMove(&cl_pendingcmd[plnum], plnum);

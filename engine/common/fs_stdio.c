@@ -291,7 +291,7 @@ static unsigned int QDECL FSSTDIO_FLocate(searchpathfuncs_t *handle, flocation_t
 // check a file in the directory tree
 	snprintf (netpath, sizeof(netpath)-1, "%s/%s", sp->rootpath, filename);
 
-#ifdef ANDROID
+#ifdef ANDROID_NONO
 	{
 		vfsfile_t *f = VFSSTDIO_Open(netpath, "rb", NULL);
 		if (!f)

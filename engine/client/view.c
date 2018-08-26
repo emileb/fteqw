@@ -460,7 +460,7 @@ void V_ParseDamage (playerview_t *pv)
 
 #ifdef ANDROID
 	//later versions of android might support strength values, but the simple standard interface is duration only.
-	Sys_Vibrate(count);
+	//Sys_Vibrate(count);
 #endif
 
 	if (v_damagecshift.value >= 0)

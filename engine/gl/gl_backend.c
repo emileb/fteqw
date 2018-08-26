@@ -540,6 +540,16 @@ void GL_LazyBind(int tmu, int target, texid_t texnum)
 }
 #endif
 
+#ifdef __ANDROID__ // Touch controls change shit, fit before next frame
+void BE_FixPointers()
+{
+	qglColorPointer(4, shaderstate.colourarraytype, 0, shaderstate.curcolourpointer);
+	qglVertexPointer(3, GL_FLOAT, VECV_STRIDE, shaderstate.curvertexpointer);
+    qglTexCoordPointer(shaderstate.pendingtexcoordparts[0], GL_FLOAT, 0, shaderstate.pendingtexcoordpointer[0]);
+    qglBindTexture(GL_TEXTURE_2D, shaderstate.currenttextures[0] );
+}
+#endif
+
 static void BE_ApplyAttributes(unsigned int bitstochange, unsigned int bitstoendisable)
 {
 	unsigned int i;

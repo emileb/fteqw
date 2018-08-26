@@ -65,11 +65,36 @@ qboolean Sys_RandomBytes(qbyte *string, int len)
 //print into stdout
 void Sys_Printf (char *fmt, ...)
 {
-	va_list		argptr;	
-		
+
+#ifdef __ANDROID__
+	va_list         argptr;
+	char *e;
+
+	static char linebuf[2048];	//android doesn't do \ns properly *sigh*
+	static char *endbuf = linebuf;	//android doesn't do \ns properly *sigh*
+
+	//append the new data
+	va_start (argptr, fmt);
+	vsnprintf (endbuf,sizeof(linebuf)-(endbuf-linebuf)-1, fmt,argptr);
+	va_end (argptr);
+	endbuf += strlen(endbuf);
+
+	//split it on linebreaks
+	while ((e = strchr(linebuf, '\n')))
+	{
+		*e = 0;
+		LOGI("%s", linebuf);
+		memmove(linebuf, e+1, endbuf-(e+1));
+		linebuf[endbuf-(e+1)] = 0;
+		endbuf -= (e+1)-linebuf;
+	}
+#else
+	va_list		argptr;
+
 	va_start (argptr,fmt);
 	vprintf (fmt,argptr);
 	va_end (argptr);
+#endif
 }
 
 unsigned int Sys_Milliseconds(void)
@@ -469,7 +494,17 @@ void Sys_MainLoop(void)
 }
 #endif
 
+#ifdef __ANDROID__
+#ifndef FNDELAY
+#define FNDELAY		O_NDELAY
+#endif
+#endif
+
+#ifdef __ANDROID__
+int main_android (int argc, const char **argv)
+#else
 int QDECL main(int argc, char **argv)
+#endif
 {
 	float time, newtime, oldtime;
 	quakeparms_t	parms;

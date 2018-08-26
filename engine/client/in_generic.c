@@ -1006,6 +1006,10 @@ void IN_MoveJoystick(struct joy_s *joy, float *movements, int pnum, float framet
 	movements[2] += joy_movesens[2].value * cl_upspeed.value * jstrafe[2];
 }
 
+#ifdef __ANDROID__
+void IN_Move_Android (float *movements, int pnum, float frametime);
+#endif
+
 void IN_Move (float *movements, int pnum, float frametime)
 {
 	int i;
@@ -1014,6 +1018,10 @@ void IN_Move (float *movements, int pnum, float frametime)
 
 	for (i = 0; i < MAXJOYSTICKS; i++)
 		IN_MoveJoystick(&joy[i], movements, pnum, frametime);
+
+#ifdef __ANDROID__
+	IN_Move_Android(movements, pnum, frametime);
+#endif
 }
 
 void IN_JoystickAxisEvent(unsigned int devid, int axis, float value)

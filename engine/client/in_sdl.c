@@ -755,6 +755,7 @@ void Sys_SendKeyEvents(void)
 {
 	SDL_Event event;
 
+#ifndef __ANDROID__ // Stop soft keyboard being permanently active
 #ifdef HAVE_SDL_TEXTINPUT
 	SDL_bool active = SDL_IsTextInputActive();
 	if (Key_Dest_Has(kdm_console|kdm_message) || (!Key_Dest_Has(~kdm_game) && cls.state == ca_disconnected) || sys_osk.ival)
@@ -768,7 +769,7 @@ void Sys_SendKeyEvents(void)
 			SDL_StopTextInput();
 	}
 #endif
-
+#endif
 
 	while(SDL_PollEvent(&event))
 	{

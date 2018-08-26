@@ -37,9 +37,17 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #endif
 
 #ifdef ANDROID
-	#define NO_PNG
-	#define NO_JPEG
-	#define NO_OGG
+	//#define NO_PNG
+	//#define NO_JPEG
+	//#define NO_OGG
+#endif
+
+#ifdef __ANDROID__
+#include <android/log.h>
+#define LOGI(...) ((void)__android_log_print(ANDROID_LOG_INFO,"DP", __VA_ARGS__))
+#define LOGW(...) ((void)__android_log_print(ANDROID_LOG_WARN, "DP", __VA_ARGS__))
+#define LOGE(...) ((void)__android_log_print(ANDROID_LOG_ERROR,"DP", __VA_ARGS__))
+
 #endif
 
 #ifdef _XBOX
@@ -579,6 +587,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #endif
 #ifdef ANDROID
 	#define GLESONLY	//should reduce the conditions a little
+	//#define GLSLONLY
 //	#undef HEADLESSQUAKE
 #endif
 #if defined(NACL)

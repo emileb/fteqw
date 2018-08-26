@@ -251,14 +251,35 @@ void *Hash_Add(hashtable_t *table, const char *name, void *data, bucket_t *buck)
 
 	return buck;
 }
+
+#ifdef __arm__ // Clang compiler can produce double load instructions which MUST be aligned
+ void setPointer( void * out, void* in )
+{
+    uint8_t *out8 = out;
+    uint64_t inInt = in;
+
+	for(int n = 0; n < sizeof( in ); n++ )
+	{
+	    out8[n] = (inInt >> (n*8)) & 0xFF;
+	}
+}
+#endif
+
 void *Hash_AddInsensitive(hashtable_t *table, const char *name, void *data, bucket_t *buck)
 {
 	unsigned int bucknum = Hash_KeyInsensitive(name, table->numbuckets);
 
+#ifdef __arm__
+    setPointer( &buck->data, data );
+    setPointer( &buck->key.string, name);
+    setPointer( &buck->next, table->bucket[bucknum]);
+    setPointer( &table->bucket[bucknum], buck);
+#else
 	buck->data = data;
 	buck->key.string = name;
-	buck->next = table->bucket[bucknum];
-	table->bucket[bucknum] = buck;
+    buck->next = table->bucket[bucknum];
+    table->bucket[bucknum] = buck;
+#endif
 
 	return buck;
 }

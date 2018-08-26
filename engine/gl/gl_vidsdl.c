@@ -128,7 +128,11 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 	if (qrenderer == QR_OPENGL)
 	{
 #if SDL_MAJOR_VERSION >= 2
+
+#ifndef __ANDROID__ // Dont do this yet! otherwise it always loads GLES1
 		SDL_GL_LoadLibrary(NULL);
+#endif
+
 #endif
 
 		if (info->bpp >= 32)
@@ -218,6 +222,11 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 	#if SDL_PATCHLEVEL >= 1
 		flags |= SDL_WINDOW_ALLOW_HIGHDPI;
 	#endif
+#ifdef __ANDROID__
+    SDL_GL_LoadLibrary(NULL);
+    flags =  SDL_WINDOW_OPENGL;
+#endif
+
 	sdlwindow = SDL_CreateWindow(FULLENGINENAME, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, info->width, info->height, flags);
 	if (!sdlwindow)
 	{

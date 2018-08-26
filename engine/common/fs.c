@@ -5533,7 +5533,7 @@ qboolean FS_ChangeGame(ftemanifest_t *man, qboolean allowreloadconfigs, qboolean
 		}
 	}
 
-#ifdef ANDROID
+#ifdef ANDROID_NONO
 	{
 		//write a .nomedia file to avoid people from getting random explosion sounds etc interspersed with their music
 		vfsfile_t *f;
@@ -6226,7 +6226,7 @@ void FS_RegisterDefaultFileSystems(void)
 #endif
 #ifdef PACKAGE_Q1PAK
 	FS_RegisterFileSystemType(NULL, "pak", FSPAK_LoadArchive, true);
-#if !defined(_WIN32) && !defined(ANDROID)
+#if !defined(_WIN32) //&& !defined(ANDROID)
 	/*for systems that have case sensitive paths, also include *.PAK */
 	FS_RegisterFileSystemType(NULL, "PAK", FSPAK_LoadArchive, true);
 #endif

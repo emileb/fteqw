@@ -2825,7 +2825,7 @@ void M_Menu_Video_f (void)
 			MB_REDTEXT("Video Options", true),
 			MB_TEXT("^Ue080^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue082", true),
 #ifdef ANDROID
-			MB_COMBOCVAR("Orientation", sys_orientation, orientationopts, orientationvalues, NULL),
+			//MB_COMBOCVAR("Orientation", sys_orientation, orientationopts, orientationvalues, NULL),
 #else
 			MB_COMBOCVAR("Renderer", vid_renderer, rendererops, renderervalues, NULL),
 			MB_COMBOCVARRETURN("Display Mode", vid_fullscreen, fullscreenopts, fullscreenvalues, info->dispmode, vid_fullscreen.description),
@@ -2884,7 +2884,7 @@ void M_Menu_Video_f (void)
 	MC_AddRedText(menu, 200, y, current3dres, false); y+=8;
 
  	y+=8;
-	MC_AddRedText(menu, 0, y,								"      €‚ ", false); y+=8;
+	MC_AddRedText(menu, 0, y,								"      â‚¬ÂÂÂÂÂÂÂÂÂÂÂÂÂÂÂÂÂÂÂÂÂÂÂÂÂÂÂÂÂÂâ€š ", false); y+=8;
 	y+=8;
 	info->renderer = MC_AddCombo(menu,	16, y,				"         Renderer", rendererops, i);	y+=8;
 	info->bppcombo = MC_AddCombo(menu,	16, y,				"      Color Depth", bppnames, currentbpp); y+=8;
