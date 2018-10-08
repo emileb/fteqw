@@ -34,17 +34,6 @@ int PortableKeyEvent(int state, int code ,int unitcode)
 	return 0;
 }
 
-void KeyUp (kbutton_t *b);
-void KeyUpPort (kbutton_t *b)
-{
-	KeyUp(b);
-}
-
-void KeyDown (kbutton_t *b, kbutton_t *anti);
-void KeyDownPort (kbutton_t *b)
-{
-	KeyDown( b, 0 );
-}
 
 void PortableAction(int state, int action)
 {
@@ -176,6 +165,12 @@ void PortableAction(int state, int action)
         case PORT_MALICE_CYCLE:
             if (state)
                 PortableCommand("impulse 14\n");
+            break;
+        case PORT_ACT_QUICKSAVE:
+            PortableKeyEvent( state, SDL_SCANCODE_F6, 0 );
+            break;
+        case PORT_ACT_QUICKLOAD:
+            PortableKeyEvent( state, SDL_SCANCODE_F9, 0 );
             break;
         }
 	}

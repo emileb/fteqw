@@ -745,7 +745,7 @@ hashfunc_t SHA1_m;
 //int SHA1_m(char *digest, size_t maxdigestsize, size_t numstrings, const char **strings, size_t *stringlens);
 //#define SHA1(digest,maxdigestsize,string,stringlen) SHA1_m(digest, maxdigestsize, 1, &string, &stringlen)
 size_t SHA1(unsigned char *digest, size_t maxdigestsize, const unsigned char *string, size_t stringlen);
-size_t HMAC(hashfunc_t *hashfunc, unsigned char *digest, size_t maxdigestsize, const unsigned char *data, size_t datalen, const unsigned char *key, size_t keylen);
+size_t HMAC_fte(hashfunc_t *hashfunc, unsigned char *digest, size_t maxdigestsize, const unsigned char *data, size_t datalen, const unsigned char *key, size_t keylen);
 
 int version_number(void);
 char *version_string(void);

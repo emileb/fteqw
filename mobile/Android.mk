@@ -15,6 +15,7 @@ BASE_DIR := engine
 LOCAL_C_INCLUDES :=     $(SDL_INCLUDE_PATHS)  \
                         $(TOP_DIR) \
                         $(TOP_DIR)/MobileTouchControls \
+                        $(TOP_DIR)/MobileTouchControls/libpng \
                         $(TOP_DIR)/AudioLibs_OpenTouch/liboggvorbis/include \
                         $(TOP_DIR)/Clibs_OpenTouch \
                         $(TOP_DIR)/Clibs_OpenTouch/jpeg8d \
@@ -26,10 +27,11 @@ $(LOCAL_PATH)/$(BASE_DIR)/d3d \
 $(LOCAL_PATH)/$(BASE_DIR)/server \
 $(LOCAL_PATH)/$(BASE_DIR)/common \
 $(LOCAL_PATH)/$(BASE_DIR)/http \
-$(LOCAL_PATH)/$(BASE_DIR)/libs \
 $(LOCAL_PATH)/$(BASE_DIR)/qclib \
 $(LOCAL_PATH)/$(BASE_DIR)/nacl \
 $(LOCAL_PATH)/$(BASE_DIR)/botlib \
+
+#$(LOCAL_PATH)/$(BASE_DIR)/libs \
 
 # engine/gl/gl_vidsdl.c \
 

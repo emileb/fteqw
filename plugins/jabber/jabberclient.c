@@ -1239,13 +1239,13 @@ static size_t HMAC_Hi(hashfunc_t *hashfunc, char *out, char *password, int passw
 
 	//first iteration is special
 	buf_cat(salt, "\0\0\0\1", 4);
-	digestsize = HMAC(hashfunc, prev, sizeof(prev), salt->buf, salt->len, password, passwordlen);
+	digestsize = HMAC_fte(hashfunc, prev, sizeof(prev), salt->buf, salt->len, password, passwordlen);
 	memcpy(out, prev, digestsize);
 	
 	//later iterations just use the previous iteration
 	for (i = 1; i < times; i++)
 	{
-		HMAC(hashfunc, prev, digestsize, prev, digestsize, password, passwordlen);
+		HMAC_fte(hashfunc, prev, digestsize, prev, digestsize, password, passwordlen);
 
 		for (j = 0; j < digestsize; j++)
 			out[j] ^= prev[j];
@@ -1330,11 +1330,11 @@ static int sasl_scram_challenge(struct sasl_ctx_s *ctx, char *in, int inlen, cha
 	else
 		return -2;	//panic. password not known any more. the server should not be changing salt/itr.
 
-	HMAC(func, clientkey, sizeof(clientkey), "Client Key", strlen("Client Key"), salted_password, digestsize);
+	HMAC_fte(func, clientkey, sizeof(clientkey), "Client Key", strlen("Client Key"), salted_password, digestsize);
 //Note: if we wanted to be fancy, we could store both clientkey and serverkey instead of salted_password, but I'm not sure there's all that much point.
 	tmp = clientkey;
 	func(storedkey, sizeof(storedkey), 1, &tmp, &digestsize);
-	HMAC(func, clientsignature, sizeof(clientsignature), sigkey.buf, sigkey.len, storedkey, digestsize);
+	HMAC_fte(func, clientsignature, sizeof(clientsignature), sigkey.buf, sigkey.len, storedkey, digestsize);
 
 	for (i = 0; i < digestsize; i++)
 		proof[i] = clientkey[i] ^ clientsignature[i];
@@ -1343,8 +1343,8 @@ static int sasl_scram_challenge(struct sasl_ctx_s *ctx, char *in, int inlen, cha
 	Base64_Finish();
 
 	//to validate the server...
-	HMAC(func, serverkey, sizeof(serverkey), "Server Key", strlen("Server Key"), salted_password, sizeof(salted_password));
-	HMAC(func, ctx->scram.authvhash, sizeof(ctx->scram.authvhash), sigkey.buf, sigkey.len, serverkey, sizeof(serverkey)); //aka:serversignature
+	HMAC_fte(func, serverkey, sizeof(serverkey), "Server Key", strlen("Server Key"), salted_password, sizeof(salted_password));
+	HMAC_fte(func, ctx->scram.authvhash, sizeof(ctx->scram.authvhash), sigkey.buf, sigkey.len, serverkey, sizeof(serverkey)); //aka:serversignature
 
 	//"c=biws,r=fyko+d2lbbFgONRv9qkxdawL3rfcNHYJY1ZVvWVs7j,p=v0X8v3Bz2T0CJGbJQyF0X+HI4Ts="
 	Q_snprintf(out, outlen, "%s,p=%s", final.buf, base64);
