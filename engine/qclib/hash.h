@@ -10,6 +10,9 @@
 #define STRCMP(s1,s2) (((*s1)!=(*s2)) || strcmp(s1,s2))	//saves about 2-6 out of 120 - expansion of idea from fastqcc
 typedef struct bucket_s {
 	void *data;
+#ifdef __ANDROID__
+	char TEMP; // Fix for BS optimisation by Clang kn ARM
+#endif
 	union {
 		const char *string;
 		unsigned int value;

@@ -610,12 +610,14 @@ static void GL_Texturemode_Apply(GLenum targ, unsigned int flags)
 	qglTexParameteri(targ, GL_TEXTURE_MAG_FILTER, mag);
 	if (gl_anisotropy_factor)	//0 means driver doesn't support
 	{
+#ifndef __ANDROID__
 		//only use anisotrophy when using linear any linear, because of drivers that forces linear sampling when anis is active (annoyingly this is allowed by the spec).
 		//(also protects r_softwarebanding)
 		if (min == GL_LINEAR_MIPMAP_LINEAR || min == GL_LINEAR_MIPMAP_NEAREST)
 			qglTexParameterf(targ, GL_TEXTURE_MAX_ANISOTROPY_EXT, gl_anisotropy_factor);
 		else
 			qglTexParameterf(targ, GL_TEXTURE_MAX_ANISOTROPY_EXT, 1);
+#endif
 	}
 }
 qboolean GL_LoadTextureMips(texid_t tex, const struct pendingtextureinfo *mips)

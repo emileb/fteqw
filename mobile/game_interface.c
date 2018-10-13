@@ -172,6 +172,10 @@ void PortableAction(int state, int action)
         case PORT_ACT_QUICKLOAD:
             PortableKeyEvent( state, SDL_SCANCODE_F9, 0 );
             break;
+        case PORT_ACT_CONSOLE:
+            if (state)
+                PortableCommand("toggleconsole");
+            break;
         }
 	}
 }
