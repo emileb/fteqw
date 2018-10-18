@@ -3421,7 +3421,11 @@ TRACE(("dbg: Mod_LoadTextures: inittexturedescs\n"));
 		tx = ZG_Malloc(&loadmodel->memgroup, sizeof(texture_t));
 		loadmodel->textures[i] = tx;
 
+#ifdef __arm__
+	    memcpy ((void*)(tx->name), (void*)(mt->name), sizeof(tx->name));
+#else
 		memcpy (tx->name, mt->name, sizeof(tx->name));
+#endif
 		tx->width = mt->width;
 		tx->height = mt->height;
 

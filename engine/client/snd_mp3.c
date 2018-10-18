@@ -49,7 +49,7 @@
 
 # include "libmad/mad.h"
 #define USE_MADLIB
-#include "mymad.c"
+//#include "mymad.c"
 
 /*
  * This is perhaps the simplest example use of the MAD high-level API.

@@ -50,6 +50,11 @@ void PortableAction(int state, int action)
 
             return;
         }
+        else if( action == PORT_ACT_CONSOLE )
+        {
+            if (state)
+               PortableCommand("toggleconsole");
+        }
     }
     else
     {
@@ -175,6 +180,12 @@ void PortableAction(int state, int action)
         case PORT_ACT_CONSOLE:
             if (state)
                 PortableCommand("toggleconsole");
+            break;
+        case PORT_ACT_MP_SCORES:
+            if(state)
+                PortableCommand("+showscores");
+            else
+                PortableCommand("-showscores");
             break;
         }
 	}

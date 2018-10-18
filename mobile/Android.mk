@@ -4,7 +4,7 @@ include $(CLEAR_VARS)
 
 LOCAL_MODULE := fteqw
 
-LOCAL_CFLAGS :=  -DGLQUAKE -Wno-write-strings -DFTEQW -DENGINE_NAME=\"fteqw\"
+LOCAL_CFLAGS :=  -DGLQUAKE -DLIBVORBISFILE_STATIC  -Wno-write-strings -DFTEQW -DENGINE_NAME=\"fteqw\"
 LOCAL_CFLAGS += -Wall -Wno-pointer-sign -Wno-unknown-pragmas -Wno-format-zero-length -Wno-strict-aliasing
 LOCAL_CFLAGS += -Dstrnicmp=strncasecmp -Dstricmp=strcasecmp
 
@@ -17,6 +17,7 @@ LOCAL_C_INCLUDES :=     $(SDL_INCLUDE_PATHS)  \
                         $(TOP_DIR)/MobileTouchControls \
                         $(TOP_DIR)/MobileTouchControls/libpng \
                         $(TOP_DIR)/AudioLibs_OpenTouch/liboggvorbis/include \
+                        $(TOP_DIR)/AudioLibs_OpenTouch/ \
                         $(TOP_DIR)/Clibs_OpenTouch \
                         $(TOP_DIR)/Clibs_OpenTouch/jpeg8d \
                         $(TOP_DIR)/Clibs_OpenTouch/freetype2-android/include \
