@@ -84,6 +84,7 @@ void Sys_Printf (char *fmt, ...)
 	{
 		*e = 0;
 		LOGI("%s", linebuf);
+        LogWritter_Write(linebuf);
 		memmove(linebuf, e+1, endbuf-(e+1));
 		linebuf[endbuf-(e+1)] = 0;
 		endbuf -= (e+1)-linebuf;
