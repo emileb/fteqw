@@ -242,7 +242,7 @@ cvar_t scr_sshot_prefix						= CVAR  ("scr_sshot_prefix", "screenshots/fte-");
 cvar_t scr_viewsize							= CVARFC("viewsize", "100", CVAR_ARCHIVE, SCR_Viewsize_Callback);
 
 #ifdef ANDROID
-cvar_t vid_conautoscale						= CVARF ("vid_conautoscale", "3",
+cvar_t vid_conautoscale						= CVARF ("vid_conautoscale", "2",
 												CVAR_ARCHIVE | CVAR_RENDERERCALLBACK);
 #else
 cvar_t vid_conautoscale						= CVARFD ("vid_conautoscale", "0",
