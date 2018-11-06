@@ -208,6 +208,36 @@ void PortableAction(int state, int action)
             if (state)
                 PortableCommand("impulse 14\n");
             break;
+        // HEXEN 2 ----------------------------
+        case PORT_ACT_CROUCH:
+            if(state)
+                PortableCommand("+crouch");
+            else
+                PortableCommand("-crouch");
+            break;
+        case PORT_ACT_INVUSE:
+            if (state)
+                PortableCommand("invuse\n");
+            break;
+        case PORT_ACT_INVDROP:
+            if (state)
+                PortableCommand("impulse 44\n");
+            break;
+        case PORT_ACT_INVPREV:
+            if (state)
+                PortableCommand("invleft\n");
+            break;
+        case PORT_ACT_INVNEXT:
+            if (state)
+                PortableCommand("invright\n");
+            break;
+ 	    case PORT_ACT_HELPCOMP:
+ 		    if (state)
+ 			    PortableCommand("+showinfo\n");
+            else
+                PortableCommand("-showinfo\n");
+ 		    break;
+            // -------------------------------------
         case PORT_ACT_QUICKSAVE:
             PortableKeyEvent( state, SDL_SCANCODE_F6, 0 );
             break;
