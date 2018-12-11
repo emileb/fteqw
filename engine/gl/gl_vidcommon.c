@@ -3143,6 +3143,10 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 	qglDisableClientState	= (void *)getglcore("glDisableClientState");
 
 	qglDrawRangeElements	= (void *)getglext("glDrawRangeElements");
+
+#ifdef __ANDROID__  // EMILE, fix this for GLES 2, Huawaei returns non null for gles 1 for some reason
+    qglDrawRangeElements = 0;
+#endif
 	if (qglDrawRangeElements == 0)
 		qglDrawRangeElements = GL_DrawRangeElementsEmul;
 

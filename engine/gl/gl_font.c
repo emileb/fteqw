@@ -1950,7 +1950,8 @@ struct font_s *Font_LoadFont(const char *fontfilename, float vheight)
 		size_t lumpsize;
 		qbyte lumptype;
 		unsigned char *w = W_GetLumpName(fontfilename+4, &lumpsize, &lumptype);
-		if (!w || lumpsize != 5)
+		//if (!w || lumpsize != 5)
+		if (!w || lumpsize != 4096)
 		{
 			Z_Free(f);
 			return NULL;
