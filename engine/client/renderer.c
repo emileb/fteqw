@@ -101,6 +101,9 @@ cvar_t gl_shadeq1_name						= CVARD  ("gl_shadeq1_name", "*", "Rename all surfac
 extern cvar_t r_vertexlight;
 extern cvar_t r_forceprogramify;
 extern cvar_t dpcompat_nopremulpics;
+#ifdef PSKMODELS
+cvar_t dpcompat_psa_ungroup					= CVAR  ("dpcompat_psa_ungroup", "0");
+#endif
 
 cvar_t mod_md3flags							= CVARD  ("mod_md3flags", "1", "The flags field of md3s was never officially defined. If this is set to 1, the flags will be treated identically to mdl files. Otherwise they will be ignored. Naturally, this is required to provide rotating pickups in quake.");
 
@@ -120,8 +123,7 @@ cvar_t r_wireframe							= CVARFD ("r_wireframe", "0",
 													CVAR_CHEAT, "Developer feature where everything is drawn with wireframe over the top. Only active where cheats are permitted.");
 cvar_t r_wireframe_smooth					= CVAR ("r_wireframe_smooth", "0");
 cvar_t r_refract_fbo						= CVARD ("r_refract_fbo", "1", "Use an fbo for refraction. If 0, just renders as a portal and uses a copy of the current framebuffer.");
-cvar_t r_refractreflect_scale				= CVARD ("r_refractreflect_scale", "0.5", "Use a different scale for refraction and reflection. Because $reasons.");
-cvar_t gl_miptexLevel						= CVAR  ("gl_miptexLevel", "0");
+cvar_t r_refractreflect_scale				= CVARD ("r_refractreflect_scale", "0.5", "Use a different scale for refraction and reflection texturemaps. Because $reasons.");
 cvar_t r_drawviewmodel						= CVARF  ("r_drawviewmodel", "1", CVAR_ARCHIVE);
 cvar_t r_drawviewmodelinvis					= CVAR  ("r_drawviewmodelinvis", "0");
 cvar_t r_dynamic							= CVARFD ("r_dynamic", IFMINIMAL("0","1"),
@@ -192,8 +194,9 @@ cvar_t r_stainfadetime						= CVAR  ("r_stainfadetime", "1");
 cvar_t r_stains								= CVARFC("r_stains", IFMINIMAL("0","0"),
 												CVAR_ARCHIVE,
 												Cvar_Limiter_ZeroToOne_Callback);
-cvar_t r_renderscale						= CVARD("r_renderscale", "1", "Provides a way to enable subsampling or super-sampling");
-cvar_t r_fxaa								= CVARD("r_fxaa", "0", "Runs a post-procesing pass to strip the jaggies.");
+cvar_t r_renderscale						= CVARFD("r_renderscale", "1", CVAR_ARCHIVE, "Provides a way to enable subsampling or super-sampling");
+cvar_t r_fxaa								= CVARFD("r_fxaa", "0", CVAR_ARCHIVE, "Runs a post-procesing pass to strip the jaggies.");
+cvar_t r_graphics							= CVARFD("r_graphics", "1", CVAR_ARCHIVE, "Turning this off will result in ascii-style rendering.");
 cvar_t r_postprocshader						= CVARD("r_postprocshader", "", "Specifies a custom shader to use as a post-processing shader");
 cvar_t r_wallcolour							= CVARAF ("r_wallcolour", "128 128 128",
 													  "r_wallcolor", CVAR_RENDERERCALLBACK|CVAR_SHADERSYSTEM);//FIXME: broken
@@ -237,7 +240,7 @@ cvar_t scr_showpause						= CVAR  ("showpause", "1");
 cvar_t scr_showturtle						= CVAR  ("showturtle", "0");
 cvar_t scr_turtlefps						= CVAR  ("scr_turtlefps", "10");
 cvar_t scr_sshot_compression				= CVAR  ("scr_sshot_compression", "75");
-cvar_t scr_sshot_type						= CVAR  ("scr_sshot_type", "png");
+cvar_t scr_sshot_type						= CVARD  ("scr_sshot_type", "png", "This specifies the default extension(and thus file format) for screenshots.\nKnown extensions are: png, jpg/jpeg, bmp, pcx, tga, ktx, dds.");
 cvar_t scr_sshot_prefix						= CVAR  ("scr_sshot_prefix", "screenshots/fte-"); 
 cvar_t scr_viewsize							= CVARFC("viewsize", "100", CVAR_ARCHIVE, SCR_Viewsize_Callback);
 
@@ -297,7 +300,7 @@ extern cvar_t r_dodgytgafiles;
 extern cvar_t r_dodgypcxfiles;
 extern cvar_t r_dodgymiptex;
 extern char *r_defaultimageextensions;
-extern cvar_t r_imageexensions;
+extern cvar_t r_imageextensions;
 extern cvar_t r_image_downloadsizelimit;
 extern cvar_t r_drawentities;
 extern cvar_t r_drawviewmodel;
@@ -352,9 +355,9 @@ cvar_t gl_ati_truform_type					= CVAR  ("gl_ati_truform_type", "1");
 cvar_t r_tessellation_level					= CVAR  ("r_tessellation_level", "5");
 cvar_t gl_blend2d							= CVAR  ("gl_blend2d", "1");
 cvar_t gl_blendsprites						= CVARD  ("gl_blendsprites", "0", "Blend sprites instead of alpha testing them");
-cvar_t r_deluxmapping_cvar					= CVARAFD ("r_deluxemapping", "0", "r_glsl_deluxemapping",
+cvar_t r_deluxemapping_cvar					= CVARAFD ("r_deluxemapping", "1", "r_glsl_deluxemapping",
 												CVAR_ARCHIVE|CVAR_RENDERERLATCH, "Enables bumpmapping based upon precomputed light directions.\n0=off\n1=use if available\n2=auto-generate (if possible)");
-qboolean r_deluxmapping;
+qboolean r_deluxemapping;
 cvar_t r_shaderblobs						= CVARD ("r_shaderblobs", "0", "If enabled, can massively accelerate vid restarts / loading (especially with the d3d renderer). Can cause issues when upgrading engine versions, so this is disabled by default.");
 cvar_t gl_compress							= CVARFD ("gl_compress", "0", CVAR_ARCHIVE, "Enable automatic texture compression even for textures which are not pre-compressed.");
 cvar_t gl_conback							= CVARFCD ("gl_conback", "",
@@ -393,6 +396,9 @@ cvar_t gl_overbright_all					= CVARF ("gl_overbright_all", "0",
 												CVAR_ARCHIVE);
 cvar_t gl_picmip							= CVARFD  ("gl_picmip", "0", CVAR_ARCHIVE, "Reduce world/model texture sizes by some exponential factor.");
 cvar_t gl_picmip2d							= CVARFD  ("gl_picmip2d", "0", CVAR_ARCHIVE, "Reduce hud/menu texture sizes by some exponential factor.");
+cvar_t gl_picmip_world						= CVARFD  ("gl_picmip_world", "0", CVAR_ARCHIVE, "Effectively added to gl_picmip for the purposes of world textures.");
+cvar_t gl_picmip_sprites					= CVARFD  ("gl_picmip_sprites", "0", CVAR_ARCHIVE, "Effectively added to gl_picmip for the purposes of sprite textures.");
+cvar_t gl_picmip_other						= CVARFD  ("gl_picmip_other", "0", CVAR_ARCHIVE, "Effectively added to gl_picmip for the purposes of model textures.");
 cvar_t gl_nohwblend							= CVARD  ("gl_nohwblend","1", "If 1, don't use hardware gamma ramps for transient effects that change each frame (does not affect long-term effects like holding quad or underwater tints).");
 //cvar_t gl_schematics						= CVARD  ("gl_schematics", "0", "Gimmick rendering mode that draws the length of various world edges.");
 cvar_t gl_skyboxdist						= CVARD  ("gl_skyboxdist", "0", "The distance of the skybox. If 0, the engine will determine it based upon the far clip plane distance.");	//0 = guess.
@@ -426,13 +432,12 @@ cvar_t vid_triplebuffer						= CVARAFD ("vid_triplebuffer", "1", "gl_triplebuffe
 cvar_t r_portalrecursion					= CVARD  ("r_portalrecursion", "1", "The number of portals the camera is allowed to recurse through.");
 cvar_t r_portaldrawplanes					= CVARD  ("r_portaldrawplanes", "0", "Draw front and back planes in portals. Debug feature.");
 cvar_t r_portalonly							= CVARD  ("r_portalonly", "0", "Don't draw things which are not portals. Debug feature.");
-cvar_t dpcompat_psa_ungroup					= CVAR  ("dpcompat_psa_ungroup", "0");
 cvar_t r_noaliasshadows						= CVARF ("r_noaliasshadows", "0", CVAR_ARCHIVE);
 cvar_t r_shadows							= CVARFD ("r_shadows", "0",	CVAR_ARCHIVE, "Draw basic blob shadows underneath entities without using realtime lighting.");
 cvar_t r_showbboxes							= CVARD("r_showbboxes", "0", "Debugging. Shows bounding boxes. 1=ssqc, 2=csqc. Red=solid, Green=stepping/toss/bounce, Blue=onground.");
 cvar_t r_showfields							= CVARD("r_showfields", "0", "Debugging. Shows entity fields boxes (entity closest to crosshair). 1=ssqc, 2=csqc.");
 cvar_t r_showshaders						= CVARD("r_showshaders", "0", "Debugging. Shows the name of the (worldmodel) shader being pointed to.");
-cvar_t r_lightprepass_cvar					= CVARFD("r_lightprepass", "0", CVAR_ARCHIVE, "Experimental. Attempt to use a different lighting mechanism. Requires vid_reload to take effect.");
+cvar_t r_lightprepass_cvar					= CVARFD("r_lightprepass", "0", CVAR_ARCHIVE, "Experimental. Attempt to use a different lighting mechanism (aka: deferred lighting). Requires vid_reload to take effect.");
 int r_lightprepass;
 
 cvar_t r_shadow_bumpscale_basetexture		= CVARD  ("r_shadow_bumpscale_basetexture", "0", "bumpyness scaler for generation of fallback normalmap textures from models");
@@ -461,6 +466,7 @@ cvar_t vid_hardwaregamma					= CVARFD ("vid_hardwaregamma", "1",
 cvar_t vid_desktopgamma						= CVARFD ("vid_desktopgamma", "0",
 												CVAR_ARCHIVE | CVAR_RENDERERLATCH, "Apply gamma ramps upon the desktop rather than the window.");
 
+cvar_t r_fog_cullentities					= CVARD ("r_fog_cullentities", "1", "Automatically cull entities according to fog.");
 cvar_t r_fog_exp2							= CVARD ("r_fog_exp2", "1", "Expresses how fog fades with distance. 0 (matching DarkPlaces's default) is typically more realistic, while 1 (matching FitzQuake and others) is more common.");
 cvar_t r_fog_permutation					= CVARFD ("r_fog_permutation", "1", CVAR_SHADERSYSTEM, "Renders fog using a material permutation. 0 plays nicer with q3 shaders, but 1 is otherwise a better choice.");
 
@@ -469,17 +475,18 @@ cvar_t	gl_screenangle = CVAR("gl_screenangle", "0");
 #endif
 
 #ifdef VKQUAKE
-cvar_t vk_stagingbuffers					= CVARD ("vk_stagingbuffers",			"", "Configures which dynamic buffers are copied into gpu memory for rendering, instead of reading from shared memory. Empty for default settings.\nAccepted chars are u, e, v, 0.");
+cvar_t vk_stagingbuffers					= CVARFD ("vk_stagingbuffers",			"", CVAR_RENDERERLATCH, "Configures which dynamic buffers are copied into gpu memory for rendering, instead of reading from shared memory. Empty for default settings.\nAccepted chars are u, e, v, 0.");
 cvar_t vk_submissionthread					= CVARD	("vk_submissionthread",			"", "Execute submits+presents on a thread dedicated to executing them. This may be a significant speedup on certain drivers.");
-cvar_t vk_debug								= CVARD	("vk_debug",					"0", "Register a debug handler to display driver/layer messages. 2 enables the standard validation layers.");
-cvar_t vk_dualqueue							= CVARD ("vk_dualqueue",				"", "Attempt to use a separate queue for presentation. Blank for default.");
+cvar_t vk_debug								= CVARFD("vk_debug",					"0", CVAR_VIDEOLATCH, "Register a debug handler to display driver/layer messages. 2 enables the standard validation layers.");
+cvar_t vk_dualqueue							= CVARFD("vk_dualqueue",				"", CVAR_VIDEOLATCH, "Attempt to use a separate queue for presentation. Blank for default.");
 cvar_t vk_busywait							= CVARD ("vk_busywait",					"", "Force busy waiting until the GPU finishes doing its thing.");
 cvar_t vk_waitfence							= CVARD ("vk_waitfence",				"", "Waits on fences, instead of semaphores. This is more likely to result in gpu stalls while the cpu waits.");
-cvar_t vk_nv_glsl_shader					= CVARD	("vk_loadglsl",					"", "Enable direct loading of glsl, where supported by drivers. Do not use in combination with vk_debug 2 (vk_debug should be 1 if you want to see any glsl compile errors). Don't forget to do a vid_restart after.");
-cvar_t vk_nv_dedicated_allocation			= CVARD	("vk_nv_dedicated_allocation",	"", "Flag vulkan memory allocations as dedicated, where applicable.");
-cvar_t vk_khr_dedicated_allocation			= CVARD	("vk_khr_dedicated_allocation",	"", "Flag vulkan memory allocations as dedicated, where applicable.");
-cvar_t vk_khr_push_descriptor				= CVARD	("vk_khr_push_descriptor",		"", "Enables better descriptor streaming.");
-cvar_t vk_amd_rasterization_order			= CVARD ("vk_amd_rasterization_order",	"",	"Enables the use of relaxed rasterization ordering, for a small speedup at the minor risk of a little zfighting.");
+cvar_t vk_usememorypools					= CVARFD("vk_usememorypools",			"",	CVAR_VIDEOLATCH, "Allocates memory pools for sub allocations. Vulkan has a limit to the number of memory allocations allowed so this should always be enabled, however at this time FTE is unable to reclaim pool memory, and would require periodic vid_restarts to flush them.");
+cvar_t vk_nv_glsl_shader					= CVARFD("vk_loadglsl",					"", CVAR_VIDEOLATCH, "Enable direct loading of glsl, where supported by drivers. Do not use in combination with vk_debug 2 (vk_debug should be 1 if you want to see any glsl compile errors). Don't forget to do a vid_restart after.");
+cvar_t vk_khr_get_memory_requirements2		= CVARFD("vk_khr_get_memory_requirements2", "", CVAR_VIDEOLATCH, "Enable extended memory info querires");
+cvar_t vk_khr_dedicated_allocation			= CVARFD("vk_khr_dedicated_allocation",	"", CVAR_VIDEOLATCH, "Flag vulkan memory allocations as dedicated, where applicable.");
+cvar_t vk_khr_push_descriptor				= CVARFD("vk_khr_push_descriptor",		"", CVAR_VIDEOLATCH, "Enables better descriptor streaming.");
+cvar_t vk_amd_rasterization_order			= CVARFD("vk_amd_rasterization_order",	"",	CVAR_VIDEOLATCH, "Enables the use of relaxed rasterization ordering, for a small speedup at the minor risk of a little zfighting.");
 #endif
 
 #ifdef D3D9QUAKE
@@ -523,7 +530,9 @@ void GLRenderer_Init(void)
 	Cvar_Register (&gl_lateswap, GLRENDEREROPTIONS);
 	Cvar_Register (&gl_lerpimages, GLRENDEREROPTIONS);
 
+#ifdef PSKMODELS
 	Cvar_Register (&dpcompat_psa_ungroup, GLRENDEREROPTIONS);
+#endif
 	Cvar_Register (&r_lerpmuzzlehack, GLRENDEREROPTIONS);
 	Cvar_Register (&r_noframegrouplerp, GLRENDEREROPTIONS);
 	Cvar_Register (&r_portalrecursion, GLRENDEREROPTIONS);
@@ -536,7 +545,7 @@ void GLRenderer_Init(void)
 
 	Cvar_Register (&gl_smoothcrosshair, GRAPHICALNICETIES);
 
-	Cvar_Register (&r_deluxmapping_cvar, GRAPHICALNICETIES);
+	Cvar_Register (&r_deluxemapping_cvar, GRAPHICALNICETIES);
 
 #ifdef R_XFLIP
 	Cvar_Register (&r_xflip, GLRENDEREROPTIONS);
@@ -546,6 +555,9 @@ void GLRenderer_Init(void)
 
 	Cvar_Register (&gl_picmip, GLRENDEREROPTIONS);
 	Cvar_Register (&gl_picmip2d, GLRENDEREROPTIONS);
+	Cvar_Register (&gl_picmip_world, GLRENDEREROPTIONS);
+	Cvar_Register (&gl_picmip_sprites, GLRENDEREROPTIONS);
+	Cvar_Register (&gl_picmip_other, GLRENDEREROPTIONS);
 
 	Cvar_Register (&r_shaderblobs, GLRENDEREROPTIONS);
 	Cvar_Register (&gl_compress, GLRENDEREROPTIONS);
@@ -554,6 +566,7 @@ void GLRenderer_Init(void)
 	Cvar_Register (&gl_overbright, GRAPHICALNICETIES);
 	Cvar_Register (&gl_overbright_all, GRAPHICALNICETIES);
 	Cvar_Register (&gl_dither, GRAPHICALNICETIES);
+	Cvar_Register (&r_fog_cullentities, GRAPHICALNICETIES);
 	Cvar_Register (&r_fog_exp2, GLRENDEREROPTIONS);
 	Cvar_Register (&r_fog_permutation, GLRENDEREROPTIONS);
 
@@ -582,7 +595,6 @@ void GLRenderer_Init(void)
 
 	Cvar_Register (&r_lightmap_nearest, GLRENDEREROPTIONS);
 	Cvar_Register (&r_lightmap_average, GLRENDEREROPTIONS);
-	Cvar_Register (&r_lightmap_format, GLRENDEREROPTIONS);
 }
 #endif
 
@@ -730,14 +742,9 @@ void Renderer_Init(void)
 	Cmd_AddCommand("vid_toggle", R_ToggleFullscreen_f);
 
 #ifdef RTLIGHTS
-	Cmd_AddCommand ("r_editlights_reload", R_ReloadRTLights_f);
-	Cmd_AddCommand ("r_editlights_save", R_SaveRTLights_f);
-	Cvar_Register (&r_editlights_import_radius, "Realtime Light editing/importing");
-	Cvar_Register (&r_editlights_import_ambient, "Realtime Light editing/importing");
-	Cvar_Register (&r_editlights_import_diffuse, "Realtime Light editing/importing");
-	Cvar_Register (&r_editlights_import_specular, "Realtime Light editing/importing");
-
+	R_EditLights_RegisterCommands();
 #endif
+
 	Cmd_AddCommand("r_dumpshaders", Shader_WriteOutGenerics_f);
 	Cmd_AddCommand("r_remapshader", Shader_RemapShader_f);
 	Cmd_AddCommand("r_showshader", Shader_ShowShader_f);
@@ -846,9 +853,9 @@ void Renderer_Init(void)
 	Cvar_Register(&r_dodgytgafiles, "Hacky bug workarounds");
 	Cvar_Register(&r_dodgypcxfiles, "Hacky bug workarounds");
 	Cvar_Register(&r_dodgymiptex, "Hacky bug workarounds");
-	r_imageexensions.enginevalue = r_defaultimageextensions;
-	Cvar_Register(&r_imageexensions, GRAPHICALNICETIES);
-	r_imageexensions.callback(&r_imageexensions, NULL);
+	r_imageextensions.enginevalue = r_defaultimageextensions;
+	Cvar_Register(&r_imageextensions, GRAPHICALNICETIES);
+	r_imageextensions.callback(&r_imageextensions, NULL);
 	Cvar_Register(&r_image_downloadsizelimit, GRAPHICALNICETIES);
 	Cvar_Register(&r_loadlits, GRAPHICALNICETIES);
 	Cvar_Register(&r_lightstylesmooth, GRAPHICALNICETIES);
@@ -856,6 +863,7 @@ void Renderer_Init(void)
 	Cvar_Register(&r_lightstylespeed, GRAPHICALNICETIES);
 	Cvar_Register(&r_lightstylescale, GRAPHICALNICETIES);
 	Cvar_Register(&r_lightmap_scale, GRAPHICALNICETIES);
+	Cvar_Register(&r_lightmap_format, GRAPHICALNICETIES);
 
 	Cvar_Register(&r_hdr_framebuffer, GRAPHICALNICETIES);
 	Cvar_Register(&r_hdr_irisadaptation, GRAPHICALNICETIES);
@@ -893,6 +901,7 @@ void Renderer_Init(void)
 	Cvar_Register (&r_refractreflect_scale, GRAPHICALNICETIES);
 	Cvar_Register (&r_postprocshader, GRAPHICALNICETIES);
 	Cvar_Register (&r_fxaa, GRAPHICALNICETIES);
+	Cvar_Register (&r_graphics, GRAPHICALNICETIES);
 	Cvar_Register (&r_renderscale, GRAPHICALNICETIES);
 	Cvar_Register (&r_stereo_separation, GRAPHICALNICETIES);
 	Cvar_Register (&r_stereo_convergence, GRAPHICALNICETIES);
@@ -976,7 +985,6 @@ void Renderer_Init(void)
 	Cvar_Register (&r_clear, GLRENDEREROPTIONS);
 	Cvar_Register (&gl_max_size, GLRENDEREROPTIONS);
 	Cvar_Register (&gl_maxdist, GLRENDEREROPTIONS);
-	Cvar_Register (&gl_miptexLevel, GRAPHICALNICETIES);
 	Cvar_Register (&gl_texturemode, GLRENDEREROPTIONS);
 	Cvar_Register (&gl_texturemode2d, GLRENDEREROPTIONS);
 	Cvar_Register (&r_font_linear, GLRENDEREROPTIONS);
@@ -1011,7 +1019,9 @@ void Renderer_Init(void)
 	Cvar_Register (&r_polygonoffset_stencil_offset, GLRENDEREROPTIONS);
 
 	Cvar_Register (&r_forceprogramify, GLRENDEREROPTIONS);
+#ifndef NOLEGACY
 	Cvar_Register (&dpcompat_nopremulpics, GLRENDEREROPTIONS);
+#endif
 #ifdef VKQUAKE
 	Cvar_Register (&vk_stagingbuffers,			VKRENDEREROPTIONS);
 	Cvar_Register (&vk_submissionthread,		VKRENDEREROPTIONS);
@@ -1019,9 +1029,10 @@ void Renderer_Init(void)
 	Cvar_Register (&vk_dualqueue,				VKRENDEREROPTIONS);
 	Cvar_Register (&vk_busywait,				VKRENDEREROPTIONS);
 	Cvar_Register (&vk_waitfence,				VKRENDEREROPTIONS);
+	Cvar_Register (&vk_usememorypools,			VKRENDEREROPTIONS);
 
 	Cvar_Register (&vk_nv_glsl_shader,			VKRENDEREROPTIONS);
-	Cvar_Register (&vk_nv_dedicated_allocation,	VKRENDEREROPTIONS);
+	Cvar_Register (&vk_khr_get_memory_requirements2,VKRENDEREROPTIONS);
 	Cvar_Register (&vk_khr_dedicated_allocation,VKRENDEREROPTIONS);
 	Cvar_Register (&vk_khr_push_descriptor,		VKRENDEREROPTIONS);
 	Cvar_Register (&vk_amd_rasterization_order,	VKRENDEREROPTIONS);
@@ -1237,12 +1248,12 @@ rendererinfo_t *rendererinfo[16] =
 void R_RegisterRenderer(rendererinfo_t *ri)
 {
 	size_t i;
-	for (i = 0; i < sizeof(rendererinfo)/sizeof(rendererinfo[0]); i++)
+	for (i = 0; i < countof(rendererinfo); i++)
 	{	//already registered
 		if (rendererinfo[i] == ri)
 			return;
 	}
-	for (i = 0; i < sizeof(rendererinfo)/sizeof(rendererinfo[0]); i++)
+	for (i = 0; i < countof(rendererinfo); i++)
 	{	//register it in the first empty slot
 		if (!rendererinfo[i])
 		{
@@ -1452,7 +1463,22 @@ qboolean R_ApplyRenderer_Load (rendererstate_t *newr)
 				if (newr->fullscreen == 2)
 					Con_TPrintf("Setting fullscreen windowed %s%s\n", newr->srgb?"SRGB ":"", newr->renderer->description);
 				else if (newr->fullscreen)
-					Con_TPrintf("Setting mode %i*%i %ibpp %ihz %s%s\n", newr->width, newr->height, newr->bpp, newr->rate, newr->srgb?"SRGB ":"", newr->renderer->description);
+				{
+					if (newr->rate)
+					{
+						if (newr->width || newr->height)
+							Con_TPrintf("Setting mode %i*%i %ibpp %ihz %s%s\n", newr->width, newr->height, newr->bpp, newr->rate, newr->srgb?"SRGB ":"", newr->renderer->description);
+						else
+							Con_TPrintf("Setting mode auto %ibpp %ihz %s%s\n", newr->bpp, newr->rate, newr->srgb?"SRGB ":"", newr->renderer->description);
+					}
+					else
+					{
+						if (newr->width || newr->height)
+							Con_TPrintf("Setting mode %i*%i %ibpp %s%s\n", newr->width, newr->height, newr->bpp, newr->srgb?"SRGB ":"", newr->renderer->description);
+						else
+							Con_TPrintf("Setting mode auto %ibpp %s%s\n", newr->bpp, newr->srgb?"SRGB ":"", newr->renderer->description);
+					}
+				}
 				else
 					Con_TPrintf("Setting windowed mode %i*%i %s%s\n", newr->width, newr->height, newr->srgb?"SRGB ":"", newr->renderer->description);
 			}
@@ -1466,19 +1492,19 @@ qboolean R_ApplyRenderer_Load (rendererstate_t *newr)
 			host_basepal = (qbyte *)FS_LoadMallocFile ("wad/playpal", &sz);
 		if (!host_basepal || sz != 768)
 		{
-			qbyte *pcx=NULL;
+#if defined(Q2CLIENT) && defined(IMAGEFMT_PCX)
+			qbyte *pcx = COM_LoadTempFile("pics/colormap.pcx", 0, &sz);
+#endif
 			if (host_basepal)
 				Z_Free(host_basepal);
 			host_basepal = BZ_Malloc(768);
-			pcx = COM_LoadTempFile("pics/colormap.pcx", &sz);
-			if (!pcx || !ReadPCXPalette(pcx, sz, host_basepal))
+#if defined(Q2CLIENT) && defined(IMAGEFMT_PCX)
+			if (pcx && ReadPCXPalette(pcx, sz, host_basepal))
+				goto q2colormap;	//skip the colormap.lmp file as we already read it
+			else
+#endif
 			{
 				memcpy(host_basepal, default_quakepal, 768);
-			}
-			else
-			{
-				//if (ReadPCXData(pcx, com_filesize, 256, VID_GRADES, colormap))
-				goto q2colormap;	//skip the colormap.lmp file as we already read it
 			}
 		}
 
@@ -1509,7 +1535,9 @@ qboolean R_ApplyRenderer_Load (rendererstate_t *newr)
 		if (vid.fullbright < 2)
 			vid.fullbright = 0;	//transparent colour doesn't count.
 
+#if defined(Q2CLIENT) && defined(IMAGEFMT_PCX)
 q2colormap:
+#endif
 
 TRACE(("dbg: R_ApplyRenderer: Palette loaded\n"));
 
@@ -1528,7 +1556,7 @@ TRACE(("dbg: R_ApplyRenderer: vid applied\n"));
 		R_GenPaletteLookup();
 
 		r_softwarebanding = false;
-		r_deluxmapping = false;
+		r_deluxemapping = false;
 		r_lightprepass = false;
 
 		W_LoadWadFile("gfx.wad");
@@ -1536,6 +1564,10 @@ TRACE(("dbg: R_ApplyRenderer: wad loaded\n"));
 		Image_Init();
 		Draw_Init();
 TRACE(("dbg: R_ApplyRenderer: draw inited\n"));
+#ifdef MENU_NATIVECODE
+	if (mn_entry)
+		mn_entry->Init(MI_RENDERER, vid.width, vid.height, vid.rotpixelwidth, vid.rotpixelheight);
+#endif
 		R_Init();
 		RQ_Init();
 		R_InitParticleTexture ();
@@ -1563,7 +1595,7 @@ TRACE(("dbg: R_ApplyRenderer: isDedicated = true\n"));
 		{
 			int os = sv.state;
 			sv.state = ss_dead;	//prevents server from being killed off too.
-			CL_Disconnect();
+			CL_Disconnect("Graphics rendering disabled");
 			sv.state = os;
 		}
 		Sys_InitTerminal();
@@ -1577,7 +1609,6 @@ TRACE(("dbg: R_ApplyRenderer: initing mods\n"));
 
 	Cvar_ForceSetValue(&vid_dpi_x, vid.dpi_x);
 	Cvar_ForceSetValue(&vid_dpi_y, vid.dpi_y);
-
 
 	TRACE(("dbg: R_ApplyRenderer: R_PreNewMap (how handy)\n"));
 	Surf_PreNewMap();
@@ -1665,6 +1696,10 @@ TRACE(("dbg: R_ApplyRenderer: clearing world\n"));
 	Plug_ResChanged();
 #endif
 	Cvar_ForceCallback(&r_particlesystem);
+#ifdef MENU_NATIVECODE
+	if (mn_entry)
+		mn_entry->Init(MI_RENDERER, vid.width, vid.height, vid.rotpixelwidth, vid.rotpixelheight);
+#endif
 
 	CL_InitDlights();
 
@@ -1714,6 +1749,7 @@ TRACE(("dbg: R_ApplyRenderer: reloading ALL models\n"));
 					cl.model_precache[i] = Mod_FindName (Mod_FixName(cl.model_name[i], cl.model_name[1]));
 		}
 
+#ifndef NOLEGACY
 		for (i=0; i < MAX_VWEP_MODELS; i++)
 		{
 			if (*cl.model_name_vwep[i])
@@ -1721,6 +1757,7 @@ TRACE(("dbg: R_ApplyRenderer: reloading ALL models\n"));
 			else
 				cl.model_precache_vwep[i] = NULL;
 		}
+#endif
 
 #ifdef CSQC_DAT
 		for (i=1 ; i<MAX_CSMODELS ; i++)
@@ -1746,7 +1783,7 @@ TRACE(("dbg: R_ApplyRenderer: done the models\n"));
 //				Con_Printf ("\nThe required model file '%s' could not be found.\n\n", cl.model_name[i]);
 //				Con_Printf ("You may need to download or purchase a client pack in order to play on this server.\n\n");
 
-				CL_Disconnect ();
+				CL_Disconnect ("Worldmodel missing after video reload");
 #ifdef VM_UI
 				UI_Reset();
 #endif
@@ -1798,9 +1835,24 @@ TRACE(("dbg: R_ApplyRenderer: efrags\n"));
 
 void R_ReloadRenderer_f (void)
 {
+#if !defined(CLIENTONLY) && (defined(Q2BSPS) || defined(Q3BSPS))
+	void *portalblob = NULL;
+	size_t portalsize = 0;
+#endif
+
 	float time = Sys_DoubleTime();
 	if (qrenderer == QR_NONE || qrenderer == QR_HEADLESS)
 		return;	//don't bother reloading the renderer if its not actually rendering anything anyway.
+
+#if !defined(CLIENTONLY) && (defined(Q2BSPS) || defined(Q3BSPS))
+	if (sv.state == ss_active && sv.world.worldmodel && sv.world.worldmodel->loadstate == MLS_LOADED)
+	{
+		void *t;
+		portalsize = CM_WritePortalState(sv.world.worldmodel, &t);
+		if (portalsize && (portalblob = BZ_Malloc(portalsize)))
+			memcpy(portalblob, t, portalsize);
+	}
+#endif
 
 	Cvar_ApplyLatches(CVAR_VIDEOLATCH|CVAR_RENDERERLATCH);
 	R_ShutdownRenderer(false);
@@ -1808,6 +1860,31 @@ void R_ReloadRenderer_f (void)
 	//reloads textures without destroying video context.
 	R_ApplyRenderer_Load(NULL);
 	Cvar_ApplyCallbacks(CVAR_RENDERERCALLBACK);
+
+#if !defined(CLIENTONLY) && (defined(Q2BSPS) || defined(Q3BSPS))
+	if (portalblob)
+	{
+		if (sv.world.worldmodel && sv.world.worldmodel->loadstate == MLS_LOADED)
+			CM_ReadPortalState(sv.world.worldmodel, portalblob, portalsize);
+		BZ_Free(portalblob);
+	}
+#endif
+}
+
+static int R_PriorityForRenderer(rendererinfo_t *r)
+{
+	if (r && r->name[0])
+	{
+		if (r->VID_GetPriority)
+			return r->VID_GetPriority();
+		else if (r->rtype == QR_HEADLESS)
+			return -1;	//headless renderers are a really poor choice, and will make the user think it buggy.
+		else if (r->rtype == QR_NONE)
+			return 0;	//dedicated servers are possible, but we really don't want to use them unless we have no other choice.
+		else
+			return 1;	//assume 1 for most renderers.
+	}
+	return -2;	//invalid renderer
 }
 
 //use Cvar_ApplyLatches(CVAR_RENDERERLATCH) beforehand.
@@ -1881,20 +1958,7 @@ qboolean R_BuildRenderstate(rendererstate_t *newr, char *rendererstring)
 		//I'd like to just qsort the renderers, but that isn't stable and might reorder gl+d3d etc.
 		for (i = 0; i < countof(rendererinfo); i++)
 		{
-			if (rendererinfo[i] && rendererinfo[i]->name[0])
-			{
-				if (rendererinfo[i]->VID_GetPriority)
-					pri = rendererinfo[i]->VID_GetPriority();
-				else if (rendererinfo[i]->rtype == QR_HEADLESS)
-					pri = -1;	//headless renderers are a really poor choice, and will make the user think it buggy.
-				else if (rendererinfo[i]->rtype == QR_NONE)
-					pri = 0;	//dedicated servers are possible, but we really don't want to use them unless we have no other choice.
-				else
-					pri = 1;	//assume 1 for most renderers.
-			}
-			else
-				pri = -2;
-
+			pri = R_PriorityForRenderer(rendererinfo[i]);
 			if (pri > bestpri)
 			{
 				bestpri = pri;
@@ -1905,7 +1969,7 @@ qboolean R_BuildRenderstate(rendererstate_t *newr, char *rendererstring)
 	else if (!strcmp(com_token, "random"))
 	{
 		int count;
-		for (i = 0, count = 0; i < sizeof(rendererinfo)/sizeof(rendererinfo[0]); i++)
+		for (i = 0, count = 0; i < countof(rendererinfo); i++)
 		{
 			if (!rendererinfo[i] || !rendererinfo[i]->description)
 				continue;	//not valid in this build. :(
@@ -1916,7 +1980,7 @@ qboolean R_BuildRenderstate(rendererstate_t *newr, char *rendererstring)
 			count++;
 		}
 		count = rand()%count;
-		for (i = 0; i < sizeof(rendererinfo)/sizeof(rendererinfo[0]); i++)
+		for (i = 0; i < countof(rendererinfo); i++)
 		{
 			if (!rendererinfo[i] || !rendererinfo[i]->description)
 				continue;	//not valid in this build. :(
@@ -1934,7 +1998,8 @@ qboolean R_BuildRenderstate(rendererstate_t *newr, char *rendererstring)
 	}
 	else
 	{
-		for (i = 0; i < sizeof(rendererinfo)/sizeof(rendererinfo[0]); i++)
+		int bestpri = -2, pri;
+		for (i = 0; i < countof(rendererinfo); i++)
 		{
 			if (!rendererinfo[i] || !rendererinfo[i]->description)
 				continue;	//not valid in this build. :(
@@ -1944,8 +2009,14 @@ qboolean R_BuildRenderstate(rendererstate_t *newr, char *rendererstring)
 					continue;
 				if (!stricmp(rendererinfo[i]->name[j], com_token))
 				{
-					newr->renderer = rendererinfo[i];
-					break;
+					pri = R_PriorityForRenderer(rendererinfo[i]);
+
+					if (pri > bestpri)
+					{
+						bestpri = pri;
+						newr->renderer = rendererinfo[i];
+					}
+					break; //try the next renderer now.
 				}
 			}
 		}
@@ -2008,14 +2079,43 @@ qboolean R_BuildRenderstate(rendererstate_t *newr, char *rendererstring)
 	return newr->renderer != NULL;
 }
 
+struct sortedrenderers_s
+{
+	int index;	//original index, to try to retain stable sort orders.
+	int pri;
+	rendererinfo_t *r;
+};
+static int QDECL R_SortRenderers(const void *av, const void *bv)
+{
+	const struct sortedrenderers_s *a = av;
+	const struct sortedrenderers_s *b = bv;
+	if (a->pri == b->pri)
+		return (a->index > b->index)?1:-1;
+	return (a->pri < b->pri)?1:-1;
+}
+
 void R_RestartRenderer (rendererstate_t *newr)
 {
+#ifndef CLIENTONLY
+	void *portalblob = NULL;
+	size_t portalsize = 0;
+#endif
 	rendererstate_t oldr;
 	if (r_blockvidrestart)
 	{
 		Con_Printf("Ignoring vid_restart from config\n");
 		return;
 	}
+
+#if !defined(CLIENTONLY) && (defined(Q2BSPS) || defined(Q3BSPS))
+	if (sv.state == ss_active && sv.world.worldmodel && sv.world.worldmodel->loadstate == MLS_LOADED)
+	{
+		void *t;
+		portalsize = CM_WritePortalState(sv.world.worldmodel, &t);
+		if (portalsize && (portalblob = BZ_Malloc(portalsize)))
+			memcpy(portalblob, t, portalsize);
+	}
+#endif
 
 	TRACE(("dbg: R_RestartRenderer_f renderer %p\n", newr->renderer));
 
@@ -2033,22 +2133,23 @@ void R_RestartRenderer (rendererstate_t *newr)
 			int i;
 			qboolean failed = true;
 			rendererinfo_t *skip = newr->renderer;
+			struct sortedrenderers_s sorted[countof(rendererinfo)];
 
 			if (failed && newr->fullscreen == 1)
 			{
-				Con_Printf(CON_NOTICE "Trying fullscreen windowed\n");
+				Con_Printf(CON_NOTICE "Trying fullscreen windowed"CON_DEFAULT"\n");
 				newr->fullscreen = 2;
 				failed = !R_ApplyRenderer(newr);
 			}
 			if (failed && newr->rate != 0)
 			{
-				Con_Printf(CON_NOTICE "Trying default refresh rate\n");
+				Con_Printf(CON_NOTICE "Trying default refresh rate"CON_DEFAULT"\n");
 				newr->rate = 0;
 				failed = !R_ApplyRenderer(newr);
 			}
 			if (failed && newr->width != DEFAULT_WIDTH && newr->height != DEFAULT_HEIGHT)
 			{
-				Con_Printf(CON_NOTICE "Trying %i*%i\n", DEFAULT_WIDTH, DEFAULT_HEIGHT);
+				Con_Printf(CON_NOTICE "Trying %i*%i"CON_DEFAULT"\n", DEFAULT_WIDTH, DEFAULT_HEIGHT);
 				if (newr->fullscreen == 2)
 					newr->fullscreen = 1;
 				newr->width = DEFAULT_WIDTH;
@@ -2057,18 +2158,24 @@ void R_RestartRenderer (rendererstate_t *newr)
 			}
 			if (failed && newr->fullscreen)
 			{
-				Con_Printf(CON_NOTICE "Trying windowed\n");
+				Con_Printf(CON_NOTICE "Trying windowed"CON_DEFAULT"\n");
 				newr->fullscreen = 0;
 				failed = !R_ApplyRenderer(newr);
 			}
 
-			//FIXME: query renderers for their priority and then use that. then we can favour X11 when DISPLAY is set and wayland when WAYLAND_DISPLAY is set, etc.
-			for (i = 0; failed && i < sizeof(rendererinfo)/sizeof(rendererinfo[0]); i++)
+			for (i = 0; i < countof(sorted); i++)
 			{
-				newr->renderer = rendererinfo[i];
+				sorted[i].index = i;
+				sorted[i].r = rendererinfo[i];
+				sorted[i].pri = R_PriorityForRenderer(sorted[i].r);
+			}
+			qsort(sorted, countof(sorted), sizeof(sorted[0]), R_SortRenderers);
+			for (i = 0; failed && i < countof(sorted); i++)
+			{
+				newr->renderer = sorted[i].r;
 				if (newr->renderer && newr->renderer != skip && newr->renderer->rtype != QR_HEADLESS)
 				{
-					Con_Printf(CON_NOTICE "Trying %s\n", newr->renderer->description);
+					Con_Printf(CON_NOTICE "Trying %s"CON_DEFAULT"\n", newr->renderer->description);
 					failed = !R_ApplyRenderer(newr);
 				}
 			}
@@ -2090,6 +2197,15 @@ void R_RestartRenderer (rendererstate_t *newr)
 				Sys_Error("Unable to initialise any video mode\n");
 		}
 	}
+
+#if !defined(CLIENTONLY) && (defined(Q2BSPS) || defined(Q3BSPS))
+	if (portalblob)
+	{
+		if (sv.world.worldmodel && sv.world.worldmodel->loadstate == MLS_LOADED)
+			CM_ReadPortalState(sv.world.worldmodel, portalblob, portalsize);
+		BZ_Free(portalblob);
+	}
+#endif
 
 	Cvar_ApplyCallbacks(CVAR_RENDERERCALLBACK);
 	SCR_EndLoadingPlaque();
@@ -2128,11 +2244,21 @@ void R_SetRenderer_f (void)
 
 	if (Cmd_Argc() == 1 || !stricmp(param, "help"))
 	{
-		Con_Printf ("\nValid setrenderer parameters are:\n");
-		for (i = 0; i < sizeof(rendererinfo)/sizeof(rendererinfo[0]); i++)
+		struct sortedrenderers_s sorted[countof(rendererinfo)];
+		for (i = 0; i < countof(sorted); i++)
 		{
-			if (rendererinfo[i] && rendererinfo[i]->description)
-				Con_Printf("^[%s\\type\\/setrenderer %s^]^7: %s%s\n", rendererinfo[i]->name[0], rendererinfo[i]->name[0], rendererinfo[i]->description, (currentrendererstate.renderer == rendererinfo[i])?" ^2(current)":"");
+			sorted[i].index = i;
+			sorted[i].r = rendererinfo[i];
+			sorted[i].pri = R_PriorityForRenderer(sorted[i].r);
+		}
+		qsort(sorted, countof(sorted), sizeof(sorted[0]), R_SortRenderers);
+
+		Con_Printf ("\nValid setrenderer parameters are:\n");
+		for (i = 0; i < countof(rendererinfo); i++)
+		{
+			rendererinfo_t *r = sorted[i].r;
+			if (r && r->description)
+				Con_Printf("^[%s\\type\\/setrenderer %s^]^7: %s%s\n", r->name[0], r->name[0], r->description, (currentrendererstate.renderer == r)?" ^2(current)":"");
 		}
 		return;
 	}
@@ -2878,7 +3004,7 @@ void R_SetFrustum (float projmat[16], float viewmat[16])
 
 	//do far plane
 	//fog will logically not actually reach 0, though precision issues will force it. we cut off at an exponant of -500
-	if (r_refdef.globalfog.density)
+	if (r_refdef.globalfog.density && r_fog_cullentities.ival)
 	{
 		float culldist;
 		float fog;

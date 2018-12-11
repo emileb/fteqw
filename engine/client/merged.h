@@ -1,4 +1,6 @@
 #ifdef VKQUAKE
+//we need some types available elsewhere, but don't really want to have to include the entire vulkan api everywhere.
+//unfortunately, vulkan's handle types are not well defined.
 #if defined(__LP64__) || defined(_WIN64)
 #define VulkanAPIRandomness void*
 #elif defined(_MSC_VER) && _MSC_VER < 1300
@@ -6,12 +8,12 @@
 #else
 #define VulkanAPIRandomness long long
 #endif
-#define VkRetardedDescriptorSet VulkanAPIRandomness
-#define VkRetardedShaderModule VulkanAPIRandomness
-#define VkRetardedPipelineLayout VulkanAPIRandomness
-#define VkRetardedDescriptorSetLayout VulkanAPIRandomness
-#define VkRetardedBuffer VulkanAPIRandomness
-#define VkRetardedDeviceMemory VulkanAPIRandomness
+#define qVkDescriptorSet VulkanAPIRandomness
+#define qVkShaderModule VulkanAPIRandomness
+#define qVkPipelineLayout VulkanAPIRandomness
+#define qVkDescriptorSetLayout VulkanAPIRandomness
+#define qVkBuffer VulkanAPIRandomness
+#define qVkDeviceMemory VulkanAPIRandomness
 #endif
 
 //These are defined later in the source tree. This file should probably be moved to a later spot.
@@ -42,7 +44,12 @@ typedef enum
 	#define MAX_BONE_CONTROLLERS 5
 #endif
 
-#define FRAME_BLENDS 4
+#ifdef NOLEGACY
+#define FRAME_BLENDS 2
+#else
+#define FRAME_BLENDS 4	//for compat with DP (for mods that want 4-way blending yet refuse to use framegroups properly). real mods should be using skeletal objects allowing for N-way blending.
+#endif
+
 #define FST_BASE 0	//base frames
 #define FS_REG 1	//regular frames
 #define FS_COUNT 2	//regular frames
@@ -104,7 +111,7 @@ void R2D_ConsoleBackground (int firstline, int lastline, qboolean forceopaque);
 void R2D_EditorBackground (void);
 
 void R2D_Image(float x, float y, float w, float h, float s1, float t1, float s2, float t2, mpic_t *pic);
-void R2D_Image2dQuad(vec2_t const*points, vec2_t const*texcoords, mpic_t *pic);
+void R2D_Image2dQuad(vec2_t const*points, vec2_t const*texcoords, vec4_t const*rgba, mpic_t *pic);
 
 void R2D_ImageColours(float r, float g, float b, float a);
 void R2D_ImagePaletteColour(unsigned int i, float a);
@@ -138,6 +145,7 @@ void R_DrawTextField(int x, int y, int w, int h, const char *text, unsigned int 
 #define CPRINT_RALIGN		(1<<2)	//R
 #define CPRINT_BALIGN		(1<<3)	//B
 #define CPRINT_BACKGROUND	(1<<4)	//P
+#define CPRINT_NOWRAP		(1<<5)
 
 #define CPRINT_OBITUARTY	(1<<16)	//O (show at 2/3rds from top)
 #define CPRINT_PERSIST		(1<<17)	//P (doesn't time out)
@@ -248,7 +256,7 @@ typedef struct image_s
 #ifdef VKQUAKE
 		struct
 		{
-			VkRetardedDescriptorSet vkdescriptor;
+			qVkDescriptorSet vkdescriptor;
 			struct vk_image_s *vkimage;
 		};
 #endif
@@ -302,6 +310,8 @@ struct pendingtextureinfo
 		int depth;
 		qboolean needfree;
 	} mip[72];	//enough for a 4096 cubemap. or a really smegging big 2d texture...
+	//mips are ordered as in arrayindex THEN mip order, allowing easy truncation of mip levels.
+	//cubemaps are just arrayindex*6
 };
 
 //small context for easy vbo creation.
@@ -334,7 +344,7 @@ typedef union vboarray_s
 #ifdef VKQUAKE
 	struct
 	{
-		VkRetardedBuffer buff;
+		qVkBuffer buff;
 		unsigned int offs;
 	} vk;
 #endif
@@ -367,6 +377,16 @@ typedef struct texnums_s {
 	texid_t fullbright;
 	texid_t reflectcube;
 	texid_t reflectmask;
+
+	//the material's pushconstants. vulkan guarentees only 128 bytes. so 8 vec4s. note that lmscales should want 4 of them...
+	/*struct
+	{
+		vec4_t basefactors;
+		vec4_t specfactors;
+		vec4_t fullbrightfactors;
+
+		//FIXME: envmap index, lightmap index, etc.
+	} factors;*/
 } texnums_t;
 
 //not all modes accept meshes - STENCIL(intentional) and DEPTHONLY(not implemented)
@@ -385,7 +405,7 @@ typedef enum backendmode_e
 
 typedef struct rendererinfo_s {
 	char *description;
-	char *name[4];
+	char *name[5];
 	r_qrenderer_t rtype;
 	//FIXME: all but the vid stuff really should be filled in by the video code, simplifying system-specific stuff.
 
@@ -407,7 +427,7 @@ typedef struct rendererinfo_s {
 	void	 (*VID_SwapBuffers)			(void);	//force a buffer swap, regardless of what's displayed.
 	qboolean (*VID_ApplyGammaRamps)		(unsigned int size, unsigned short *ramps);
 
-	void	*(*VID_CreateCursor)			(const char *filename, float hotx, float hoty, float scale);	//may be null, stub returns null
+	void	*(*VID_CreateCursor)			(const qbyte *imagedata, int width, int height, uploadfmt_t format, float hotx, float hoty, float scale);	//may be null, stub returns null
 	qboolean (*VID_SetCursor)			(void *cursor);	//may be null
 	void	 (*VID_DestroyCursor)			(void *cursor);	//may be null
 

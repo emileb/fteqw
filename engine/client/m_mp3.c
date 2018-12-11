@@ -101,6 +101,7 @@ static qboolean qacmStartup(void)
 #endif
 
 static char media_currenttrack[MAX_QPATH];
+static cvar_t music_fade = CVAR("music_fade", "1");
 
 //higher bits have priority (if they have something to play).
 #define MEDIA_GAMEMUSIC (1u<<0)	//cd music. also music command etc.
@@ -295,7 +296,7 @@ static qboolean Media_Changed (unsigned int mediatype)
 		CDAudio_Stop();
 	}
 #endif
-	media_fadeout = true;
+	media_fadeout = music_fade.ival;
 	media_fadeouttime = realtime;
 	return true;
 }
@@ -341,6 +342,7 @@ void Media_WriteCurrentTrack(sizebuf_t *buf)
 qboolean Media_NamedTrack(const char *track, const char *looptrack)
 {
 	unsigned int tracknum;
+	//FIXME: for q2, gog uses ../music/Track%02i.ogg, with various remapping requirements for the mission packs.
 	static char *path[] =
 	{
 		"music/",
@@ -496,6 +498,11 @@ void Media_NamedTrack_f(void)
 		Media_NamedTrack(Cmd_Argv(1), Cmd_Argv(2));
 	else
 		Media_NamedTrack(Cmd_Argv(1), Cmd_Argv(1));
+}
+void Media_StopTrack_f(void)
+{
+	*media_playtrack = *media_loopingtrack = 0;
+	Media_Changed(MEDIA_GAMEMUSIC);
 }
 
 void Media_NumberedTrack(unsigned int initialtrack, unsigned int looptrack)
@@ -1390,7 +1397,7 @@ void Media_LoadTrackNames (char *listname)
 	char *trackname;
 	mediatrack_t *newtrack;
 	size_t fsize;
-	char *data = COM_LoadTempFile(listname, &fsize);
+	char *data = COM_LoadTempFile(listname, FSLF_IGNOREPURE, &fsize);
 
 	loadedtracknames=true;
 
@@ -2293,7 +2300,7 @@ static cin_t *Media_Static_TryLoad(char *name)
 		qbyte *staticfilmimage;
 		int imagewidth;
 		int imageheight;
-		qboolean hasalpha;
+		uploadfmt_t format = PTI_RGBA8;
 
 		int fsize;
 		char fullname[MAX_QPATH];
@@ -2310,7 +2317,7 @@ static cin_t *Media_Static_TryLoad(char *name)
 		}
 
 		if ((staticfilmimage = ReadPCXFile(file, fsize, &imagewidth, &imageheight)) ||	//convert to 32 rgba if not corrupt
-			(staticfilmimage = ReadTargaFile(file, fsize, &imagewidth, &imageheight, &hasalpha, false)) ||
+			(staticfilmimage = ReadTargaFile(file, fsize, &imagewidth, &imageheight, &format, false, PTI_RGBA8)) ||
 #ifdef AVAIL_JPEGLIB
 			(staticfilmimage = ReadJPEGFile(file, fsize, &imagewidth, &imageheight)) ||
 #endif
@@ -2444,9 +2451,10 @@ cin_t *Media_StartCin(char *name)
 	if (!name || !*name)	//clear only.
 		return NULL;
 
+#ifndef MINIMAL
 	if (!cin)
 		cin = Media_Static_TryLoad(name);
-
+#endif
 #ifdef Q2CLIENT
 	if (!cin)
 		cin = Media_Cin_TryLoad(name);
@@ -2980,7 +2988,7 @@ static void QDECL capture_raw_video (void *vctx, int frame, void *data, int stri
 	char filename[MAX_OSPATH];
 	ctx->frames = frame+1;
 	Q_snprintfz(filename, sizeof(filename), "%s%8.8i.%s", ctx->videonameprefix, frame, ctx->videonameextension);
-	SCR_ScreenShot(filename, ctx->fsroot, &data, 1, stride, width, height, fmt);
+	SCR_ScreenShot(filename, ctx->fsroot, &data, 1, stride, width, height, fmt, true);
 
 	if (capturethrottlesize.ival)
 	{
@@ -3210,13 +3218,16 @@ static void QDECL capture_avi_video(void *vctx, int frame, void *vdata, int stri
 	qbyte *data, *in, *out;
 	int x, y;
 
+	if (stride < 0)	//if stride is negative, then its bottom-up, but the data pointer is at the start of the buffer (rather than 'first row')
+		vdata = (char*)vdata - stride*(height-1);
+
 	//we need to output a packed bottom-up bgr image.
 
-	//switch the input from logically top-down to bottom-up (regardless of the physical ordering of its rows)
+	//switch the input from logical-top-down to bottom-up (regardless of the physical ordering of its rows)
 	in = (qbyte*)vdata + stride*(height-1);
 	stride = -stride;
 
-	if (fmt == TF_BGR24 && stride == width*3)
+	if (fmt == TF_BGR24 && stride == width*-3)
 	{	//no work needed!
 		data = in;
 	}
@@ -5021,7 +5032,7 @@ typedef struct
 #define MPEGLAYER3_ID_MPEG 1
 #endif
 
-qboolean QDECL S_LoadMP3Sound (sfx_t *s, qbyte *data, size_t datalen, int sndspeed)
+static qboolean QDECL S_LoadMP3Sound (sfx_t *s, qbyte *data, size_t datalen, int sndspeed, qboolean forcedecode)
 {
 	WAVEFORMATEX pcm_format;
 	MPEGLAYER3WAVEFORMAT mp3format;
@@ -5121,6 +5132,7 @@ void Media_Init(void)
 		Cmd_AddCommand ("menu_media", M_Menu_Media_f);
 	#endif
 #endif
+	Cvar_Register(&music_fade,	"Media player things");
 
 #ifdef HAVE_SPEECHTOTEXT
 	Cmd_AddCommand("tts", TTS_Say_f);
@@ -5150,10 +5162,10 @@ void Media_Init(void)
 	#endif
 	Media_RegisterEncoder(NULL, &capture_raw);
 
-	Cmd_AddCommand("capture", Media_RecordFilm_f);
-	Cmd_AddCommand("capturedemo", Media_RecordDemo_f);
-	Cmd_AddCommand("capturestop", Media_StopRecordFilm_f);
-	Cmd_AddCommand("capturepause", Media_CapturePause_f);
+	Cmd_AddCommandD("capture", Media_RecordFilm_f, "Captures realtime action to a named video file. Check the capture* cvars to control driver/codecs/rates.");
+	Cmd_AddCommandD("capturedemo", Media_RecordDemo_f, "Capture a nemed demo to a named video file. Demo capturing can be performed offscreen, allowing arbitrary video sizes, or smooth captures on underpowered hardware.");
+	Cmd_AddCommandD("capturestop", Media_StopRecordFilm_f, "Aborts the current video capture.");
+	Cmd_AddCommandD("capturepause", Media_CapturePause_f, "Pauses the video capture, allowing you to avoid capturing uninteresting parts. This is a toggle, so reuse the same command to resume capturing again.");
 
 	Cvar_Register(&capturemessage,			"Video Capture Controls");
 	Cvar_Register(&capturesound,			"Video Capture Controls");
@@ -5175,4 +5187,5 @@ void Media_Init(void)
 #endif
 
 	Cmd_AddCommand("music", Media_NamedTrack_f);
+	Cmd_AddCommand("stopmusic", Media_StopTrack_f);
 }

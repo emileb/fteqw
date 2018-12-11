@@ -36,6 +36,7 @@ static void DLC_Poll(qdownload_t *dl);
 static void CL_ProcessUserInfo (int slot, player_info_t *player);
 
 #ifdef NQPROT
+char cl_dp_packagenames[4096];
 static char cl_dp_csqc_progsname[128];
 static int cl_dp_csqc_progssize;
 static int cl_dp_csqc_progscrc;
@@ -712,27 +713,35 @@ static void CL_SendDownloadStartRequest(char *filename, char *localname, unsigne
 	static int dlsequence;
 	qdownload_t *dl;
 
+	//don't download multiple things at once... its leaky if nothing else.
+	if (cls.download)
+		return;
+
 #ifdef WEBCLIENT
 	if (!strncmp(filename, "http://", 7) || !strncmp(filename, "https://", 8))
 	{
-		if (!cls.download || !(cls.download->flags & DLLF_ALLOWWEB))
+		struct dl_download *wdl = HTTP_CL_Get(filename, localname, CL_WebDownloadFinished);
+		if (wdl)
 		{
-			struct dl_download *wdl = HTTP_CL_Get(filename, localname, CL_WebDownloadFinished);
-			if (wdl)
+			if (flags & DLLF_NONGAME)
 			{
-				if (!(flags & DLLF_TEMPORARY))
-					Con_TPrintf ("Downloading %s to %s...\n", wdl->url, wdl->localname);
-				wdl->qdownload.flags = flags;
-				cls.download = &wdl->qdownload;
+				wdl->fsroot = FS_ROOT;
+				if (!strncmp(localname, "package/", 8))
+					Q_strncpyz(wdl->localname, localname+8, sizeof(wdl->localname));
 			}
-			else
-				CL_DownloadFailed(filename, NULL);
+			if (!(flags & DLLF_TEMPORARY))
+				Con_TPrintf ("Downloading %s to %s...\n", wdl->url, wdl->localname);
+			wdl->qdownload.flags = flags;
+
+			CL_DisenqueDownload(filename);
+
+			cls.download = &wdl->qdownload;
 		}
+		else
+			CL_DownloadFailed(filename, NULL);
 		return;
 	}
 #endif
-	if (cls.download)
-		return;	//no!
 	
 	dl = Z_Malloc(sizeof(*dl));
 	dl->filesequence = ++dlsequence;
@@ -785,7 +794,7 @@ void CL_DownloadFinished(qdownload_t *dl)
 
 
 	//should probably ask the filesytem code if its a package format instead.
-	if (!strncmp(filename, "package/", 8) || !strncmp(ext, "pk4", 3) || !strncmp(ext, "pk3", 3) || !strncmp(ext, "pak", 3))
+	if (!strncmp(filename, "package/", 8) || !strncmp(ext, "pk4", 3) || !strncmp(ext, "pk3", 3) || !strncmp(ext, "pak", 3) || (dl->fsroot == FS_ROOT))
 	{
 		FS_ReloadPackFiles();
 		CL_CheckServerInfo();
@@ -815,7 +824,9 @@ void CL_DownloadFinished(qdownload_t *dl)
 			{
 				if (!strcmp(cl.model_name[i], filename))
 				{
-					cl.model_precache[i] = Mod_ForName(cl.model_name[i], MLV_WARN);	//throw away result.
+					if (cl.model_precache[i] && cl.model_precache[i]->loadstate == MLS_FAILED)
+						cl.model_precache[i]->loadstate = MLS_NOTLOADED;
+					cl.model_precache[i] = Mod_ForName(cl.model_name[i], MLV_WARN);
 					if (i == 1)
 						cl.worldmodel = cl.model_precache[i];
 					break;
@@ -825,18 +836,24 @@ void CL_DownloadFinished(qdownload_t *dl)
 			{
 				if (!strcmp(cl.model_csqcname[i], filename))
 				{
-					cl.model_csqcprecache[i] = Mod_ForName(cl.model_csqcname[i], MLV_WARN);	//throw away result.
+					if (cl.model_csqcprecache[i] && cl.model_csqcprecache[i]->loadstate == MLS_FAILED)
+						cl.model_csqcprecache[i]->loadstate = MLS_NOTLOADED;
+					cl.model_csqcprecache[i] = Mod_ForName(cl.model_csqcname[i], MLV_WARN);
 					break;
 				}
 			}
+#ifndef NOLEGACY
 			for (i = 0; i < MAX_VWEP_MODELS; i++)
 			{
 				if (!strcmp(cl.model_name_vwep[i], filename))
 				{
+					if (cl.model_precache_vwep[i] && cl.model_precache_vwep[i]->loadstate == MLS_FAILED)
+						cl.model_precache_vwep[i]->loadstate = MLS_NOTLOADED;
 					cl.model_precache_vwep[i] = Mod_ForName(cl.model_name_vwep[i], MLV_WARN);
 					break;
 				}
 			}
+#endif
 		}
 		S_ResetFailedLoad();	//okay, so this can still get a little spammy in bad places...
 
@@ -1163,6 +1180,7 @@ static void Model_CheckDownloads (void)
 		CL_CheckModelResources(s);
 	}
 
+#ifndef NOLEGACY
 	for (i = 0; i < MAX_VWEP_MODELS; i++)
 	{
 		s = cl.model_name_vwep[i];
@@ -1176,6 +1194,7 @@ static void Model_CheckDownloads (void)
 		CL_CheckOrEnqueDownloadFile(s, s, 0);
 		CL_CheckModelResources(s);
 	}
+#endif
 }
 
 static int CL_LoadModels(int stage, qboolean dontactuallyload)
@@ -1185,39 +1204,48 @@ static int CL_LoadModels(int stage, qboolean dontactuallyload)
 	float giveuptime = Sys_DoubleTime()+1;	//small things get padded into a single frame
 
 #define atstage() ((cl.contentstage == stage++ && !dontactuallyload)?true:false)
-#define endstage() ++cl.contentstage;if (!cls.timedemo && giveuptime<Sys_DoubleTime()) return -1;
+#define endstage() ++cl.contentstage;if (!cls.timedemo && giveuptime<Sys_DoubleTime()) return -1
+#define skipstage() if (atstage())++cl.contentstage;else
 
 	pmove.numphysent = 0;
 	pmove.physents[0].model = NULL;
 
-/*#ifdef CSQC_DAT
-	if (atstage())
-	{
+#if defined(CSQC_DAT) && defined(NQPROT)
+	if (cls.protocol == CP_NETQUAKE && atstage())
+	{	//we only need this for nq. for qw we checked for downloads with the other stuff.
+		//there are also too many possible names to load... :(
 		extern cvar_t  cl_nocsqc;
-		if (cls.protocol == CP_NETQUAKE && !cl_nocsqc.ival && !cls.demoplayback)
+		if (!cl_nocsqc.ival && !cls.demoplayback)
 		{
-			char *s;
+			const char *cscrc = InfoBuf_ValueForKey(&cl.serverinfo, "*csprogs");
+			const char *cssize = InfoBuf_ValueForKey(&cl.serverinfo, "*csprogssize");
+			const char *csname = InfoBuf_ValueForKey(&cl.serverinfo, "*csprogsname");
+			unsigned int chksum = strtoul(cscrc, NULL, 0);
+			size_t chksize = strtoul(cssize, NULL, 0);
 			SCR_SetLoadingFile("csprogs");
-			s = Info_ValueForKey(cl.serverinfo, "*csprogs");
-			if (*s)	//only allow csqc if the server says so, and the 'checksum' matches.
+			if (!*csname)
+				csname = "csprogs.dat";
+			if (*cscrc && !CSQC_CheckDownload(csname, chksum, chksize))	//only allow csqc if the server says so, and the 'checksum' matches.
 			{
 				extern cvar_t cl_download_csprogs;
-				unsigned int chksum = strtoul(s, NULL, 0);
+				unsigned int chksum = strtoul(cscrc, NULL, 0);
 				if (cl_download_csprogs.ival)
 				{
 					char *str = va("csprogsvers/%x.dat", chksum);
-					if (CL_CheckOrEnqueDownloadFile("csprogs.dat", str, DLLF_REQUIRED))
-						return stage;	//its kinda required
+					if (CL_IsDownloading(str))
+						return -1;	//don't progress to loading it while we're still downloading it.
+					if (CL_CheckOrEnqueDownloadFile(csname, str, DLLF_REQUIRED))
+						return -1;	//its kinda required
 				}
 				else
 				{
-					Con_Printf("Not downloading csprogs.dat due to allow_download_csprogs\n");
+					Con_Printf("Not downloading csprogs.dat due to %s\n", cl_download_csprogs.name);
 				}
 			}
 		}
 		endstage();
 	}
-#endif*/
+#endif
 
 #ifdef HLCLIENT
 	if (atstage())
@@ -1235,19 +1263,25 @@ static int CL_LoadModels(int stage, qboolean dontactuallyload)
 		qboolean anycsqc;
 		char *endptr;
 		unsigned int chksum;
-		anycsqc = atoi(Info_ValueForKey(cl.serverinfo, "anycsqc"));
+		size_t progsize;
+		const char *progsname;
+		anycsqc = atoi(InfoBuf_ValueForKey(&cl.serverinfo, "anycsqc"));
 		if (cls.demoplayback)
 			anycsqc = true;
-		s = Info_ValueForKey(cl.serverinfo, "*csprogs");
+		s = InfoBuf_ValueForKey(&cl.serverinfo, "*csprogssize");
+		progsize = strtoul(s, NULL, 0);
+		s = InfoBuf_ValueForKey(&cl.serverinfo, "*csprogs");
 		chksum = strtoul(s, &endptr, 0);
+		progsname = InfoBuf_ValueForKey(&cl.serverinfo, "*csprogsname");
 		if (*endptr)
 		{
 			Con_Printf("corrupt *csprogs key in serverinfo\n");
 			anycsqc = true;
 			chksum = 0;
 		}
+		progsname = *s?InfoBuf_ValueForKey(&cl.serverinfo, "*csprogsname"):NULL;
 		SCR_SetLoadingFile("csprogs");
-		if (!CSQC_Init(anycsqc, *s?true:false, chksum))
+		if (!CSQC_Init(anycsqc, progsname, chksum, progsize))
 		{
 			Sbar_Start();	//try and start this before we're actually on the server,
 							//this'll stop the mod from sending so much stuffed data at us, whilst we're frozen while trying to load.
@@ -1275,9 +1309,8 @@ static int CL_LoadModels(int stage, qboolean dontactuallyload)
 		for (i=1 ; i<MAX_PRECACHE_MODELS ; i++)
 		{
 			if (!cl.model_name[i][0])
-				continue;
-
-			if (atstage())
+				skipstage();
+			else if (atstage())
 			{
 #if 0
 				SCR_SetLoadingFile(cl.model_name[i]);
@@ -1300,6 +1333,7 @@ static int CL_LoadModels(int stage, qboolean dontactuallyload)
 				endstage();
 			}
 		}
+#ifndef NOLEGACY
 		for (i = 0; i < MAX_VWEP_MODELS; i++)
 		{
 			if (!cl.model_name_vwep[i][0])
@@ -1317,6 +1351,7 @@ static int CL_LoadModels(int stage, qboolean dontactuallyload)
 				endstage();
 			}
 		}
+#endif
 	}
 
 
@@ -1348,8 +1383,8 @@ static int CL_LoadModels(int stage, qboolean dontactuallyload)
 	for (i=1 ; i<MAX_CSMODELS ; i++)
 	{
 		if (!cl.model_csqcname[i][0])
-			continue;
-		if (atstage())
+			skipstage();
+		else if (atstage())
 		{
 #if 0
 			SCR_SetLoadingFile(cl.model_csqcname[i]);
@@ -1515,7 +1550,7 @@ static void Sound_CheckDownloads (void)
 //	if (cls.fteprotocolextensions & PEXT_CSQC)
 	{
 		char	*s;
-		s = Info_ValueForKey(cl.serverinfo, "*csprogs");
+		s = InfoBuf_ValueForKey(&cl.serverinfo, "*csprogs");
 		if (*s)	//only allow csqc if the server says so, and the 'checksum' matches.
 		{
 			extern cvar_t cl_download_csprogs, cl_nocsqc;
@@ -1609,6 +1644,7 @@ void CL_RequestNextDownload (void)
 
 		if (!cl.contentstage)
 		{
+			int pure;
 			stage = 0;
 			stage = CL_LoadModels(stage, true);
 			stage = CL_LoadSounds(stage, true);
@@ -1616,8 +1652,12 @@ void CL_RequestNextDownload (void)
 			cl.contentstage = 0;
 
 			//might be safer to do it later, but kinder to do it before wasting time.
-			if (!FS_PureOkay())
-			{
+			pure = FS_PureOkay();
+			if (pure < 0 || (pure==0 && (cls.download || cl.downloadlist)))
+				return;	//we're downloading something and may still be able to satisfy it.
+			if (pure == 0 && !cls.demoplayback)
+			{	//failure!
+				Con_Printf(CON_ERROR"You are missing pure packages, and they could not be autodownloaded.\nYou may need to purchase an update.\n");
 	#ifdef HAVE_MEDIA_ENCODER
 				if (cls.demoplayback && Media_Capturing())
 				{
@@ -1626,7 +1666,7 @@ void CL_RequestNextDownload (void)
 				}
 	#endif
 				SCR_SetLoadingStage(LS_NONE);
-				CL_Disconnect();
+				CL_Disconnect("Game Content differs from server");
 				return;
 			}
 		}
@@ -1640,6 +1680,8 @@ void CL_RequestNextDownload (void)
 		current_loading_size = cl.contentstage;
 		if (stage < 0)
 			return;
+		//if (cls.userinfosync.numkeys)
+		//	return;	//don't prespawn until we've actually sent all our initial userinfo.
 		if (requiredownloads.ival && COM_HasWork())
 		{
 			SCR_SetLoadingFile("loading content");
@@ -2457,7 +2499,7 @@ void DL_Abort(qdownload_t *dl, enum qdlabort aborttype)
 			case DL_DARKPLACES:
 			case DL_QWCHUNKS:
 				{
-					char *serverversion = Info_ValueForKey(cl.serverinfo, "*version");
+					char *serverversion = InfoBuf_ValueForKey(&cl.serverinfo, "*version");
 					if (strncmp(serverversion , "MVDSV ", 6))	//don't tell mvdsv to stop, because it has retarded annoying clientprints that are spammy as fuck, and we don't want that.
 						CL_SendClientCommand(true, "stopdownload");
 				}
@@ -2687,13 +2729,25 @@ static void CLDP_ParseDownloadData(void)
 
 	if (dl->file)
 	{
-		VFS_SEEK(dl->file, start);
-		VFS_WRITE(dl->file, buffer, size);
+		if (start > dl->completedbytes)
+			;	//this protocol cannot deal with gaps. we might as well wait until its repeated later.
+		else if (start+size < dl->completedbytes)
+			;	//already completed this data
+		else
+		{
+			int offset = dl->completedbytes-start;	//we may already have completed some chunk already
 
-		dl->percent = (start+size) / (float)VFS_GETLEN(dl->file) * 100;
+			VFS_WRITE(dl->file, buffer+offset, size-offset);
+			dl->completedbytes += size-offset;
+			dl->ratebytes += size-offset;	//for download rate calcs
+		}
+
+		dl->percent = (start+size) / (float)dl->size * 100;
 	}
 
-	//this is only reliable because I'm lazy
+	//we need to ack in order.
+	//the server doesn't actually track packets, only position, however there's no way to tell it that we already have a chunk
+	//we could send the acks unreliably, but any cl->sv loss would involve a sv->cl resend (because we can't dupe).
 	MSG_WriteByte(&cls.netchan.message, clcdp_ackdownloaddata);
 	MSG_WriteLong(&cls.netchan.message, start);
 	MSG_WriteShort(&cls.netchan.message, size);
@@ -3071,14 +3125,14 @@ static void CLQW_ParseServerData (void)
 		}
 		if (protover == PROTOCOL_VERSION_QW)	//this ends the version info
 			break;
-		if (cls.demoplayback && (protover == 26 || protover == 27 || protover == 28))	//older versions, maintain demo compatability.
+		if (cls.demoplayback && (protover >= 24 && protover <= 28))	//older versions, maintain demo compatability.
 			break;
 		Host_EndGame ("Server returned version %i, not %i\n", protover, PROTOCOL_VERSION_QW);
 	}
 #else
 	protover = MSG_ReadLong ();
 	if (protover != PROTOCOL_VERSION_QW &&
-		!(cls.demoplayback && (protover == 26 || protover == 27 || protover == 28)))
+		!(cls.demoplayback && (protover >= 24 && protover <= 28)))
 		Host_EndGame ("Server returned version %i, not %i\n", protover, PROTOCOL_VERSION_QW);
 #endif
 
@@ -3116,11 +3170,11 @@ static void CLQW_ParseServerData (void)
 		COM_FlushTempoaryPacks();
 		COM_Gamedir(str, NULL);
 #ifndef CLIENTONLY
-		Info_SetValueForStarKey (svs.info, "*gamedir", str, MAX_SERVERINFO_STRING);
+		InfoBuf_SetStarKey (&svs.info, "*gamedir", str);
 #endif
 	}
 
-	CL_ClearState ();
+	CL_ClearState (true);
 #ifdef QUAKEHUD
 	Stats_NewMap();
 #endif
@@ -3300,7 +3354,7 @@ static void CLQW_ParseServerData (void)
 	}
 	else
 	{
-		if (CL_RemoveClientCommands("soundlist"))
+		if (CL_RemoveClientCommands("soundlist") && !(cls.fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS))
 			Con_DPrintf("Multiple soundlists\n");
 		// ask for the sound list next
 //		CL_SendClientCommand ("soundlist %i 0", cl.servercount);
@@ -3395,7 +3449,7 @@ static void CLQ2_ParseServerData (void)
 													//FTE doesn't actually have a timescale cvar, so create one to 'fool' q2admin.
 													//I can't really blame q2admin for rejecting engines that don't have this cvar, as it could have been renamed via a hex-edit.
 
-	CL_ClearState ();
+	CL_ClearState (true);
 	CLQ2_ClearState ();
 	cl.minpitch = -89;
 	cl.maxpitch = 89;
@@ -3491,7 +3545,9 @@ static void CLQ2_ParseServerData (void)
 void CL_ParseEstablished(void)
 {
 #ifdef NQPROT
+	*cl_dp_packagenames = 0;
 	cl_dp_serverextension_download = false;
+	*cl_dp_csqc_progsname = 0;
 	cl_dp_csqc_progscrc = 0;
 	cl_dp_csqc_progssize = 0;
 #endif
@@ -3658,7 +3714,7 @@ static void CLNQ_ParseServerData(void)		//Doesn't change gamedir - use with caut
 	int gametype;
 	Con_DPrintf ("Serverdata packet %s.\n", cls.demoplayback?"read":"received");
 	SCR_SetLoadingStage(LS_CLIENT);
-	CL_ClearState ();
+	CL_ClearState (true);
 #ifdef QUAKEHUD
 	Stats_NewMap();
 #endif
@@ -3676,7 +3732,7 @@ static void CLNQ_ParseServerData(void)		//Doesn't change gamedir - use with caut
 			COM_FlushTempoaryPacks();
 			COM_Gamedir(str, NULL);
 #ifndef CLIENTONLY
-			Info_SetValueForStarKey (svs.info, "*gamedir", str, MAX_SERVERINFO_STRING);
+			InfoBuf_SetStarKey (&svs.info, "*gamedir", str);
 #endif
 		}
 	}
@@ -3752,29 +3808,47 @@ static void CLNQ_ParseServerData(void)		//Doesn't change gamedir - use with caut
 	//fill in the csqc stuff
 	if (!cl_dp_csqc_progscrc)
 	{
-		Info_RemoveKey(cl.serverinfo, "*csprogs");
-		Info_RemoveKey(cl.serverinfo, "*csprogssize");
-		Info_RemoveKey(cl.serverinfo, "*csprogsname");
+		InfoBuf_RemoveKey(&cl.serverinfo, "*csprogs");
+		InfoBuf_RemoveKey(&cl.serverinfo, "*csprogssize");
+		InfoBuf_RemoveKey(&cl.serverinfo, "*csprogsname");
 	}
 	else
 	{
-		Info_SetValueForStarKey(cl.serverinfo, "*csprogs", va("%i", cl_dp_csqc_progscrc), sizeof(cl.serverinfo));
-		Info_SetValueForStarKey(cl.serverinfo, "*csprogssize", va("%i", cl_dp_csqc_progssize), sizeof(cl.serverinfo));
-		Info_SetValueForStarKey(cl.serverinfo, "*csprogsname", va("%s", cl_dp_csqc_progsname), sizeof(cl.serverinfo));
+		InfoBuf_SetStarKey(&cl.serverinfo, "*csprogs",		va("%i", cl_dp_csqc_progscrc));
+		InfoBuf_SetStarKey(&cl.serverinfo, "*csprogssize", va("%i", cl_dp_csqc_progssize));
+		InfoBuf_SetStarKey(&cl.serverinfo, "*csprogsname", va("%s", cl_dp_csqc_progsname));
 	}
+
+	if (*cl_dp_packagenames)
+	{
+		char *in = cl_dp_packagenames;
+		while (*in)
+		{
+			in = COM_Parse(in);
+
+			if (*cl.serverpaknames)
+				Q_strncatz(cl.serverpaknames, " ", sizeof(cl.serverpaknames));
+			Q_strncatz(cl.serverpaknames, com_token, sizeof(cl.serverpaknames));
+			if (*cl.serverpakcrcs)
+				Q_strncatz(cl.serverpakcrcs, " ", sizeof(cl.serverpakcrcs));
+			Q_strncatz(cl.serverpakcrcs, "-", sizeof(cl.serverpakcrcs));	//we don't have any crc info. we'll instead need this info as part of the filename.
+			cl.serverpakschanged = true;
+		}
+	}
+
 
 	//update gamemode
 	if (gametype != GAME_COOP)
-		Info_SetValueForStarKey(cl.serverinfo, "deathmatch", "1", sizeof(cl.serverinfo));
+		InfoBuf_SetKey(&cl.serverinfo, "deathmatch", "1");
 	else
-		Info_SetValueForStarKey(cl.serverinfo, "deathmatch", "0", sizeof(cl.serverinfo));
-	Info_SetValueForStarKey(cl.serverinfo, "teamplay", "0", sizeof(cl.serverinfo));
+		InfoBuf_SetKey(&cl.serverinfo, "deathmatch", "0");
+	InfoBuf_SetKey(&cl.serverinfo, "teamplay", "0");
 
 	//allow some things by default that quakeworld bans by default
-	Info_SetValueForStarKey(cl.serverinfo, "watervis", "1", sizeof(cl.serverinfo));
+	InfoBuf_SetKey(&cl.serverinfo, "watervis", "1");
 
 	//prohibit some things that QW/FTE has enabled by default, which would be frowned upon in NQ
-	Info_SetValueForStarKey(cl.serverinfo, "fbskins", "0", sizeof(cl.serverinfo));
+	InfoBuf_SetKey(&cl.serverinfo, "fbskins", "0");
 
 	//pretend it came from the server, and update cheat/permissions/etc
 	CL_CheckServerInfo();
@@ -3822,7 +3896,7 @@ Con_DPrintf ("CL_SignonReply: %i\n", cls.signon);
 		CL_SendClientCommand(true, "name \"%s\"\n", name.string);
 		CL_SendClientCommand(true, "color %i %i\n", topcolor.ival, bottomcolor.ival);
 		if (cl.haveserverinfo)
-			Info_Enumerate(cls.userinfo[0], NULL, CLNQ_SendInitialUserInfo);
+			InfoBuf_Enumerate(&cls.userinfo[0], NULL, CLNQ_SendInitialUserInfo);
 		else if (CPNQ_IS_DP)
 		{	//dp needs a couple of extras to work properly in certain cases. don't send them on other servers because that generally results in error messages.
 			CL_SendClientCommand(true, "rate %s", rate.string);
@@ -4066,7 +4140,7 @@ static void CL_ParseSoundlist (qboolean lots)
 		}
 		else
 		{
-			if (CL_RemoveClientCommands("modellist"))
+			if (CL_RemoveClientCommands("modellist") && !(cls.fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS))
 				Con_DPrintf("Multiple modellists\n");
 //			CL_SendClientCommand ("modellist %i 0", cl.servercount);
 			CL_SendClientCommand (true, modellist_name, cl.servercount, 0);
@@ -4106,8 +4180,10 @@ static void CL_ParseModellist (qboolean lots)
 			cl_spikeindex = nummodels;
 		if (!strcmp(cl.model_name[nummodels],"progs/player.mdl"))
 			cl_playerindex = nummodels;
+#ifndef NOLEGACY
 		if (*cl.model_name_vwep[0] && !strcmp(cl.model_name[nummodels],cl.model_name_vwep[0]) && cl_playerindex == -1)
 			cl_playerindex = nummodels;
+#endif
 		if (!strcmp(cl.model_name[nummodels],"progs/h_player.mdl"))
 			cl_h_playerindex = nummodels;
 		if (!strcmp(cl.model_name[nummodels],"progs/flag.mdl"))
@@ -4168,7 +4244,7 @@ static void CLQ2_ParseClientinfo(int i, char *s)
 
 	player = &cl.players[i];
 
-	*player->userinfo = '\0';
+	InfoBuf_Clear(&player->userinfo, true);
 	cl.players[i].userinfovalid = true;
 
 	model = strchr(s, '\\');
@@ -4192,12 +4268,12 @@ static void CLQ2_ParseClientinfo(int i, char *s)
 	}
 	else
 		skin = "";
-	Info_SetValueForKey(player->userinfo, "model", model, MAX_INFO_STRING);
-	Info_SetValueForKey(player->userinfo, "skin", skin, MAX_INFO_STRING);
+	InfoBuf_SetValueForKey(&player->userinfo, "model", model);
+	InfoBuf_SetValueForKey(&player->userinfo, "skin", skin);
 #else
-	Info_SetValueForKey(player->userinfo, "skin", model, sizeof(player->userinfo));
+	InfoBuf_SetValueForKey(&player->userinfo, "skin", model);
 #endif
-	Info_SetValueForKey(player->userinfo, "name", name, sizeof(player->userinfo));
+	InfoBuf_SetValueForKey(&player->userinfo, "name", name);
 
 	cl.players[i].userid = i;
 	cl.players[i].rbottomcolor = 1;
@@ -4242,7 +4318,7 @@ static void CLQ2_ParseConfigString (void)
 		return;
 	}
 
-	if (i < 0 || i >= Q2MAX_CONFIGSTRINGS)
+	if ((unsigned int)i >= Q2MAX_CONFIGSTRINGS)
 		Host_EndGame ("configstring > Q2MAX_CONFIGSTRINGS");
 
 //	strncpy (olds, cl.configstrings[i], sizeof(olds));
@@ -4288,6 +4364,8 @@ static void CLQ2_ParseConfigString (void)
 	{
 		Media_NamedTrack (s, NULL);
 	}
+	else if (i == Q2CS_AIRACCEL)
+		Q_strncpyz(cl.q2airaccel, s, sizeof(cl.q2airaccel));
 	else if (i >= Q2CS_MODELS && i < Q2CS_MODELS+Q2MAX_MODELS)
 	{
 		if (*s == '/')
@@ -4756,7 +4834,7 @@ static void CLQ2_ParseStartSoundPacket(void)
 	{	//a 'sexed' sound
 		if (ent > 0 && ent <= MAX_CLIENTS)
 		{
-			char *model = Info_ValueForKey(cl.players[ent-1].userinfo, "skin");
+			char *model = InfoBuf_ValueForKey(&cl.players[ent-1].userinfo, "skin");
 			char *skin;
 			skin = strchr(model, '/');
 			if (skin)
@@ -4825,7 +4903,7 @@ static void CLNQ_ParseStartSoundPacket(void)
 		pitchadj = (unsigned short)MSG_ReadShort() / 4000.0;
 
 	flags = field_mask>>8;
-	flags &= CF_FORCELOOP | CF_NOREVERB | CF_FOLLOW;
+	flags &= CF_NETWORKED;
 
 	if (field_mask & NQSND_LARGEENTITY)
 	{
@@ -4975,7 +5053,7 @@ void CL_NewTranslation (int slot)
 		player->ttopcolor = TOP_DEFAULT;
 		player->tbottomcolor = BOTTOM_DEFAULT;
 
-		mod = Info_ValueForKey(player->userinfo, "skin");
+		mod = InfoBuf_ValueForKey(&player->userinfo, "skin");
 		skin = strchr(mod, '/');
 		if (skin)
 			*skin++ = 0;
@@ -5077,22 +5155,22 @@ static void CL_ProcessUserInfo (int slot, player_info_t *player)
 	int i;
 	char *col;
 	int ospec = player->spectator;
-	Q_strncpyz (player->name, Info_ValueForKey (player->userinfo, "name"), sizeof(player->name));
-	Q_strncpyz (player->team, Info_ValueForKey (player->userinfo, "team"), sizeof(player->team));
+	Q_strncpyz (player->name, InfoBuf_ValueForKey (&player->userinfo, "name"), sizeof(player->name));
+	Q_strncpyz (player->team, InfoBuf_ValueForKey (&player->userinfo, "team"), sizeof(player->team));
 
-	col = Info_ValueForKey (player->userinfo, "topcolor");
+	col = InfoBuf_ValueForKey (&player->userinfo, "topcolor");
 	if (!strncmp(col, "0x", 2))
 		player->rtopcolor = 0xff000000|strtoul(col+2, NULL, 16);
 	else
 		player->rtopcolor = atoi(col);
 
-	col = Info_ValueForKey (player->userinfo, "bottomcolor");
+	col = InfoBuf_ValueForKey (&player->userinfo, "bottomcolor");
 	if (!strncmp(col, "0x", 2))
 		player->rbottomcolor = 0xff000000|strtoul(col+2, NULL, 16);
 	else
 		player->rbottomcolor = atoi(col);
 
-	i = atoi(Info_ValueForKey (player->userinfo, "*spectator"));
+	i = atoi(InfoBuf_ValueForKey (&player->userinfo, "*spectator"));
 	if (i == 2)
 		player->spectator = 2;
 	else if (i)
@@ -5108,7 +5186,7 @@ static void CL_ProcessUserInfo (int slot, player_info_t *player)
 
 #ifdef HEXEN2
 	/*if we're running hexen2, they have to be some class...*/
-	player->h2playerclass = atoi(Info_ValueForKey (player->userinfo, "cl_playerclass"));
+	player->h2playerclass = atoi(InfoBuf_ValueForKey (&player->userinfo, "cl_playerclass"));
 	if (player->h2playerclass > 5)
 		player->h2playerclass = 5;
 	if (player->h2playerclass < 1)
@@ -5168,7 +5246,7 @@ static void CL_UpdateUserinfo (void)
 
 	player = &cl.players[slot];
 	player->userid = MSG_ReadLong ();
-	Q_strncpyz (player->userinfo, MSG_ReadString(), sizeof(player->userinfo));
+	InfoBuf_FromString(&player->userinfo, MSG_ReadString(), false);
 	player->userinfovalid = true;
 
 	CL_ProcessUserInfo (slot, player);
@@ -5178,7 +5256,7 @@ static void CL_UpdateUserinfo (void)
 	if (slot == cl.playerview[0].playernum && player->name[0])
 	{
 		char *qz;
-		qz = Info_ValueForKey(player->userinfo, "Qizmo");
+		qz = InfoBuf_ValueForKey(&player->userinfo, "Qizmo");
 		if (*qz)
 			TP_ExecTrigger("f_qizmoconnect", false);
 	}
@@ -5193,27 +5271,67 @@ static void CL_ParseSetInfo (void)
 {
 	int		slot;
 	player_info_t	*player;
-	char key[MAX_QWMSGLEN];
-	char value[MAX_QWMSGLEN];
+	char *temp;
+	char *key;
+	char *val;
+	unsigned int offset;
+	qboolean final;
+	size_t keysize;
+	size_t valsize;
 
 	slot = MSG_ReadByte ();
 
-	Q_strncpyz (key, MSG_ReadString(), sizeof(key));
-	Q_strncpyz (value, MSG_ReadString(), sizeof(value));
+	if (slot == 255 && (cls.fteprotocolextensions2 & PEXT2_INFOBLOBS))
+	{
+		slot = MSG_ReadByte();
+		offset = MSG_ReadLong();
+		final = !!(offset & 0x80000000);
+		offset &= ~0x80000000;
+	}
+	else
+	{
+		final = true;
+		offset = 0;
+	}
 
-	if (slot >= MAX_CLIENTS)
-		Con_Printf("INVALID SETINFO %i: %s=%s\n", slot, key, value);
+	temp = MSG_ReadString();
+	if (cls.fteprotocolextensions2 & PEXT2_INFOBLOBS)
+		key = InfoBuf_DecodeString(temp, temp+strlen(temp), &keysize);
+	else
+	{
+		keysize = strlen(temp);
+		key = Z_StrDup(temp);
+	}
+
+	temp = MSG_ReadString();
+	if (cls.fteprotocolextensions2 & PEXT2_INFOBLOBS)
+		val = InfoBuf_DecodeString(temp, temp+strlen(temp), &valsize);
+	else
+	{
+		valsize = strlen(temp);
+		val = Z_StrDup(temp);
+	}
+
+	if (slot == 255)
+		InfoBuf_SyncReceive(&cl.serverinfo, key, keysize, val, valsize, offset, final);
+	else if (slot >= MAX_CLIENTS)
+		Con_Printf("INVALID SETINFO %i: %s=%s\n", slot, key, val);
 	else
 	{
 		player = &cl.players[slot];
 
-		Con_DPrintf("SETINFO %s: %s=%s\n", player->name, key, value);
+		if (offset)
+			Con_DLPrintf(2,"SETINFO %s: %s+=%s\n", player->name, key, val);
+		else
+			Con_DLPrintf(strcmp(key, "chat")?1:2,"SETINFO %s: %s=%s\n", player->name, key, val);
 
-		Info_SetValueForStarKey (player->userinfo, key, value, sizeof(player->userinfo));
+		InfoBuf_SyncReceive(&player->userinfo, key, keysize, val, valsize, offset, final);
 		player->userinfovalid = true;
 
 		CL_ProcessUserInfo (slot, player);
 	}
+	Z_Free(key);
+	Z_Free(val);
 }
 
 /*
@@ -5233,7 +5351,7 @@ static void CL_ServerInfo (void)
 
 	Con_DPrintf("SERVERINFO: %s=%s\n", key, value);
 
-	Info_SetValueForStarKey (cl.serverinfo, key, value, MAX_SERVERINFO_STRING);
+	InfoBuf_SetStarKey(&cl.serverinfo, key, value);
 
 	CL_CheckServerInfo();
 }
@@ -5286,11 +5404,11 @@ static void CL_SetStatMovevar(int pnum, int stat, int ivalue, float value)
 	{
 	case STAT_FRAGLIMIT:
 		if (cls.protocol == CP_NETQUAKE && CPNQ_IS_DP)
-			Info_SetValueForKey(cl.serverinfo, "fraglimit", va("%g", value), sizeof(cl.serverinfo));
+			InfoBuf_SetKey(&cl.serverinfo, "fraglimit", va("%g", value));
 		break;
 	case STAT_TIMELIMIT:
 		if (cls.protocol == CP_NETQUAKE && CPNQ_IS_DP)
-			Info_SetValueForKey(cl.serverinfo, "timelimit", va("%g", value), sizeof(cl.serverinfo));
+			InfoBuf_SetKey(&cl.serverinfo, "timelimit", va("%g", value));
 		break;
 	case STAT_MOVEVARS_AIRACCEL_QW_STRETCHFACTOR:	//0
 	case STAT_MOVEVARS_AIRCONTROL_PENALTY:			//0
@@ -5714,7 +5832,7 @@ static int CL_PlayerColor(player_info_t *plr, qboolean *name_coloured)
 		// 0-6 is standard colors (red to white)
 		// 7-13 is using secondard charactermask
 		// 14 and afterwards repeats
-		t = Info_ValueForKey(plr->userinfo, "tc");
+		t = InfoBuf_ValueForKey(&plr->userinfo, "tc");
 		if (*t)
 			c = atoi(t);
 		else
@@ -5911,7 +6029,8 @@ void CL_PrintChat(player_info_t *plr, char *msg, int plrflags)
 
 			if (con_separatechat.ival == 1)
 			{
-				Con_PrintCon(&con_main, fullchatmessage, con_main.parseflags|PFS_NONOTIFY);
+				console_t *c = Con_GetMain();
+				Con_PrintCon(c, fullchatmessage, c->parseflags|PFS_NONOTIFY);
 				return;
 			}
 		}
@@ -6194,20 +6313,20 @@ static void CL_ParseStuffCmd(char *msg, int destsplit)	//this protects stuffcmds
 			if (Cmd_Argc() == 2)
 			{
 				cl.haveserverinfo = true;
-				Q_strncpyz (cl.serverinfo, Cmd_Argv(1), sizeof(cl.serverinfo));
+				InfoBuf_FromString(&cl.serverinfo, Cmd_Argv(1), false);
 				CL_CheckServerInfo();
 			}
 
 			#if _MSC_VER > 1200
 			if (cls.netchan.remote_address.type != NA_LOOPBACK)
-				Sys_RecentServer("+connect", cls.servername, va("%s (%s)", Info_ValueForKey(cl.serverinfo, "hostname"), cls.servername), "Join QW Server");
+				Sys_RecentServer("+connect", cls.servername, va("%s (%s)", InfoBuf_ValueForKey(&cl.serverinfo, "hostname"), cls.servername), "Join QW Server");
 			#endif
 		}
 		else if (!strncmp(stufftext, "//svi ", 6))	//for serverinfo over NQ protocols
 		{
 			Cmd_TokenizeString(stufftext+2, false, false);
 			Con_DPrintf("SERVERINFO: %s=%s\n", Cmd_Argv(1), Cmd_Argv(2));
-			Info_SetValueForStarKey (cl.serverinfo, Cmd_Argv(1), Cmd_Argv(2), MAX_SERVERINFO_STRING);
+			InfoBuf_SetStarKey(&cl.serverinfo, Cmd_Argv(1), Cmd_Argv(2));
 			CL_CheckServerInfo();
 		}
 
@@ -6241,8 +6360,8 @@ static void CL_ParseStuffCmd(char *msg, int destsplit)	//this protects stuffcmds
 		{
 			if (!cl.haveserverinfo)
 			{
-				Info_SetValueForStarKey(cl.serverinfo, "maxpitch", (atoi(stufftext+13))? "90":"", sizeof(cl.serverinfo));
-				Info_SetValueForStarKey(cl.serverinfo, "minpitch", (atoi(stufftext+13))?"-90":"", sizeof(cl.serverinfo));
+				InfoBuf_SetKey(&cl.serverinfo, "maxpitch", (atoi(stufftext+13))? "90":"");
+				InfoBuf_SetKey(&cl.serverinfo, "minpitch", (atoi(stufftext+13))?"-90":"");
 				CL_CheckServerInfo();
 			}
 		}
@@ -6259,6 +6378,7 @@ static void CL_ParseStuffCmd(char *msg, int destsplit)	//this protects stuffcmds
 			cl.serverpakschanged = true;
 			CL_CheckServerPacks();
 		}
+#ifndef NOLEGACY
 		else if (!strncmp(stufftext, "//vwep ", 7))			//list of vwep model indexes, because using the normal model precaches wasn't cool enough
 		{													//(from zquake/ezquake)
 			int i;
@@ -6279,6 +6399,7 @@ static void CL_ParseStuffCmd(char *msg, int destsplit)	//this protects stuffcmds
 				}
 			}
 		}
+#endif
 		else if (cls.demoplayback && !strncmp(stufftext, "playdemo ", 9))
 		{	//some demos (like speed-demos-archive's marathon runs) chain multiple demos with playdemo commands
 			//these should still chain properly even when the demo is in some archive(like .dz) or subdir
@@ -6363,12 +6484,12 @@ static void CL_ParseStuffCmd(char *msg, int destsplit)	//this protects stuffcmds
 			{
 				player_info_t *player = &cl.players[slot];
 				Con_DPrintf("SETINFO %s: %s\n", player->name, value);
-				Q_strncpyz(player->userinfo, value, sizeof(player->userinfo));
+				InfoBuf_FromString(&player->userinfo, value, false);
 				player->userinfovalid = true;
 				CL_ProcessUserInfo (slot, player);
 			}
 		}
-		else if (!strncmp(stufftext, "//ui ", 5))				//ui <slot> <key> <value>. Full user info updates.
+		else if (!strncmp(stufftext, "//ui ", 5))				//ui <slot> <key> <value>. Partial user info updates.
 		{
 			unsigned int slot;
 			const char *key, *value;
@@ -6380,7 +6501,7 @@ static void CL_ParseStuffCmd(char *msg, int destsplit)	//this protects stuffcmds
 			{
 				player_info_t *player = &cl.players[slot];
 				Con_DPrintf("SETINFO %s: %s=%s\n", player->name, key, value);
-				Info_SetValueForStarKey (player->userinfo, key, value, sizeof(player->userinfo));
+				InfoBuf_SetValueForStarKey (&player->userinfo, key, value);
 				CL_ProcessUserInfo (slot, player);
 			}
 		}
@@ -6465,7 +6586,7 @@ static void CL_ParsePrecache(void)
 	}
 }
 
-static void Con_HexDump(qbyte *packet, size_t len)
+static void Con_HexDump(qbyte *packet, size_t len, size_t badoffset)
 {
 	int i;
 	int pos;
@@ -6478,6 +6599,8 @@ static void Con_HexDump(qbyte *packet, size_t len)
 		{
 			if (pos >= len)
 				Con_Printf(" - ");
+			else if (pos == badoffset)
+				Con_Printf("^b^1%2x ", packet[pos]);
 			else
 				Con_Printf("%2x ", packet[pos]);
 			pos++;
@@ -6488,9 +6611,19 @@ static void Con_HexDump(qbyte *packet, size_t len)
 			if (pos >= len)
 				Con_Printf("X");
 			else if (packet[pos] == 0 || packet[pos] == '\t' || packet[pos] == '\r' || packet[pos] == '\n')
-				Con_Printf(".");
+			{
+				if (pos == badoffset)
+					Con_Printf("^b^1.");
+				else
+					Con_Printf(".");
+			}
 			else
-				Con_Printf("%c", packet[pos]);
+			{
+				if (pos == badoffset)
+					Con_Printf("^b^1%c", packet[pos]);
+				else
+					Con_Printf("%c", packet[pos]);
+			}
 			pos++;
 		}
 		Con_Printf("\n");
@@ -6499,7 +6632,7 @@ static void Con_HexDump(qbyte *packet, size_t len)
 }
 void CL_DumpPacket(void)
 {
-	Con_HexDump(net_message.data, net_message.cursize);
+	Con_HexDump(net_message.data, net_message.cursize, msg_readcount-1);
 }
 
 static void CL_ParsePortalState(void)
@@ -7309,7 +7442,7 @@ isilegible:
 		case svcq2_reconnect:	//8. this is actually kinda weird to have
 			Con_TPrintf ("reconnecting...\n");
 #if 1
-			CL_Disconnect();
+			CL_Disconnect("Reconnect request");
 			CL_BeginServerReconnect();
 			return;
 #else
@@ -7669,7 +7802,7 @@ void CLNQ_ParseServerMessage (void)
 			break;
 
 		case svc_disconnect:
-			CL_Disconnect();
+			CL_Disconnect("Server disconnected");
 			return;
 
 		case svc_centerprint:
@@ -7871,7 +8004,7 @@ void CLNQ_ParseServerMessage (void)
 				strcpy(cl.players[i].name, MSG_ReadString());
 				if (*cl.players[i].name)
 					cl.players[i].userid = i+1;
-				Info_SetValueForKey(cl.players[i].userinfo, "name", cl.players[i].name, sizeof(cl.players[i].userinfo));
+				InfoBuf_SetValueForKey(&cl.players[i].userinfo, "name", cl.players[i].name);
 				if (!cl.nqplayernamechanged)
 					cl.nqplayernamechanged = realtime+2;
 
@@ -7901,9 +8034,9 @@ void CLNQ_ParseServerMessage (void)
 //					cl.players[i].rbottomcolor = (a&0xf0)>>4;
 //					sprintf(cl.players[i].team, "%2d", cl.players[i].rbottomcolor);
 
-					Info_SetValueForKey(cl.players[i].userinfo, "topcolor", va("%i", a&0x0f), sizeof(cl.players[i].userinfo));
-					Info_SetValueForKey(cl.players[i].userinfo, "bottomcolor", va("%i", (a&0xf0)>>4), sizeof(cl.players[i].userinfo));
-					Info_SetValueForKey(cl.players[i].userinfo, "team", va("%i", (a&0xf0)>>4), sizeof(cl.players[i].userinfo));
+					InfoBuf_SetValueForKey(&cl.players[i].userinfo, "topcolor", va("%i", a&0x0f));
+					InfoBuf_SetValueForKey(&cl.players[i].userinfo, "bottomcolor", va("%i", (a&0xf0)>>4));
+					InfoBuf_SetValueForKey(&cl.players[i].userinfo, "team", va("%i", (a&0xf0)>>4));
 					CL_ProcessUserInfo (i, &cl.players[i]);
 
 //					CLNQ_CheckPlayerIsSpectator(i);
@@ -7937,7 +8070,7 @@ void CLNQ_ParseServerMessage (void)
 			break;
 		case svcdp_updatestatbyte:
 		//case svcneh_fog:
-			if (CPNQ_IS_BJP || cls.protocol_nq == PROTOCOL_VERSION_NEHD)
+			if (CPNQ_IS_BJP || cls.protocol_nq == CPNQ_NEHAHRA)
 			{
 				CL_ResetFog(0);
 				if (MSG_ReadByte())

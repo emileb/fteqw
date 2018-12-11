@@ -1100,7 +1100,7 @@ static int bi_lua_setinfokey(lua_State *L)
 	key = lua_tolstring(L, 2, NULL);
 	value = lua_tolstring(L, 3, NULL);
 
-	result = PF_ForceInfoKey_Internal(entnum, key, value);
+	result = PF_ForceInfoKey_Internal(entnum, key, value, strlen(value));
 	lua_pushinteger(L, result);
 	return 1;
 }
@@ -1410,7 +1410,7 @@ static int bi_lua_walkmove(lua_State *L)
 // save program state, because World_movestep may call other progs
 	oldself = *world->g.self;
 
-	lua_pushboolean(L, World_movestep(world, ent, move, axis, true, false, NULL, NULL));
+	lua_pushboolean(L, World_movestep(world, ent, move, axis, true, false, NULL));
 
 // restore program state
 	*world->g.self = oldself;
@@ -2367,6 +2367,7 @@ static void my_lua_registerbuiltins(lua_State *L)
 	registerfuncd(loadlua);	//should probably use 'require' instead.
 	registerfuncn(vec3);
 	registerfuncn(field);
+#undef qtrue
 	registerfuncn(qtrue);	//for auto-converted code that tests for truth amongst a myriad of different custom types...
 
 	registerfunc(setmodel);
@@ -2836,7 +2837,7 @@ cont:
 	return data;
 }
 
-static int QDECL Lua_LoadEnts(pubprogfuncs_t *pf, const char *mapstring, void *ctx, void (PDECL *callback) (pubprogfuncs_t *progfuncs, struct edict_s *ed, void *ctx, const char *entstart, const char *entend))
+static int QDECL Lua_LoadEnts(pubprogfuncs_t *pf, const char *mapstring, void *ctx, void (PDECL *callback) (pubprogfuncs_t *progfuncs, struct edict_s *ed, void *ctx, const char *entstart, const char *entend), pbool (PDECL *unhandledcallback)(pubprogfuncs_t *,void *,const char **))
 {
 	lua_State *L = lua.ctx;
 	struct edict_s *ed = NULL;
@@ -2898,7 +2899,7 @@ static int QDECL Lua_LoadEnts(pubprogfuncs_t *pf, const char *mapstring, void *c
 	return sv.world.edict_size;
 }
 
-static eval_t *QDECL Lua_GetEdictFieldValue(pubprogfuncs_t *pf, edict_t *e, char *fieldname, etype_t type, evalc_t *cache)
+static eval_t *QDECL Lua_GetEdictFieldValue(pubprogfuncs_t *pf, edict_t *e, const char *fieldname, etype_t type, evalc_t *cache)
 {
 	eval_t *val;
 	luafld_t *fld;
@@ -3027,7 +3028,7 @@ static const char *ASMCALL QDECL Lua_StringToNative(pubprogfuncs_t *prinst, stri
 	return ret;
 }
 
-static void Lua_Event_Touch(world_t *w, wedict_t *s, wedict_t *o)
+static void Lua_Event_Touch(world_t *w, wedict_t *s, wedict_t *o, trace_t *trace)
 {
 	int oself = pr_global_struct->self;
 	int oother = pr_global_struct->other;

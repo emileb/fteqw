@@ -270,6 +270,7 @@ void M_Menu_Audio_f (void);
 void M_Menu_Demos_f (void);
 void M_Menu_Mods_f (void);
 void M_Menu_ModelViewer_f(void);
+void M_Menu_ModelViewer_c(int argn, const char *partial, struct xcommandargcompletioncb_s *ctx);
 
 extern menu_t *menu_script;
 
@@ -1034,7 +1035,7 @@ qboolean MC_Quit_Key (int key, menu_t *menu)
 	case 'y':
 		M_RemoveMenu(menu);
 		Key_Dest_Add(kdm_console);
-		CL_Disconnect ();
+		CL_Disconnect (NULL);
 		Sys_Quit ();
 		break;
 
@@ -1064,7 +1065,7 @@ qboolean MC_SaveQuit_Key (int key, menu_t *menu)
 	case 'N':
 		M_RemoveMenu(menu);
 #ifndef FTE_TARGET_WEB
-		CL_Disconnect ();
+		CL_Disconnect (NULL);
 		Sys_Quit ();
 #endif
 		break;
@@ -1074,7 +1075,7 @@ qboolean MC_SaveQuit_Key (int key, menu_t *menu)
 		M_RemoveMenu(menu);
 		Cmd_ExecuteString("cfg_save", RESTRICT_LOCAL);
 #ifndef FTE_TARGET_WEB
-		CL_Disconnect ();
+		CL_Disconnect (NULL);
 		Sys_Quit ();
 #endif
 		break;
@@ -1124,7 +1125,7 @@ void M_Menu_Quit_f (void)
 	{
 	case 0:
 #ifndef FTE_TARGET_WEB
-		CL_Disconnect ();
+		CL_Disconnect (NULL);
 		Sys_Quit ();
 #endif
 		break;
@@ -1135,9 +1136,9 @@ void M_Menu_Quit_f (void)
 		quitmenu = M_CreateMenuInfront(0);
 		quitmenu->key = MC_SaveQuit_Key;
 
-		MC_AddWhiteText(quitmenu, 64, 0, 84,	 "You have unsaved settings ", false);
-		MC_AddWhiteText(quitmenu, 64, 0, 92,	 "    Would you like to     ", false);
-		MC_AddWhiteText(quitmenu, 64, 0, 100,	 "      save them now?      ", false);
+		MC_AddWhiteText(quitmenu, 64, 256, 84,	 "You have unsaved settings ", 2);
+		MC_AddWhiteText(quitmenu, 64, 256, 92,	 "    Would you like to     ", 2);
+		MC_AddWhiteText(quitmenu, 64, 256, 100,	 "      save them now?      ", 2);
 
 		quitmenu->selecteditem = (menuoption_t *)
 #ifdef FTE_TARGET_WEB
@@ -1161,19 +1162,19 @@ void M_Menu_Quit_f (void)
 
 #ifdef FTE_TARGET_WEB
 
-//		MC_AddWhiteText(quitmenu, 64, 0, 84,	 "                          ", false);
-		MC_AddWhiteText(quitmenu, 64, 0, 92,	 " There is nothing to save ", false);
-//		MC_AddWhiteText(quitmenu, 64, 0, 100,	 "                          ", false);
+//		MC_AddWhiteText(quitmenu, 64, 256, 84,	 "                          ", 2);
+		MC_AddWhiteText(quitmenu, 64, 256, 92,	 " There is nothing to save ", 2);
+//		MC_AddWhiteText(quitmenu, 64, 256, 100,	 "                          ", 2);
 
 		quitmenu->selecteditem = (menuoption_t *)
 		MC_AddConsoleCommand    (quitmenu, 120, 0, 116,        "Oh",			       "menupop\n");
 #else
 		{
 			int		i = rand()&7;
-			MC_AddWhiteText(quitmenu, 64, 0, 84, quitMessage[i*4+0], false);
-			MC_AddWhiteText(quitmenu, 64, 0, 92, quitMessage[i*4+1], false);
-			MC_AddWhiteText(quitmenu, 64, 0, 100, quitMessage[i*4+2], false);
-			MC_AddWhiteText(quitmenu, 64, 0, 108, quitMessage[i*4+3], false);
+			MC_AddWhiteText(quitmenu, 64, 256, 84, quitMessage[i*4+0], 2);
+			MC_AddWhiteText(quitmenu, 64, 256, 92, quitMessage[i*4+1], 2);
+			MC_AddWhiteText(quitmenu, 64, 256, 100, quitMessage[i*4+2], 2);
+			MC_AddWhiteText(quitmenu, 64, 256, 108, quitMessage[i*4+3], 2);
 		}
 
 		quitmenu->selecteditem = (menuoption_t *)
@@ -1222,7 +1223,7 @@ void M_Init_Internal (void)
 		return;
 	internalmenusregistered = true;
 
-#ifndef CLIENTONLY
+#if !defined(CLIENTONLY) && defined(SAVEDGAMES)
 	Cmd_AddCommand ("menu_save", M_Menu_Save_f);
 	Cmd_AddCommand ("menu_load", M_Menu_Load_f);
 	Cmd_AddCommand ("menu_loadgame", M_Menu_Load_f);	//q2...
@@ -1234,7 +1235,9 @@ void M_Init_Internal (void)
 	Cmd_AddCommand ("help", M_Menu_Help_f);
 	Cmd_AddCommand ("menu_quit", M_Menu_Quit_f);
 	Cmd_AddCommand ("menu_mods", M_Menu_Mods_f);
-	Cmd_AddCommand ("modelviewer", M_Menu_ModelViewer_f);
+#ifndef MINIMAL
+	Cmd_AddCommandAD ("modelviewer", M_Menu_ModelViewer_f, M_Menu_ModelViewer_c, "View a model...");
+#endif
 
 #ifdef CL_MASTER
 	Cmd_AddCommand ("menu_slist", M_Menu_ServerList2_f);
@@ -1371,7 +1374,7 @@ void M_Init (void)
 	Cmd_AddCommand ("menu_servers", M_Menu_ServerList2_f);
 #endif
 	//downloads menu needs sandboxing, so cannot be provided by qc.
-#ifdef WEBCLIENT
+#ifdef PACKAGEMANAGER
 	Cmd_AddCommand ("menu_download", Menu_DownloadStuff_f);
 #endif
 	//demo menu is allowed to see outside of the quakedir. you can't replicate that in qc's sandbox.

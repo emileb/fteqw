@@ -381,10 +381,30 @@ static void SV_Give_f (void)
 
 static int QDECL ShowMapList (const char *name, qofs_t flags, time_t mtime, void *parm, searchpathfuncs_t *spath)
 {
+	const char *levelshots[] =
+	{
+		"levelshots/%s.tga",
+		"levelshots/%s.jpg",
+		"levelshots/%s.png",
+		"maps/%s.tga",
+		"maps/%s.jpg",
+		"maps/%s.png"
+	};
+	size_t u;
 	char stripped[64];
 	if (name[5] == 'b' && name[6] == '_')	//skip box models
 		return true;
 	COM_StripExtension(name+5, stripped, sizeof(stripped)); 
+	for (u = 0; u < countof(levelshots); u++)
+	{
+		const char *ls = va(levelshots[u], stripped);
+		if (COM_FCheckExists(ls))
+		{
+			Con_Printf("^[\\map\\%s\\img\\%s\\w\\64\\h\\48^]", stripped, ls);
+			Con_Printf("^[[%s]\\map\\%s\\tipimg\\%s^]\n", stripped, stripped, ls);
+			return true;
+		}
+	}
 	Con_Printf("^[[%s]\\map\\%s^]\n", stripped, stripped);
 	return true;
 }
@@ -450,26 +470,45 @@ command from the console or progs.
 quirks:
 a leading '*' means new unit, meaning all old map state is flushed regardless of startspot
 a '+' means 'set nextmap cvar to the following value and otherwise ignore, for q2 compat. only applies if there's also a '.' and the specified bsp doesn't exist, for q1 compat.
-just a '.' is taken to mean 'restart'. parms are not changed from their current values, startspot is also unchanged.
+just a '.' is taken to mean 'restart'. parms are not changed from their current values, startspot is also unchanged. Loads the last saved game instead when applicable.
 
-'map' will change map, for most games. strips parms+serverflags+cache. note that NQ kicks everyone (NQ expects you to use changelevel for that).
+variations:
+'map' will change map, for most games. strips parms+serverflags+cache. note that vanilla NQ kicks everyone (NQ expects you to use changelevel for that).
 'changelevel' will not flush the level cache, for h2 compat (won't save current level state in such a situation, as nq would prefer not)
 'gamemap' will save the game to 'save0' after loading, for q2 compat
 'spmap' is for q3 and sets 'gametype' to '2', otherwise identical to 'map'. all other map commands will reset it to '0' if its '2' at the time.
+'map_restart' restarts the current map. Name is needed for q3 compat.
+'restart' is an alias for 'map_restart'. Exists for NQ compat, but as an alias for QW mods that tried to use it for mod-specific things.
+
+hexen2 fixme:
+'restart restore' restarts the map, reloading from a saved game if applicable.
+'restart' forgets the current map (potentially breaking the game). we don't care much for that behaviour (could make it a 'restart unit' I guess).
+
+quake2:
+'gamemap [*]foo.dm2[$spot][+nextserver]'
+	* == new unit
+	$ == start spot
+	+ == value for nextserver cvar (used for cinematics).
+'map' is always a new unit.
+
+quake:
++ is used in certain map names. * cannot be, but $ potentially could be.
 ======================
 */
 void SV_Map_f (void)
 {
 	char	level[MAX_QPATH];
 	char	spot[MAX_QPATH];
-	char	expanded[MAX_QPATH];
+	char	expanded[MAX_QPATH+64];
 	char	*nextserver;
 	qboolean preserveplayers= false;
 	qboolean isrestart		= false;	//don't hurt settings
+#ifdef SAVEDGAMES
 	qboolean newunit		= false;	//no hubcache
+	qboolean q2savetos0		= false;
+#endif
 	qboolean flushparms		= false;	//flush parms+serverflags
 	qboolean cinematic		= false;	//new map is .cin / .roq or something
-	qboolean q2savetos0		= false;
 #ifdef Q3SERVER
 	qboolean q3singleplayer	= false;	//forces g_gametype to 2 (otherwise clears if it was 2).
 #endif
@@ -490,9 +529,19 @@ void SV_Map_f (void)
 
 	if (!Q_strcasecmp(Cmd_Argv(0), "map_restart"))
 	{
-		float delay = atof(Cmd_Argv(1));
-		if (delay)
-			Con_DPrintf ("map_restart delay not implemented yet\n");
+		const char *arg = Cmd_Argv(1);
+#ifdef SAVEDGAMES
+		if (!strcmp(arg, "restore"))		//hexen2 reload-saved-game
+			;
+		else if (!strcmp(arg, "initial"))	//force initial, even if it breaks saved games.
+			*sv.loadgame_on_restart = 0;
+		else
+#endif
+		{
+			float delay = atof(arg);
+			if (delay)			//q3's restart-after-delay
+				Con_DPrintf ("map_restart delay not implemented yet\n");
+		}
 		Q_strncpyz (level, ".", sizeof(level));
 		startspot = NULL;
 
@@ -500,7 +549,6 @@ void SV_Map_f (void)
 	}
 	else
 	{
-
 		if (Cmd_Argc() != 2 && Cmd_Argc() != 3)
 		{
 			if (Cmd_IsInsecure())
@@ -514,16 +562,20 @@ void SV_Map_f (void)
 		startspot = ((Cmd_Argc() == 2)?NULL:Cmd_Argv(2));
 	}
 
-	q2savetos0 = !strcmp(Cmd_Argv(0), "gamemap") && !isDedicated;	//q2
 #ifdef Q3SERVER
 	q3singleplayer = !strcmp(Cmd_Argv(0), "spmap");
 #endif
 	flushparms = !strcmp(Cmd_Argv(0), "map") || !strcmp(Cmd_Argv(0), "spmap");
+#ifdef SAVEDGAMES
 	newunit = flushparms || (!strcmp(Cmd_Argv(0), "changelevel") && !startspot);
+	q2savetos0 = !strcmp(Cmd_Argv(0), "gamemap") && !isDedicated;	//q2
+#endif
 
 	sv.mapchangelocked = false;
 
-	if (strcmp(level, "."))	//restart current
+	if (!strcmp(level, "."))
+		;//restart current
+	else
 	{
 		snprintf (expanded, sizeof(expanded), "maps/%s.bsp", level); // this function and the if statement below, is a quake bugfix which stopped a map called "dm6++.bsp" from loading because of the + sign, quake2 map syntax interprets + character as "intro.cin+base1.bsp", to play a cinematic then load a map after
 		if (!COM_FCheckExists (expanded))
@@ -557,8 +609,10 @@ void SV_Map_f (void)
 		Q_strncpyz(level, svs.name, sizeof(level));
 		isrestart = true;
 		flushparms = false;
+#ifdef SAVEDGAMES
 		newunit = false;
 		q2savetos0 = false;
+#endif
 
 		if (!*level)
 		{
@@ -579,16 +633,26 @@ void SV_Map_f (void)
 		if (!startspot)
 		{
 			//revert the startspot if its not overridden
-			Q_strncpyz(spot, Info_ValueForKey(svs.info, "*startspot"), sizeof(spot));
+			Q_strncpyz(spot, InfoBuf_ValueForKey(&svs.info, "*startspot"), sizeof(spot));
 			startspot = spot;
 		}
 	}
+
+#ifdef SAVEDGAMES
+	if (isrestart && *sv.loadgame_on_restart && SV_Loadgame(sv.loadgame_on_restart))
+	{	//we managed to reload a saved game instead!
+		//this is required in order to keep hub state consistent (dying mid-map would require saved games to store both current and start of map(not to be confused with initial state, which would be trivial))
+		return;
+	}
+#endif
 
 	// check to make sure the level exists
 	if (*level == '*')
 	{
 		memmove(level, level+1, strlen(level));
+#ifdef SAVEDGAMES
 		newunit=true;
+#endif
 	}
 #ifndef SERVERONLY
 	SCR_ImageName(level);
@@ -618,7 +682,7 @@ void SV_Map_f (void)
 	else
 #endif
 	{
-		char *exts[] = {"maps/%s", "maps/%s.bsp", "maps/%s.cm", "maps/%s.hmp", /*"maps/%s.map",*/ NULL};
+		char *exts[] = {"maps/%s", "maps/%s.bsp", "maps/%s.cm", "maps/%s.hmp", /*"maps/%s.map",*/ /*"maps/%s.ent",*/ NULL};
 		int i, j;
 
 		for (i = 0; exts[i]; i++)
@@ -644,7 +708,7 @@ void SV_Map_f (void)
 			if (!exts[i])
 			{
 				// FTE is still a Quake engine so report BSP missing
-				snprintf (expanded, sizeof(expanded), exts[0], level);
+				snprintf (expanded, sizeof(expanded), exts[1], level);
 				Con_TPrintf ("Can't find %s\n", expanded);
 #ifndef SERVERONLY
 				SCR_SetLoadingStage(LS_NONE);
@@ -657,24 +721,27 @@ void SV_Map_f (void)
 		}
 	}
 
+#ifdef MVD_RECORDING
 	if (sv.mvdrecording)
 		SV_MVDStop_f();
+#endif
 
 #ifndef SERVERONLY
 	if (!isDedicated)	//otherwise, info used on map loading isn't present
 	{
 		cl.haveserverinfo = true;
-		Q_strncpyz (cl.serverinfo, svs.info, sizeof(cl.serverinfo));
+		InfoBuf_Clone(&cl.serverinfo, &svs.info);
 		CL_CheckServerInfo();
 	}
 
 	if (!sv.state && cls.state)
-		CL_Disconnect();
+		CL_Disconnect(NULL);
 #endif
 
 	if (!isrestart)
 		SV_SaveSpawnparms ();
 
+#ifdef SAVEDGAMES
 	if (newunit)
 		SV_FlushLevelCache();	//forget all on new unit
 	else if (startspot && !isrestart && !newunit)
@@ -698,6 +765,7 @@ void SV_Map_f (void)
 #endif
 			SV_SaveLevelCache(NULL, false);
 	}
+#endif
 
 #ifdef Q3SERVER
 	{
@@ -783,7 +851,9 @@ void SV_Map_f (void)
 	}
 
 	SCR_SetLoadingFile("spawnserver");
+#ifdef SAVEDGAMES
 	if (newunit || !startspot || cinematic || !SV_LoadLevelCache(NULL, level, startspot, false))
+#endif
 	{
 		if (waschangelevel && !startspot)
 			startspot = "";
@@ -854,12 +924,13 @@ void SV_Map_f (void)
 			Cvar_Set(nsv, "");
 	}
 
+#ifdef SAVEDGAMES
 	if (q2savetos0)
 	{
 		if (sv.state != ss_cinematic)	//too weird.
 			SV_Savegame("s0", true);
 	}
-
+#endif
 
 	if (isDedicated)
 		Mod_Purge(MP_MAPCHANGED);
@@ -1100,9 +1171,9 @@ void SV_EvaluatePenalties(client_t *cl)
 	}
 
 	if (delta & BAN_VIP)
-		Info_SetValueForStarKey(cl->userinfo, "*VIP", (cl->penalties & BAN_VIP)?"1":"", sizeof(cl->userinfo));
+		InfoBuf_SetStarKey(&cl->userinfo, "*VIP", (cl->penalties & BAN_VIP)?"1":"");
 	if (delta & BAN_MAPPER)
-		Info_SetValueForStarKey(cl->userinfo, "*mapper", (cl->penalties & BAN_MAPPER)?"1":"", sizeof(cl->userinfo));
+		InfoBuf_SetStarKey(&cl->userinfo, "*mapper", (cl->penalties & BAN_MAPPER)?"1":"");
 }
 
 static time_t reevaluatebantime;
@@ -1623,7 +1694,7 @@ static void SV_ForceName_f (void)
 
 	while((cl = SV_GetClientForString(Cmd_Argv(1), &clnum)))
 	{
-		Info_SetValueForKey(cl->userinfo, "name", Cmd_Argv(2), EXTENDED_INFO_STRING);
+		InfoBuf_SetKey(&cl->userinfo, "name", Cmd_Argv(2));
 		SV_LogPlayer(cl, "name forced");
 		SV_ExtractFromUserinfo(cl, true);
 		Q_strncpyz(cl->name, Cmd_Argv(2), sizeof(cl->namebuf));
@@ -1830,6 +1901,12 @@ static void SV_Status_f (void)
 
 	int columns = 80;
 	extern cvar_t sv_listen_qw;
+#if defined(TCPCONNECT) && !defined(CLIENTONLY)
+	#if defined(HAVE_SSL)
+		extern cvar_t net_enable_tls;
+	#endif
+	extern cvar_t net_enable_http, net_enable_webrtcbroker, net_enable_websockets, net_enable_qizmo, net_enable_qtv;
+#endif
 #ifdef NQPROT
 	extern cvar_t sv_listen_nq, sv_listen_dp;
 #endif
@@ -1903,8 +1980,11 @@ static void SV_Status_f (void)
 		else if (net_enable_dtls.ival)
 			Con_Printf(" DTLS");
 #endif
-		/*if (net_enable_tls.ival)
+#if defined(TCPCONNECT) && !defined(CLIENTONLY)
+#if defined(HAVE_SSL)
+		if (net_enable_tls.ival)
 			Con_Printf(" TLS");
+#endif
 		if (net_enable_http.ival)
 			Con_Printf(" HTTP");
 		if (net_enable_webrtcbroker.ival)
@@ -1914,7 +1994,8 @@ static void SV_Status_f (void)
 		if (net_enable_qizmo.ival)
 			Con_Printf(" QZ");
 		if (net_enable_qtv.ival)
-			Con_Printf(" QTV");*/
+			Con_Printf(" QTV");
+#endif
 		Con_Printf("\n");
 		break;
 	}
@@ -1944,11 +2025,19 @@ static void SV_Status_f (void)
 			if (!sv.strings.sound_precache[count])
 				break;
 		Con_Printf("sounds           : %i/%i\n", count, MAX_PRECACHE_SOUNDS);
+
+		for (count = 1; count < MAX_SSPARTICLESPRE; count++)
+			if (!sv.strings.particle_precache[count])
+				break;
+		if (count!=1)
+			Con_Printf("particles        : %i/%i\n", count, MAX_SSPARTICLESPRE);
 	}
 	Con_Printf("gamedir          : %s\n", FS_GetGamedir(true));
 	if (sv.csqcdebug)
 		Con_Printf("csqc debug       : true\n");
+#ifdef MVD_RECORDING
 	SV_Demo_PrintOutputs();
+#endif
 	NET_PrintConnectionsStatus(svs.sockets);
 
 
@@ -2136,6 +2225,7 @@ void SV_ConSay_f(void)
 		SV_ClientPrintf(client, PRINT_CHAT, "%s\n", text);
 	}
 
+#ifdef MVD_RECORDING
 	if (sv.mvdrecording)
 	{
 		sizebuf_t *msg;
@@ -2147,6 +2237,7 @@ void SV_ConSay_f(void)
 		MSG_WriteChar(msg, '\n');
 		MSG_WriteChar(msg, 0);
 	}
+#endif
 }
 
 static void SV_ConSayOne_f (void)
@@ -2192,51 +2283,6 @@ static void SV_Heartbeat_f (void)
 	SV_Master_ReResolve();
 }
 
-#define FOREACHCLIENT(i,cl)	\
-for (i = sv.mvdrecording?-1:0; i < sv.allocated_client_slots; i++)	\
-if ((cl = (i==-1?&demo.recorder:&svs.clients[i])))	\
-if ((i == -1) || cl->state >= cs_connected)
-
-void SV_SendServerInfoChange(const char *key, const char *value)
-{
-	int i;
-	client_t *cl;
-
-	if (!sv.state)
-		return;
-
-#ifdef Q2SERVER
-	if (svs.gametype == GT_QUAKE2)
-		return;	//FIXME!!!
-#endif
-#ifdef Q3SERVER
-	if (svs.gametype == GT_QUAKE3)
-		return;	//FIXME!!!
-#endif
-
-	FOREACHCLIENT(i, cl)
-	{
-		if (cl->controller)
-			continue;
-
-		if (ISQWCLIENT(cl))
-		{
-			ClientReliableWrite_Begin(cl, svc_serverinfo, strlen(key) + strlen(value)+3);
-			ClientReliableWrite_String(cl, key);
-			ClientReliableWrite_String(cl, value);
-		}
-		else if (ISNQCLIENT(cl) && (cl->fteprotocolextensions2 & PEXT2_PREDINFO))
-		{
-			ClientReliableWrite_Begin(cl, svc_stufftext, 1+6+strlen(key)+2+strlen(value)+3);
-			ClientReliableWrite_SZ(cl, "//svi ", 6);
-			ClientReliableWrite_SZ(cl, key, strlen(key));
-			ClientReliableWrite_SZ(cl, " \"", 2);
-			ClientReliableWrite_SZ(cl, value, strlen(value));
-			ClientReliableWrite_String(cl, "\"\n");
-		}
-	}
-}
-
 /*
 ===========
 SV_Serverinfo_f
@@ -2253,7 +2299,7 @@ void SV_Serverinfo_f (void)
 	if (Cmd_Argc() == 1)
 	{
 		Con_TPrintf ("Server info settings:\n");
-		Info_Print (svs.info, "");
+		InfoBuf_Print (&svs.info, "");
 		return;
 	}
 
@@ -2268,18 +2314,18 @@ void SV_Serverinfo_f (void)
 		if (!strcmp(Cmd_Argv(1), "*"))
 			if (!strcmp(Cmd_Argv(2), ""))
 			{	//clear it out
-				char *k;
+				const char *k;
 				for(i=0;;)
 				{
-					k = Info_KeyForNumber(svs.info, i);
-					if (!*k)
+					k = InfoBuf_KeyForNumber(&svs.info, i);
+					if (!k)
 						break;	//no more.
 					else if (*k == '*')
 						i++;	//can't remove * keys
 					else if ((var = Cvar_FindVar(k)) && var->flags&CVAR_SERVERINFO)
 						i++;	//this one is a cvar.
 					else
-						Info_RemoveKey(svs.info, k);	//we can remove this one though, so yay.
+						InfoBuf_RemoveKey(&svs.info, k);	//we can remove this one though, so yay.
 				}
 
 				return;
@@ -2287,15 +2333,34 @@ void SV_Serverinfo_f (void)
 		Con_Printf ("Can't set * keys\n");
 		return;
 	}
-	Q_strncpyz(value, Cmd_Argv(2), sizeof(value));
-	value[sizeof(value)-1] = '\0';
-	for (i = 3; i < Cmd_Argc(); i++)
-	{
-		strncat(value, " ", sizeof(value)-1);
-		strncat(value, Cmd_Argv(i), sizeof(value)-1);
-	}
 
-	Info_SetValueForKey (svs.info, Cmd_Argv(1), value, MAX_SERVERINFO_STRING);
+	if (!strcmp(Cmd_Argv(0), "serverinfoblob"))
+	{
+		qofs_t fsize;
+		char *data = FS_MallocFile(Cmd_Argv(2), FS_GAME, &fsize);
+		if (!data)
+		{
+			Con_Printf ("Unable to read %s\n", Cmd_Argv(2));
+			return;
+		}
+		if (fsize > 64*1024*1024)
+			Con_Printf ("File is over 64mb\n");
+		else
+			InfoBuf_SetStarBlobKey(&svs.info, Cmd_Argv(1), data, fsize);
+		FS_FreeFile(data);
+	}
+	else
+	{
+		Q_strncpyz(value, Cmd_Argv(2), sizeof(value));
+		value[sizeof(value)-1] = '\0';
+		for (i = 3; i < Cmd_Argc(); i++)
+		{
+			strncat(value, " ", sizeof(value)-1);
+			strncat(value, Cmd_Argv(i), sizeof(value)-1);
+		}
+
+		InfoBuf_SetValueForKey (&svs.info, Cmd_Argv(1), value);
+	}
 
 	// if this is a cvar, change it too
 	var = Cvar_FindVar (Cmd_Argv(1));
@@ -2306,8 +2371,6 @@ void SV_Serverinfo_f (void)
 		var->string = Z_StrDup (value);
 		var->value = Q_atof (var->string);
 */	}
-
-	SV_SendServerInfoChange(Cmd_Argv(1), value);
 }
 
 
@@ -2325,7 +2388,7 @@ static void SV_Localinfo_f (void)
 	if (Cmd_Argc() == 1)
 	{
 		Con_TPrintf ("Local info settings:\n");
-		Info_Print (localinfo, "");
+		InfoBuf_Print (&svs.localinfo, "");
 		return;
 	}
 
@@ -2340,14 +2403,14 @@ static void SV_Localinfo_f (void)
 		if (!strcmp(Cmd_Argv(1), "*"))
 			if (!strcmp(Cmd_Argv(2), ""))
 			{	//clear it out
-				Info_RemoveNonStarKeys(localinfo);
+				InfoBuf_Clear(&svs.localinfo, false);
 				return;
 			}
 		Con_Printf ("Can't set * keys\n");
 		return;
 	}
-	old = Info_ValueForKey(localinfo, Cmd_Argv(1));
-	Info_SetValueForKey (localinfo, Cmd_Argv(1), Cmd_Argv(2), MAX_LOCALINFO_STRING);
+	old = InfoBuf_ValueForKey(&svs.localinfo, Cmd_Argv(1));
+	InfoBuf_SetValueForKey (&svs.localinfo, Cmd_Argv(1), Cmd_Argv(2));
 
 	PR_LocalInfoChanged(Cmd_Argv(1), old, Cmd_Argv(2));
 
@@ -2358,10 +2421,10 @@ void SV_SaveInfos(vfsfile_t *f)
 {
 	VFS_WRITE(f, "\n", 1);
 	VFS_WRITE(f, "serverinfo * \"\"\n", 16);
-	Info_WriteToFile(f, svs.info, "serverinfo", CVAR_SERVERINFO);
+	InfoBuf_WriteToFile(f, &svs.info, "serverinfo", CVAR_SERVERINFO);
 	VFS_WRITE(f, "\n", 1);
 	VFS_WRITE(f, "localinfo * \"\"\n", 15);
-	Info_WriteToFile(f, localinfo, "localinfo", 0);
+	InfoBuf_WriteToFile(f, &svs.localinfo, "localinfo", 0);
 }
 
 /*
@@ -2390,7 +2453,7 @@ void SV_User_f (void)
 											"fatness",		"hlbsp",	"bullet",			"hullsize",		"modeldbl",		"entitydbl",	"entitydbl2",		"floatcoords", 
 											"OLD vweap",	"q2bsp",	"q3bsp",			"colormod",		"splitscreen",	"hexen2",		"spawnstatic2",		"customtempeffects",
 											"packents",		"UNKNOWN",	"showpic",			"setattachment","UNKNOWN",		"chunkeddls",	"csqc",				"dpflags"};
-	static const char *pext2names[32] = {	"prydoncursor",	"voip",		"setangledelta",	"rplcdeltas",	"maxplayers",	"predinfo",		"sizeenc",			"UNKNOWN",
+	static const char *pext2names[32] = {	"prydoncursor",	"voip",		"setangledelta",	"rplcdeltas",	"maxplayers",	"predinfo",		"sizeenc",			"infoblobs",
 											"UNKNOWN",		"UNKNOWN",	"UNKNOWN",			"UNKNOWN",		"UNKNOWN",		"UNKNOWN",		"UNKNOWN",			"UNKNOWN", 
 											"UNKNOWN",		"UNKNOWN",	"UNKNOWN",			"UNKNOWN",		"UNKNOWN",		"UNKNOWN",		"UNKNOWN",			"UNKNOWN",
 											"UNKNOWN",		"UNKNOWN",	"UNKNOWN",			"UNKNOWN",		"UNKNOWN",		"UNKNOWN",		"UNKNOWN",			"UNKNOWN"};
@@ -2405,14 +2468,17 @@ void SV_User_f (void)
 	Con_Printf("Userinfo:\n");
 	while((cl = SV_GetClientForString(Cmd_Argv(1), &clnum)))
 	{
-		Info_Print (cl->userinfo, "  ");
+		InfoBuf_Print (&cl->userinfo, "  ");
 		switch(cl->protocol)
 		{
 		case SCP_BAD:
 			Con_Printf("protocol: bot/invalid\n");
 			break;
-		case SCP_QUAKEWORLD:
-			Con_Printf("protocol: quakeworld\n");
+		case SCP_QUAKEWORLD:	//branding is everything...
+			if (cl->fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS)
+				Con_Printf("protocol: fteqw-nack\n");
+			else
+				Con_Printf("protocol: quakeworld\n");
 			break;
 		case SCP_QUAKE2:
 			Con_Printf("protocol: quake2\n");
@@ -2421,13 +2487,19 @@ void SV_User_f (void)
 			Con_Printf("protocol: quake3\n");
 			break;
 		case SCP_NETQUAKE:
-			Con_Printf("protocol: (net)quake\n");
+			if (cl->fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS)
+				Con_Printf("protocol: ftenq-nack\n");
+			else
+				Con_Printf("protocol: (net)quake\n");
 			break;
 		case SCP_BJP3:
 			Con_Printf("protocol: bjp3\n");
 			break;
 		case SCP_FITZ666:
-			Con_Printf("protocol: fitzquake 666\n");
+			if (cl->fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS)
+				Con_Printf("protocol: fte666-nack\n");
+			else
+				Con_Printf("protocol: fitzquake 666\n");
 			break;
 		case SCP_DARKPLACES6:
 			Con_Printf("protocol: dpp6\n");
@@ -2442,9 +2514,12 @@ void SV_User_f (void)
 
 		if (cl->fteprotocolextensions)
 		{
+			unsigned int effective = cl->fteprotocolextensions;
+			if (cl->fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS)	//these flags were made obsolete. don't list them.
+				effective &= ~(PEXT_SCALE|PEXT_TRANS|PEXT_ACCURATETIMINGS|PEXT_FATNESS|PEXT_HULLSIZE|PEXT_MODELDBL|PEXT_ENTITYDBL|PEXT_ENTITYDBL2|PEXT_COLOURMOD|PEXT_SPAWNSTATIC2|PEXT_SETATTACHMENT|PEXT_DPFLAGS);
 			Con_Printf("pext1:");
 			for (u = 0; u < 32; u++)
-				if (cl->fteprotocolextensions & (1u<<u))
+				if (effective & (1u<<u))
 						Con_Printf(" %s", pext1names[u]);
 			Con_Printf("\n");
 		}
@@ -2520,7 +2595,7 @@ static void SV_Gamedir (void)
 
 	if (Cmd_Argc() == 1)
 	{
-		Con_TPrintf ("Current gamedir: %s\n", Info_ValueForKey (svs.info, "*gamedir"));
+		Con_TPrintf ("Current gamedir: %s\n", InfoBuf_ValueForKey (&svs.info, "*gamedir"));
 		return;
 	}
 
@@ -2539,7 +2614,7 @@ static void SV_Gamedir (void)
 		return;
 	}
 
-	Info_SetValueForStarKey (svs.info, "*gamedir", dir, MAX_SERVERINFO_STRING);
+	InfoBuf_SetValueForStarKey (&svs.info, "*gamedir", dir);
 }
 
 static int QDECL CompleteGamedirPath (const char *name, qofs_t flags, time_t mtime, void *parm, searchpathfuncs_t *spath)
@@ -2630,7 +2705,7 @@ static void SV_Gamedir_f (void)
 	else
 	{
 		COM_Gamedir (dir, NULL);
-		Info_SetValueForStarKey (svs.info, "*gamedir", dir, MAX_SERVERINFO_STRING);
+		InfoBuf_SetValueForStarKey (&svs.info, "*gamedir", dir);
 	}
 	Z_Free(dir);
 }
@@ -2891,25 +2966,40 @@ void SV_ReallyEvilHack_f(void)
 void SV_PrecacheList_f(void)
 {
 	unsigned int i;
-	for (i = 0; i < sizeof(sv.strings.vw_model_precache)/sizeof(sv.strings.vw_model_precache[0]); i++)
+	char *group = Cmd_Argv(1);
+#ifndef NOLEGACY
+	if (!*group || !strncmp(group, "vwep", 4))
 	{
-		if (sv.strings.vw_model_precache[i])
-			Con_Printf("vweap %u: %s\n", i, sv.strings.vw_model_precache[i]);
+		for (i = 0; i < sizeof(sv.strings.vw_model_precache)/sizeof(sv.strings.vw_model_precache[0]); i++)
+		{
+			if (sv.strings.vw_model_precache[i])
+				Con_Printf("vwep  %u: %s\n", i, sv.strings.vw_model_precache[i]);
+		}
 	}
-	for (i = 0; i < MAX_PRECACHE_MODELS; i++)
+#endif
+	if (!*group || !strncmp(group, "model", 5))
 	{
-		if (sv.strings.model_precache[i])
-			Con_Printf("model %u: %s\n", i, sv.strings.model_precache[i]);
+		for (i = 0; i < MAX_PRECACHE_MODELS; i++)
+		{
+			if (sv.strings.model_precache[i])
+				Con_Printf("model %u: ^[%s\\modelviewer\\%s^]\n", i, sv.strings.model_precache[i], sv.strings.model_precache[i]);
+		}
 	}
-	for (i = 0; i < MAX_PRECACHE_SOUNDS; i++)
+	if (!*group || !strncmp(group, "sound", 5))
 	{
-		if (sv.strings.sound_precache[i])
-			Con_Printf("sound %u: %s\n", i, sv.strings.sound_precache[i]);
+		for (i = 0; i < MAX_PRECACHE_SOUNDS; i++)
+		{
+			if (sv.strings.sound_precache[i])
+				Con_Printf("sound %u: %s\n", i, sv.strings.sound_precache[i]);
+		}
 	}
-	for (i = 0; i < MAX_SSPARTICLESPRE; i++)
+	if (!*group || !strncmp(group, "part", 4))
 	{
-		if (sv.strings.particle_precache[i])
-			Con_Printf("pticl %u: %s\n", i, sv.strings.particle_precache[i]);
+		for (i = 0; i < MAX_SSPARTICLESPRE; i++)
+		{
+			if (sv.strings.particle_precache[i])
+				Con_Printf("part  %u: %s\n", i, sv.strings.particle_precache[i]);
+		}
 	}
 }
 
@@ -3004,6 +3094,7 @@ void SV_InitOperatorCommands (void)
 		Cmd_AddCommand ("sayone", SV_ConSayOne_f);
 		Cmd_AddCommand ("tell", SV_ConSayOne_f);
 		Cmd_AddCommand ("serverinfo", SV_Serverinfo_f);	//commands that conflict with client commands.
+		Cmd_AddCommand ("serverinfoblob", SV_Serverinfo_f);	//commands that conflict with client commands.
 		Cmd_AddCommand ("user", SV_User_f);
 
 		Cmd_AddCommand ("god", SV_God_f);

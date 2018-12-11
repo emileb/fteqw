@@ -23,13 +23,14 @@ struct
 	qintptr_t (*initfunction)(qintptr_t *args);
 } staticplugins[] = 
 {
-#if defined(USERBE) && !defined(QUAKETC)
-//	{"Bullet_internal", Plug_Bullet_Init},
-//	{"ODE_internal", Plug_ODE_Init},
+#if defined(USE_INTERNAL_BULLET)
+	{"bullet_internal", Plug_Bullet_Init},
+#endif
+#if defined(USE_INTERNAL_ODE)
+	{"ODE_internal", Plug_ODE_Init},
 #endif
 	{NULL}
 };
-
 
 #ifdef GLQUAKE
 #include "glquake.h"
@@ -65,9 +66,6 @@ typedef struct plugin_s {
 
 	//protocol-in-a-plugin
 	qintptr_t connectionlessclientpacket;
-
-	//called to discolour console input text if they spelt it wrongly
-	qintptr_t spellcheckmaskedtext;
 #endif
 	qintptr_t svmsgfunction;
 	qintptr_t chatmsgfunction;
@@ -77,7 +75,7 @@ typedef struct plugin_s {
 	struct plugin_s *next;
 } plugin_t;
 
-int Plug_SubConsoleCommand(console_t *con, char *line);
+int Plug_SubConsoleCommand(console_t *con, const char *line);
 
 plugin_t *currentplug;
 
@@ -269,7 +267,7 @@ static char *Plug_CleanName(const char *file, char *out, size_t sizeof_out)
 	}
 	return out;
 }
-plugin_t *Plug_Load(const char *file, int type)
+static plugin_t *Plug_Load(const char *file, int type)
 {
 	char temp[MAX_OSPATH];
 	plugin_t *newplug;
@@ -496,8 +494,6 @@ static qintptr_t VARGS Plug_ExportToEngine(void *offset, quintptr_t mask, const 
 		currentplug->chatmsgfunction = functionid;
 	else if (!strcmp(name, "CenterPrintMessage"))
 		currentplug->centerprintfunction = functionid;
-	else if (!strcmp(name, "SpellCheckMaskedText"))
-		currentplug->spellcheckmaskedtext = functionid;
 #endif
 	else
 		return 0;
@@ -959,26 +955,13 @@ static qintptr_t VARGS Plug_Net_TCPListen(void *offset, quintptr_t mask, const q
 	if (!currentplug)
 		return -3;	//streams depend upon current plugin context. which isn't valid in a thread.
 	if (!localip)
-		localip = "0.0.0.0";	//pass "[::]" for ipv6
+		localip = "tcp://0.0.0.0";	//pass "[::]" for ipv6
 
 	if (!NET_StringToAdr(localip, localport, &a))
 		return -1;
-	NetadrToSockadr(&a, &address);
-
-	switch(((struct sockaddr*)&address)->sa_family)
-	{
-	case AF_INET:
-		alen = sizeof(struct sockaddr_in);
-		break;
-#ifdef IPPROTO_IPV6
-	case AF_INET6:
-		alen = sizeof(struct sockaddr_in6);
-		break;
-#endif
-	default:
-		return -2;
-	}
-
+	if (a.prot != NP_STREAM && a.prot != NP_DGRAM)
+		return -1;
+	alen = NetadrToSockadr(&a, &address);
 
 	if ((sock = socket(((struct sockaddr*)&address)->sa_family, SOCK_STREAM, 0)) == -1)
 	{
@@ -1040,7 +1023,7 @@ static qintptr_t VARGS Plug_Net_Accept(void *offset, quintptr_t mask, const qint
 	{
 		netadr_t a;
 		char *s;
-		SockadrToNetadr((struct sockaddr_qstorage *)&address, &a);
+		SockadrToNetadr((struct sockaddr_qstorage *)&address, addrlen, &a);
 		s = NET_AdrToString(adr, sizeof(adr), &a);
 		Q_strncpyz(VM_POINTER(arg[1]), s, addrlen);
 	}
@@ -1051,7 +1034,7 @@ static qintptr_t VARGS Plug_Net_Accept(void *offset, quintptr_t mask, const qint
 	return handle;
 }
 //EBUILTIN(int, NET_TCPConnect, (char *ip, int port));
-qintptr_t VARGS Plug_Net_TCPConnect(void *offset, quintptr_t mask, const qintptr_t *arg)
+static qintptr_t VARGS Plug_Net_TCPConnect(void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	char *remoteip = VM_POINTER(arg[0]);
 	unsigned short remoteport = VM_LONG(arg[1]);
@@ -1069,11 +1052,11 @@ qintptr_t VARGS Plug_Net_TCPConnect(void *offset, quintptr_t mask, const qintptr
 
 void Plug_Net_Close_Internal(int handle);
 #ifdef HAVE_SSL
-qintptr_t VARGS Plug_Net_SetTLSClient(void *offset, quintptr_t mask, const qintptr_t *arg)
+static qintptr_t VARGS Plug_Net_SetTLSClient(void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	pluginstream_t *stream;
 	unsigned int handle = VM_LONG(arg[0]);
-	if (handle < 0 || handle >= pluginstreamarraylen || pluginstreamarray[handle].plugin != currentplug)
+	if (handle >= pluginstreamarraylen || pluginstreamarray[handle].plugin != currentplug)
 	{
 		Con_Printf("Plug_Net_SetTLSClient: socket does not belong to you (or is invalid)\n");
 		return -2;
@@ -1094,7 +1077,7 @@ qintptr_t VARGS Plug_Net_SetTLSClient(void *offset, quintptr_t mask, const qintp
 	return 0;
 }
 
-qintptr_t VARGS Plug_Net_GetTLSBinding(void *offset, quintptr_t mask, const qintptr_t *arg)
+static qintptr_t VARGS Plug_Net_GetTLSBinding(void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	pluginstream_t *stream;
 	unsigned int handle = VM_LONG(arg[0]);
@@ -1106,7 +1089,7 @@ qintptr_t VARGS Plug_Net_GetTLSBinding(void *offset, quintptr_t mask, const qint
 		return -2;
 	if (VM_OOB(arg[1], *bindsize))
 		return -2;
-	if (handle < 0 || handle >= pluginstreamarraylen || pluginstreamarray[handle].plugin != currentplug)
+	if ((size_t)handle >= pluginstreamarraylen || pluginstreamarray[handle].plugin != currentplug)
 	{
 		Con_Printf("Plug_Net_GetTLSBinding: socket does not belong to you (or is invalid)\n");
 		return -2;
@@ -1126,7 +1109,7 @@ qintptr_t VARGS Plug_Net_GetTLSBinding(void *offset, quintptr_t mask, const qint
 #endif
 #endif
 
-qintptr_t VARGS Plug_VFS_Open(void *offset, quintptr_t mask, const qintptr_t *arg)
+static qintptr_t VARGS Plug_VFS_Open(void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	char *fname = VM_POINTER(arg[0]);
 	vfsfile_t **handle = VM_POINTER(arg[1]);
@@ -1136,7 +1119,7 @@ qintptr_t VARGS Plug_VFS_Open(void *offset, quintptr_t mask, const qintptr_t *ar
 		return true;
 	return false;
 }
-qintptr_t VARGS Plug_FS_NativePath(void *offset, quintptr_t mask, const qintptr_t *arg)
+static qintptr_t VARGS Plug_FS_NativePath(void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	const char *fname = VM_POINTER(arg[0]);
 	enum fs_relative relativeto = VM_LONG(arg[1]);
@@ -1166,7 +1149,7 @@ static qintptr_t VARGS Plug_Con_POpen(void *offset, quintptr_t mask, const qintp
 	return handle;
 }
 
-qintptr_t VARGS Plug_FS_Open(void *offset, quintptr_t mask, const qintptr_t *arg)
+static qintptr_t VARGS Plug_FS_Open(void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	//modes:
 	//1: read
@@ -1232,7 +1215,7 @@ qintptr_t VARGS Plug_FS_Open(void *offset, quintptr_t mask, const qintptr_t *arg
 	*ret = handle;
 	return VFS_GETLEN(pluginstreamarray[handle].vfs);
 }
-qintptr_t VARGS Plug_FS_Seek(void *offset, quintptr_t mask, const qintptr_t *arg)
+static qintptr_t VARGS Plug_FS_Seek(void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	unsigned int handle = VM_LONG(arg[0]);
 	unsigned int low = VM_LONG(arg[1]), high = VM_LONG(arg[2]);
@@ -1247,7 +1230,7 @@ qintptr_t VARGS Plug_FS_Seek(void *offset, quintptr_t mask, const qintptr_t *arg
 	return VFS_TELL(stream->vfs);
 }
 
-qintptr_t VARGS Plug_FS_GetLength(void *offset, quintptr_t mask, const qintptr_t *arg)
+static qintptr_t VARGS Plug_FS_GetLength(void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	unsigned int handle = VM_LONG(arg[0]);
 	unsigned int *low = VM_POINTER(arg[1]), *high = VM_POINTER(arg[2]);
@@ -1279,7 +1262,7 @@ qintptr_t VARGS Plug_FS_GetLength(void *offset, quintptr_t mask, const qintptr_t
 	return false;
 }
 
-qintptr_t VARGS Plug_memset(void *offset, quintptr_t mask, const qintptr_t *arg)
+static qintptr_t VARGS Plug_memset(void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	void *p = VM_POINTER(arg[0]);
 
@@ -1291,7 +1274,7 @@ qintptr_t VARGS Plug_memset(void *offset, quintptr_t mask, const qintptr_t *arg)
 
 	return arg[0];
 }
-qintptr_t VARGS Plug_memcpy(void *offset, quintptr_t mask, const qintptr_t *arg)
+static qintptr_t VARGS Plug_memcpy(void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	void *p1 = VM_POINTER(arg[0]);
 	void *p2 = VM_POINTER(arg[1]);
@@ -1307,7 +1290,7 @@ qintptr_t VARGS Plug_memcpy(void *offset, quintptr_t mask, const qintptr_t *arg)
 
 	return arg[0];
 }
-qintptr_t VARGS Plug_memmove(void *offset, quintptr_t mask, const qintptr_t *arg)
+static qintptr_t VARGS Plug_memmove(void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	void *p1 = VM_POINTER(arg[0]);
 	void *p2 = VM_POINTER(arg[1]);
@@ -1324,7 +1307,7 @@ qintptr_t VARGS Plug_memmove(void *offset, quintptr_t mask, const qintptr_t *arg
 	return arg[0];
 }
 
-qintptr_t VARGS Plug_sqrt(void *offset, quintptr_t mask, const qintptr_t *arg)
+static qintptr_t VARGS Plug_sqrt(void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	union {
 		qintptr_t i;
@@ -1333,7 +1316,7 @@ qintptr_t VARGS Plug_sqrt(void *offset, quintptr_t mask, const qintptr_t *arg)
 	ret.f = sqrt(VM_FLOAT(arg[0]));
 	return ret.i;
 }
-qintptr_t VARGS Plug_sin(void *offset, quintptr_t mask, const qintptr_t *arg)
+static qintptr_t VARGS Plug_sin(void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	union {
 		qintptr_t i;
@@ -1342,7 +1325,7 @@ qintptr_t VARGS Plug_sin(void *offset, quintptr_t mask, const qintptr_t *arg)
 	ret.f = sin(VM_FLOAT(arg[0]));
 	return ret.i;
 }
-qintptr_t VARGS Plug_cos(void *offset, quintptr_t mask, const qintptr_t *arg)
+static qintptr_t VARGS Plug_cos(void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	union {
 		qintptr_t i;
@@ -1351,7 +1334,7 @@ qintptr_t VARGS Plug_cos(void *offset, quintptr_t mask, const qintptr_t *arg)
 	ret.f = cos(VM_FLOAT(arg[0]));
 	return ret.i;
 }
-qintptr_t VARGS Plug_atan2(void *offset, quintptr_t mask, const qintptr_t *arg)
+static qintptr_t VARGS Plug_atan2(void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	union {
 		qintptr_t i;
@@ -1399,7 +1382,7 @@ void Plug_Net_Close_Internal(int handle)
 	pluginstreamarray[handle].type = STREAM_NONE;
 	pluginstreamarray[handle].plugin = NULL;
 }
-qintptr_t VARGS Plug_Net_Recv(void *offset, quintptr_t mask, const qintptr_t *arg)
+static qintptr_t VARGS Plug_Net_Recv(void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	int read;
 	int handle = VM_LONG(arg[0]);
@@ -1435,7 +1418,7 @@ qintptr_t VARGS Plug_Net_Recv(void *offset, quintptr_t mask, const qintptr_t *ar
 		return -2;
 	}
 }
-qintptr_t VARGS Plug_Net_Send(void *offset, quintptr_t mask, const qintptr_t *arg)
+static qintptr_t VARGS Plug_Net_Send(void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	int written;
 	int handle = VM_LONG(arg[0]);
@@ -1467,7 +1450,7 @@ qintptr_t VARGS Plug_Net_Send(void *offset, quintptr_t mask, const qintptr_t *ar
 		return -2;
 	}
 }
-qintptr_t VARGS Plug_Net_SendTo(void *offset, quintptr_t mask, const qintptr_t *arg)
+static qintptr_t VARGS Plug_Net_SendTo(void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	int written;
 	int handle = VM_LONG(arg[0]);
@@ -1508,7 +1491,7 @@ qintptr_t VARGS Plug_Net_SendTo(void *offset, quintptr_t mask, const qintptr_t *
 		return -2;
 	}
 }
-qintptr_t VARGS Plug_Net_Close(void *offset, quintptr_t mask, const qintptr_t *arg)
+static qintptr_t VARGS Plug_Net_Close(void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	int handle = VM_LONG(arg[0]);
 	if (handle < 0 || handle >= pluginstreamarraylen || pluginstreamarray[handle].plugin != currentplug)
@@ -1518,7 +1501,7 @@ qintptr_t VARGS Plug_Net_Close(void *offset, quintptr_t mask, const qintptr_t *a
 	return 0;
 }
 
-qintptr_t VARGS Plug_ReadInputBuffer(void *offset, quintptr_t mask, const qintptr_t *arg)
+static qintptr_t VARGS Plug_ReadInputBuffer(void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	void *buffer = VM_POINTER(arg[0]);
 	int bufferlen = VM_LONG(arg[1]);
@@ -1527,7 +1510,7 @@ qintptr_t VARGS Plug_ReadInputBuffer(void *offset, quintptr_t mask, const qintpt
 	memcpy(buffer, currentplug->inputptr, currentplug->inputbytes);
 	return bufferlen;
 }
-qintptr_t VARGS Plug_UpdateInputBuffer(void *offset, quintptr_t mask, const qintptr_t *arg)
+static qintptr_t VARGS Plug_UpdateInputBuffer(void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	void *buffer = VM_POINTER(arg[0]);
 	int bufferlen = VM_LONG(arg[1]);
@@ -1540,7 +1523,7 @@ qintptr_t VARGS Plug_UpdateInputBuffer(void *offset, quintptr_t mask, const qint
 #ifdef USERBE
 #include "pr_common.h"
 //functions useful for rigid body engines.
-qintptr_t VARGS Plug_RBE_GetPluginFuncs(void *offset, quintptr_t mask, const qintptr_t *arg)
+static qintptr_t VARGS Plug_RBE_GetPluginFuncs(void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	static rbeplugfuncs_t funcs =
 	{
@@ -1565,7 +1548,7 @@ qintptr_t VARGS Plug_RBE_GetPluginFuncs(void *offset, quintptr_t mask, const qin
 void Plug_CloseAll_f(void);
 void Plug_List_f(void);
 void Plug_Close_f(void);
-void Plug_Load_f(void)
+static void Plug_Load_f(void)
 {
 	char *plugin;
 	plugin = Cmd_Argv(1);
@@ -1843,7 +1826,7 @@ qboolean Plug_ConsoleLink(char *text, char *info, const char *consolename)
 	return result;
 }
 
-int Plug_SubConsoleCommand(console_t *con, char *line)
+int Plug_SubConsoleCommand(console_t *con, const char *line)
 {
 	int ret;
 	char buffer[2048];
@@ -1855,23 +1838,6 @@ int Plug_SubConsoleCommand(console_t *con, char *line)
 	ret = VM_Call(currentplug->vm, currentplug->conexecutecommand, 0);
 	currentplug = oldplug;
 	return ret;
-}
-
-void Plug_SpellCheckMaskedText(unsigned int *maskedstring, int maskedchars, int x, int y, int cs, int firstc, int charlimit)
-{
-	plugin_t *oldplug = currentplug;
-	for (currentplug = plugs; currentplug; currentplug = currentplug->next)
-	{
-		if (currentplug->spellcheckmaskedtext)
-		{
-			currentplug->inputptr = maskedstring;
-			currentplug->inputbytes = sizeof(*maskedstring)*maskedchars;
-			VM_Call(currentplug->vm, currentplug->spellcheckmaskedtext, x, y, cs, firstc, charlimit);
-			currentplug->inputptr = NULL;
-			currentplug->inputbytes = 0;
-		}
-	}
-	currentplug = oldplug;
 }
 #endif
 

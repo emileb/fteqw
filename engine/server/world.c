@@ -479,7 +479,7 @@ void World_TouchLinks (world_t *w, wedict_t *ent, areanode_t *node)
 		if (!((int)ent->xv->dimension_solid & (int)touch->xv->dimension_hit))	//didn't change did it?...
 			continue;
 
-		w->Event_Touch(w, touch, ent);
+		w->Event_Touch(w, touch, ent, NULL);
 
 		if (ED_ISFREE(ent))
 			break;
@@ -584,11 +584,25 @@ void QDECL World_LinkEdict (world_t *w, wedict_t *ent, qboolean touch_triggers)
 		VectorAdd (ent->v->origin, ent->v->maxs, ent->v->absmax);
 	}
 
+	//some fancy things can mean the ent's aabb is larger than its collision box.
+#ifdef USERBE
+//	if (ent->rbe.body.body)
+//		w->rbe->ExpandBodyAABB(w->rbe, &ent->rbe.body, ent->v->absmin, env->v->absmax);
+#endif
+#ifdef SKELETALOBJECTS
+	if (ent->xv->skeletonindex)
+		skel_updateentbounds(w, ent);
+#endif
+
 	if (!ent->v->solid)
 		ent->solidsize = ES_SOLID_BSP;
-	else// if (1)///*ent->v->modelindex || */ent->v->model)
+	else
 	{
-		model_t *mod = w->Get_CModel(w, ent->v->modelindex);
+		model_t *mod;
+		if (ent->v->solid == SOLID_BSP)
+			mod = w->Get_CModel(w, ent->v->modelindex);
+		else
+			mod = NULL;
 		if (mod && mod->type == mod_brush)
 			ent->solidsize = ES_SOLID_BSP;
 		else
@@ -1389,7 +1403,7 @@ int World_AreaEdicts (world_t *w, vec3_t mins, vec3_t maxs, wedict_t **list, int
 
 		if (count == maxcount)
 		{
-			Con_Printf ("World_AreaEdicts: MAXCOUNT\n");
+			Con_DPrintf ("World_AreaEdicts: MAXCOUNT\n");
 			return count;
 		}
 
@@ -1885,7 +1899,7 @@ static void World_ClipToEverything (world_t *w, moveclip_t *clip)
 
 void World_TouchAllLinks (world_t *w, wedict_t *ent)
 {
-	wedict_t *touchedicts[512], *touch;
+	wedict_t *touchedicts[2048], *touch;
 	int num;
 	num = World_AreaEdicts(w, ent->v->absmin, ent->v->absmax, touchedicts, countof(touchedicts), AREA_TRIGGER);
 	while (num-- > 0)
@@ -1911,7 +1925,7 @@ void World_TouchAllLinks (world_t *w, wedict_t *ent)
 		if (!((int)ent->xv->dimension_solid & (int)touch->xv->dimension_hit))	//didn't change did it?...
 			continue;
 
-		w->Event_Touch(w, touch, ent);
+		w->Event_Touch(w, touch, ent, NULL);
 
 		if (ED_ISFREE(ent))
 			break;
@@ -2049,7 +2063,7 @@ static void World_ClipToLinks (world_t *w, areagridlink_t *node, moveclip_t *cli
 			//even if the trace traveled less, we still care if it was in a solid.
 			clip->trace.startsolid |= trace.startsolid;
 			clip->trace.allsolid |= trace.allsolid;
-			if (!clip->trace.ent)
+			if (!clip->trace.ent || trace.fraction == clip->trace.fraction)	//xonotic requires that second test (DP has no check at all, which would end up reporting mismatched fraction/ent results, so yuck).
 			{
 				clip->trace.contents = trace.contents;
 				clip->trace.ent = touch;
@@ -2208,6 +2222,138 @@ static void World_ClipToLinks (world_t *w, areanode_t *node, moveclip_t *clip)
 		World_ClipToLinks (w, node->children[1], clip );
 }
 #endif
+
+#ifdef HAVE_CLIENT
+//The logic of this function is seriously handicapped vs the other types of trace we could be doing.
+static void World_ClipToNetwork (world_t *w, moveclip_t *clip)
+{
+	int i;
+	packet_entities_t *pe = cl.currentpackentities;
+	entity_state_t	*touch;
+
+	unsigned int touchcontents;
+	model_t *model;
+	vec3_t bmins, bmaxs;
+	trace_t trace;
+	static framestate_t framestate;	//meh
+
+	if (clip->type & MOVE_ENTCHAIN)
+		return;
+
+	for (i = 0; i < pe->num_entities; i++)
+	{
+		touch = &pe->entities[i];
+
+		if (touch->solidsize == ES_SOLID_BSP)
+		{
+			switch(touch->skinnum)
+			{
+			case Q1CONTENTS_LADDER:	touchcontents = FTECONTENTS_LADDER;	break;
+			case Q1CONTENTS_SKY:	touchcontents = FTECONTENTS_SKY;	break;
+			case Q1CONTENTS_LAVA:	touchcontents = FTECONTENTS_LAVA;	break;
+			case Q1CONTENTS_SLIME:	touchcontents = FTECONTENTS_SLIME;	break;
+			case Q1CONTENTS_WATER:	touchcontents = FTECONTENTS_WATER;	break;
+			default:				touchcontents = ~0;					break;	//could be anything... :(
+			}
+			if (touch->modelindex <= 0 || touch->modelindex >= MAX_PRECACHE_MODELS)
+				continue;	//erk
+			model = cl.model_precache[touch->modelindex];
+			VectorCopy(model->mins, bmins);
+			VectorCopy(model->maxs, bmaxs);
+		}
+#if 1
+		else
+			continue;	//only hit brush ents.
+#else
+		else if (touch->solidsize == ES_SOLID_NOT)
+			continue;
+		else
+		{
+			if (clip->type & MOVE_NOMONSTERS)
+				continue;
+			touchcontents = FTECONTENTS_BODY;
+			model = NULL;
+			COM_DecodeSize(touch->solidsize, bmins, bmaxs);
+		}
+#endif
+		if (!(clip->hitcontentsmask & touchcontents))
+			continue;
+
+		//FIXME: this doesn't handle rotations.
+		if (   clip->boxmins[0] > touch->origin[0]+bmaxs[0]
+			|| clip->boxmins[1] > touch->origin[1]+bmaxs[1]
+			|| clip->boxmins[2] > touch->origin[2]+bmaxs[2]
+			|| clip->boxmaxs[0] < touch->origin[0]+bmins[0]
+			|| clip->boxmaxs[1] < touch->origin[1]+bmins[1]
+			|| clip->boxmaxs[2] < touch->origin[2]+bmins[2] )
+			continue;
+
+		//lets say that ssqc ents are in dimension 0x1, as far as the csqc can see.
+		if (!((int)clip->passedict->xv->dimension_hit & 1))
+			continue;
+
+		if (!model || model->loadstate != MLS_LOADED || !model->funcs.NativeTrace)
+		{
+			model = NULL;
+
+			if (clip->hitcontentsmask & FTECONTENTS_BODY)
+				touchcontents = FTECONTENTS_CORPSE|FTECONTENTS_BODY;
+			else
+				touchcontents = 0;
+
+			World_HullForBox(bmins, bmaxs);
+		}
+
+		framestate.g[FS_REG].frame[0] = touch->frame;
+		framestate.g[FS_REG].lerpweight[0] = 1;
+
+		if (World_TransformedTrace(model, 0, &framestate, clip->start, clip->end, clip->mins, clip->maxs, clip->capsule, &trace, touch->origin, vec3_origin, clip->hitcontentsmask))
+		{
+	// if using hitmodel, we know it hit the bounding box, so try a proper trace now.
+			/*if (clip->type & MOVE_HITMODEL && (trace.fraction != 1 || trace.startsolid) && !model)
+			{
+				//okay, we hit the bbox
+				model = w->Get_CModel(w, mdlidx);
+
+				if (model && model->funcs.NativeTrace && model->loadstate == MLS_LOADED)
+				{
+					//do the second trace, using the actual mesh.
+					World_TransformedTrace(model, hullnum, &framestate, start, end, mins, maxs, capsule, &trace, eorg, vec3_origin, hitcontentsmask);
+				}
+			}*/
+		}
+
+		if (trace.fraction < clip->trace.fraction)
+		{
+			//trace traveled less, but don't forget if we started in a solid.
+			trace.startsolid |= clip->trace.startsolid;
+			trace.allsolid |= clip->trace.allsolid;
+
+			if (clip->trace.startsolid && !trace.startsolid)
+				trace.ent = clip->trace.ent;	//something else hit earlier, that one gets the trace entity, but not the fraction. yeah, combining traces like this was always going to be weird.
+			else
+			{
+				trace.ent = w->edicts;	//misreport world
+				clip->trace.entnum = touch->number;	//with an ssqc ent number
+			}
+			clip->trace = trace;
+		}
+		else if (trace.startsolid || trace.allsolid)
+		{
+			//even if the trace traveled less, we still care if it was in a solid.
+			clip->trace.startsolid |= trace.startsolid;
+			clip->trace.allsolid |= trace.allsolid;
+			if (!clip->trace.ent || trace.fraction == clip->trace.fraction)	//xonotic requires that second test (DP has no check at all, which would end up reporting mismatched fraction/ent results, so yuck).
+			{
+				clip->trace.contents = trace.contents;
+				clip->trace.ent = w->edicts;	//misreport world
+				clip->trace.entnum = touch->number;	//with an ssqc ent number
+			}
+		}
+	}
+}
+#endif
+
 /*
 ==================
 SV_MoveBounds
@@ -2417,6 +2563,13 @@ trace_t World_Move (world_t *w, vec3_t start, vec3_t mins, vec3_t maxs, vec3_t e
 		wedict_t *other = WEDICT_NUM_UB(w->progs, *w->g.other);
 		return World_ClipMoveToEntity (w, other, other->v->origin, start, mins, maxs, end, hullnum, type & MOVE_HITMODEL, clip.capsule, clip.hitcontentsmask);
 	}
+#ifndef NOLEGACY
+	if ((type&MOVE_WORLDONLY) == MOVE_WORLDONLY)
+	{	//for compat with DP
+		wedict_t *other = w->edicts;
+		return World_ClipMoveToEntity (w, other, other->v->origin, start, mins, maxs, end, hullnum, type & MOVE_HITMODEL, clip.capsule, clip.hitcontentsmask);
+	}
+#endif
 
 // clip to world
 	clip.trace = World_ClipMoveToEntity (w, w->edicts, w->edicts->v->origin, start, mins, maxs, end, hullnum, false, clip.capsule, clip.hitcontentsmask);
@@ -2571,6 +2724,10 @@ trace_t World_Move (world_t *w, vec3_t start, vec3_t mins, vec3_t maxs, vec3_t e
 				}
 			}
 		}
+		/*else if (w->rbe_hasphysicsents && passedict->rbe.body.body)
+		{
+			w->rbe->Trace(w, clip.passedict, clip.start, clip.end, &clip.trace);
+		}*/
 		else
 		{
 #ifdef USEAREAGRID
@@ -2581,6 +2738,14 @@ trace_t World_Move (world_t *w, vec3_t start, vec3_t mins, vec3_t maxs, vec3_t e
 		}
 		World_ClipToLinks(w, &w->portallist, &clip);
 	}
+
+#ifdef HAVE_CLIENT
+	{
+		extern world_t csqc_world;
+		if (w == &csqc_world)
+			World_ClipToNetwork(w, &clip);
+	}
+#endif
 
 //	if (clip.trace.startsolid)
 //		clip.trace.fraction = 0;
@@ -2793,10 +2958,10 @@ static qboolean GenerateCollisionMesh_BSP(world_t *world, model_t *mod, wedict_t
 		}
 	}
 
-	ed->ode.ode_element3i = ptr_elements;
-	ed->ode.ode_vertex3f = ptr_verts;
-	ed->ode.ode_numvertices = numverts;
-	ed->ode.ode_numtriangles = numindexes/3;
+	ed->rbe.element3i = ptr_elements;
+	ed->rbe.vertex3f = ptr_verts;
+	ed->rbe.numvertices = numverts;
+	ed->rbe.numtriangles = numindexes/3;
 	return true;
 }
 
@@ -2859,10 +3024,10 @@ static qboolean GenerateCollisionMesh_Alias(world_t *world, model_t *mod, wedict
 
 	Alias_FlushCache();	//it got built using an entity on the stack, make sure other stuff doesn't get hurt.
 
-	ed->ode.ode_element3i = ptr_elements;
-	ed->ode.ode_vertex3f = ptr_verts;
-	ed->ode.ode_numvertices = numverts;
-	ed->ode.ode_numtriangles = numindexes/3;
+	ed->rbe.element3i = ptr_elements;
+	ed->rbe.vertex3f = ptr_verts;
+	ed->rbe.numvertices = numverts;
+	ed->rbe.numtriangles = numindexes/3;
 	return true;
 }
 
@@ -2872,22 +3037,22 @@ static void CollisionMesh_CleanupMesh(wedict_t *ed)
 	float *v1, *v2, *v3;
 	vec3_t d1, d2, cr;
 	int in, out;
-	for (in = 0, out = 0; in < ed->ode.ode_numtriangles*3; in+=3)
+	for (in = 0, out = 0; in < ed->rbe.numtriangles*3; in+=3)
 	{
-		v1 = &ed->ode.ode_vertex3f[ed->ode.ode_element3i[in+0]*3];
-		v2 = &ed->ode.ode_vertex3f[ed->ode.ode_element3i[in+1]*3];
-		v3 = &ed->ode.ode_vertex3f[ed->ode.ode_element3i[in+2]*3];
+		v1 = &ed->rbe.vertex3f[ed->rbe.element3i[in+0]*3];
+		v2 = &ed->rbe.vertex3f[ed->rbe.element3i[in+1]*3];
+		v3 = &ed->rbe.vertex3f[ed->rbe.element3i[in+2]*3];
 		VectorSubtract(v3, v1, d1);
 		VectorSubtract(v2, v1, d2);
 		CrossProduct(d1, d2, cr);
 		if (DotProduct(cr,cr) == 0)
 			continue;
-		ed->ode.ode_element3i[out+0] = ed->ode.ode_element3i[in+0];
-		ed->ode.ode_element3i[out+1] = ed->ode.ode_element3i[in+1];
-		ed->ode.ode_element3i[out+2] = ed->ode.ode_element3i[in+2];
+		ed->rbe.element3i[out+0] = ed->rbe.element3i[in+0];
+		ed->rbe.element3i[out+1] = ed->rbe.element3i[in+1];
+		ed->rbe.element3i[out+2] = ed->rbe.element3i[in+2];
 		out+=3;
 	}
-	ed->ode.ode_numtriangles = out/3;
+	ed->rbe.numtriangles = out/3;
 }
 
 qboolean QDECL World_GenerateCollisionMesh(world_t *world, model_t *mod, wedict_t *ed, vec3_t geomcenter)
@@ -2912,19 +3077,19 @@ qboolean QDECL World_GenerateCollisionMesh(world_t *world, model_t *mod, wedict_
 	if (result)
 	{
 		CollisionMesh_CleanupMesh(ed);
-		if (ed->ode.ode_numtriangles > 0)
+		if (ed->rbe.numtriangles > 0)
 			return true;
 	}
 	return false;
 }
 void QDECL World_ReleaseCollisionMesh(wedict_t *ed)
 {
-	BZ_Free(ed->ode.ode_element3i);
-	ed->ode.ode_element3i = NULL;
-	BZ_Free(ed->ode.ode_vertex3f);
-	ed->ode.ode_vertex3f = NULL;
-	ed->ode.ode_numvertices = 0;
-	ed->ode.ode_numtriangles = 0;
+	BZ_Free(ed->rbe.element3i);
+	ed->rbe.element3i = NULL;
+	BZ_Free(ed->rbe.vertex3f);
+	ed->rbe.vertex3f = NULL;
+	ed->rbe.numvertices = 0;
+	ed->rbe.numtriangles = 0;
 }
 #endif
 #endif

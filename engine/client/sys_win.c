@@ -74,16 +74,14 @@ void *RT_GetCoreWindow(int *width, int *height){return NULL;}	//I already wrote 
 void D3D11_DoResize(int newwidth, int newheight);	//already written, call if resized since getcorewindow
 
 static char *clippy;
-char *Sys_GetClipboard(void)
+void Sys_Clipboard_PasteText(clipboardtype_t cbt, void (*callback)(void *cb, char *utf8), void *ctx)
 {
-	return Z_StrDup(clippy);
+	callback(ctx, clippy);
 }
-void Sys_CloseClipboard(char *bf)
+void Sys_SaveClipboard(clipboardtype_t cbt, char *text)
 {
-	Z_Free(bf);
-}
-void Sys_SaveClipboard(char *text)
-{
+	if (cbt != CBT_CLIPBOARD)
+		return;	//don't copy on mere selection. windows users won't expect it.
 	Z_Free(clippy);
 	clippy = Z_StrDup(text);
 }
@@ -852,7 +850,7 @@ DWORD CrashExceptionHandler (qboolean iswatchdog, DWORD exceptionCode, LPEXCEPTI
 				if (logpos+1 >= sizeof(stacklog))
 					break;
 			}
-			Sys_SaveClipboard(stacklog+logstart);
+			Sys_SaveClipboard(CBT_CLIPBOARD, stacklog+logstart);
 #ifdef _MSC_VER
 			if (MessageBoxA(0, stacklog, "KABOOM!", MB_ICONSTOP|MB_YESNO) != IDYES)
 			{
@@ -1414,6 +1412,8 @@ int Sys_EnumerateFiles (const char *gpath, const char *match, int (QDECL *func)(
 {
 	char fullmatch[MAX_OSPATH];
 	int start;
+	if (!gpath)
+		gpath = "";
 	if (strlen(gpath) + strlen(match) + 2 > MAX_OSPATH)
 		return 1;
 
@@ -1838,10 +1838,10 @@ double Sys_DoubleTime (void)
 
 /////////////////////////////////////////////////////////////
 //clipboard
-HANDLE	clipboardhandle;
-char *cliputf8;
-char *Sys_GetClipboard(void)
+void Sys_Clipboard_PasteText(clipboardtype_t cbt, void (*callback)(void *cb, char *utf8), void *ctx)
 {
+	HANDLE	clipboardhandle;
+	char *cliputf8;
 	if (OpenClipboard(NULL))
 	{
 		//windows programs interpret CF_TEXT as ansi (aka: gibberish)
@@ -1882,7 +1882,11 @@ char *Sys_GetClipboard(void)
 					utf8 += c;
 				}
 				*utf8 = 0;
-				return cliputf8;
+				callback(ctx, cliputf8);
+				free(cliputf8);
+				GlobalUnlock(clipboardhandle);
+				CloseClipboard();
+				return;
 			}
 
 			//failed at the last hurdle
@@ -1913,7 +1917,8 @@ char *Sys_GetClipboard(void)
 					utf8 += c;
 				}
 				*utf8 = 0;
-				return cliputf8;
+				callback(ctx, cliputf8);
+				free(cliputf8);
 			}
 
 			//failed at the last hurdle
@@ -1922,23 +1927,8 @@ char *Sys_GetClipboard(void)
 		}
 		CloseClipboard();
 	}
-
-	clipboardhandle = NULL;
-
-	return NULL;
 }
-void Sys_CloseClipboard(char *bf)
-{
-	if (clipboardhandle)
-	{
-		free(cliputf8);
-		cliputf8 = NULL;
-		GlobalUnlock(clipboardhandle);
-		CloseClipboard();
-		clipboardhandle = NULL;
-	}
-}
-void Sys_SaveClipboard(char *text)
+void Sys_SaveClipboard(clipboardtype_t cbt, const char *text)
 {
 	HANDLE glob;
 	char *temp;
@@ -2396,7 +2386,6 @@ int			global_nCmdShow;
 HWND		hwnd_dialog;
 
 static const IID qIID_IShellLinkW	= {0x000214F9L, 0, 0, {0xc0,0,0,0,0,0,0,0x46}};
-static const IID qIID_IPersistFile	= {0x0000010BL, 0, 0, {0xc0,0,0,0,0,0,0,0x46}};
 
 #include <shlobj.h>
 #if defined(_MSC_VER) && _MSC_VER <= 1200
@@ -2764,11 +2753,11 @@ void Win7_TaskListInit(void)
 			#define UPD_BUILDTYPE "test"
 			//WARNING: Security comes from the fact that the triptohell.info certificate is hardcoded in the tls code.
 			//this will correctly detect insecure tls proxies also.
-			#define UPDATE_URL_ROOT		"https://triptohell.info/moodles/"
-			#define UPDATE_URL_TESTED	UPDATE_URL_ROOT "autoup/"
-			#define UPDATE_URL_NIGHTLY	UPDATE_URL_ROOT
-			#define UPDATE_URL_VERSION	"%sversion.txt"
-			#ifdef NOLEGACY
+//			#define UPDATE_URL_ROOT		"https://triptohell.info/moodles/"
+//			#define UPDATE_URL_TESTED	UPDATE_URL_ROOT "autoup/"
+//			#define UPDATE_URL_NIGHTLY	UPDATE_URL_ROOT
+//			#define UPDATE_URL_VERSION	"%sversion.txt"
+/*			#ifdef NOLEGACY
 				#ifdef _WIN64
 					#define UPDATE_URL_BUILD "%snocompat64/fte" EXETYPE "64.exe"
 				#else
@@ -2780,7 +2769,7 @@ void Win7_TaskListInit(void)
 				#else
 					#define UPDATE_URL_BUILD "%swin32/fte" EXETYPE ".exe"
 				#endif
-			#endif
+			#endif*/
 		#endif
 
 		#if defined(SERVERONLY)
@@ -3150,6 +3139,7 @@ static BOOL microsoft_accessU(LPCSTR pszFolder, DWORD dwAccessDesired)
 #define BFFM_SETOKTEXT		(WM_USER + 105)	//v6
 #define BFFM_SETEXPANDED	(WM_USER + 106)	//v6
 #endif
+static const IID qIID_IPersistFile	= {0x0000010BL, 0, 0, {0xc0,0,0,0,0,0,0,0x46}};
 
 static WNDPROC omgwtfwhyohwhy;
 static LRESULT CALLBACK stoopidstoopidstoopid(HWND w, UINT m, WPARAM wp, LPARAM lp)
@@ -3601,7 +3591,7 @@ static void Sys_MakeInstaller(const char *name)
 			qbyte *rgbadata;
 			int imgwidth, imgheight;
 			int iconid = 1;
-			qboolean hasalpha;
+			uploadfmt_t format;
 			memset(&icondata, 0, sizeof(icondata));
 			icondata.idType = 1;
 			filelen = VFS_GETLEN(filehandle);
@@ -3614,7 +3604,7 @@ static void Sys_MakeInstaller(const char *name)
 			UpdateResource(bin, RT_GROUP_ICON, MAKEINTRESOURCE(2), RESLANG, NULL, 0);
 //			UpdateResource(bin, RT_GROUP_ICON, MAKEINTRESOURCE(3), RESLANG, NULL, 0);
 
-			rgbadata = Read32BitImageFile(filedata, filelen, &imgwidth, &imgheight, &hasalpha, va("%s.png", name));
+			rgbadata = ReadRawImageFile(filedata, filelen, &imgwidth, &imgheight, &format, true, va("%s.png", name));
 			if (!rgbadata)
 				error = "unable to read icon image";
 			else
@@ -4245,58 +4235,22 @@ void Sys_Sleep (double seconds)
 
 
 HCURSOR	hArrowCursor, hCustomCursor;
-void *WIN_CreateCursor(const char *filename, float hotx, float hoty, float scale)
+void *WIN_CreateCursor(const qbyte *imagedata, int width, int height, uploadfmt_t format, float hotx, float hoty, float scale)
 {
-	int width, height;
 	BITMAPV4HEADER bi;
 	DWORD x,y;
 	HCURSOR hAlphaCursor = NULL;
 	ICONINFO ii;
 	HDC maindc;
 
-	qbyte *rgbadata, *rgbadata_start, *bgradata, *bgradata_start;
-	qboolean hasalpha;
-	void *filedata;
-	int filelen;
-	if (!filename || !*filename)
-		return NULL;
-	filelen = FS_LoadFile(filename, &filedata);
-	if (!filedata)
+	const qbyte *rgbadata;
+	qbyte *bgradata, *bgradata_start;
+	void *scaled = NULL;
+	if (!imagedata)
 		return NULL;
 
-	hasalpha = false;
-	rgbadata_start = Read32BitImageFile(filedata, filelen, &width, &height, &hasalpha, "cursor");
-	FS_FreeFile(filedata);
-	if (!rgbadata_start)
-		return NULL;
-
-	if (!hasalpha && !strchr(filename, ':'))
-	{	//people seem to insist on using jpgs, which don't have alpha.
-		//screw over the alpha channel if needed.
-		unsigned int alpha_width, alpha_height, p;
-		char aname[MAX_QPATH];
-		unsigned char *alphadata;
-		char *alph;
-		size_t alphsize;
-		char ext[8];
-		COM_StripExtension(filename, aname, sizeof(aname));
-		COM_FileExtension(filename, ext, sizeof(ext));
-		Q_strncatz(aname, "_alpha.", sizeof(aname));
-		Q_strncatz(aname, ext, sizeof(aname));
-		alphsize = FS_LoadFile(filename, (void**)&alph);
-		if (alph)
-		{
-			if ((alphadata = Read32BitImageFile(alph, alphsize, &alpha_width, &alpha_height, &hasalpha, aname)))
-			{
-				if (alpha_width == width && alpha_height == height)
-					for (p = 0; p < alpha_width*alpha_height; p++)
-						rgbadata_start[(p<<2) + 3] = (alphadata[(p<<2) + 0] + alphadata[(p<<2) + 1] + alphadata[(p<<2) + 2])/3;
-				BZ_Free(alphadata);
-			}
-			FS_FreeFile(alph);
-		}
-	}
-
+	// FIXME: CreateIconIndirect does NOT understand DPI scaling, and will show a tiny cursor in such cases.
+	// we should rescale scale by vid_conautoscale etc.
 	if (scale != 1)
 	{
 		int nw,nh;
@@ -4306,11 +4260,10 @@ void *WIN_CreateCursor(const char *filename, float hotx, float hoty, float scale
 		if (nw <= 0 || nh <= 0 || nw > 128 || nh > 128)	//don't go crazy.
 			return NULL;
 		nd = BZ_Malloc(nw*nh*4);
-		Image_ResampleTexture((unsigned int*)rgbadata_start, width, height, (unsigned int*)nd, nw, nh);
+		Image_ResampleTexture((unsigned int*)imagedata, width, height, (unsigned int*)nd, nw, nh);
 		width = nw;
 		height = nh;
-		BZ_Free(rgbadata_start);
-		rgbadata_start = nd;
+		imagedata = scaled = nd;
 	}
 
 	memset(&bi,0, sizeof(bi));
@@ -4335,11 +4288,11 @@ void *WIN_CreateCursor(const char *filename, float hotx, float hoty, float scale
 
 	if (!ii.hbmColor)
 	{
-		BZ_Free(rgbadata_start);
+		BZ_Free(scaled);
 		return NULL;
 	}
 
-	for (rgbadata=rgbadata_start,y=0;y<height;y++)
+	for (rgbadata=imagedata,y=0;y<height;y++)
 	{
 		bgradata = bgradata_start + (height-1-y)*width*4;
 		for (x=0;x<width;x++)
@@ -4353,7 +4306,7 @@ void *WIN_CreateCursor(const char *filename, float hotx, float hoty, float scale
 		}
 	}
 
-	BZ_Free(rgbadata_start);
+	BZ_Free(scaled);
 
 	ii.fIcon = FALSE;  // Change fIcon to TRUE to create an alpha icon
 	ii.xHotspot = hotx;
@@ -4363,8 +4316,8 @@ void *WIN_CreateCursor(const char *filename, float hotx, float hoty, float scale
 	// Create the alpha cursor with the alpha DIB section.
 	hAlphaCursor = CreateIconIndirect(&ii);
 
-	DeleteObject(ii.hbmColor);          
-	DeleteObject(ii.hbmMask); 
+	DeleteObject(ii.hbmColor);
+	DeleteObject(ii.hbmMask);
 
 	return hAlphaCursor;
 }

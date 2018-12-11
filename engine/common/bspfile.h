@@ -369,7 +369,7 @@ typedef struct q2miptex_s
 // upper design bounds
 // leaffaces, leafbrushes, planes, and verts are still bounded by
 // 16 bit short limits
-#define	SANITY_MAX_Q2MAP_MODELS		1024
+#define	SANITY_MAX_Q2MAP_MODELS		MAX_PRECACHE_MODELS
 //#define	MAX_Q2MAP_ENTITIES	2048
 #define SANITY_MAX_MAP_BRUSHES (~0u/sizeof(*out))
 #define	SANITY_MAX_MAP_LEAFFACES	262144		//sanity only
@@ -378,11 +378,7 @@ typedef struct q2miptex_s
 #define	MAX_Q2MAP_AREAPORTALS	1024
 //#define	MAX_Q2MAP_VERTS		MAX_MAP_VERTS
 //#define	MAX_Q2MAP_FACES		MAX_MAP_FACES
-#ifdef FTE_TARGET_WEB
-#define	MAX_Q2MAP_LEAFBRUSHES (32768)		//used in an array
-#else
-#define	MAX_Q2MAP_LEAFBRUSHES (65536*2)		//used in an array
-#endif
+#define	SANITY_MAX_MAP_LEAFBRUSHES (65536*64)		//used in an array
 //#define	MAX_Q2MAP_PORTALS		65536	//unused
 //#define	MAX_Q2MAP_EDGES		128000		//unused
 //#define	MAX_Q2MAP_SURFEDGES	256000		//unused
@@ -517,7 +513,7 @@ typedef struct
 //q2origin,q3origin					0x01000000	//could define, but normally removed by compiler, so why?
 #define FTECONTENTS_BODY			0x02000000
 #define FTECONTENTS_CORPSE			0x04000000
-//q2detail,q3detail					0x08000000	//not very useful to us
+#define FTECONTENTS_DETAIL			0x08000000	//not very useful to us, but used by .map support
 //q2translucent,q3structual			0x10000000
 //q2ladder,q3translucent			0x20000000
 //q3trigger							0x40000000

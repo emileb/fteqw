@@ -32,7 +32,7 @@ is not a staircase.
 
 =============
 */
-int c_yes, c_no;
+//int c_yes, c_no;
 
 hull_t *Q1BSP_ChooseHull(model_t *model, int hullnum, vec3_t mins, vec3_t maxs, vec3_t offset);
 
@@ -92,11 +92,11 @@ qboolean World_CheckBottom (world_t *world, wedict_t *ent, vec3_t up)
 				goto realcheck;
 		}
 
-	c_yes++;
+//	c_yes++;
 	return true;		// we got out easy
 
 realcheck:
-	c_no++;
+//	c_no++;
 //
 // check it for real...
 //
@@ -128,7 +128,7 @@ realcheck:
 				return false;
 		}
 
-	c_yes++;
+//	c_yes++;
 	return true;
 }
 
@@ -142,7 +142,7 @@ possible, no move is done, false is returned, and
 pr_global_struct->trace_normal is set to the normal of the blocking wall
 =============
 */
-qboolean World_movestep (world_t *world, wedict_t *ent, vec3_t move, vec3_t axis[3], qboolean relink, qboolean noenemy, void (*set_move_trace)(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals, trace_t *trace), struct globalvars_s *set_trace_globs)
+qboolean World_movestep (world_t *world, wedict_t *ent, vec3_t move, vec3_t axis[3], qboolean relink, qboolean noenemy, void (*set_move_trace)(pubprogfuncs_t *prinst, trace_t *trace))
 {
 	float		dz;
 	vec3_t		oldorg, neworg, end;
@@ -192,7 +192,7 @@ qboolean World_movestep (world_t *world, wedict_t *ent, vec3_t move, vec3_t axis
 			}
 			trace = World_Move (world, ent->v->origin, ent->v->mins, ent->v->maxs, neworg, false, ent);
 			if (set_move_trace)
-				set_move_trace(world->progs, set_trace_globs, &trace);
+				set_move_trace(world->progs, &trace);
 	
 			if (trace.fraction == 1)
 			{
@@ -218,7 +218,7 @@ qboolean World_movestep (world_t *world, wedict_t *ent, vec3_t move, vec3_t axis
 
 	trace = World_Move (world, neworg, ent->v->mins, ent->v->maxs, end, false, ent);
 	if (set_move_trace)
-		set_move_trace(world->progs, set_trace_globs, &trace);
+		set_move_trace(world->progs, &trace);
 
 	if (trace.allsolid)
 		return false;
@@ -229,7 +229,7 @@ qboolean World_movestep (world_t *world, wedict_t *ent, vec3_t move, vec3_t axis
 		VectorMA(neworg, -movevars.stepheight, axis[2], neworg);
 		trace = World_Move (world, neworg, ent->v->mins, ent->v->maxs, end, false, ent);
 		if (set_move_trace)
-			set_move_trace(world->progs, set_trace_globs, &trace);
+			set_move_trace(world->progs, &trace);
 		if (trace.allsolid || trace.startsolid)
 			return false;
 	}
@@ -448,7 +448,7 @@ qboolean World_StepDirection (world_t *world, wedict_t *ent, float yaw, float di
 	//FIXME: Hexen2: ent flags & FL_SET_TRACE
 
 	VectorCopy (ent->v->origin, oldorigin);
-	if (World_movestep (world, ent, move, axis, false, false, NULL, NULL))
+	if (World_movestep (world, ent, move, axis, false, false, NULL))
 	{
 		delta = anglemod(delta);
 		if (delta > 45 && delta < 315)
@@ -629,7 +629,9 @@ qboolean World_MoveToGoal (world_t *world, wedict_t *ent, float dist)
 
 
 #ifdef ENGINE_ROUTING
-cvar_t route_shownodes = CVAR("route_shownodes", "0");
+#ifndef SERVERONLY
+static cvar_t route_shownodes = CVAR("route_shownodes", "0");
+#endif
 
 #define LF_EDGE			0x00000001
 #define LF_JUMP			0x00000002
@@ -648,7 +650,7 @@ struct waypointnetwork_s
 		vec3_t pos;
 		int linkflags;
 	} *displaynode;
-	int displaynodes;
+	size_t displaynodes;
 
 	struct waypoint_s
 	{
@@ -660,7 +662,7 @@ struct waypointnetwork_s
 			float linkcost;//might be much lower in the case of teleports, or expensive if someone wanted it to be a lower priority link.
 			int linkflags; //LF_*
 		} *neighbour;
-		int neighbours;
+		size_t neighbours;
 	} waypoints[1];
 };
 void WayNet_Done(struct waypointnetwork_s *net)
@@ -709,6 +711,8 @@ static struct waypointnetwork_s *WayNet_Begin(void **ctxptr, model_t *worldmodel
 		}
 		if (!wf)
 			wf = FS_MallocFile(va("%s.way", worldmodel->name), FS_GAME, NULL);
+		if (!wf)
+			return NULL;
 
 		l = wf;
 		//read the number of waypoints
@@ -812,8 +816,8 @@ int WayNet_FindNearestNode(struct waypointnetwork_s *net, vec3_t pos)
 struct routecalc_s
 {
 	world_t *world;
-	int spawncount;	//so we don't confuse stuff if the map gets restarted.
 	wedict_t *ed;
+	int spawncount;	//so we don't confuse stuff if the map gets restarted.
 //	float spawnid;	//so the route fails if the ent is removed.
 	func_t callback;
 
@@ -1080,6 +1084,8 @@ void Route_Calculate(void *ctx, void *data, size_t a, size_t b)
 	COM_AddWork(WG_MAIN, Route_Calculated, NULL, route, 0, 0);
 }
 
+//void route_linkitem(entity item, int ittype)	//-1 to unlink
+//void route_choosedest(entity ent, int numitemtypes, float *itemweights)
 /*
 =============
 PF_route_calculate
@@ -1091,6 +1097,7 @@ the first node in the nodelist is the destination.
 typedef struct {
 	vector dest;
 	int linkflags;
+	//float anglehint;
 } nodeslist_t;
 void(entity ent, vector dest, int denylinkflags, void(entity ent, vector dest, int numnodes, nodeslist_t *nodelist) callback) route_calculate = #0;
 =============

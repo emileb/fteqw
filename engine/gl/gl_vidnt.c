@@ -1169,7 +1169,6 @@ void GLVID_SetCaption(const char *text)
 	SetWindowTextW(mainwindow, wide);
 }
 
-
 static qboolean VID_SetFullDIBMode (rendererstate_t *info)
 {
 	int i;
@@ -1264,6 +1263,21 @@ static qboolean VID_SetFullDIBMode (rendererstate_t *info)
 
 	if (!dibwindow)
 		Sys_Error ("Couldn't create DIB window");
+
+	{
+		BOOL fDisable = TRUE;
+		DWORD qDWMWA_TRANSITIONS_FORCEDISABLED = 3;
+		HRESULT (WINAPI *pDwmSetWindowAttribute)(HWND hWnd,DWORD dwAttribute,LPCVOID pvAttribute,DWORD cbAttribute);
+		dllfunction_t dwm[] =
+		{
+			{(void*)&pDwmSetWindowAttribute, "DwmSetWindowAttribute"},
+			{NULL,NULL}
+		};
+		if (Sys_LoadLibrary("dwmapi.dll", dwm))
+		{
+			pDwmSetWindowAttribute(dibwindow, qDWMWA_TRANSITIONS_FORCEDISABLED, &fDisable, sizeof(fDisable));
+		}
+	}
 
 	SendMessage (dibwindow, WM_SETICON, (WPARAM)TRUE, (LPARAM)hIcon);
 	SendMessage (dibwindow, WM_SETICON, (WPARAM)FALSE, (LPARAM)hIcon);
@@ -1506,6 +1520,19 @@ static int GLVID_SetMode (rendererstate_t *info, unsigned char *palette)
 
 		if (!GL_Init(info, getglfunc))
 			return false;
+
+		if (qwglGetPixelFormatAttribfvARB)	//just for debugging info.
+		{
+			int iAttributeNames[] = {WGL_RED_BITS_ARB, WGL_GREEN_BITS_ARB, WGL_BLUE_BITS_ARB, WGL_ALPHA_BITS_ARB, WGL_PIXEL_TYPE_ARB, WGL_DEPTH_BITS_ARB, WGL_STENCIL_BITS_ARB};
+			float fAttributeValues[countof(iAttributeNames)] = {0};
+			if (qwglGetPixelFormatAttribfvARB(maindc, currentpixelformat, 0, countof(iAttributeNames), iAttributeNames, fAttributeValues))
+			{
+				Con_DPrintf("Colour buffer: GL_R%gG%gB%gA%g%s\n", fAttributeValues[0], fAttributeValues[1], fAttributeValues[2], fAttributeValues[3], fAttributeValues[5]==WGL_TYPE_RGBA_FLOAT_ARB?"F":((vid.flags & VID_SRGBAWARE)?"_SRGB":""));
+				Con_DPrintf("Depth buffer: GL_DEPTH%g_STENCIL%g\n", fAttributeValues[5], fAttributeValues[6]);
+			}
+		}
+
+
 		qSwapBuffers(maindc);
 
 #ifdef VKQUAKE
@@ -2299,7 +2326,7 @@ static BOOL CheckForcePixelFormat(rendererstate_t *info)
 		iAttribute[iAttributes++] = WGL_SUPPORT_OPENGL_ARB;				iAttribute[iAttributes++] = GL_TRUE;
 		iAttribute[iAttributes++] = WGL_ACCELERATION_ARB;				iAttribute[iAttributes++] = WGL_FULL_ACCELERATION_ARB;
 
-		if (info->srgb>=3 && modestate != MS_WINDOWED)
+		if (info->srgb>=2 && modestate != MS_WINDOWED)
 		{	//half-float backbuffers!
 
 			//'as has been the case since Windows Vista, fp16 swap chains are expected to have linear color data'
@@ -2861,7 +2888,7 @@ static LONG WINAPI GLMainWndProc (
 			GLAppActivate(FALSE, Minimized);//FIXME: thread
 			ClearAllStates ();	//FIXME: thread
 #endif
-			if (modestate == MS_FULLDIB)
+			if (modestate != MS_WINDOWED)
 				ShowWindow(mainwindow, SW_SHOWMINNOACTIVE);
 			break;
 		case WM_SETFOCUS:

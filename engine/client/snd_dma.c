@@ -327,6 +327,7 @@ static struct
 	unsigned int encsamplerate;
 
 	void *decoder[MAX_CLIENTS];
+	float declevel[MAX_CLIENTS];
 	unsigned char deccodec[MAX_CLIENTS];
 	unsigned char decseq[MAX_CLIENTS];	/*sender's sequence, to detect+cover minor packetloss*/
 	unsigned char decgen[MAX_CLIENTS];	/*last generation. if it changes, we flush speex to reset packet loss*/
@@ -787,6 +788,7 @@ void S_Voip_Decode(unsigned int sender, unsigned int codec, unsigned int gen, un
 		s_voip.deccodec[sender] = codec;
 		s_voip.decgen[sender] = gen;
 		s_voip.decseq[sender] = seq;
+		s_voip.declevel[sender] = 0;
 	}
 
 
@@ -913,7 +915,19 @@ void S_Voip_Decode(unsigned int sender, unsigned int codec, unsigned int gen, un
 		Con_DPrintf("%i dropped audio frames\n", drops);
 
 	if (decodesamps > 0)
+	{	//calculate levels of other people. eukara demanded this.
+		float level = 0;
+		float f;
+		for (len = 0; len < decodesamps; len++)
+		{
+			f = decodebuf[len];
+			level += f*f;
+		}
+		level = (3000*level) / (32767.0f*32767*decodesamps);
+		s_voip.declevel[sender] = (s_voip.declevel[sender]*7 + level)/8;
+
 		S_RawAudio(sender, (qbyte*)decodebuf, s_voip.decsamplerate[sender], decodesamps, 1, 2, snd_voip_play.value);
+	}
 }
 
 #ifdef SUPPORT_ICE
@@ -1611,6 +1625,14 @@ int S_Voip_Loudness(qboolean ignorevad)
 	if (!s_voip.cdriverctx || (!ignorevad && s_voip.dumps))
 		return -1;
 	return s_voip.voiplevel;
+}
+int S_Voip_ClientLoudness(unsigned int plno)
+{
+	if (plno >= MAX_CLIENTS)
+		return 0;
+	if (s_voip.lastspoke[plno] > realtime)
+		return s_voip.declevel[plno];
+	return -1;
 }
 qboolean S_Voip_Speaking(unsigned int plno)
 {
@@ -2485,7 +2507,7 @@ sfx_t *S_PrecacheSound2 (const char *name, qboolean syspath)
 
 // cache it in
 	if (precache.ival && sndcardinfo)
-		S_LoadSound (sfx);
+		S_LoadSound (sfx, true);
 
 	return sfx;
 }
@@ -2554,7 +2576,7 @@ static void SND_AccumulateSpacialization(soundcardinfo_t *sc, channel_t *ch, vec
 	float volscale;
 	int seat;
 
-	if (ch->flags & CF_ABSVOLUME)
+	if (ch->flags & CF_CL_ABSVOLUME)
 		volscale = 1;
 	else
 		volscale = volume.value * voicevolumemod;
@@ -2681,12 +2703,12 @@ static void SND_Spatialize(soundcardinfo_t *sc, channel_t *ch)
 	}
 
 	//sounds with absvolume ignore all volume etc cvars+settings
-	if (ch->flags & CF_ABSVOLUME)
+	if (ch->flags & CF_CL_ABSVOLUME)
 		volscale = 1;
 	else
 		volscale = volume.value * voicevolumemod;
 
-	if (!vid.activeapp && !snd_inactive.ival && !(ch->flags & CF_INACTIVE))
+	if (!vid.activeapp && !snd_inactive.ival && !(ch->flags & CF_CLI_INACTIVE))
 		volscale = 0;
 
 	if (sc->seat == -1)
@@ -2829,16 +2851,18 @@ static void S_UpdateSoundCard(soundcardinfo_t *sc, qboolean updateonly, channel_
 	target_chan->entchannel = entchannel;
 	SND_Spatialize(sc, target_chan);
 
-	if (!updateonly && !target_chan->vol[0] && !target_chan->vol[1] && !target_chan->vol[2] && !target_chan->vol[3] && !target_chan->vol[4] && !target_chan->vol[5] && sc->ChannelUpdate)
-	{
-		target_chan->sfx = NULL;
-		return;		// not audible at all
-	}
-
-	if (!S_LoadSound (sfx))
+	if (!S_LoadSound (sfx, false))
 	{
 		target_chan->sfx = NULL;
 		return;		// couldn't load the sound's data
+	}
+
+	//FIXME: why does this only filter for openal devices? its weird.
+	if (!updateonly && !target_chan->vol[0] && !target_chan->vol[1] && !target_chan->vol[2] && !target_chan->vol[3] && !target_chan->vol[4] && !target_chan->vol[5] && sc->ChannelUpdate)
+	if (sfx->loopstart == -1 && !(flags&CF_FORCELOOP))	//only skip if its not looping.
+	{
+		target_chan->sfx = NULL;
+		return;		// not audible at all
 	}
 
 	target_chan->sfx = sfx;
@@ -3154,7 +3178,7 @@ void S_StaticSound (sfx_t *sfx, vec3_t origin, float vol, float attenuation)
 			}
 		}
 
-		if (!S_LoadSound (sfx))
+		if (!S_LoadSound (sfx, true))
 			break;
 
 		ss = &scard->channel[scard->total_chans];
@@ -3284,9 +3308,9 @@ void S_UpdateAmbientSounds (soundcardinfo_t *sc)
 		}
 		if (chan->sfx)
 		{
-			chan->flags = /*CF_INACTIVE|*/CF_ABSVOLUME|CF_NOSPACIALISE|CF_NOREVERB;	//bypasses volume cvar completely.
+			chan->flags = /*CF_CL_INACTIVE|*/CF_CL_ABSVOLUME|CF_NOSPACIALISE|CF_NOREVERB;	//bypasses volume cvar completely.
 			vol = 255*bgmvolume.value*voicevolumemod;
-			if (!vid.activeapp && !snd_inactive.ival && !(chan->flags & CF_INACTIVE))
+			if (!vid.activeapp && !snd_inactive.ival && !(chan->flags & CF_CLI_INACTIVE))
 				vol = 0;
 			vol = bound(0, vol, 255);
 			vol = Media_CrossFade(i-MUSIC_FIRST, vol, (chan->pos>>PITCHSHIFT) / (float)snd_speed);
@@ -3474,7 +3498,7 @@ static void S_Q2_AddEntitySounds(soundcardinfo_t *sc)
 		if (!sfx)
 			continue;
 		if (sfx->loadstate == SLS_NOTLOADED)
-			S_LoadSound(sfx);
+			S_LoadSound(sfx, true);
 		if (sfx->loadstate != SLS_LOADED)
 			continue;	//not ready yet
 
@@ -3482,7 +3506,7 @@ static void S_Q2_AddEntitySounds(soundcardinfo_t *sc)
 		{
 			for (c = NULL, j=DYNAMIC_FIRST; j < DYNAMIC_STOP ; j++)
 			{
-				if (sc->channel[j].entnum == entnums[count] && !sc->channel[j].entchannel && (sc->channel[j].flags & CF_AUTOSOUND))
+				if (sc->channel[j].entnum == entnums[count] && !sc->channel[j].entchannel && (sc->channel[j].flags & CF_CLI_AUTOSOUND))
 				{
 					c = &sc->channel[j];
 					break;
@@ -3493,7 +3517,7 @@ static void S_Q2_AddEntitySounds(soundcardinfo_t *sc)
 		{
 			for (c = NULL, j=DYNAMIC_FIRST; j < DYNAMIC_STOP ; j++)
 			{
-				if (sc->channel[j].sfx == sfx && (sc->channel[j].flags & CF_AUTOSOUND))
+				if (sc->channel[j].sfx == sfx && (sc->channel[j].flags & CF_CLI_AUTOSOUND))
 				{
 					c = &sc->channel[j];
 					break;
@@ -3505,7 +3529,7 @@ static void S_Q2_AddEntitySounds(soundcardinfo_t *sc)
 			c = SND_PickChannel(sc, 0, 0);
 			if (!c)
 				continue;
-			c->flags = CF_AUTOSOUND|CF_FORCELOOP;
+			c->flags = CF_CLI_AUTOSOUND|CF_FORCELOOP;
 			c->entnum = sc->ChannelUpdate?entnums[count]:0;
 			c->entchannel = 0;
 			c->dist_mult = 3 / sound_nominal_clip_dist;
@@ -3580,7 +3604,7 @@ static void S_UpdateCard(soundcardinfo_t *sc)
 	{
 		if (!ch->sfx)
 			continue;
-		if (ch->flags & CF_AUTOSOUND)
+		if (ch->flags & CF_CLI_AUTOSOUND)
 		{
 			if (!ch->vol[0] && !ch->vol[1] && !ch->vol[2] && !ch->vol[3] && !ch->vol[4] && !ch->vol[5])
 			{
@@ -3879,11 +3903,11 @@ void S_PlayVol(void)
 	{
 		if (!Q_strrchr(Cmd_Argv(i), '.'))
 		{
-			Q_strncpy(name, Cmd_Argv(i), sizeof(name)-4);
+			Q_strncpyz(name, Cmd_Argv(i), sizeof(name)-4);
 			Q_strcat(name, ".wav");
 		}
 		else
-			Q_strncpy(name, Cmd_Argv(i), sizeof(name));
+			Q_strncpyz(name, Cmd_Argv(i), sizeof(name));
 		sfx = S_PrecacheSound(name);
 		vol = Q_atof(Cmd_Argv(i+1));
 		S_StartSound(0, -1, sfx, NULL, NULL, vol, 0.0, 0, 0, CF_NOSPACIALISE);
@@ -3957,7 +3981,7 @@ void S_LocalSound2 (const char *sound, int channel, float volume)
 		Con_Printf ("S_LocalSound: can't cache %s\n", sound);
 		return;
 	}
-	S_StartSound (0, channel, sfx, NULL, NULL, volume, 0, 0, 0, CF_INACTIVE|CF_NOSPACIALISE|CF_NOREVERB);
+	S_StartSound (0, channel, sfx, NULL, NULL, volume, 0, 0, 0, CF_CLI_INACTIVE|CF_NOSPACIALISE|CF_NOREVERB);
 }
 void S_LocalSound (const char *sound)
 {
@@ -4168,7 +4192,7 @@ void S_RawAudio(int sourceid, qbyte *data, int speed, int samples, int channels,
 			channel_t *c = SND_PickChannel(si, -1, 0);
 			if (c)
 			{
-				c->flags = (sourceid>=0?CF_INACTIVE:0)|CF_ABSVOLUME|CF_NOSPACIALISE;
+				c->flags = (sourceid>=0?CF_CLI_INACTIVE:0)|CF_CL_ABSVOLUME|CF_NOSPACIALISE;
 				c->entnum = 0;
 				c->entchannel = 0;
 				c->dist_mult = 0;

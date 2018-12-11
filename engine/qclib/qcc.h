@@ -310,7 +310,11 @@ typedef union QCC_eval_s
 {
 	QCC_string_t			string;
 	float				_float;
-	float				vector[1];
+#ifdef __GNUC__
+	float				vector[0];	//gnuc extension. I'm using it to mute clang warnings.
+#else
+	float				vector[1];	//should be 3, except that then eval_t would be too big.
+#endif
 	func_t				function;
 	int					_int;
 //	union QCC_eval_s		*ptr;
@@ -331,7 +335,8 @@ struct QCC_typeparam_s
 {
 	struct QCC_type_s *type;
 	QCC_sref_t defltvalue;
-	pbool optional;
+	pbool optional:1;	//argument may safely be omitted, for builtin functions. for qc functions use the defltvalue instead.
+	pbool isvirtual:1;	//const, with implicit initialisation only. valid for structs
 	unsigned char out;	//0=in,1==inout,2=out
 	unsigned int ofs;
 	unsigned int arraysize;
@@ -343,6 +348,7 @@ struct accessor_s
 	struct QCC_type_s *type;
 	struct QCC_type_s *indexertype;	//null if not indexer
 	QCC_sref_t getset_func[2];
+	QCC_sref_t staticval;
 	pbool getset_isref[2];
 	char *fieldname;
 };
@@ -362,8 +368,8 @@ typedef struct QCC_type_s
 	pbool typedefed:1;
 	pbool vargs:1;		//function has vargs
 	pbool vargcount:1;	//function has special varg count param
-	char *name;
-	char *aname;
+	const char *name;
+	const char *aname;
 
 	struct accessor_s *accessors;
 
@@ -389,7 +395,6 @@ typedef struct QCC_def_s
 	struct QCC_function_s	*scope;		// function the var was defined in, or NULL
 	struct QCC_def_s	*deftail;	// arrays and structs create multiple globaldef objects providing different types at the different parts of the single object (struct), or alternative names (vectors). this allows us to correctly set the const type based upon how its initialised.
 	struct QCC_def_s	*generatedfor;
-	int			initialized;	// 1 when a declaration included "= immediate". 2 = extern.
 	int			constant;		// 1 says we can use the value over and over again. 2 is used on fields, for some reason.
 
 	struct QCC_def_s	*symbolheader;	//this is the original symbol within which the def is stored.
@@ -424,6 +429,8 @@ typedef struct QCC_def_s
 	pbool weak:1;				//ignore any initialiser value (only permitted on functions)
 	pbool accumulate:1;			//don't finalise the function's statements.
 	pbool nofold:1;
+	pbool initialized:1;		//true when a declaration included "= immediate".
+	pbool isextern:1;			//fteqw-specific lump entry
 
 	int	fromstatement;		//statement that it is valid from.
 	temp_t *temp;
@@ -449,6 +456,7 @@ typedef struct
 		REF_FIELD,	//(entity.field)			- reading is a single load, writing requires address+storep
 		REF_STRING,	//"hello"[1]=='e'			- special opcodes, or str2chr builtin, or something
 		REF_NONVIRTUAL,	//(global.ofs)			- identical to global except for function calls, where index can be used to provide the 'newself' for the call.
+		REF_THISCALL,	//(global.ofs)			- identical to global except for function calls, where index is used as the first argument.
 		REF_ACCESSOR //buf_create()[5]
 	} type;
 
@@ -470,7 +478,7 @@ extern char QCC_copyright[1024];
 extern char QCC_Packname[5][128];
 extern int QCC_packid;
 
-const extern	unsigned int		type_size[];
+extern	const unsigned int		type_size[];
 //extern	QCC_def_t	*def_for_type[9];
 
 extern	QCC_type_t	*type_void, *type_string, *type_float, *type_vector, *type_entity, *type_field, *type_function, *type_floatfunction, *type_pointer, *type_floatpointer, *type_intpointer, *type_integer, *type_variant, *type_floatfield;
@@ -541,6 +549,7 @@ char *QCC_PR_GetDefinesList(void);
 //============================================================================
 
 extern	pbool	pr_dumpasm;
+extern pbool preprocessonly;
 
 //extern	QCC_def_t		**pr_global_defs;	// to find def for a global variable
 
@@ -631,6 +640,7 @@ extern pbool flag_allowuninit;
 extern pbool flag_cpriority;
 extern pbool flag_embedsrc;
 extern pbool flag_nopragmafileline;
+extern pbool flag_utf8strings;
 
 extern pbool opt_overlaptemps;
 extern pbool opt_shortenifnots;
@@ -684,17 +694,19 @@ void QCC_PR_PrintStatement (QCC_statement_t *s);
 void QCC_PR_Lex (void);
 // reads the next token into pr_token and classifies its type
 
-QCC_type_t *QCC_PR_NewType (char *name, int basictype, pbool typedefed);
+QCC_type_t *QCC_PR_NewType (const char *name, int basictype, pbool typedefed);	//note: name must be hunk/immediate
 QCC_type_t *QCC_PointerTypeTo(QCC_type_t *type);
 QCC_type_t *QCC_PR_ParseType (int newtype, pbool silentfail);
 QCC_sref_t QCC_PR_ParseDefaultInitialiser(QCC_type_t *type);
 extern pbool type_inlinefunction;
-QCC_type_t *QCC_TypeForName(char *name);
+QCC_type_t *QCC_TypeForName(const char *name);
 QCC_type_t *QCC_PR_ParseFunctionType (int newtype, QCC_type_t *returntype);
 QCC_type_t *QCC_PR_ParseFunctionTypeReacc (int newtype, QCC_type_t *returntype);
 QCC_type_t *QCC_PR_GenFunctionType (QCC_type_t *rettype, struct QCC_typeparam_s *args, int numargs);
 char *QCC_PR_ParseName (void);
 CompilerConstant_t *QCC_PR_DefineName(char *name);
+struct QCC_typeparam_s *QCC_PR_FindStructMember(QCC_type_t *t, const char *membername, unsigned int *out_ofs);
+QCC_type_t *QCC_PR_PointerType (QCC_type_t *pointsto);
 
 const char *QCC_VarAtOffset(QCC_sref_t ref);
 
@@ -718,6 +730,8 @@ void QCC_PR_ParsePrintDef (int warningtype, QCC_def_t *def);
 void QCC_PR_ParsePrintSRef (int warningtype, QCC_sref_t sref);
 void VARGS QCC_PR_ParseErrorPrintDef (int errortype, QCC_def_t *def, const char *error, ...);
 void VARGS QCC_PR_ParseErrorPrintSRef (int errortype, QCC_sref_t sref, const char *error, ...);
+
+QCC_type_t *QCC_PR_MakeThiscall(QCC_type_t *orig, QCC_type_t *thistype);
 
 int QCC_WarningForName(const char *name);
 char *QCC_NameForWarning(int idx);
@@ -752,6 +766,7 @@ enum {
 	WARN_PRECOMPILERMESSAGE,
 	WARN_TOOMANYPARAMETERSFORFUNC,
 	WARN_TOOMANYPARAMETERSVARARGS,
+	WARN_NESTEDCOMMENT,
 	WARN_STRINGTOOLONG,
 	WARN_BADTARGET,
 	WARN_BADPRAGMA,
@@ -780,6 +795,8 @@ enum {
 	WARN_NOTSTANDARDBEHAVIOUR,
 	WARN_DUPLICATEPRECOMPILER,
 	WARN_IDENTICALPRECOMPILER,
+	WARN_FORMATSTRING,		//sprintf
+	WARN_DEPRECACTEDSYNTAX,	//triggered when syntax is used that I'm trying to kill
 	WARN_GMQCC_SPECIFIC,	//extension created by gmqcc that conflicts or isn't properly implemented.
 	WARN_FTE_SPECIFIC,	//extension that only FTEQCC will have a clue about.
 	WARN_EXTENSION_USED,	//extension that frikqcc also understands
@@ -806,6 +823,7 @@ enum {
 	WARN_COMPATIBILITYHACK,		//work around old defs.qc or invalid dpextensions.qc
 	WARN_REDECLARATIONMISMATCH,
 	WARN_PARAMWITHNONAME,
+	WARN_ARGUMENTCHECK,
 
 	ERR_PARSEERRORS,	//caused by qcc_pr_parseerror being called.
 
@@ -904,6 +922,25 @@ enum {
 	WARN_MAX
 };
 
+//ansi colour codes, for debugging stuff.
+enum
+{
+	COL_NONE,		//white/regular text.
+	COL_ERROR,		//to highlight errors
+	COL_WARNING,	//to highlight warnings
+	COL_LOCATION,	//to highlight file:line locations
+	COL_NAME,		//unknown symbols.
+	COL_SYMBOL,		//known symbols
+	COL_MAX
+};
+extern const char *qcccol[COL_MAX];
+#define col_none qcccol[COL_NONE]
+#define col_location qcccol[COL_LOCATION]
+#define col_error qcccol[COL_ERROR]
+#define col_name qcccol[COL_NAME]
+#define col_warning qcccol[COL_WARNING]
+#define col_symbol qcccol[COL_SYMBOL]
+
 #define FLAG_KILLSDEBUGGERS	1
 #define FLAG_ASDEFAULT		2
 #define FLAG_SETINGUI		4
@@ -968,6 +1005,7 @@ void QCC_PR_NewLine (pbool incomment);
 #define GDF_USED		64	//don't strip this, ever.
 #define GDF_BASICTYPE	128	//don't care about #merge types not being known correctly.
 #define GDF_SCANLOCAL	256	//don't use the locals hash table
+#define GDF_POSTINIT	512	//field must be initialised at the end of the compile (allows arrays to be extended later)
 QCC_def_t *QCC_PR_GetDef (QCC_type_t *type, const char *name, struct QCC_function_s *scope, pbool allocate, int arraysize, unsigned int flags);
 QCC_sref_t QCC_PR_GetSRef (QCC_type_t *type, const char *name, struct QCC_function_s *scope, pbool allocate, int arraysize, unsigned int flags);
 void QCC_FreeTemp(QCC_sref_t t);
@@ -1009,6 +1047,8 @@ void QCC_PR_ParseInitializerDef(QCC_def_t *def, unsigned int flags);
 void QCC_PR_FinaliseFunctions(void);
 
 
+pbool QCC_main (int argc, char **argv);	//as part of the quake engine
+void QCC_ContinueCompile(void);
 void PostCompile(void);
 pbool PreCompile(void);
 void QCC_Cleanup(void);
@@ -1095,20 +1135,21 @@ int	QCC_CopyStringLength (const char *str, size_t length);
 
 
 typedef struct qcc_cachedsourcefile_s {
-	char filename[128];
 	size_t size;
+	size_t bufsize;
 	size_t zhdrofs;
 	int zcrc;
 	char *file;
 	enum{FT_CODE, FT_DATA} type;	//quakec source file or not.
 	struct qcc_cachedsourcefile_s *next;
+	char filename[1];
 } qcc_cachedsourcefile_t;
 extern qcc_cachedsourcefile_t *qcc_sourcefile;
 int WriteSourceFiles(qcc_cachedsourcefile_t *filelist, int h, pbool sourceaswell, pbool legacyembed);
 
 
 struct pkgctx_s;
-struct pkgctx_s *Packager_Create(void (*messagecallback)(void *userctx, char *message, ...), void *userctx);
+struct pkgctx_s *Packager_Create(void (*messagecallback)(void *userctx, const char *message, ...), void *userctx);
 void			Packager_ParseFile(struct pkgctx_s *ctx, char *scriptfilename);
 void			Packager_ParseText(struct pkgctx_s *ctx, char *scripttext);
 void			Packager_WriteDataset(struct pkgctx_s *ctx, char *setname);
@@ -1159,18 +1200,26 @@ extern void *(*pHash_GetNext)(hashtable_t *table, const char *name, void *old);
 extern void *(*pHash_Add)(hashtable_t *table, const char *name, void *data, bucket_t *);
 extern void (*pHash_RemoveData)(hashtable_t *table, const char *name, void *data);
 
-typedef struct vfile_s
-{	//when originally running from a .dat, we load up all the functions and work from those rather than actual files.
-	//(these get re-written into the resulting .dat)
-	struct vfile_s *next;
-	void *fdata;
-	size_t fsize;
-	size_t msize;
-	char name[1];
-} vfile_t;
+//when originally running from a .dat, we load up all the functions and work from those rather than actual files.
+//(these get re-written into the resulting .dat)
+typedef struct qcc_cachedsourcefile_s vfile_t;
 vfile_t *QCC_FindVFile(const char *name);
 vfile_t *QCC_AddVFile(const char *name, void *data, size_t size);
 void QCC_CatVFile(vfile_t *, const char *fmt, ...);
 void QCC_InsertVFile(vfile_t *, size_t pos, const char *fmt, ...);
 
 //void *QCC_ReadFile(const char *fname, unsigned char *(*buf_get)(void *ctx, size_t len), void *buf_ctx, size_t *out_size, pbool issourcefile);
+
+
+typedef struct
+{
+	char	name[56];
+	int		filepos, filelen;
+} packfile_t;
+
+typedef struct
+{
+	char	id[4];
+	int		dirofs;
+	int		dirlen;
+} packheader_t;

@@ -117,6 +117,8 @@ typedef enum {qfalse, qtrue} qboolean;//false and true are forcivly defined.
 #define false qfalse
 #else
 typedef enum {false, true}	qboolean;
+#define qtrue true
+#define qfalse false
 #endif
 
 #define STRINGIFY2(s) #s
@@ -162,13 +164,13 @@ typedef struct sizebuf_s
 {
 	qboolean	allowoverflow;	// if false, do a Sys_Error
 	qboolean	overflowed;		// set to true if the buffer size failed
-	qbyte	*data;
-	int		maxsize;
-	int		cursize;
-	int packing;
-	int currentbit;
+	qbyte		*data;
+	int			maxsize;	//storage size of data
+	int			cursize;	//assigned size of data
+	sbpacking_t	packing;	//required for q3
+	int			currentbit; //ignored for rawbytes
 
-	struct netprim_s prim;
+	struct netprim_s prim;	//for unsized write/read coord/angles
 } sizebuf_t;
 
 void SZ_Clear (sizebuf_t *buf);
@@ -362,7 +364,7 @@ void deleetstring(char *result, const char *leet);
 
 extern	char		com_token[65536];
 
-typedef enum {TTP_UNKNOWN, TTP_STRING, TTP_LINEENDING, TTP_RAWTOKEN, TTP_EOF, TTP_PUNCTUATION} com_tokentype_t;
+typedef enum com_tokentype_e {TTP_UNKNOWN, TTP_STRING, TTP_LINEENDING, TTP_RAWTOKEN, TTP_EOF, TTP_PUNCTUATION} com_tokentype_t;
 extern com_tokentype_t com_tokentype;
 
 //these cast away the const for the return value.
@@ -397,11 +399,13 @@ char *COM_DeFunString(conchar_t *str, conchar_t *stop, char *out, int outsize, q
 #define PFS_KEEPMARKUP		1	//leave markup in the final string (but do parse it)
 #define PFS_FORCEUTF8		2	//force utf-8 decoding
 #define PFS_NOMARKUP		4	//strip markup completely
+#ifndef NOLEGACY
 #define PFS_EZQUAKEMARKUP	8	//aim for compat with ezquake instead of q3 compat
+#endif
 #define PFS_CENTERED		16	//flag used by console prints (text should remain centered)
 #define PFS_NONOTIFY		32	//flag used by console prints (text won't be visible other than by looking at the console)
 conchar_t *COM_ParseFunString(conchar_t defaultflags, const char *str, conchar_t *out, int outsize, int keepmarkup);	//ext is usually CON_WHITEMASK, returns its null terminator
-unsigned int utf8_decode(int *error, const void *in, char **out);
+unsigned int utf8_decode(int *error, const void *in, char const**out);
 unsigned int utf8_encode(void *out, unsigned int unicode, int maxlen);
 unsigned int iso88591_encode(char *out, unsigned int unicode, int maxlen, qboolean markup);
 unsigned int qchar_encode(char *out, unsigned int unicode, int maxlen, qboolean markup);
@@ -416,10 +420,11 @@ void COM_BiDi_Shutdown(void);
 unsigned int unicode_byteofsfromcharofs(const char *str, unsigned int charofs, qboolean markup);
 unsigned int unicode_charofsfrombyteofs(const char *str, unsigned int byteofs, qboolean markup);
 unsigned int unicode_encode(char *out, unsigned int unicode, int maxlen, qboolean markup);
-unsigned int unicode_decode(int *error, const void *in, char **out, qboolean markup);
+unsigned int unicode_decode(int *error, const void *in, char const**out, qboolean markup);
 size_t unicode_strtolower(const char *in, char *out, size_t outsize, qboolean markup);
 size_t unicode_strtoupper(const char *in, char *out, size_t outsize, qboolean markup);
 unsigned int unicode_charcount(const char *in, size_t buffersize, qboolean markup);
+void unicode_strpad(char *out, size_t outsize, const char *in, qboolean leftalign, size_t minwidth, size_t maxwidth, qboolean markup);
 
 char *COM_SkipPath (const char *pathname);
 void QDECL COM_StripExtension (const char *in, char *out, int outlen);
@@ -529,7 +534,7 @@ void FS_ReferenceControl(unsigned int refflag, unsigned int resetflags);
 typedef struct vfsfile_s
 {
 	int (QDECL *ReadBytes) (struct vfsfile_s *file, void *buffer, int bytestoread);
-	int (QDECL *WriteBytes) (struct vfsfile_s *file, const void *buffer, int bytestoread);
+	int (QDECL *WriteBytes) (struct vfsfile_s *file, const void *buffer, int bytestowrite);
 	qboolean (QDECL *Seek) (struct vfsfile_s *file, qofs_t pos);	//returns false for error
 	qofs_t (QDECL *Tell) (struct vfsfile_s *file);
 	qofs_t (QDECL *GetLen) (struct vfsfile_s *file);	//could give some lag
@@ -561,7 +566,7 @@ void VARGS VFS_PRINTF(vfsfile_t *vf, const char *fmt, ...) LIKEPRINTF(2);
 
 enum fs_relative{
 	FS_BINARYPATH,	//for dlls and stuff
-	FS_ROOT,		//./ (the root basepath or root homepath.)
+	FS_ROOT,		//./ (effective -homedir if enabled, otherwise effective -basedir arg)
 	FS_SYSTEM,		//a system path. absolute paths are explicitly allowed and expected, but not required.
 
 	//after this point, all types must be relative to a gamedir
@@ -609,14 +614,14 @@ void FS_UnloadPackFiles(void);
 void FS_ReloadPackFiles(void);
 char *FSQ3_GenerateClientPacksList(char *buffer, int maxlen, int basechecksum);
 void FS_PureMode(int mode, char *purenamelist, char *purecrclist, char *refnamelist, char *refcrclist, int seed);	//implies an fs_restart. ref package names are optional, for q3 where pure names don't contain usable paths
-qboolean FS_PureOkay(void);
+int FS_PureOkay(void);
 
 //recursively tries to open files until it can get a zip.
 vfsfile_t *CL_OpenFileInPackage(searchpathfuncs_t *search, char *name);
 qboolean CL_ListFilesInPackage(searchpathfuncs_t *search, char *name, int (QDECL *func)(const char *fname, qofs_t fsize, time_t mtime, void *parm, searchpathfuncs_t *spath), void *parm, void *recursioninfo);
 
 qbyte *QDECL COM_LoadStackFile (const char *path, void *buffer, int bufsize, size_t *fsize);
-qbyte *COM_LoadTempFile (const char *path, size_t *fsize);
+qbyte *COM_LoadTempFile (const char *path, unsigned int locateflags, size_t *fsize);
 qbyte *COM_LoadTempMoreFile (const char *path, size_t *fsize);	//allocates a little bit more without freeing old temp
 //qbyte *COM_LoadHunkFile (const char *path);
 
@@ -659,6 +664,7 @@ typedef struct
 	char *defaultoverrides;	//execed after default.cfg, to give usable defaults even when the mod the user is running is shit.
 	char *eula;			//when running as an installer, the user will be presented with this as a prompt
 	char *rtcbroker;	//the broker to use for webrtc connections.
+	char *basedir;		//this is where we expect to find the data.
 	struct
 	{
 		qboolean base;
@@ -681,6 +687,7 @@ void FS_Manifest_Free(ftemanifest_t *man);
 ftemanifest_t *FS_Manifest_Parse(const char *fname, const char *data);
 void PM_Shutdown(void);
 void PM_Command_f(void);
+qboolean PM_CanInstall(const char *packagename);
 
 void COM_InitFilesystem (void);	//does not set up any gamedirs.
 qboolean FS_DownloadingPackage(void);
@@ -703,7 +710,7 @@ qbyte *FS_LoadMallocFile (const char *path, size_t *fsize);
 qofs_t FS_LoadFile(const char *name, void **file);
 void FS_FreeFile(void *file);
 
-qbyte *COM_LoadFile (const char *path, int usehunk, size_t *filesize);
+qbyte *COM_LoadFile (const char *path, unsigned int locateflags, int usehunk, size_t *filesize);
 
 qboolean COM_LoadMapPackFile(const char *name, qofs_t offset);
 void COM_FlushTempoaryPacks(void);
@@ -723,15 +730,79 @@ unsigned int COM_RemapMapChecksum(struct model_s *model, unsigned int checksum);
 
 #define	MAX_INFO_KEY	256
 char *Info_ValueForKey (const char *s, const char *key);
-void Info_RemoveKey (char *s, const char *key);
-char *Info_KeyForNumber (const char *s, int num);
-void Info_RemovePrefixedKeys (char *start, char prefix);
-void Info_RemoveNonStarKeys (char *start);
 void Info_SetValueForKey (char *s, const char *key, const char *value, int maxsize);
 void Info_SetValueForStarKey (char *s, const char *key, const char *value, int maxsize);
+void Info_RemovePrefixedKeys (char *start, char prefix);
+void Info_RemoveKey (char *s, const char *key);
+char *Info_KeyForNumber (const char *s, int num);
 void Info_Print (const char *s, const char *lineprefix);
+/*
+void Info_RemoveNonStarKeys (char *start);
 void Info_Enumerate (const char *s, void *ctx, void(*cb)(void *ctx, const char *key, const char *value));
 void Info_WriteToFile(vfsfile_t *f, char *info, char *commandname, int cvarflags);
+*/
+
+/*
+  Info Buffers
+  Keynames are still length limited, and may not contain nulls, but neither restriction applies to values.
+  Using base64 encoding, we're able to encode problematic chars like quotes and newlines (and nulls).
+  This allows mods to store image files inside userinfo.
+*/
+typedef struct
+{
+	struct infokey_s
+	{
+		qbyte			partial:1;		//partial values read as "".
+		qbyte			large:1;		//requires partial/encoded transmission
+		char			*name;
+		size_t			size;
+		size_t			buffersize;		//to avoid excessive reallocs
+		char			*value;
+	} *keys;
+	size_t numkeys;
+	size_t totalsize;	//so we can limit userinfo abuse.
+
+	void (*ChangeCB)(void *context, const char *key);	//usually calls InfoSync_Add on all the interested parties.
+	void *ChangeCTX;
+} infobuf_t;
+typedef struct
+{
+	struct
+	{
+		void			*context;
+		char			*name;
+		size_t			syncpos;		//reset to 0 when dirty.
+	} *keys;
+	size_t numkeys;
+} infosync_t;
+void InfoSync_Remove(infosync_t *sync, size_t k);
+void InfoSync_Add(infosync_t *sync, void *context, const char *name);
+void InfoSync_Clear(infosync_t *sync);	//wipes all memory etc.
+void InfoSync_Strip(infosync_t *sync, void *context);	//Clears away all infos from that context.
+extern const char *basicuserinfos[];	//note: has a leading *
+extern const char *privateuserinfos[];	//key names that are not broadcast from the server
+qboolean InfoBuf_FindKey (infobuf_t *info, const char *key, size_t *idx);
+const char *InfoBuf_KeyForNumber (infobuf_t *info, int num);
+const char *InfoBuf_BlobForKey (infobuf_t *info, const char *key, size_t *blobsize);
+char *InfoBuf_ReadKey (infobuf_t *info, const char *key, char *outbuf, size_t outsize);
+char *InfoBuf_ValueForKey (infobuf_t *info, const char *key);
+qboolean InfoBuf_RemoveKey (infobuf_t *info, const char *key);
+qboolean InfoBuf_SetKey (infobuf_t *info, const char *key, const char *val);	//refuses to set *keys.
+qboolean InfoBuf_SetStarKey (infobuf_t *info, const char *key, const char *val);
+qboolean InfoBuf_SetStarBlobKey (infobuf_t *info, const char *key, const char *val, size_t valsize);
+#define InfoBuf_SetValueForKey InfoBuf_SetKey
+#define InfoBuf_SetValueForStarKey InfoBuf_SetStarKey
+void InfoBuf_Clear(infobuf_t *info, qboolean all);
+void InfoBuf_Clone(infobuf_t *dest, infobuf_t *src);
+void InfoBuf_FromString(infobuf_t *info, const char *infostring, qboolean append);
+char *InfoBuf_DecodeString(const char *instart, const char *inend, size_t *sz);
+qboolean InfoBuf_EncodeString(const char *n, size_t s, char *out, size_t outsize);
+size_t InfoBuf_ToString(infobuf_t *info, char *infostring, size_t maxsize, const char **priority, const char **ignore, const char **exclusive, infosync_t *sync, void *synccontext);	//_ and * can be used to indicate ALL such keys.
+qboolean InfoBuf_SyncReceive (infobuf_t *info, const char *key, size_t keysize, const char *val, size_t valsize, size_t offset, qboolean final);
+void InfoBuf_Print(infobuf_t *info, const char *prefix);
+void InfoBuf_WriteToFile(vfsfile_t *f, infobuf_t *info, const char *commandname, int cvarflags);
+void InfoBuf_Enumerate (infobuf_t *info, void *ctx, void(*cb)(void *ctx, const char *key, const char *value));
+
 
 void Com_BlocksChecksum (int blocks, void **buffer, int *len, unsigned char *outbuf);
 unsigned int Com_BlockChecksum (const void *buffer, int length);
@@ -741,6 +812,8 @@ qbyte	COM_BlockSequenceCRCByte (qbyte *base, int length, int sequence);
 qbyte	Q2COM_BlockSequenceCRCByte (qbyte *base, int length, int sequence);
 
 typedef size_t hashfunc_t(unsigned char *digest, size_t maxdigestsize, size_t numstrings, const unsigned char **strings, size_t *stringlens);
+#define SHA1 SHA1_quake
+#define HMAC HMAC_quake
 hashfunc_t SHA1_m;
 //int SHA1_m(char *digest, size_t maxdigestsize, size_t numstrings, const char **strings, size_t *stringlens);
 //#define SHA1(digest,maxdigestsize,string,stringlen) SHA1_m(digest, maxdigestsize, 1, &string, &stringlen)
@@ -778,8 +851,10 @@ void Con_Log (const char *s);
 void Log_Logfile_f (void);
 void Log_Init(void);
 void Log_ShutDown(void);
+#ifdef IPLOG
 void IPLog_Add(const char *ip, const char *name);	//for associating player ip addresses with names.
 qboolean IPLog_Merge_File(const char *fname);
+#endif
 qboolean CertLog_ConnectOkay(const char *hostname, void *cert, size_t certsize);
 
 

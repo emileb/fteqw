@@ -328,7 +328,7 @@ void SV_EmitCSQCUpdate(client_t *client, sizebuf_t *msg, qbyte svcnumber)
 			{
 				if (!(client->pendingcsqcbits[entnum] & SENDFLAGS_REMOVED))
 				{	//while the entity has NOREMOVE, only remove it if the remove is a resend
-					if ((int)EDICT_NUM_PB(svprogfuncs, en)->xv->pvsflags & PVSF_NOREMOVE)
+					if ((int)EDICT_NUM_PB(svprogfuncs, entnum)->xv->pvsflags & PVSF_NOREMOVE)
 						continue;
 				}
 				if (msg->cursize + 5 >= msg->maxsize)
@@ -450,7 +450,7 @@ void SV_EmitCSQCUpdate(client_t *client, sizebuf_t *msg, qbyte svcnumber)
 		if (client->pendingcsqcbits[entnum] & (SENDFLAGS_PRESENT|SENDFLAGS_REMOVED))
 		{
 			if (!(client->pendingcsqcbits[entnum] & SENDFLAGS_REMOVED))
-			{	//while the entity has NOREMOVE, only remove it if the remove is a resend
+			{	//while the original entity has NOREMOVE, only remove it if the remove is a resend
 				if ((int)EDICT_NUM_PB(svprogfuncs, entnum)->xv->pvsflags & PVSF_NOREMOVE)
 					continue;
 			}
@@ -1326,6 +1326,9 @@ qboolean SVFTE_EmitPacketEntities(client_t *client, packet_entities_t *to, sizeb
 	qbyte *oldbonedata;
 	unsigned int maxbonedatasize;
 	qboolean overflow = false;
+	client_t *cl;
+	float age;
+	client_frame_t *frame;
 
 	if (!client->pendingdeltabits)
 		return false;
@@ -1470,11 +1473,12 @@ qboolean SVFTE_EmitPacketEntities(client_t *client, packet_entities_t *to, sizeb
 		sequence = client->netchan.outgoing_unreliable;
 	else
 		sequence = client->netchan.incoming_sequence;
+	frame = &client->frameunion.frames[sequence & UPDATE_MASK];
 
 	/*cache frame info*/
-	resend = client->frameunion.frames[sequence & UPDATE_MASK].resend;
+	resend = frame->resend;
 	outno = 0;
-	outmax = client->frameunion.frames[sequence & UPDATE_MASK].maxresend;
+	outmax = frame->maxresend;
 
 	/*start writing the packet*/
 	MSG_WriteByte (msg, svcfte_updateentities);
@@ -1557,8 +1561,32 @@ qboolean SVFTE_EmitPacketEntities(client_t *client, packet_entities_t *to, sizeb
 	else
 		client->nextdeltaindex = j;	//we overflowed or something, start going round-robin
 
-	client->frameunion.frames[sequence & UPDATE_MASK].numresend = outno;
-	client->frameunion.frames[sequence & UPDATE_MASK].sequence = sequence;
+	frame->numresend = outno;
+	frame->sequence = sequence;
+
+	for (i = 0; i < to->num_entities; i++)
+	{
+		n = &to->entities[i];
+		j = n->number-1;
+		if (j >= sv.allocated_client_slots)
+			break;	//don't track non-player slots.
+
+		cl = &svs.clients[j];
+
+		//states of other players are actually old.
+		//by the time we receive the other player's move, this stuff will be outdated and we don't know when that will actually be.
+		//so (cheaply) guess where they're really meant to be if they're running at a lower framerate.
+		if (!cl->name[0] || cl->protocol == SCP_BAD)	//is bot
+			age = 0;//= sv.time - sv.world.physicstime; //FIXME
+		else
+			age = sv.time - sv.world.physicstime;
+		age = bound(0, age, 0.1);
+
+		VectorMA(n->origin, (sv.time - cl->localtime)/8.0, n->u.q1.velocity, frame->playerpositions[j]);
+		//FIXME: add framestate_t info.
+		frame->playerpresent[j] = true;
+	}
+
 	return overflow;
 }
 
@@ -2335,6 +2363,7 @@ qboolean Cull_Traceline(pvscamera_t *cameras, edict_t *seen)
 	return true;
 }
 
+#ifdef MVD_RECORDING
 void SV_WritePlayersToMVD (client_t *client, client_frame_t *frame, sizebuf_t *msg)
 {
 	int			j;
@@ -2421,6 +2450,7 @@ void SV_WritePlayersToMVD (client_t *client, client_frame_t *frame, sizebuf_t *m
 			dcl->flags |= DF_GIB;
 	}
 }
+#endif
 
 /*
 =============
@@ -3863,8 +3893,7 @@ void SV_WriteEntitiesToClient (client_t *client, sizebuf_t *msg, qboolean ignore
 
 	// this is the frame we are creating
 	frame = &client->frameunion.frames[client->netchan.incoming_sequence & UPDATE_MASK];
-	if (!sv.paused)
-		memset(frame->playerpresent, 0, sizeof(frame->playerpresent));
+	memset(frame->playerpresent, 0, sizeof(frame->playerpresent));
 
 	// find the client's PVS
 	if (ignorepvs)
@@ -4006,9 +4035,11 @@ void SV_WriteEntitiesToClient (client_t *client, sizebuf_t *msg, qboolean ignore
 			// send over the players in the PVS
 			if (svs.gametype != GT_HALFLIFE)
 			{
+#ifdef MVD_RECORDING
 				if (client == &demo.recorder)
 					SV_WritePlayersToMVD(client, frame, msg);
 				else
+#endif
 					SV_WritePlayersToClient (client, frame, clent, cameras, msg);
 			}
 

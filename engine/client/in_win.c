@@ -162,7 +162,7 @@ qboolean	mouseactive;
 static cvar_t	in_joystick				= CVARAF("joystick","0", "in_joystick", CVAR_ARCHIVE);
 static qboolean	joy_advancedinit;
 
-static DWORD		joy_flags;
+static DWORD		joy_flags = JOY_RETURNALL|JOY_RETURNCENTERED;
 #define MAX_JOYSTICKS 8
 static struct wjoy_s {
 	qboolean			isxinput;	//xinput device
@@ -1116,7 +1116,7 @@ void INS_RawInput_Init(void)
 	raw = BZ_Malloc(INIT_RIBUFFER_SIZE);
 	ribuffersize = INIT_RIBUFFER_SIZE;
 
-	Con_SafePrintf("Raw input: initialized with %i mice and %i keyboards\n", rawmicecount, rawkbdcount);
+	Con_DPrintf("Raw input: initialized with %i mice and %i keyboards\n", rawmicecount, rawkbdcount);
 
 	return; // success
 }

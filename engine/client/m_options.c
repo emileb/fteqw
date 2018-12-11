@@ -187,9 +187,6 @@ qboolean M_Options_InvertMouse (menucheck_t *option, struct menu_s *menu, chk_se
 void M_Menu_Options_f (void)
 {
 	extern cvar_t crosshair, r_projection;
-#ifndef CLIENTONLY
-	extern cvar_t sv_autosave;
-#endif
 	int y;
 
 	static const char *projections[] = {
@@ -211,7 +208,8 @@ void M_Menu_Options_f (void)
 		NULL
 	};
 
-#ifndef CLIENTONLY
+#if !defined(CLIENTONLY) && defined(SAVEDGAMES)
+	extern cvar_t sv_autosave;
 	static const char *autosaveopts[] = {
 		"Off",
 		"30 secs",
@@ -231,11 +229,55 @@ void M_Menu_Options_f (void)
 		NULL
 	};
 #endif
+#if !defined(CLIENTONLY) && defined(MVD_RECORDING)
+	extern cvar_t sv_demoAutoRecord;
+	static const char *autorecordopts[] = {
+		"Off",
+		"Singleview",
+		"Multiview",
+		NULL
+	};
+	static const char *autorecordvals[] = {
+		"0",
+		"-1",
+		"1",
+		NULL
+	};
+	extern cvar_t cl_loopbackprotocol;
+	static const char *lprotopts[] = {
+		"Vanilla QW",
+		"FTE QW (recommended)",
+#ifdef NQPROT
+		"FTE NQ",
+		"666",
+		"BJP3",
+//		"DP6",
+//		"DP7",
+		"Automatic (FTE NQ/QW)",
+		"Vanilla NQ",
+#endif
+		NULL
+	};
+	static const char *lprotvals[] = {
+		"qwid",
+		"qw",
+#ifdef NQPROT
+		"nq",
+		"fitz",
+		"bjp3",
+//		"dp6",
+//		"dp7",
+		"auto",
+		"nqid",
+#endif
+		NULL
+	};
+#endif
 
 	menubulk_t bulk[] = {
 		MB_CONSOLECMD("Customize controls", "menu_keys\n", "Modify keyboard and mouse inputs."),
-#ifdef WEBCLIENT
-		MB_CONSOLECMD("Updates and packages", "menu_download\n", "Modify keyboard and mouse inputs."),
+#ifdef PACKAGEMANAGER
+		MB_CONSOLECMD("Updates and Packages", "menu_download\n", "Configure additional content and plugins."),
 #endif
 		MB_CONSOLECMD("Go to console", "toggleconsole\nplay misc/menu2.wav\n", "Open up the engine console."),
 		MB_CONSOLECMD("Reset to defaults", "cvarreset *\nexec default.cfg\nplay misc/menu2.wav\n", "Reloads the default configuration."),
@@ -250,8 +292,12 @@ void M_Menu_Options_f (void)
 		MB_CHECKBOXCVAR("Lookspring", lookspring, 0),
 		MB_CHECKBOXCVAR("Lookstrafe", lookstrafe, 0),
 		MB_CHECKBOXCVAR("Windowed Mouse", _windowed_mouse, 0),
-#ifndef CLIENTONLY
+#if !defined(CLIENTONLY) && defined(SAVEDGAMES)
 		MB_COMBOCVAR("Auto Save", sv_autosave, autosaveopts, autosavevals, NULL),
+#endif
+#if !defined(CLIENTONLY) && defined(MVD_RECORDING)
+		MB_COMBOCVAR("Auto Record", sv_demoAutoRecord, autorecordopts, autorecordvals, NULL),
+		MB_COMBOCVAR("Force Protocol", cl_loopbackprotocol, lprotopts, lprotvals, "Some protocols may impose additional limitations/breakages, and are listed only for potential demo-recording compat."),
 #endif
 		MB_SPACING(4),
 		// removed hud options (cl_sbar, cl_hudswap, old-style chat, old-style msg)
@@ -763,7 +809,7 @@ const char *presetexec[] =
 	"seta gl_polyblend 0;"
 	"seta gl_flashblend 0;"
 	"seta gl_specular 0;"
-	"seta r_deluxmapping 0;"
+	"seta r_deluxemapping 0;"
 	"seta r_loadlit 0;"
 	"seta r_fastsky 1;"
 	"seta r_drawflame 0;"
@@ -788,11 +834,14 @@ const char *presetexec[] =
 	"seta cl_rollangle 0;"
 	"seta cl_bob 0;"
 	"seta cl_sbar 0;"
-	"seta sv_nqplayerphysics 0;"	//server settings in a preset might be bad.
+	"cvarreset sv_nqplayerphysics;"	//server settings in a preset might be bad.
 	"seta cl_demoreel 0;"
 	"seta cl_gibfilter 1;"
 	"if cl_deadbodyfilter == 0 then seta cl_deadbodyfilter 1;"		//as useful as 2 is, some mods use death frames for crouching etc.
 	"seta gl_simpleitems 1;"
+	"seta cl_fullpitch 1;seta maxpitch \"\";seta minpitch \"\";"	//mimic quakespasm where possible.
+	"seta r_graphics 1;"
+	"seta r_renderscale 1;"
 
 	, // fast options
 	"gl_texturemode ln;"
@@ -838,8 +887,10 @@ const char *presetexec[] =
 	//"d_mipcap \"0 3\";"		//logically correct, but will fuck up on ATI drivers if increased mid-map, because ATI will just ignore any levels that are not currently enabled.
 	"cl_gibfilter 0;"
 	"seta cl_deadbodyfilter 0;"
+	"cl_fullpitch 1;maxpitch 90;seta minpitch -90;"	//QS has cheaty viewpitch range. some maps require it.
 
 	, //vanilla-esque options.
+	"cl_fullpitch 0;maxpitch \"\";seta minpitch \"\";"	//quakespasm is not vanilla
 	"gl_texturemode nll;"		//yup, we went there.
 	"gl_texturemode2d n.l;"		//yeah, 2d too.
 	"r_nolerp 1;"
@@ -871,11 +922,12 @@ const char *presetexec[] =
 	"gl_texturemode2d l;"
 	"cl_sbar 0;"
 	"v_viewmodel_quake 0;"	//don't move the gun around weirdly.
-	"sv_nqplayerphysics 0;"
+	"cvarreset sv_nqplayerphysics;"
 	"cl_demoreel 0;"
 	"r_loadlit 1;"
 	"r_nolerp 0;"
 	"r_noframegrouplerp 0;"
+	"cl_fullpitch 1;maxpitch 90;seta minpitch -90;"
 
 	, // nice options
 //	"r_stains 0.75;"
@@ -893,14 +945,14 @@ const char *presetexec[] =
 	"r_shadow_realtime_dlight 1;"
 //	"gl_detail 1;"
 	"r_lightstylesmooth 1;"
-	"r_deluxmapping 2;"
+	"r_deluxemapping 2;"
 	"gl_texture_anisotropic_filtering 4;"
 
 	, // realtime options
 	"r_bloom 1;"
-	"r_deluxmapping 0;"	//won't be seen anyway
+	"r_deluxemapping 0;"	//won't be seen anyway
 	"r_particledesc \"high tsshaft\";"
-	"r_waterstyle 3;"
+//	"r_waterstyle 3;"	//too expensive.
 	"r_glsl_offsetmapping 1;"
 	"r_shadow_realtime_world 1;"
 	"gl_texture_anisotropic_filtering 16;"
@@ -959,7 +1011,7 @@ void M_Menu_Preset_f (void)
 #else
 	bias = 1;
 #endif
-		if (r_deluxmapping_cvar.ival)
+		if (r_deluxemapping_cvar.ival)
 		item = 2;	//nice
 	else if (gl_load24bit.ival)
 		item = 3;	//normal
@@ -995,6 +1047,15 @@ void FPS_Preset_f (void)
 		char buffer[MAX_OSPATH];
 		COM_QuotedString(presetfname, buffer, sizeof(buffer), false);
 		Cbuf_InsertText(va("\nexec %s\nfs_restart\n", buffer), RESTRICT_LOCAL, false);
+		return;
+	}
+
+	if (!stricmp("hdr", arg))
+	{
+		Cbuf_InsertText(
+			"set vid_srgb 2\n"
+			"set r_hdr_irisadaptation 1\n"
+			, RESTRICT_LOCAL, false);
 		return;
 	}
 
@@ -1112,7 +1173,7 @@ void M_Menu_FPS_f (void)
 	menu_t *menu;
 	fpsmenuinfo_t *info;
 
-	extern cvar_t v_contentblend, show_fps, cl_r2g, cl_gibfilter, cl_expsprite, cl_deadbodyfilter, cl_lerp_players, cl_nolerp;
+	extern cvar_t v_contentblend, show_fps, cl_r2g, cl_gibfilter, cl_expsprite, cl_deadbodyfilter, cl_lerp_players, cl_nolerp, cl_maxfps, cl_yieldcpu;
 	static menuresel_t resel;
 	int y;
 	menu = M_Options_Title(&y, sizeof(fpsmenuinfo_t));
@@ -1129,6 +1190,8 @@ void M_Menu_FPS_f (void)
 			MB_CMD("Apply", M_PresetApply, "Applies selected preset."),
 			MB_SPACING(4),
 			MB_COMBOCVAR("Show FPS", show_fps, fpsopts, fpsvalues, "Display FPS or frame millisecond values on screen. Settings except immediate are for values across 1 second."),
+			MB_EDITCVARSLIM("Framerate Limiter", cl_maxfps.name, "Limits the maximum framerate. Set to 0 for none."),
+			MB_CHECKBOXCVARTIP("Yield CPU", cl_yieldcpu, 1, "Reduce CPU usage between frames.\nShould probably be off when using vsync."),
 			MB_COMBOCVAR("Player lerping", cl_lerp_players, playerlerpopts, values_0_1, "Smooth movement of other players, but will increase effective latency. Does not affect all network protocols."),
 			MB_COMBOCVAR("Entity lerping", cl_nolerp, entlerpopts, values_0_1_2, "Smooth movement of entities, but will increase effective latency."),
 			MB_CHECKBOXCVAR("Content Blend", v_contentblend, 0),
@@ -1162,8 +1225,11 @@ void M_Menu_Render_f (void)
 	static const char *logcenteropts[] = {"Off", "Singleplayer", "Always", NULL};
 	static const char *logcentervalues[] = {"0", "1", "2", NULL};
 
+	static const char *cshiftopts[] = {"Off", "Fullscreen", "Edges", NULL};
+	static const char *cshiftvalues[] = {"0", "1", "2", NULL};
+
 	menu_t *menu;
-	extern cvar_t r_novis, cl_item_bobbing, r_waterwarp, r_nolerp, r_noframegrouplerp, r_fastsky, gl_nocolors, gl_lerpimages, r_wateralpha, r_drawviewmodel, gl_cshiftenabled, r_hdr_irisadaptation, scr_logcenterprint;
+	extern cvar_t r_novis, cl_item_bobbing, r_waterwarp, r_nolerp, r_noframegrouplerp, r_fastsky, gl_nocolors, gl_lerpimages, r_wateralpha, r_drawviewmodel, gl_cshiftenabled, r_hdr_irisadaptation, scr_logcenterprint, r_fxaa, r_graphics;
 #ifdef GLQUAKE
 	extern cvar_t r_bloom;
 #endif
@@ -1174,6 +1240,7 @@ void M_Menu_Render_f (void)
 	{
 		MB_REDTEXT("Rendering Options", true),
 		MB_TEXT("^Ue080^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue082", true),
+		MB_CHECKBOXCVAR("Graphics", r_graphics, 0),	//graphics on / off. Its a general dig at modern games not having any real options.
 		MB_CHECKBOXCVAR("Disable VIS", r_novis, 0),
 		MB_CHECKBOXCVAR("Fast Sky", r_fastsky, 0),
 		MB_CHECKBOXCVAR("Disable Model Lerp", r_nolerp, 0),
@@ -1182,11 +1249,12 @@ void M_Menu_Render_f (void)
 		MB_COMBOCVAR("Water Warp", r_waterwarp, warpopts, warpvalues, NULL),
 		MB_SLIDER("Water Alpha", r_wateralpha, 0, 1, 0.1, NULL),
 		MB_SLIDER("Viewmodel Alpha", r_drawviewmodel, 0, 1, 0.1, NULL),
-		MB_CHECKBOXCVAR("Poly Blending", gl_cshiftenabled, 0),
+		MB_COMBOCVAR("Screen Tints", gl_cshiftenabled, cshiftopts, cshiftvalues, "Changes how screen flashes should be displayed (otherwise known as polyblends)."),
 #ifdef QWSKINS
 		MB_CHECKBOXCVAR("Disable Colormap", gl_nocolors, 0),
 #endif
 		MB_COMBOCVAR("Log Centerprints", scr_logcenterprint, logcenteropts, logcentervalues, "Display centerprints in the console also."),
+		MB_CHECKBOXCVAR("FXAA", r_fxaa, 0),
 #ifdef GLQUAKE
 		MB_CHECKBOXCVAR("Bloom", r_bloom, 0),
 #endif
@@ -1326,6 +1394,7 @@ qboolean M_VideoApplyShadowLighting (union menuoption_s *op,struct menu_s *menu,
 			break;
 		}
 #ifdef MINIMAL
+		(void)cvarv;
 		Cbuf_AddText(va("r_shadow_realtime_world %s;r_shadow_realtime_world_shadows %s\n", cvarsrw, cvarsrws), RESTRICT_LOCAL);
 #else
 		Cbuf_AddText(va("r_vertexlight %s;r_shadow_realtime_world %s;r_shadow_realtime_world_shadows %s\n", cvarv, cvarsrw, cvarsrws), RESTRICT_LOCAL);
@@ -1571,7 +1640,7 @@ void M_Menu_Lighting_f (void)
 #endif
 			MB_COMBOCVAR("Lightmap Format", r_lightmap_format, lightmapformatopts, lightmapformatvalues, "Selects which format to use for lightmaps."),
 			MB_COMBOCVAR("LIT Loading", r_loadlits, loadlitopts, loadlitvalues, "Determines if the engine should use external colored lighting for maps. The generated setting will cause the engine to generate colored lighting for maps that don't have the associated data."),
-			MB_COMBOCVAR("Deluxmapping", r_deluxmapping_cvar, loadlitopts, loadlitvalues, "Controls whether static lighting should respond to lighting directions."),
+			MB_COMBOCVAR("Deluxemapping", r_deluxemapping_cvar, loadlitopts, loadlitvalues, "Controls whether static lighting should respond to lighting directions."),
 			MB_CHECKBOXCVAR("Lightstyle Lerp", r_lightstylesmooth, 0),
 			MB_SPACING(4),
 			MB_COMBOCVAR("Flash Blend", r_flashblend, fbopts, fbvalues, "Disables or enables the spherical light effect for dynamic lights. Traced means the sphere effect will be line of sight checked before displaying the effect."),
@@ -2782,6 +2851,18 @@ void M_Menu_Video_f (void)
 	};
 	static const char *scalevalues[] = { "1", "1.5", "2", "2.5", "3", "4", "5", "6", NULL};
 
+	static const char *vsyncopts[] =
+	{
+		"Off",
+		"Strict",
+		"Lax",
+		"Alternate Frames",
+		NULL
+	};
+	static const char *vsyncvalues[] = { "0", "1", "-1", "2", NULL};
+	extern cvar_t vid_vsync;
+	extern cvar_t cl_maxfps;
+	extern cvar_t cl_yieldcpu;
 
 /*
 	static const char *vsyncoptions[] =
@@ -2849,6 +2930,7 @@ void M_Menu_Video_f (void)
 			MB_EDITCVARSLIMRETURN("Height", "vid_height", info->height),
 			MB_EDITCVARSLIMRETURN("Color Depth", "vid_bpp", info->bpp),
 			MB_EDITCVARSLIMRETURN("Refresh Rate", "vid_displayfrequency", info->hz),
+
 			MB_SPACING(4),
 			MB_COMBORETURN("2D Mode", res2dmodeopts, res2dmodechoice, info->res2dmode, "Select method for determining or configuring 2D resolution and scaling. The default option matches the current display resolution, and the scale option scales by a factor of the display resolution."),
 			// scale entry
@@ -2874,6 +2956,11 @@ void M_Menu_Video_f (void)
 			MB_SLIDER("Gamma", v_gamma, 1.5, 0.25, -0.05, NULL),
 			MB_COMBOCVAR("Gamma Mode", vid_srgb, srgbopts, srgbvalues, "Controls the colour space to try to use."),
 			MB_SLIDER("Contrast", v_contrast, 0.8, 3, 0.05, NULL),
+
+			MB_COMBOCVAR("VSync", vid_vsync, vsyncopts, vsyncvalues, "Controls whether to wait for rendering to finish."),
+			MB_EDITCVARSLIM("Framerate Limiter", cl_maxfps.name, "Limits the maximum framerate. Set to 0 for none."),
+			MB_CHECKBOXCVARTIP("Yield CPU", cl_yieldcpu, 1, "Reduce CPU usage between frames.\nShould probably be off when using vsync."),
+			
 			MB_END()
 		};
 		MC_AddBulk(menu, &resel, bulk, 16, 200, y);
@@ -2884,7 +2971,7 @@ void M_Menu_Video_f (void)
 	MC_AddRedText(menu, 200, y, current3dres, false); y+=8;
 
  	y+=8;
-	MC_AddRedText(menu, 0, y,								"      €‚ ", false); y+=8;
+	MC_AddRedText(menu, 0, y,								"      ^Ue080^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue082 ", false); y+=8;
 	y+=8;
 	info->renderer = MC_AddCombo(menu,	16, y,				"         Renderer", rendererops, i);	y+=8;
 	info->bppcombo = MC_AddCombo(menu,	16, y,				"      Color Depth", bppnames, currentbpp); y+=8;
@@ -3370,8 +3457,11 @@ static void M_ModelViewerDraw(int x, int y, struct menucustom_s *c, struct menu_
 			"end: skin-=1\n"
 			"pgup: frame+=1\n"
 			"pgdn: frame-=1\n"
-			"mins: %g %g %g, maxs: %g %g %g\n", ent.model->mins[0], ent.model->mins[1], ent.model->mins[2], ent.model->maxs[0], ent.model->maxs[1], ent.model->maxs[2])
-			, CON_WHITEMASK, CPRINT_TALIGN|CPRINT_LALIGN, font_default, fs);
+			"mins: %g %g %g, maxs: %g %g %g\n"
+			"flags: %#x %#x\n", 
+				ent.model->mins[0], ent.model->mins[1], ent.model->mins[2], ent.model->maxs[0], ent.model->maxs[1], ent.model->maxs[2],
+				ent.model->flags, ent.model->engineflags),
+			CON_WHITEMASK, CPRINT_TALIGN|CPRINT_LALIGN, font_default, fs);
 		break;
 	case MV_COLLISION:
 		if (!ent.model)
@@ -3654,6 +3744,30 @@ void M_Menu_ModelViewer_f(void)
 	mv->ragworld.worldmodel = Mod_ForName("", MLV_SILENT);
 	World_RBE_Start(&mv->ragworld);
 #endif
+}
+static int QDECL CompleteModelViewerList (const char *name, qofs_t flags, time_t mtime, void *parm, searchpathfuncs_t *spath)
+{
+	struct xcommandargcompletioncb_s *ctx = parm;
+	const char *ext = COM_GetFileExtension(name, NULL);
+	if (!strcmp(ext, ".mdl") || !strcmp(ext, ".md2") || !strcmp(ext, ".md3")
+		|| !strcmp(ext, ".iqm") || !strcmp(ext, ".dpm") || !strcmp(ext, ".zym")
+		|| !strcmp(ext, ".psk") || !strcmp(ext, ".md5mesh") || !strcmp(ext, ".md5anim")
+		|| !strcmp(ext, ".bsp") || !strcmp(ext, ".map") || !strcmp(ext, ".hmp")
+		|| !strcmp(ext, ".spr") || !strcmp(ext, ".sp2") || !strcmp(ext, ".spr32"))
+	{
+		ctx->cb(name, NULL, NULL, ctx);
+	}
+	return true;
+}
+void M_Menu_ModelViewer_c(int argn, const char *partial, struct xcommandargcompletioncb_s *ctx)
+{
+	if (argn == 1)
+	{
+		COM_EnumerateFiles(va("%s*", partial), CompleteModelViewerList, ctx);
+		COM_EnumerateFiles(va("%s*/*", partial), CompleteModelViewerList, ctx);
+		COM_EnumerateFiles(va("%s*/*", partial), CompleteModelViewerList, ctx);
+		COM_EnumerateFiles(va("%s*/*/*", partial), CompleteModelViewerList, ctx);
+	}
 }
 #else
 void M_Menu_ModelViewer_f(void)

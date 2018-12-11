@@ -1,10 +1,14 @@
 #include "progsint.h"
 #include "qcc.h"
 
-#if !defined(NO_ZLIB) && !defined(FTE_TARGET_WEB) && !defined(NACL) && !defined(_XBOX)
+#if !defined(FTE_TARGET_WEB) && !defined(NACL) && !defined(_XBOX)
 #ifndef AVAIL_ZLIB
 #define AVAIL_ZLIB
 #endif
+#endif
+
+#ifdef NO_ZLIB
+#undef AVAIL_ZLIB
 #endif
 
 #ifdef AVAIL_ZLIB
@@ -191,6 +195,18 @@ int QC_EnumerateFilesFromBlob(const void *blob, size_t blobsize, void (*cb)(cons
 	int ret = 0;
 	if (blobsize < 22)
 		return ret;
+	if (!strncmp(blob, "PACK", 4))
+	{
+		const packheader_t *head = blob;
+		const packfile_t *f = (packfile_t*)((char*)blob + head->dirofs);
+		for (ret = 0; ret < head->dirlen/sizeof(*f); ret++, f++)
+		{
+			cb(f->name, (const char*)blob+f->filepos, f->filelen, 0, f->filelen);
+		}
+		return ret;
+	}
+
+	//treat it as a zip
 	eocd = blob;
 	eocd += blobsize-22;
 	if (QC_ReadRawInt(eocd+0) != 0x06054b50)
@@ -246,7 +262,8 @@ int QC_EnumerateFilesFromBlob(const void *blob, size_t blobsize, void (*cb)(cons
 
 			csize = QC_ReadRawInt(le+18);
 			usize = QC_ReadRawInt(le+22);
-			QC_strlcpy(name, cd+46, (nl+1<sizeof(name))?nl+1:sizeof(name));
+			if (!QC_strlcpy(name, cd+46, (nl+1<sizeof(name))?nl+1:sizeof(name)))
+				continue;	//name was too long.
 
 			cb(name, le+30+QC_ReadRawShort(le+26)+QC_ReadRawShort(le+28), csize, method, usize);
 			ret++;

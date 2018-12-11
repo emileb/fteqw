@@ -22,6 +22,7 @@
 void OptionsDialog(void);
 static void GUI_CreateInstaller_Windows(void);
 static void GUI_CreateInstaller_Android(void);
+pbool GenBuiltinsList(char *buffer, int buffersize);
 static void SetProgsSrcFileAndPath(char *filename);
 static void CreateOutputWindow(pbool doannoates);
 void AddSourceFile(const char *parentsrc, const char *filename);
@@ -350,31 +351,132 @@ static pbool QCC_RegSetValue(HKEY base, char *keyname, char *valuename, int type
 }
 */
 
+#undef printf
+#undef Sys_Error
+void Sys_Error(const char *text, ...);
+
+pbool qcc_vfiles_changed;
 static vfile_t *qcc_vfiles;
+HWND mainwindow;
+HINSTANCE ghInstance;
+static INT CALLBACK StupidBrowseCallbackProc(HWND hwnd, UINT uMsg, LPARAM lp, LPARAM pData) ;
+void QCC_SaveVFiles(void)
+{
+	vfile_t *f;
+	if (qcc_vfiles_changed)
+	{
+		switch (MessageBox(mainwindow, "Save files as archive?", "FTEQCCGUI", MB_YESNOCANCEL))
+		{
+		case IDYES:
+			{
+				char filename[MAX_PATH];
+				char oldpath[MAX_PATH+10];
+				OPENFILENAME ofn;
+				memset(&ofn, 0, sizeof(ofn));
+				ofn.lStructSize = sizeof(ofn);
+				ofn.hInstance = ghInstance;
+				ofn.lpstrFile = filename;
+				ofn.lpstrTitle = "Output archive";
+				ofn.nMaxFile = sizeof(filename)-1;
+				ofn.lpstrFilter = "QuakeC Projects\0*.zip\0All files\0*.*\0";
+				memset(filename, 0, sizeof(filename));
+				GetCurrentDirectory(sizeof(oldpath)-1, oldpath);
+				ofn.lpstrInitialDir = oldpath;
+				if (GetSaveFileName(&ofn))
+				{
+					int h = SafeOpenWrite(ofn.lpstrFile, -1);
+
+					progfuncs_t funcs;
+					progexterns_t ext;
+					memset(&funcs, 0, sizeof(funcs));
+					funcs.funcs.parms = &ext;
+					memset(&ext, 0, sizeof(ext));
+					ext.ReadFile = GUIReadFile;
+					ext.FileSize = GUIFileSize;
+					ext.WriteFile = QCC_WriteFile;
+					ext.Sys_Error = Sys_Error;
+					ext.Printf = GUIprintf;
+
+					qccprogfuncs = &funcs;
+					WriteSourceFiles(qcc_vfiles, h, true, false);
+					qccprogfuncs = NULL;
+
+					SafeClose(h);
+
+					qcc_vfiles_changed = false;
+					return;
+				}
+			}
+			break;
+		case IDNO:
+			{
+				char oldworkingdir[MAX_PATH], newdir[MAX_PATH+10], workingdir[MAX_PATH];
+				BROWSEINFO bi;
+				LPITEMIDLIST il;
+				memset(&bi, 0, sizeof(bi));
+				bi.hwndOwner = mainwindow;
+				bi.pidlRoot = NULL;
+				GetCurrentDirectory(sizeof(oldworkingdir)-1, oldworkingdir);
+				GetCurrentDirectory(sizeof(workingdir)-1, workingdir);
+				bi.pszDisplayName = workingdir;
+				bi.lpszTitle = "Where do you want the source?";
+				bi.ulFlags = BIF_RETURNONLYFSDIRS|BIF_STATUSTEXT;
+				bi.lpfn = StupidBrowseCallbackProc;
+				bi.lParam = 0;
+				bi.iImage = 0;
+				il = SHBrowseForFolder(&bi);
+				if (il)
+				{
+					SHGetPathFromIDList(il, newdir);
+					CoTaskMemFree(il);
+
+					for (f = qcc_vfiles; f; f = f->next)
+					{
+						char nname[MAX_PATH];
+						int h;
+						QC_snprintfz(nname, sizeof(nname), "%s\\%s", newdir, f->filename);
+						h = SafeOpenWrite(f->filename, -1);
+						if (h >= 0)
+						{
+							SafeWrite(h, f->file, f->size);
+							SafeClose(h);
+						}
+					}
+				}
+				SetCurrentDirectory(oldworkingdir);	//revert microsoft stupidity.
+			}
+			break;
+		default:
+			return;
+		}
+	}
+}
 void QCC_CloseAllVFiles(void)
 {
 	vfile_t *f;
+
 	while(qcc_vfiles)
 	{
 		f = qcc_vfiles;
 		qcc_vfiles = f->next;
 
-		free(f->fdata);
+		free(f->file);
 		free(f);
 	}
+	qcc_vfiles_changed = false;
 }
 vfile_t *QCC_FindVFile(const char *name)
 {
 	vfile_t *f;
 	for (f = qcc_vfiles; f; f = f->next)
 	{
-		if (!strcmp(f->name, name))
+		if (!strcmp(f->filename, name))
 			return f;
 	}
 	//give it another go, for case
 	for (f = qcc_vfiles; f; f = f->next)
 	{
-		if (!QC_strcasecmp(f->name, name))
+		if (!QC_strcasecmp(f->filename, name))
 			return f;
 	}
 	return NULL;
@@ -386,14 +488,17 @@ vfile_t *QCC_AddVFile(const char *name, void *data, size_t size)
 	{
 		f = malloc(sizeof(vfile_t) + strlen(name));
 		f->next = qcc_vfiles;
-		strcpy(f->name, name);
+		strcpy(f->filename, name);
 		qcc_vfiles = f;
 	}
 	else
-		free(f->fdata);
-	f->fdata = malloc(size);
-	memcpy(f->fdata, data, size);
-	f->fsize = f->msize = size;
+		free(f->file);
+	f->file = malloc(size);
+	f->type = FT_CODE;
+	memcpy(f->file, data, size);
+	f->size = f->bufsize = size;
+
+	qcc_vfiles_changed = true;
 	return f;
 }
 void QCC_CatVFile(vfile_t *f, const char *fmt, ...)
@@ -407,14 +512,14 @@ void QCC_CatVFile(vfile_t *f, const char *fmt, ...)
 	va_end (argptr);
 
 	n = strlen(msg);
-	if (f->fsize+n > f->msize)
+	if (f->size+n > f->bufsize)
 	{
-		size_t msize = f->msize + n + 8192;
-		f->fdata = realloc(f->fdata, msize);
-		f->msize = msize;
+		size_t msize = f->bufsize + n + 8192;
+		f->file = realloc(f->file, msize);
+		f->bufsize = msize;
 	}
-	memcpy((char*)f->fdata+f->fsize, msg, n);
-	f->fsize += n;
+	memcpy((char*)f->file+f->size, msg, n);
+	f->size += n;
 }
 void QCC_InsertVFile(vfile_t *f, size_t pos, const char *fmt, ...)
 {
@@ -426,15 +531,15 @@ void QCC_InsertVFile(vfile_t *f, size_t pos, const char *fmt, ...)
 	va_end (argptr);
 
 	n = strlen(msg);
-	if (f->fsize+n > f->msize)
+	if (f->size+n > f->bufsize)
 	{
-		size_t msize = f->msize + n + 8192;
-		f->fdata = realloc(f->fdata, msize);
-		f->msize = msize;
+		size_t msize = f->bufsize + n + 8192;
+		f->file = realloc(f->file, msize);
+		f->bufsize = msize;
 	}
-	memmove((char*)f->fdata+pos+n, (char*)f->fdata+pos, f->fsize-pos);
-	f->fsize += n;
-	memcpy((char*)f->fdata+pos, msg, n);
+	memmove((char*)f->file+pos+n, (char*)f->file+pos, f->size-pos);
+	f->size += n;
+	memcpy((char*)f->file+pos, msg, n);
 }
 
 void QCC_EnumerateFilesResult(const char *name, const void *compdata, size_t compsize, int method, size_t plainsize)
@@ -442,6 +547,7 @@ void QCC_EnumerateFilesResult(const char *name, const void *compdata, size_t com
 	void *buffer = malloc(plainsize);
 	if (QC_decode(NULL, compsize, plainsize, method, compdata, buffer))
 		QCC_AddVFile(name, buffer, plainsize);
+
 	free(buffer);
 }
 
@@ -459,7 +565,7 @@ static void *QCC_ReadFile(const char *fname, unsigned char *(*buf_get)(void *ctx
 	vfile_t *v = QCC_FindVFile(fname);
 	if (v)
 	{
-		len = v->fsize;
+		len = v->size;
 		if (buf_get)
 			buffer = buf_get(buf_ctx, len+1);
 		else
@@ -467,9 +573,9 @@ static void *QCC_ReadFile(const char *fname, unsigned char *(*buf_get)(void *ctx
 		if (!buffer)
 			return NULL;
 		((char*)buffer)[len] = 0;
-		if (len > v->fsize)
-			len = v->fsize;
-		memcpy(buffer, v->fdata, len);
+		if (len > v->size)
+			len = v->size;
+		memcpy(buffer, v->file, len);
 		if (out_size)
 			*out_size = len;
 		return buffer;
@@ -510,7 +616,7 @@ int PDECL QCC_RawFileSize (const char *fname)
 
 	vfile_t *v = QCC_FindVFile(fname);
 	if (v)
-		return v->fsize;
+		return v->size;
 
 	f = fopen(fname, "rb");
 	if (!f)
@@ -1305,17 +1411,37 @@ HWND CreateAnEditControl(HWND parent, pbool *scintillaokay)
 		SendMessage(newc, SCI_STYLESETFORE, STYLE_BRACEBAD,					RGB(0x3F, 0x00, 0x00));
 		SendMessage(newc, SCI_STYLESETBACK, STYLE_BRACEBAD,					RGB(0xff, 0xaf, 0xaf));
 
+		//SCE_C_WORD
 		SendMessage(newc, SCI_SETKEYWORDS,	0,	(LPARAM)
 					"if else for do not while asm break case const continue "
-					"default entity enum enumflags extern "
-					"float goto int integer __variant __in __out __inout noref "
+					"default enum enumflags extern "
+					"float goto __in __out __inout noref "
 					"nosave shared state optional string "
 					"struct switch thinktime until loop "
-					"typedef union var vector void "
+					"typedef union var "
 					"accessor get set inline "
-					"virtual nonvirtual class static nonstatic local return"
+					"virtual nonvirtual class static nonstatic local return "
+					"string float vector void int integer __variant entity"
 					);
 
+		//SCE_C_WORD2
+		{
+			char buffer[65536];
+			GenBuiltinsList(buffer, sizeof(buffer));
+			SendMessage(newc, SCI_SETKEYWORDS,	1,	(LPARAM)buffer);
+		}
+		//SCE_C_COMMENTDOCKEYWORDERROR
+		//SCE_C_GLOBALCLASS
+		SendMessage(newc, SCI_SETKEYWORDS,	3,	(LPARAM)
+					""
+					);
+		//preprocessor listing
+		{
+			char *deflist = QCC_PR_GetDefinesList();
+			SendMessage(newc, SCI_SETKEYWORDS,	4,	(LPARAM)deflist);
+			free(deflist);
+		}
+		//task markers (in comments only)
 		SendMessage(newc, SCI_SETKEYWORDS,	5,	(LPARAM)
 					"TODO FIXME BUG"
 					);
@@ -2281,6 +2407,45 @@ pbool GenAutoCompleteList(char *prefix, char *buffer, int buffersize)
 	return usedbuffer>0;
 }
 
+pbool GenBuiltinsList(char *buffer, int buffersize)
+{
+	QCC_def_t *def;
+	int usedbuffer = 0;
+	int l;
+	int fno;
+	for (fno = 0; fno < sourcefilesnumdefs; fno++)
+	{
+		for (def = sourcefilesdefs[fno]; def; def = def->next)
+		{
+			if (def->scope)
+				continue;	//ignore locals, because we don't know where we are, and they're probably irrelevent.
+
+			//if its a builtin function...
+			if (def->type->type == ev_function && def->symboldata->function && functions[def->symboldata->function].code<0)
+				;
+			else if (def->filen && strstr(def->filen, "extensions"))
+				;
+			else
+				continue;
+
+			//but ignore it if its one of those special things that you're not meant to know about.
+			if (strcmp(def->name, "IMMEDIATE") && !strchr(def->name, ':') && !strchr(def->name, '.') && !strchr(def->name, '*') && !strchr(def->name, '['))
+			{
+				l = strlen(def->name);
+				if (l && usedbuffer+2+l < buffersize)
+				{
+					if (usedbuffer)
+						buffer[usedbuffer++] = ' ';
+					memcpy(buffer+usedbuffer, def->name, l);
+					usedbuffer += l;
+				}
+			}
+		}
+	}
+	buffer[usedbuffer] = 0;
+	return usedbuffer>0;
+}
+
 editor_t *tooltip_editor = NULL;
 char tooltip_variable[256];
 char tooltip_type[256];
@@ -2907,7 +3072,7 @@ static void EditorReload(editor_t *editor)
 	size_t flensz;
 	char *rawfile;
 	char *file;
-	unsigned int flen;
+	size_t flen;
 	pbool dofree;
 	rawfile = QCC_ReadFile(editor->filename, NULL, NULL, &flensz);
 	flen = flensz;
@@ -3029,6 +3194,7 @@ static void EditorReload(editor_t *editor)
 //2: draw extra focus to it
 void EditFile(const char *name, int line, pbool setcontrol)
 {
+	const char *ext;
 	char title[1024];
 	editor_t *neweditor;
 	WNDCLASS wndclass;
@@ -3079,6 +3245,33 @@ void EditFile(const char *name, int line, pbool setcontrol)
 		QC_snprintfz(title, sizeof(title), "File not found:\n%s\nCreate it?", name);
 		if (MessageBox(NULL, title, "Error", MB_ICONWARNING|MB_YESNO|MB_DEFBUTTON2) != IDYES)
 			return;
+	}
+
+	ext = strrchr(name, '.');
+	if (ext)
+	{
+		if (!QC_strcasecmp(ext, ".wav"))
+		{
+			size_t flensz;
+			char *rawfile = QCC_ReadFile(name, NULL, NULL, &flensz);
+			//fixme: thread this...
+			BOOL (WINAPI *pPlaySound)(LPCSTR pszSound, HMODULE hmod, DWORD fdwSound);
+			HMODULE winmm = LoadLibrary("winmm.dll");
+			pPlaySound = (void*)GetProcAddress(winmm, "PlaySoundA");
+			if (pPlaySound)
+				pPlaySound(rawfile, NULL, SND_MEMORY|SND_SYNC|SND_NODEFAULT);
+			free(rawfile);
+			return;
+		}
+		else if (!QC_strcasecmp(ext, ".ogg") || !QC_strcasecmp(ext, ".mp3") || !QC_strcasecmp(ext, ".opus") ||
+				!QC_strcasecmp(ext, ".bsp") || !QC_strcasecmp(ext, ".mdl") || !QC_strcasecmp(ext, ".md2") || !QC_strcasecmp(ext, ".md3") || !QC_strcasecmp(ext, ".iqm") ||
+				!QC_strcasecmp(ext, ".wad") || !QC_strcasecmp(ext, ".lmp") || !QC_strcasecmp(ext, ".png") || !QC_strcasecmp(ext, ".tga") || !QC_strcasecmp(ext, ".jpeg") ||
+				!QC_strcasecmp(ext, ".jpg") || !QC_strcasecmp(ext, ".dds") || !QC_strcasecmp(ext, ".ktx") || !QC_strcasecmp(ext, ".bmp") || !QC_strcasecmp(ext, ".pcx") ||
+				!QC_strcasecmp(ext, ".bin") || !QC_strcasecmp(ext, ".dat") || !QC_strcasecmp(ext, ".pak") || !QC_strcasecmp(ext, ".pk3") || !QC_strcasecmp(ext, ".dem") || !QC_strcasecmp(ext, ".spr"))
+		{
+			if (IDOK != MessageBox(NULL, "The file extension implies that it is a binary file. Open as text anyway?", "FTEQCCGUI", MB_OKCANCEL))
+				return;
+		}
 	}
 
 	neweditor = malloc(sizeof(editor_t));
@@ -3372,6 +3565,12 @@ void *GUIReadFile(const char *fname, unsigned char *(*buf_get)(void *ctx, size_t
 				char *deflist = QCC_PR_GetDefinesList();
 				SendMessage(e->editpane, SCI_SETKEYWORDS,	4,	(LPARAM)deflist);
 				free(deflist);
+
+				{	//and just in case some system defs changed.
+					char buffer[65536];
+					GenBuiltinsList(buffer, sizeof(buffer));
+					SendMessage(e->editpane, SCI_SETKEYWORDS,	1,	(LPARAM)buffer);
+				}
 
 				blen = SendMessage(e->editpane, SCI_GETLENGTH, 0, 0);
 				buffer = buf_get(buf_ctx, blen+1);
@@ -6985,6 +7184,26 @@ static void Packager_MessageCallback(void *ctx, const char *fmt, ...)
 	outlen = GUIEmitOutputText(outputbox, outlen, message, strlen(message), RGB(0, 0, 0));
 }
 
+void GUI_DoDecompile(void *buf, size_t size)
+{
+	char *c = ReadProgsCopyright(buf, size);
+	if (!c || !*c)
+		c = "COPYRIGHT OWNER NOT KNOWN";	//all work is AUTOMATICALLY copyrighted under the terms of the Berne Convention in all major nations. It _IS_ copyrighted, even if there's no license etc included. Good luck guessing what rights you have.
+	if (MessageBox(mainwindow, qcva("The copyright message from this progs is\n%s\n\nPlease respect the wishes and legal rights of the person who created this.", c), "Copyright", MB_OKCANCEL|MB_DEFBUTTON2|MB_ICONSTOP) == IDOK)
+	{
+		CreateOutputWindow(true);
+		compilecb();
+		DecompileProgsDat(progssrcname, buf, size);
+		if (SplitterGet(outputbox))
+		{
+			SendMessage(outputbox, WM_SETREDRAW, TRUE, 0);
+			RedrawWindow(outputbox, NULL, NULL, RDW_ERASE | RDW_FRAME | RDW_INVALIDATE | RDW_ALLCHILDREN);
+		}
+
+		QCC_SaveVFiles();
+	}
+}
+
 int WINAPI WinMain (HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
 	pbool fl_acc;
@@ -7176,7 +7395,7 @@ int WINAPI WinMain (HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLin
 			//if the project is a .dat or .zip then decompile it now (so we can access the 'source')
 			{
 				char *ext = strrchr(progssrcname, '.');
-				if (ext && (!QC_strcasecmp(ext, ".dat") || !QC_strcasecmp(ext, ".zip") || !QC_strcasecmp(ext, ".pk3")))
+				if (ext && (!QC_strcasecmp(ext, ".dat") || !QC_strcasecmp(ext, ".pak") || !QC_strcasecmp(ext, ".zip") || !QC_strcasecmp(ext, ".pk3")))
 				{
 					FILE *f = fopen(progssrcname, "rb");
 					if (f)
@@ -7192,21 +7411,24 @@ int WINAPI WinMain (HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLin
 						fclose(f);
 						QCC_CloseAllVFiles();
 						if (!QC_EnumerateFilesFromBlob(buf, size, QCC_EnumerateFilesResult) && !QC_strcasecmp(ext, ".dat"))
+						{	//its a .dat and contains no .src files
+							GUI_DoDecompile(buf, size);
+						}
+						else if (!QCC_FindVFile("progs.src"))
 						{
-							char *c = ReadProgsCopyright(buf, size);
-							if (!c || !*c)
-								c = "COPYRIGHT OWNER NOT KNOWN";	//all work is AUTOMATICALLY copyrighted under the terms of the Berne Convention in all major nations. It _IS_ copyrighted, even if there's no license etc included. Good luck guessing what rights you have.
-							if (MessageBox(mainwindow, qcva("The copyright message from this progs is\n%s\n\nPlease respect the wishes and legal rights of the person who created this.", c), "Copyright", MB_OKCANCEL|MB_DEFBUTTON2|MB_ICONSTOP) == IDOK)
-							{
-								CreateOutputWindow(true);
-								compilecb();
-								DecompileProgsDat(progssrcname, buf, size);
-								if (SplitterGet(outputbox))
-								{
-									SendMessage(outputbox, WM_SETREDRAW, TRUE, 0);
-									RedrawWindow(outputbox, NULL, NULL, RDW_ERASE | RDW_FRAME | RDW_INVALIDATE | RDW_ALLCHILDREN);
-								}
-							}
+							vfile_t *f;
+							char *archivename = progssrcname;
+							while(strchr(archivename, '\\'))
+								 archivename = strchr(archivename, '\\')+1;
+							AddSourceFile(NULL, archivename);
+							for (f = qcc_vfiles; f; f = f->next)
+								AddSourceFile(archivename,	f->filename);
+
+							f = QCC_FindVFile("progs.dat");
+							if (f)
+								GUI_DoDecompile(f->file, f->size);
+							else
+								resetprogssrc = false;
 						}
 						free(buf);
 						strcpy(progssrcname, "progs.src");
@@ -7227,8 +7449,11 @@ int WINAPI WinMain (HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLin
 
 			if (fl_compileonstart)
 			{
-				CreateOutputWindow(false);
-				RunCompiler(lpCmdLine, false);
+				if (resetprogssrc)
+				{
+					CreateOutputWindow(false);
+					RunCompiler(lpCmdLine, false);
+				}
 			}
 			else
 			{
@@ -7242,8 +7467,9 @@ int WINAPI WinMain (HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLin
 					RunCompiler("-?", false);
 				}
 			}
+			if (resetprogssrc)
+				UpdateFileList();
 			resetprogssrc = false;
-			UpdateFileList();
 		}
 
 		EditorsRun();

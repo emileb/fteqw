@@ -28,10 +28,7 @@ struct searchpathfuncs_s;
 struct model_s;
 struct font_s;
 struct shader_s;
-enum slist_test_e;
-enum hostcachekey_e;	//obtained via calls to gethostcacheindexforkey
-enum fs_relative;
-enum com_tokentype_e;
+
 #ifndef __QUAKEDEF_H__
 	#ifdef __cplusplus
 		typedef enum {qfalse, qtrue} qboolean;//false and true are forcivly defined.
@@ -51,6 +48,14 @@ enum com_tokentype_e;
 	#include <stdint.h>
 	typedef uint64_t qofs_t;
 #endif
+
+#if 1 //c++ or standard C
+	#include "cl_master.h"
+#endif
+enum slist_test_e;
+enum hostcachekey_e;	//obtained via calls to gethostcacheindexforkey
+enum fs_relative;
+enum com_tokentype_e;
 
 struct menu_inputevent_args_s
 {
@@ -111,7 +116,7 @@ typedef struct {
 	const char					*engine_version;
 
 	int (*checkextension)		(const char *ext);
-	void (*error)				(const char *err);
+	void (QDECL *error)			(const char *err, ...);
 	void (*printf)				(const char *text, ...);
 	void (*dprintf)				(const char *text, ...);
 	void (*localcmd)			(const char *cmd);
@@ -125,15 +130,16 @@ typedef struct {
 	char *(*parsetoken)			(const char *data, char *out, int outlen, enum com_tokentype_e *toktype);
 
 	int (*isserver)				(void);
-	int (*getclientstate)		(void);
+	int (*getclientstate)		(char const**disconnectionreason);
 	void (*localsound)			(const char *sample, int channel, float volume);
 
 	// file input / search crap
-	struct vfsfile_s *(*fopen)	(const char *filename, char *modestring, enum fs_relative fsroot);	//modestring should be one of rb,r+b,wb,w+b,ab,wbp. Mostly use a root of FS_GAMEONLY for writes, otherwise FS_GAME for reads.
+	struct vfsfile_s *(*fopen)	(const char *filename, const char *modestring, enum fs_relative fsroot);	//modestring should be one of rb,r+b,wb,w+b,ab,wbp. Mostly use a root of FS_GAMEONLY for writes, otherwise FS_GAME for reads.
 	void (*fclose)				(struct vfsfile_s *fhandle);
 	char *(*fgets)				(struct vfsfile_s *fhandle, char *out, size_t outsize);	//returns output buffer, or NULL
 	void (*fprintf)				(struct vfsfile_s *fhandle, const char *s, ...);
 	void (*enumeratefiles)		(const char *match, int (QDECL *callback)(const char *fname, qofs_t fsize, time_t mtime, void *ctx, struct searchpathfuncs_s *package), void *ctx);
+	qboolean (QDECL *nativepath)(const char *fname, enum fs_relative relativeto, char *out, int outlen);	//Converts a relative path to a printable system path. All paths are considered to be utf-8. WARNING: This means that windows users will need to use _wfopen etc if they use the resulting path of this function in any system calls. WARNING: this function can and WILL fail for dodgy paths (eg blocking writes to "../engine.dll")
 
 	// Drawing stuff
 	void (*drawsetcliparea)		(float x, float y, float width, float height);
@@ -142,14 +148,14 @@ typedef struct {
 	qboolean (*drawgetimagesize)(struct shader_s *pic, int *x, int *y);
 	void (*drawquad)			(const vec2_t position[4], const vec2_t texcoords[4], struct shader_s *pic, const vec4_t rgba, unsigned int be_flags);
 
-	float (*drawstring)			(vec2_t position, const char *text, struct font_s *font, float height, const vec4_t rgba, unsigned int be_flags);
+	float (*drawstring)			(const vec2_t position, const char *text, struct font_s *font, float height, const vec4_t rgba, unsigned int be_flags);
 	float (*stringwidth)		(const char *text, struct font_s *font, float height);
 	struct font_s *(*loadfont)	(const char *facename, float intendedheight);	//with ttf fonts, you'll probably want one for each size.
 	void (*destroyfont)			(struct font_s *font);
 
 	// 3D scene stuff
 	struct model_s *(*cachemodel)(const char *name);
-	void (*getmodelsize)		(struct model_s *model, vec3_t out_mins, vec3_t out_maxs);
+	qboolean (*getmodelsize)	(struct model_s *model, vec3_t out_mins, vec3_t out_maxs);
 	void (*renderscene)			(menuscene_t *scene);
 
 	// Menu specific stuff
@@ -166,8 +172,8 @@ typedef struct {
 	char *(*gethostcachestring)						(struct serverinfo_s *host, enum hostcachekey_e fld);
 	float (*gethostcachenumber)						(struct serverinfo_s *host, enum hostcachekey_e fld);
 	void (*resethostcachemasks)						(void);
-	void (*sethostcachemaskstring)					(qboolean or, enum hostcachekey_e fld, const char *str, enum slist_test_e op);
-	void (*sethostcachemasknumber)					(qboolean or, enum hostcachekey_e fld, int num, enum slist_test_e op);
+	void (*sethostcachemaskstring)					(qboolean or_, enum hostcachekey_e fld, const char *str, enum slist_test_e op);
+	void (*sethostcachemasknumber)					(qboolean or_, enum hostcachekey_e fld, int num, enum slist_test_e op);
 	void (*sethostcachesort)						(enum hostcachekey_e fld, qboolean descending);
 	int (*resorthostcache)							(void);
 	void (*refreshhostcache)						(qboolean fullreset);

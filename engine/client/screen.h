@@ -22,7 +22,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 typedef struct playerview_s playerview_t;
 
 extern	float		scr_con_current;
-extern	float		scr_conlines;		// lines of console to display
+extern	float		scr_con_target;		// lines of console to display
 
 extern	int			sb_lines;
 
@@ -98,8 +98,10 @@ typedef enum uploadfmt
 	PTI_BGRX8_SRGB,	//no alpha channel
 	PTI_RGB8,		//24bit packed format. generally not supported
 	PTI_BGR8,		//24bit packed format. generally not supported
-	PTI_L8,			//8bit format (legacy more than anything else). luminance gets flooded to all RGB channels. might be supported using swizzles.
-	PTI_L8A8,		//16bit format (legacy more than anything else). L=luminance
+	PTI_L8,			//8bit format. luminance gets flooded to all RGB channels. might be supported using swizzles.
+	PTI_L8A8,		//16bit format. L=luminance. might be supported using swizzles.
+	PTI_L8_SRGB,	//8bit format. luminance gets flooded to all RGB channels. might be supported using swizzles.
+	PTI_L8A8_SRGB,	//16bit format. L=luminance. note: this cannot be implemented as a swizzle as there's no way to get srgb on red without it on green.
 	//small formats.
 	PTI_R8,			//used for paletted data
 	PTI_RG8,		//might be useful for normalmaps
@@ -181,6 +183,7 @@ typedef enum uploadfmt
 	PTI_DEPTH32,
 	PTI_DEPTH24_8,
 
+	//non-native formats (generally requiring weird palettes that are not supported by hardware)
 	TF_BGR24_FLIP,			/*bgr byte order, no alpha channel nor pad, and bottom up*/
 	TF_MIP4_R8,		/*8bit 4-mip greyscale image*/
 	TF_MIP4_SOLID8,	/*8bit 4-mip image in default palette*/
@@ -194,6 +197,9 @@ typedef enum uploadfmt
 	TF_H2_T7G1, /*8bit data, odd indexes give greyscale transparence*/
 	TF_H2_TRANS8_0, /*8bit data, 0 is transparent, not 255*/
 	TF_H2_T4A4,     /*8bit data, weird packing*/
+
+	PTI_LLLX8,		/*RGB data where the RGB values were all the same. we can convert to L8 to use less memory (common with shirt/pants/reflection)*/
+	PTI_LLLA8,		/*RGBA data where the RGB values were all the same. we can convert to LA8 to use less memory (common with gloss)*/
 
 	/*this block requires an explicit (separate) palette*/
 	TF_8PAL24,
@@ -222,10 +228,10 @@ typedef enum uploadfmt
 	TF_R8 = PTI_R8
 
 	//these are emulated formats. this 'case' value allows drivers to easily ignore them
-#define PTI_EMULATED 	TF_INVALID:case TF_BGR24_FLIP:case TF_MIP4_R8:case TF_MIP4_SOLID8:case TF_MIP4_8PAL24:case TF_MIP4_8PAL24_T255:case TF_SOLID8:case TF_TRANS8:case TF_TRANS8_FULLBRIGHT:case TF_HEIGHT8:case TF_HEIGHT8PAL:case TF_H2_T7G1:case TF_H2_TRANS8_0:case TF_H2_T4A4:case TF_8PAL24:case TF_8PAL32
+#define PTI_EMULATED 	TF_INVALID:case TF_BGR24_FLIP:case TF_MIP4_R8:case TF_MIP4_SOLID8:case TF_MIP4_8PAL24:case TF_MIP4_8PAL24_T255:case TF_SOLID8:case TF_TRANS8:case TF_TRANS8_FULLBRIGHT:case TF_HEIGHT8:case TF_HEIGHT8PAL:case TF_H2_T7G1:case TF_H2_TRANS8_0:case TF_H2_T4A4:case TF_8PAL24:case TF_8PAL32:case PTI_LLLX8:case PTI_LLLA8
 } uploadfmt_t;
 
-qboolean SCR_ScreenShot (char *filename, enum fs_relative fsroot, void **buffer, int numbuffers, int bytestride, int width, int height, enum uploadfmt fmt);
+qboolean SCR_ScreenShot (char *filename, enum fs_relative fsroot, void **buffer, int numbuffers, int bytestride, int width, int height, enum uploadfmt fmt, qboolean writemeta);
 
 void SCR_DrawTwoDimensional(int uimenu, qboolean nohud);
 

@@ -128,7 +128,6 @@ static qintptr_t VARGS Plug_Draw_LoadImage(char *name, int type, char *script)
 	return i + 1;
 }
 
-qbyte *Read32BitImageFile(qbyte *buf, int len, int *width, int *height, qboolean *hasalpha, const char *fname);
 static qintptr_t VARGS Plug_Draw_LoadImageData(void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	qintptr_t ret = 0;
@@ -139,11 +138,12 @@ static qintptr_t VARGS Plug_Draw_LoadImageData(void *offset, quintptr_t mask, co
 	image_t *t;
 	qbyte *rgbdata;
 	unsigned int width, height;
-	
+	uploadfmt_t format;
+
 	if (VM_OOB(arg[2], arg[3]))
 		return 0;
 		
-	if ((rgbdata = Read32BitImageFile(codeddata, datalength, &width, &height, NULL, name)))
+	if ((rgbdata = ReadRawImageFile(codeddata, datalength, &width, &height, &format, false, name)))
 	{
 //		name = va("%s", name);
 		
@@ -152,7 +152,7 @@ static qintptr_t VARGS Plug_Draw_LoadImageData(void *offset, quintptr_t mask, co
 			t = Image_CreateTexture(name, NULL, IF_PREMULTIPLYALPHA|IF_NOMIPMAP|IF_UIPIC|IF_CLAMP);
 		if (TEXVALID(t))
 		{
-			Image_Upload(t, TF_RGBA32, rgbdata, NULL, width, height, IF_PREMULTIPLYALPHA|IF_NOMIPMAP|IF_UIPIC|IF_CLAMP);
+			Image_Upload(t, format, rgbdata, NULL, width, height, IF_PREMULTIPLYALPHA|IF_NOMIPMAP|IF_UIPIC|IF_CLAMP);
 			ret = Plug_Draw_LoadImage(name, 3, NULL);
 		}
 		
@@ -544,7 +544,7 @@ static qintptr_t VARGS Plug_GetPlayerInfo(void *offset, quintptr_t mask, const q
 		out->activetime = realtime - cl.players[i].realentertime;
 		out->userid = cl.players[i].userid;
 		out->spectator = cl.players[i].spectator;
-		Q_strncpyz(out->userinfo, cl.players[i].userinfo, sizeof(out->userinfo));
+		InfoBuf_ToString(&cl.players[i].userinfo, out->userinfo, sizeof(out->userinfo), basicuserinfos, NULL, NULL, NULL, NULL);
 		Q_strncpyz(out->team, cl.players[i].team, sizeof(out->team));
 	}
 
@@ -589,7 +589,7 @@ static qintptr_t VARGS Plug_GetServerInfo(void *offset, quintptr_t mask, const q
 	if (VM_OOB(arg[0], outlen))
 		return false;
 
-	Q_strncpyz(outptr, cl.serverinfo, outlen);
+	InfoBuf_ToString(&cl.serverinfo, outptr, outlen, NULL, NULL, NULL, NULL, NULL);
 	Q_strncatz(outptr, va("\\intermission\\%i", cl.intermissionmode), outlen);
 	switch(cls.demoplayback)
 	{
@@ -1226,7 +1226,7 @@ static void QDECL Plug_UnRegisterAllModelFormats(void)
 	Mod_UnRegisterAllModelFormats(module);
 }
 #endif
-qintptr_t VARGS Plug_Mod_GetPluginModelFuncs(void *offset, quintptr_t mask, const qintptr_t *arg)
+static qintptr_t VARGS Plug_Mod_GetPluginModelFuncs(void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 #ifdef SKELETALMODELS
 	static modplugfuncs_t funcs =
@@ -1262,7 +1262,7 @@ qintptr_t VARGS Plug_Mod_GetPluginModelFuncs(void *offset, quintptr_t mask, cons
 		return 0;
 }
 
-void Plug_Client_Init(void)
+static void Plug_Client_Init(void)
 {
 	Plug_RegisterBuiltin("CL_GetStats",				Plug_CL_GetStats, PLUG_BIF_NEEDSRENDERER);
 	Plug_RegisterBuiltin("Menu_Control",			Plug_Menu_Control, PLUG_BIF_NEEDSRENDERER);
@@ -1317,7 +1317,7 @@ void Plug_Client_Init(void)
 	Plug_RegisterBuiltin("Mod_GetPluginModelFuncs",	Plug_Mod_GetPluginModelFuncs, PLUG_BIF_NEEDSRENDERER|PLUG_BIF_DLLONLY);
 }
 
-void Plug_Client_Close(plugin_t *plug)
+static void Plug_Client_Close(plugin_t *plug)
 {
 	Plug_FreePlugImages(plug);
 
@@ -1335,7 +1335,7 @@ void Plug_Client_Close(plugin_t *plug)
 	}
 }
 
-void Plug_Client_Shutdown(void)
+static void Plug_Client_Shutdown(void)
 {
 	BZ_Free(pluginimagearray);
 	pluginimagearray = NULL;

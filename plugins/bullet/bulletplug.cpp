@@ -24,6 +24,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define FTEENGINE
 #define FTEPLUGIN
 #define pCvar_Register Cvar_Get
+#define pCvar_GetNVFDG Cvar_Get2
 #define pCvar_GetFloat(x) Cvar_FindVar(x)->value
 #define pSys_Error Sys_Error
 #define Plug_Init Plug_Bullet_Init
@@ -40,7 +41,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define BZ_Malloc malloc
 #define BZ_Free free
 #define Z_Free BZ_Free
-static vec3_t vec3_origin;
+//#define vec3_origin vec3_origin_
+//static vec3_t vec3_origin;
+#define VectorCompare VectorCompare_
 static int VectorCompare (const vec3_t v1, const vec3_t v2)
 {
 	int		i;
@@ -54,6 +57,7 @@ static int VectorCompare (const vec3_t v1, const vec3_t v2)
 static rbeplugfuncs_t *rbefuncs;
 
 
+
 //============================================================================
 // physics engine support
 //============================================================================
@@ -61,8 +65,15 @@ static rbeplugfuncs_t *rbefuncs;
 #define DEG2RAD(d) (d * M_PI * (1/180.0f))
 #define RAD2DEG(d) ((d*180) / M_PI)
 
-#include <btBulletDynamicsCommon.h>
+#include "btBulletDynamicsCommon.h"
 
+//not sure where these are going. seems to be an issue only on windows.
+#ifndef max
+#define max(a,b) ((a) > (b) ? (a) : (b))
+#endif
+#ifndef min
+#define min(a,b) ((a) < (b) ? (a) : (b))
+#endif
 
 static void World_Bullet_RunCmd(world_t *world, rbecommandqueue_t *cmd);
 
@@ -76,7 +87,7 @@ void World_Bullet_Init(void)
 	physics_bullet_enable					= pCvar_GetNVFDG("physics_bullet_enable",					"1",	0, "", "Bullet");
 	physics_bullet_maxiterationsperframe	= pCvar_GetNVFDG("physics_bullet_maxiterationsperframe",	"10",	0, "FIXME: should be 1 when CCD is working properly.", "Bullet");
 	physics_bullet_framerate				= pCvar_GetNVFDG("physics_bullet_framerate",				"60",	0, "", "Bullet");
-	pr_meshpitch								= pCvar_GetNVFDG("r_meshpitch",								"-1",	0, "", "Bullet");
+	pr_meshpitch							= pCvar_GetNVFDG("r_meshpitch",								"-1",	0, "", "Bullet");
 }
 
 void World_Bullet_Shutdown(void)
@@ -87,7 +98,7 @@ typedef struct bulletcontext_s
 {
 	rigidbodyengine_t funcs;
 
-	qboolean hasextraobjs;
+	bool hasextraobjs;
 //	void *ode_space;
 //	void *ode_contactgroup;
 	// number of constraint solver iterations to use (for dWorldStepFast)
@@ -157,10 +168,10 @@ static void QDECL World_Bullet_End(world_t *world)
 
 static void QDECL World_Bullet_RemoveJointFromEntity(world_t *world, wedict_t *ed)
 {
-	ed->ode.ode_joint_type = 0;
-//	if(ed->ode.ode_joint)
-//		dJointDestroy((dJointID)ed->ode.ode_joint);
-	ed->ode.ode_joint = NULL;
+	ed->rbe.joint_type = 0;
+//	if(ed->rbe.joint)
+//		dJointDestroy((dJointID)ed->rbe.joint);
+	ed->rbe.joint.joint = NULL;
 }
 
 static void QDECL World_Bullet_RemoveFromEntity(world_t *world, wedict_t *ed)
@@ -168,27 +179,27 @@ static void QDECL World_Bullet_RemoveFromEntity(world_t *world, wedict_t *ed)
 	struct bulletcontext_s *ctx = (struct bulletcontext_s*)world->rbe;
 	btRigidBody *body;
 	btCollisionShape *geom;
-	if (!ed->ode.ode_physics)
+	if (!ed->rbe.physics)
 		return;
 
 	// entity is not physics controlled, free any physics data
-	ed->ode.ode_physics = qfalse;
+	ed->rbe.physics = qfalse;
 
-	body = (btRigidBody*)ed->ode.ode_body;
-	ed->ode.ode_body = NULL;
+	body = (btRigidBody*)ed->rbe.body.body;
+	ed->rbe.body.body = NULL;
 	if (body)
 		ctx->dworld->removeRigidBody (body);
 
-	geom = (btCollisionShape*)ed->ode.ode_geom;
-	ed->ode.ode_geom = NULL;
-	if (ed->ode.ode_geom)
+	geom = (btCollisionShape*)ed->rbe.body.geom;
+	ed->rbe.body.geom = NULL;
+	if (ed->rbe.body.geom)
 		delete geom;
 
 	//FIXME: joints
 	rbefuncs->ReleaseCollisionMesh(ed);
-	if(ed->ode.ode_massbuf)
-		BZ_Free(ed->ode.ode_massbuf);
-	ed->ode.ode_massbuf = NULL;
+	if(ed->rbe.massbuf)
+		BZ_Free(ed->rbe.massbuf);
+	ed->rbe.massbuf = NULL;
 }
 
 static void World_Bullet_Frame_BodyToEntity(world_t *world, wedict_t *ed)
@@ -201,7 +212,7 @@ static void World_Bullet_Frame_BodyToEntity(world_t *world, wedict_t *ed)
 	const float *o;
 	const float *r; // for some reason dBodyGetRotation returns a [3][4] matrix
 	const float *vel;
-	btRigidBody *body = (btRigidBody*)ed->ode.ode_body;
+	btRigidBody *body = (btRigidBody*)ed->rbe.body.body;
 	int movetype;
 	float bodymatrix[16];
 	float entitymatrix[16];
@@ -259,7 +270,7 @@ static void World_Bullet_Frame_BodyToEntity(world_t *world, wedict_t *ed)
 	VectorCopy(avel, spinvelocity);
 	trans.getBasis().getOpenGLSubMatrix(bodymatrix);
 	foo Matrix4x4_RM_FromVectors(bodymatrix, forward, left, up, origin);
-	foo Matrix4_Multiply(ed->ode.ode_offsetimatrix, bodymatrix, entitymatrix);
+	foo Matrix4_Multiply(ed->rbe.offsetimatrix, bodymatrix, entitymatrix);
 	foo Matrix3x4_RM_ToVectors(entitymatrix, forward, left, up, origin);
 
 	VectorAngles(forward, up, angles);
@@ -289,11 +300,11 @@ static void World_Bullet_Frame_BodyToEntity(world_t *world, wedict_t *ed)
 	VectorCopy(avelocity, ed->v->avelocity);
 
 	// values for BodyFromEntity to check if the qc modified anything later
-	VectorCopy(origin, ed->ode.ode_origin);
-	VectorCopy(velocity, ed->ode.ode_velocity);
-	VectorCopy(angles, ed->ode.ode_angles);
-	VectorCopy(avelocity, ed->ode.ode_avelocity);
-//	ed->ode.ode_gravity = (qboolean)dBodyGetGravityMode(body);
+	VectorCopy(origin, ed->rbe.origin);
+	VectorCopy(velocity, ed->rbe.velocity);
+	VectorCopy(angles, ed->rbe.angles);
+	VectorCopy(avelocity, ed->rbe.avelocity);
+//	ed->rbe.gravity = (qboolean)dBodyGetGravityMode(body);
 
 	World_LinkEdict(world, ed, true);
 #endif
@@ -338,7 +349,8 @@ static void World_Bullet_Frame_JointFromEntity(world_t *world, wedict_t *ed)
 	int enemy = 0, aiment = 0;
 	wedict_t *e1, *e2;
 //	vec_t CFM, ERP, FMax;
-	vec_t Stop, Vel;
+	vec_t Stop;
+//	vec_t Vel;
 	vec3_t forward;
 	movetype = (int)ed->v->movetype;
 	jointtype = (int)ed->xv->jointtype;
@@ -351,11 +363,11 @@ static void World_Bullet_Frame_JointFromEntity(world_t *world, wedict_t *ed)
 		jointtype = 0; // can't have both
 
 	e1 = (wedict_t*)PROG_TO_EDICT(world->progs, enemy);
-	b1 = (btRigidBody*)e1->ode.ode_body;
+	b1 = (btRigidBody*)e1->rbe.body.body;
 	if(ED_ISFREE(e1) || !b1)
 		enemy = 0;
 	e2 = (wedict_t*)PROG_TO_EDICT(world->progs, aiment);
-	b2 = (btRigidBody*)e2->ode.ode_body;
+	b2 = (btRigidBody*)e2->rbe.body.body;
 	if(ED_ISFREE(e2) || !b2)
 		aiment = 0;
 	// see http://www.ode.org/old_list_archives/2006-January/017614.html
@@ -363,12 +375,12 @@ static void World_Bullet_Frame_JointFromEntity(world_t *world, wedict_t *ed)
 	// note: if movedir[2] is 0, it becomes ERP = 1, CFM = 1.0 / (H * K)
 	if(movedir[0] > 0 && movedir[1] > 0)
 	{
-		float K = movedir[0];
-		float D = movedir[1];
-		float R = 2.0 * D * sqrt(K); // we assume D is premultiplied by sqrt(sprungMass)
+//		float K = movedir[0];
+//		float D = movedir[1];
+//		float R = 2.0 * D * sqrt(K); // we assume D is premultiplied by sqrt(sprungMass)
 //		CFM = 1.0 / (rbe->ode_step * K + R); // always > 0
 //		ERP = rbe->ode_step * K * CFM;
-		Vel = 0;
+//		Vel = 0;
 //		FMax = 0;
 		Stop = movedir[2];
 	}
@@ -376,7 +388,7 @@ static void World_Bullet_Frame_JointFromEntity(world_t *world, wedict_t *ed)
 	{
 //		CFM = 0;
 //		ERP = 0;
-		Vel = movedir[0];
+//		Vel = movedir[0];
 //		FMax = -movedir[1]; // TODO do we need to multiply with world.physics.ode_step?
 		Stop = movedir[2] > 0 ? movedir[2] : BT_INFINITY;
 	}
@@ -384,18 +396,18 @@ static void World_Bullet_Frame_JointFromEntity(world_t *world, wedict_t *ed)
 	{
 //		CFM = 0;
 //		ERP = 0;
-		Vel = 0;
+//		Vel = 0;
 //		FMax = 0;
 		Stop = BT_INFINITY;
 	}
-	if(jointtype == ed->ode.ode_joint_type && VectorCompare(origin, ed->ode.ode_joint_origin) && VectorCompare(velocity, ed->ode.ode_joint_velocity) && VectorCompare(ed->v->angles, ed->ode.ode_joint_angles) && enemy == ed->ode.ode_joint_enemy && aiment == ed->ode.ode_joint_aiment && VectorCompare(movedir, ed->ode.ode_joint_movedir))
+	if(jointtype == ed->rbe.joint_type && VectorCompare(origin, ed->rbe.joint_origin) && VectorCompare(velocity, ed->rbe.joint_velocity) && VectorCompare(ed->v->angles, ed->rbe.joint_angles) && enemy == ed->rbe.joint_enemy && aiment == ed->rbe.joint_aiment && VectorCompare(movedir, ed->rbe.joint_movedir))
 		return; // nothing to do
 
-	if(ed->ode.ode_joint)
+	if(ed->rbe.joint.joint)
 	{
-		j = (btTypedConstraint*)ed->ode.ode_joint;
+		j = (btTypedConstraint*)ed->rbe.joint.joint;
 		rbe->dworld->removeConstraint(j);
-		ed->ode.ode_joint = NULL;
+		ed->rbe.joint.joint = NULL;
 		delete j;
 	}
 	if (!jointtype)
@@ -407,13 +419,13 @@ static void World_Bullet_Frame_JointFromEntity(world_t *world, wedict_t *ed)
 	if(aiment)
 		b2org.setValue(e2->v->origin[0], e2->v->origin[1], e2->v->origin[2]);
 
-	ed->ode.ode_joint_type = jointtype;
-	ed->ode.ode_joint_enemy = enemy;
-	ed->ode.ode_joint_aiment = aiment;
-	VectorCopy(origin, ed->ode.ode_joint_origin);
-	VectorCopy(velocity, ed->ode.ode_joint_velocity);
-	VectorCopy(ed->v->angles, ed->ode.ode_joint_angles);
-	VectorCopy(movedir, ed->ode.ode_joint_movedir);
+	ed->rbe.joint_type = jointtype;
+	ed->rbe.joint_enemy = enemy;
+	ed->rbe.joint_aiment = aiment;
+	VectorCopy(origin, ed->rbe.joint_origin);
+	VectorCopy(velocity, ed->rbe.joint_velocity);
+	VectorCopy(ed->v->angles, ed->rbe.joint_angles);
+	VectorCopy(movedir, ed->rbe.joint_movedir);
 
 	rbefuncs->AngleVectors(ed->v->angles, forward, NULL, NULL);
 
@@ -522,7 +534,7 @@ static void World_Bullet_Frame_JointFromEntity(world_t *world, wedict_t *ed)
 		break;
 	}
 
-	ed->ode.ode_joint = (void *) j;
+	ed->rbe.joint.joint = (void *) j;
 	if (j)
 	{
 		j->setUserConstraintPtr((void *) ed);
@@ -530,76 +542,137 @@ static void World_Bullet_Frame_JointFromEntity(world_t *world, wedict_t *ed)
 	}
 }
 
-static qboolean QDECL World_Bullet_RagMatrixToBody(rbebody_t *bodyptr, float *mat)
+static void MatToTransform(const float *mat, btTransform &tr)
 {
-	btRigidBody *body;
-
-/*
-	dVector3 r[3];
-
-	r[0][0] = mat[0];
-	r[0][1] = mat[1];
-	r[0][2] = mat[2];
-	r[1][0] = mat[4];
-	r[1][1] = mat[5];
-	r[1][2] = mat[6];
-	r[2][0] = mat[8];
-	r[2][1] = mat[9];
-	r[2][2] = mat[10];
-
-	dBodySetPosition(bodyptr->ode_body, mat[3], mat[7], mat[11]);
-	dBodySetRotation(bodyptr->ode_body, r[0]);
-	dBodySetLinearVel(bodyptr->ode_body, 0, 0, 0);
-	dBodySetAngularVel(bodyptr->ode_body, 0, 0, 0);
-*/
+	tr.setBasis(btMatrix3x3(
+		mat[0], mat[1], mat[2],
+		mat[3], mat[4], mat[5],
+		mat[6], mat[7], mat[8]));
+	tr.setOrigin(btVector3(mat[9], mat[10], mat[11]));
+}
+static void MatFromTransform(float *mat, const btTransform &tr)
+{
+	const btMatrix3x3 &m = tr.getBasis();
+	const btVector3 &o = tr.getOrigin();
+	const btVector3 &r0 = m.getRow(0);
+	const btVector3 &r1 = m.getRow(1);
+	const btVector3 &r2 = m.getRow(2);
+	mat[0] = r0[0];
+	mat[1] = r0[1];
+	mat[2] = r0[2];
+	mat[3] = r1[0];
+	mat[4] = r1[1];
+	mat[5] = r1[2];
+	mat[6] = r2[0];
+	mat[7] = r2[1];
+	mat[8] = r2[2];
+	mat[9] = o[0];
+	mat[10] = o[1];
+	mat[11] = o[2];
+}
+static qboolean QDECL World_Bullet_RagMatrixToBody(rbebody_t *bodyptr, float *mat)
+{	//mat is a 4*3 matrix
+	btTransform tr;
+	btRigidBody *body = (btRigidBody*)bodyptr->body;
+	MatToTransform(mat, tr);
+	body->setWorldTransform(tr);
 	return qtrue;
 }
 static qboolean QDECL World_Bullet_RagCreateBody(world_t *world, rbebody_t *bodyptr, rbebodyinfo_t *bodyinfo, float *mat, wedict_t *ent)
 {
-/*
-	dMass mass;
+	btRigidBody *body = NULL;
+	btCollisionShape *geom = NULL;
 	float radius;
-	if (!world->ode.ode_space)
-		return false;
-	world->ode.hasodeents = true;	//I don't like this, but we need the world etc to be solid.
-	world->ode.hasextraobjs = true;
-	
+//	float length;
+	bulletcontext_t *ctx = (bulletcontext_t*)world->rbe;
+//	int axisindex;
+	ctx->hasextraobjs = true;
+
 	switch(bodyinfo->geomshape)
 	{
-	case GEOMTYPE_CAPSULE:
-		radius = (bodyinfo->dimensions[0] + bodyinfo->dimensions[1]) * 0.5;
-		bodyptr->ode_geom = (void *)dCreateCapsule(world->ode.ode_space, radius, bodyinfo->dimensions[2]);
-		dMassSetCapsuleTotal(&mass, bodyinfo->mass, 3, radius, bodyinfo->dimensions[2]);
-		//aligned along the geom's local z axis
+/*
+	case GEOMTYPE_TRIMESH:
+//		foo Matrix4x4_Identity(ed->rbe.offsetmatrix);
+		geom = NULL;
+		if (!model)
+		{
+			Con_Printf("entity %i (classname %s) has no model\n", NUM_FOR_EDICT(world->progs, (edict_t*)ed), PR_GetString(world->progs, ed->v->classname));
+			if (ed->rbe.physics)
+				World_Bullet_RemoveFromEntity(world, ed);
+			return;
+		}
+		if (!rbefuncs->GenerateCollisionMesh(world, model, ed, geomcenter))
+		{
+			if (ed->rbe.physics)
+				World_Bullet_RemoveFromEntity(world, ed);
+			return;
+		}
+
+//		foo Matrix4x4_RM_CreateTranslate(ed->rbe.offsetmatrix, geomcenter[0], geomcenter[1], geomcenter[2]);
+
+		{
+			btTriangleIndexVertexArray *tiva = new btTriangleIndexVertexArray();
+			btIndexedMesh mesh;
+			mesh.m_vertexType = PHY_FLOAT;
+			mesh.m_indexType = PHY_INTEGER;
+			mesh.m_numTriangles = ed->rbe.numtriangles;
+			mesh.m_numVertices = ed->rbe.numvertices;
+			mesh.m_triangleIndexBase = (const unsigned char*)ed->rbe.element3i;
+			mesh.m_triangleIndexStride = sizeof(*ed->rbe.element3i)*3;
+			mesh.m_vertexBase = (const unsigned char*)ed->rbe.vertex3f;
+			mesh.m_vertexStride = sizeof(*ed->rbe.vertex3f)*3;
+			tiva->addIndexedMesh(mesh);
+			geom = new btBvhTriangleMeshShape(tiva, true);
+		}
 		break;
-	case GEOMTYPE_SPHERE:
-		//radius
-		radius = (bodyinfo->dimensions[0] + bodyinfo->dimensions[1] + bodyinfo->dimensions[2]) / 3;
-		bodyptr->ode_geom = dCreateSphere(world->ode.ode_space, radius);
-		dMassSetSphereTotal(&mass, bodyinfo->mass, radius);
-		//aligned along the geom's local z axis
-		break;
-	case GEOMTYPE_CYLINDER:
-		//radius, length
-		radius = (bodyinfo->dimensions[0] + bodyinfo->dimensions[1]) * 0.5;
-		bodyptr->ode_geom = dCreateCylinder(world->ode.ode_space, radius, bodyinfo->dimensions[2]);
-		dMassSetCylinderTotal(&mass, bodyinfo->mass, 3, radius, bodyinfo->dimensions[2]);
-		//alignment is irreleevnt, thouse I suppose it might be scaled wierdly.
-		break;
+*/
 	default:
+		Con_DPrintf("World_Bullet_RagCreateBody: unsupported geomshape %i\n", bodyinfo->geomshape);
 	case GEOMTYPE_BOX:
-		//diameter
-		bodyptr->ode_geom = dCreateBox(world->ode.ode_space, bodyinfo->dimensions[0], bodyinfo->dimensions[1], bodyinfo->dimensions[2]);
-		dMassSetBoxTotal(&mass, bodyinfo->mass, bodyinfo->dimensions[0], bodyinfo->dimensions[1], bodyinfo->dimensions[2]);
-		//monkey
+		geom = new btBoxShape(btVector3(bodyinfo->dimensions[0], bodyinfo->dimensions[1], bodyinfo->dimensions[2]) * 0.5);
+		break;
+
+	case GEOMTYPE_SPHERE:
+		geom = new btSphereShape(bodyinfo->dimensions[0] * 0.5f);
+		break;
+
+	case GEOMTYPE_CAPSULE:
+//	case GEOMTYPE_CAPSULE_X:
+//	case GEOMTYPE_CAPSULE_Y:
+	case GEOMTYPE_CAPSULE_Z:
+		radius = (bodyinfo->dimensions[0]+bodyinfo->dimensions[1]) * 0.5f;
+		geom = new btCapsuleShapeZ(radius, bodyinfo->dimensions[2]);
+		break;
+
+	case GEOMTYPE_CYLINDER:
+//	case GEOMTYPE_CYLINDER_X:
+//	case GEOMTYPE_CYLINDER_Y:
+	case GEOMTYPE_CYLINDER_Z:
+		radius = (bodyinfo->dimensions[0] + bodyinfo->dimensions[1]) * 0.5;
+		geom = new btCylinderShapeZ(btVector3(radius, radius, bodyinfo->dimensions[2])*0.5);
 		break;
 	}
-	bodyptr->ode_body = dBodyCreate(world->ode.ode_world);
-	dBodySetMass(bodyptr->ode_body, &mass);
-	dGeomSetBody(bodyptr->ode_geom, bodyptr->ode_body);
-	dGeomSetData(bodyptr->ode_geom, (void*)ent);
-*/
-	return World_Bullet_RagMatrixToBody(bodyptr, mat);
+	bodyptr->geom = geom;
+
+	//now create the body too
+
+	btVector3 fallInertia(0, 0, 0);
+	((btCollisionShape*)geom)->calculateLocalInertia(bodyinfo->mass, fallInertia);
+	btRigidBody::btRigidBodyConstructionInfo fallRigidBodyCI(bodyinfo->mass, NULL, (btCollisionShape*)geom, fallInertia);
+	MatToTransform(mat, fallRigidBodyCI.m_startWorldTransform);
+	body = new btRigidBody(fallRigidBodyCI);
+	body->setUserPointer(ent);
+	bodyptr->body = (void*)body;
+
+	//motion threshhold should be speed/physicsframerate.
+	//FIXME: recalculate...
+	body->setCcdMotionThreshold((bodyinfo->dimensions[0]+bodyinfo->dimensions[1]+bodyinfo->dimensions[2])*(4/3));
+	//radius should be the body's radius
+	body->setCcdSweptSphereRadius((bodyinfo->dimensions[0]+bodyinfo->dimensions[1]+bodyinfo->dimensions[2])*(0.5/3));
+
+	ctx->dworld->addRigidBody(body, ent->xv->dimension_solid, ent->xv->dimension_hit);
+
+	return qtrue;
 }
 
 static void QDECL World_Bullet_RagMatrixFromJoint(rbejoint_t *joint, rbejointinfo_t *info, float *mat)
@@ -693,24 +766,9 @@ static void QDECL World_Bullet_RagMatrixFromJoint(rbejoint_t *joint, rbejointinf
 
 static void QDECL World_Bullet_RagMatrixFromBody(world_t *world, rbebody_t *bodyptr, float *mat)
 {
-/*
-	const dReal *o = dBodyGetPosition(bodyptr->ode_body);
-	const dReal *r = dBodyGetRotation(bodyptr->ode_body);
-	mat[0] = r[0];
-	mat[1] = r[1];
-	mat[2] = r[2];
-	mat[3] = o[0];
-
-	mat[4] = r[4];
-	mat[5] = r[5];
-	mat[6] = r[6];
-	mat[7] = o[1];
-
-	mat[8] = r[8];
-	mat[9] = r[9];
-	mat[10] = r[10];
-	mat[11] = o[2];
-*/
+//	bulletcontext_t *ctx = (bulletcontext_t*)world->rbe;
+	btRigidBody *body = (btRigidBody*)bodyptr->body;
+	MatFromTransform(mat, body->getCenterOfMassTransform());
 }
 static void QDECL World_Bullet_RagEnableJoint(rbejoint_t *joint, qboolean enabled)
 {
@@ -727,22 +785,22 @@ static void QDECL World_Bullet_RagCreateJoint(world_t *world, rbejoint_t *joint,
 	switch(info->type)
 	{
 		case JOINTTYPE_POINT:
-			joint->ode_joint = dJointCreateBall(world->ode.ode_world, 0);
+			joint->ode_joint = dJointCreateBall(world->rbe.world, 0);
 			break;
 		case JOINTTYPE_HINGE:
-			joint->ode_joint = dJointCreateHinge(world->ode.ode_world, 0);
+			joint->ode_joint = dJointCreateHinge(world->rbe.world, 0);
 			break;
 		case JOINTTYPE_SLIDER:
-			joint->ode_joint = dJointCreateSlider(world->ode.ode_world, 0);
+			joint->ode_joint = dJointCreateSlider(world->rbe.world, 0);
 			break;
 		case JOINTTYPE_UNIVERSAL:
-			joint->ode_joint = dJointCreateUniversal(world->ode.ode_world, 0);
+			joint->ode_joint = dJointCreateUniversal(world->rbe.world, 0);
 			break;
 		case JOINTTYPE_HINGE2:
-			joint->ode_joint = dJointCreateHinge2(world->ode.ode_world, 0);
+			joint->ode_joint = dJointCreateHinge2(world->rbe.world, 0);
 			break;
 		case JOINTTYPE_FIXED:
-			joint->ode_joint = dJointCreateFixed(world->ode.ode_world, 0);
+			joint->ode_joint = dJointCreateFixed(world->rbe.world, 0);
 			break;
 		default:
 			joint->ode_joint = NULL;
@@ -822,14 +880,20 @@ static void QDECL World_Bullet_RagCreateJoint(world_t *world, rbejoint_t *joint,
 
 static void QDECL World_Bullet_RagDestroyBody(world_t *world, rbebody_t *bodyptr)
 {
-/*
-	if (bodyptr->ode_geom)
-		dGeomDestroy(bodyptr->ode_geom);
-	bodyptr->ode_geom = NULL;
-	if (bodyptr->ode_body)
-		dBodyDestroy(bodyptr->ode_body);
-	bodyptr->ode_body = NULL;
-*/
+	bulletcontext_t *ctx = (bulletcontext_t*)world->rbe;
+	btRigidBody *body = (btRigidBody*)bodyptr->body;
+	btCollisionShape *geom = (btCollisionShape*)bodyptr->geom;
+
+	bodyptr->body = NULL;
+	bodyptr->geom = NULL;
+
+	if (body)
+	{
+		ctx->dworld->removeRigidBody(body);
+		delete body;
+	}
+	if (geom)
+		delete geom;
 }
 
 static void QDECL World_Bullet_RagDestroyJoint(world_t *world, rbejoint_t *joint)
@@ -858,8 +922,9 @@ public:
 		btVector3 org;
 		rbefuncs->AngleVectors(edict->v->angles, axis[0], axis[1], axis[2]);
 		VectorNegate(axis[1], axis[1]);
-		VectorAvg(edict->ode.ode_mins, edict->ode.ode_maxs, offset);
+		VectorAvg(edict->rbe.mins, edict->rbe.maxs, offset);
 		VectorMA(edict->v->origin, offset[0]*1, axis[0], org);
+		org[3] = 0;//for sse.
 		VectorMA(org, offset[1]*1, axis[1], org);
 		VectorMA(org, offset[2]*1, axis[2], org);
 
@@ -894,30 +959,22 @@ public:
 		VectorCopy(worldTrans.getBasis().getColumn(0), fwd);
 		VectorCopy(worldTrans.getBasis().getColumn(1), left);
 		VectorCopy(worldTrans.getBasis().getColumn(2), up);
-		VectorAvg(edict->ode.ode_mins, edict->ode.ode_maxs, offset);
+		VectorAvg(edict->rbe.mins, edict->rbe.maxs, offset);
 		VectorMA(pos, offset[0]*-1, fwd, pos);
 		VectorMA(pos, offset[1]*-1, left, pos);
 		VectorMA(pos, offset[2]*-1, up, edict->v->origin);
 
 		rbefuncs->VectorAngles(fwd, up, edict->v->angles, (qboolean)NegativeMeshPitch(world, edict));
 
-		const btVector3 &vel = ((btRigidBody*)edict->ode.ode_body)->getLinearVelocity();
+		const btVector3 &vel = ((btRigidBody*)edict->rbe.body.body)->getLinearVelocity();
 		VectorCopy(vel.m_floats, edict->v->velocity);
 
 		//so it doesn't get rebuilt
-		VectorCopy(edict->v->origin, edict->ode.ode_origin);
-		VectorCopy(edict->v->angles, edict->ode.ode_angles);
-		VectorCopy(edict->v->velocity, edict->ode.ode_velocity);
+		VectorCopy(edict->v->origin, edict->rbe.origin);
+		VectorCopy(edict->v->angles, edict->rbe.angles);
+		VectorCopy(edict->v->velocity, edict->rbe.velocity);
 
-//		World_LinkEdict(world, edict, false);
-
-//        if(mSceneNode == nullptr)
-//            return; // silently return before we set a node
-
-//        btQuaternion rot = worldTrans.getRotation();
-//        mSceneNode ->setOrientation(rot.w(), rot.x(), rot.y(), rot.z());
-//        btVector3 pos = worldTrans.getOrigin();
-//        mSceneNode ->setPosition(pos.x(), pos.y(), pos.z());
+		//FIXME: relink the ent into the areagrid
 	}
 };
 
@@ -925,9 +982,9 @@ static void World_Bullet_Frame_BodyFromEntity(world_t *world, wedict_t *ed)
 {
 	bulletcontext_t *ctx = (bulletcontext_t*)world->rbe;
 	btRigidBody *body = NULL;
-	btScalar mass;
+//	btScalar mass;
 	float test;
-	void *dataID;
+//	void *dataID;
 	model_t *model;
 	int axisindex;
 	int modelindex = 0;
@@ -947,13 +1004,13 @@ static void World_Bullet_Frame_BodyFromEntity(world_t *world, wedict_t *ed)
 	vec3_t spinvelocity;
 	vec3_t up;
 	vec3_t velocity;
-	vec_t f;
+//	vec_t f;
 	vec_t length;
 	vec_t massval = 1.0f;
 //	vec_t movelimit;
 	vec_t radius;
 	vec_t scale;
-	vec_t spinlimit;
+//	vec_t spinlimit;
 	qboolean gravity;
 
 	geomtype = (int)ed->xv->geomtype;
@@ -1020,7 +1077,7 @@ static void World_Bullet_Frame_BodyFromEntity(world_t *world, wedict_t *ed)
 		break;
 	default:
 //	case GEOMTYPE_NONE:
-		if (ed->ode.ode_physics)
+		if (ed->rbe.physics)
 			World_Bullet_RemoveFromEntity(world, ed);
 		return;
 	}
@@ -1029,70 +1086,70 @@ static void World_Bullet_Frame_BodyFromEntity(world_t *world, wedict_t *ed)
 	if (DotProduct(geomsize,geomsize) == 0)
 	{
 		// we don't allow point-size physics objects...
-		if (ed->ode.ode_physics)
+		if (ed->rbe.physics)
 			World_Bullet_RemoveFromEntity(world, ed);
 		return;
 	}
 
 	// check if we need to create or replace the geom
-	if (!ed->ode.ode_physics
-	 || !VectorCompare(ed->ode.ode_mins, entmins)
-	 || !VectorCompare(ed->ode.ode_maxs, entmaxs)
-	 || ed->ode.ode_modelindex != modelindex)
+	if (!ed->rbe.physics
+	 || !VectorCompare(ed->rbe.mins, entmins)
+	 || !VectorCompare(ed->rbe.maxs, entmaxs)
+	 || ed->rbe.modelindex != modelindex)
 	{
 		btCollisionShape *geom;
 
 		modified = qtrue;
 		World_Bullet_RemoveFromEntity(world, ed);
-		ed->ode.ode_physics = qtrue;
-		VectorCopy(entmins, ed->ode.ode_mins);
-		VectorCopy(entmaxs, ed->ode.ode_maxs);
-		ed->ode.ode_modelindex = modelindex;
+		ed->rbe.physics = qtrue;
+		VectorCopy(entmins, ed->rbe.mins);
+		VectorCopy(entmaxs, ed->rbe.maxs);
+		ed->rbe.modelindex = modelindex;
 		VectorAvg(entmins, entmaxs, geomcenter);
-		ed->ode.ode_movelimit = min(geomsize[0], min(geomsize[1], geomsize[2]));
+		ed->rbe.movelimit = min(geomsize[0], min(geomsize[1], geomsize[2]));
 
-/*		memset(ed->ode.ode_offsetmatrix, 0, sizeof(ed->ode.ode_offsetmatrix));
-		ed->ode.ode_offsetmatrix[0] = 1;
-		ed->ode.ode_offsetmatrix[5] = 1;
-		ed->ode.ode_offsetmatrix[10] = 1;
-		ed->ode.ode_offsetmatrix[3] = -geomcenter[0];
-		ed->ode.ode_offsetmatrix[7] = -geomcenter[1];
-		ed->ode.ode_offsetmatrix[11] = -geomcenter[2];
+/*		memset(ed->rbe.offsetmatrix, 0, sizeof(ed->rbe.offsetmatrix));
+		ed->rbe.offsetmatrix[0] = 1;
+		ed->rbe.offsetmatrix[5] = 1;
+		ed->rbe.offsetmatrix[10] = 1;
+		ed->rbe.offsetmatrix[3] = -geomcenter[0];
+		ed->rbe.offsetmatrix[7] = -geomcenter[1];
+		ed->rbe.offsetmatrix[11] = -geomcenter[2];
 */
-		ed->ode.ode_mass = massval;
+		ed->rbe.mass = massval;
 
 		switch(geomtype)
 		{
 		case GEOMTYPE_TRIMESH:
-//			foo Matrix4x4_Identity(ed->ode.ode_offsetmatrix);
+//			foo Matrix4x4_Identity(ed->rbe.offsetmatrix);
 			geom = NULL;
 			if (!model)
 			{
 				Con_Printf("entity %i (classname %s) has no model\n", NUM_FOR_EDICT(world->progs, (edict_t*)ed), PR_GetString(world->progs, ed->v->classname));
-				if (ed->ode.ode_physics)
+				if (ed->rbe.physics)
 					World_Bullet_RemoveFromEntity(world, ed);
 				return;
 			}
 			if (!rbefuncs->GenerateCollisionMesh(world, model, ed, geomcenter))
 			{
-				if (ed->ode.ode_physics)
+				if (ed->rbe.physics)
 					World_Bullet_RemoveFromEntity(world, ed);
 				return;
 			}
 
-//			foo Matrix4x4_RM_CreateTranslate(ed->ode.ode_offsetmatrix, geomcenter[0], geomcenter[1], geomcenter[2]);
+//			foo Matrix4x4_RM_CreateTranslate(ed->rbe.offsetmatrix, geomcenter[0], geomcenter[1], geomcenter[2]);
 
 			{
 				btTriangleIndexVertexArray *tiva = new btTriangleIndexVertexArray();
 				btIndexedMesh mesh;
 				mesh.m_vertexType = PHY_FLOAT;
 				mesh.m_indexType = PHY_INTEGER;
-				mesh.m_numTriangles = ed->ode.ode_numtriangles;
-				mesh.m_numVertices = ed->ode.ode_numvertices;
-				mesh.m_triangleIndexBase = (const unsigned char*)ed->ode.ode_element3i;
-				mesh.m_triangleIndexStride = sizeof(*ed->ode.ode_element3i)*3;
-				mesh.m_vertexBase = (const unsigned char*)ed->ode.ode_vertex3f;
-				mesh.m_vertexStride = sizeof(*ed->ode.ode_vertex3f)*3;
+				mesh.m_numTriangles = ed->rbe.numtriangles;
+				mesh.m_numVertices = ed->rbe.numvertices;
+				mesh.m_triangleIndexBase = (const unsigned char*)ed->rbe.element3i;
+				mesh.m_triangleIndexStride = sizeof(*ed->rbe.element3i)*3;
+				mesh.m_vertexBase = (const unsigned char*)ed->rbe.vertex3f;
+				mesh.m_vertexStride = sizeof(*ed->rbe.vertex3f)*3;
 				tiva->addIndexedMesh(mesh);
 				geom = new btBvhTriangleMeshShape(tiva, true);
 			}
@@ -1166,15 +1223,15 @@ static void World_Bullet_Frame_BodyFromEntity(world_t *world, wedict_t *ed)
 
 		default:
 //			Con_Printf("World_Bullet_BodyFromEntity: unrecognized solid value %i was accepted by filter\n", solid);
-			if (ed->ode.ode_physics)
+			if (ed->rbe.physics)
 				World_Bullet_RemoveFromEntity(world, ed);
 			return;
 		}
-//		Matrix3x4_InvertTo4x4_Simple(ed->ode.ode_offsetmatrix, ed->ode.ode_offsetimatrix);
-//		ed->ode.ode_massbuf = BZ_Malloc(sizeof(dMass));
-//		memcpy(ed->ode.ode_massbuf, &mass, sizeof(dMass));
+//		Matrix3x4_InvertTo4x4_Simple(ed->rbe.offsetmatrix, ed->rbe.offsetimatrix);
+//		ed->rbe.massbuf = BZ_Malloc(sizeof(dMass));
+//		memcpy(ed->rbe.massbuf, &mass, sizeof(dMass));
 
-		ed->ode.ode_geom = (void *)geom;
+		ed->rbe.body.geom = (void *)geom;
 	}
 
 	//non-moving objects need to be static objects (and thus need 0 mass)
@@ -1182,40 +1239,41 @@ static void World_Bullet_Frame_BodyFromEntity(world_t *world, wedict_t *ed)
 		massval = 0;
 
 	//if the mass changes, we'll need to create a new body (but not the shape, so invalidate the current one)
-	if (ed->ode.ode_mass != massval)
+	if (ed->rbe.mass != massval)
 	{
-		ed->ode.ode_mass = massval;
-		body = (btRigidBody*)ed->ode.ode_body;
+		ed->rbe.mass = massval;
+		body = (btRigidBody*)ed->rbe.body.body;
 		if (body)
 			ctx->dworld->removeRigidBody(body);
-		ed->ode.ode_body = NULL;
+		ed->rbe.body.body = NULL;
 	}
 
-//	if(ed->ode.ode_geom)
-//		dGeomSetData(ed->ode.ode_geom, (void*)ed);
-	if (movetype == MOVETYPE_PHYSICS && ed->ode.ode_mass)
+//	if(ed->rbe.body.geom)
+//		dGeomSetData(ed->rbe.body.geom, (void*)ed);
+	if (movetype == MOVETYPE_PHYSICS && ed->rbe.mass)
 	{
-		if (ed->ode.ode_body == NULL)
+		if (ed->rbe.body.body == NULL)
 		{
-//			ed->ode.ode_body = (void *)(body = dBodyCreate(world->ode.ode_world));
-//			dGeomSetBody(ed->ode.ode_geom, body);
+//			ed->rbe.body.body = (void *)(body = dBodyCreate(world->rbe.world));
+//			dGeomSetBody(ed->rbe.body.geom, body);
 //			dBodySetData(body, (void*)ed);
-//			dBodySetMass(body, (dMass *) ed->ode.ode_massbuf);
+//			dBodySetMass(body, (dMass *) ed->rbe.massbuf);
 
 			btVector3 fallInertia(0, 0, 0);
-			((btCollisionShape*)ed->ode.ode_geom)->calculateLocalInertia(ed->ode.ode_mass, fallInertia);
-			btRigidBody::btRigidBodyConstructionInfo fallRigidBodyCI(ed->ode.ode_mass, new QCMotionState(ed,world), (btCollisionShape*)ed->ode.ode_geom, fallInertia);
+			((btCollisionShape*)ed->rbe.body.geom)->calculateLocalInertia(ed->rbe.mass, fallInertia);
+			btRigidBody::btRigidBodyConstructionInfo fallRigidBodyCI(ed->rbe.mass, new QCMotionState(ed,world), (btCollisionShape*)ed->rbe.body.geom, fallInertia);
 			body = new btRigidBody(fallRigidBodyCI);
 			body->setUserPointer(ed);
 //			btTransform trans;
-//			trans.setFromOpenGLMatrix(ed->ode.ode_offsetmatrix);
+//			trans.setFromOpenGLMatrix(ed->rbe.offsetmatrix);
 //			body->setCenterOfMassTransform(trans);
-			ed->ode.ode_body = (void*)body;
+			ed->rbe.body.body = (void*)body;
 
 			//motion threshhold should be speed/physicsframerate.
+			//Threshhold enables CCD when the object moves faster than X
 			//FIXME: recalculate...
 			body->setCcdMotionThreshold((geomsize[0]+geomsize[1]+geomsize[2])*(4/3));
-			//radius should be the body's radius
+			//radius should be the body's radius, or smaller.
 			body->setCcdSweptSphereRadius((geomsize[0]+geomsize[1]+geomsize[2])*(0.5/3));
 
 			ctx->dworld->addRigidBody(body, ed->xv->dimension_solid, ed->xv->dimension_hit);
@@ -1225,16 +1283,16 @@ static void World_Bullet_Frame_BodyFromEntity(world_t *world, wedict_t *ed)
 	}
 	else
 	{
-		if (ed->ode.ode_body == NULL)
+		if (ed->rbe.body.body == NULL)
 		{
-			btRigidBody::btRigidBodyConstructionInfo rbci(ed->ode.ode_mass, new QCMotionState(ed,world), (btCollisionShape*)ed->ode.ode_geom, btVector3(0, 0, 0));
+			btRigidBody::btRigidBodyConstructionInfo rbci(ed->rbe.mass, new QCMotionState(ed,world), (btCollisionShape*)ed->rbe.body.geom, btVector3(0, 0, 0));
 			body = new btRigidBody(rbci);
 			body->setUserPointer(ed);
 //			btTransform trans;
-//			trans.setFromOpenGLMatrix(ed->ode.ode_offsetmatrix);
+//			trans.setFromOpenGLMatrix(ed->rbe.offsetmatrix);
 //			body->setCenterOfMassTransform(trans);
-			ed->ode.ode_body = (void*)body;
-			if (ed->ode.ode_mass)
+			ed->rbe.body.body = (void*)body;
+			if (ed->rbe.mass)
 				body->setCollisionFlags(body->getCollisionFlags() | btCollisionObject::CF_KINEMATIC_OBJECT);
 			else
 				body->setCollisionFlags(body->getCollisionFlags() | btCollisionObject::CF_STATIC_OBJECT);
@@ -1244,7 +1302,7 @@ static void World_Bullet_Frame_BodyFromEntity(world_t *world, wedict_t *ed)
 		}
 	}
 
-	body = (btRigidBody*)ed->ode.ode_body;
+	body = (btRigidBody*)ed->rbe.body.body;
 
 	// get current data from entity
 	gravity = qtrue;
@@ -1324,44 +1382,44 @@ static void World_Bullet_Frame_BodyFromEntity(world_t *world, wedict_t *ed)
 
 	// check if the qc edited any position data
 	if (
-		0//!VectorCompare(origin, ed->ode.ode_origin)
-	 || !VectorCompare(velocity, ed->ode.ode_velocity)
-	 //|| !VectorCompare(angles, ed->ode.ode_angles)
-	 || !VectorCompare(avelocity, ed->ode.ode_avelocity)
-	 || gravity != ed->ode.ode_gravity)
+		0//!VectorCompare(origin, ed->rbe.origin)
+	 || !VectorCompare(velocity, ed->rbe.velocity)
+	 //|| !VectorCompare(angles, ed->rbe.angles)
+	 || !VectorCompare(avelocity, ed->rbe.avelocity)
+	 || gravity != ed->rbe.gravity)
 		modified = qtrue;
 
 	// store the qc values into the physics engine
-	body = (btRigidBody*)ed->ode.ode_body;
+	body = (btRigidBody*)ed->rbe.body.body;
 	if (modified && body)
 	{
 //		dVector3 r[3];
-		float entitymatrix[16];
-		float bodymatrix[16];
+//		float entitymatrix[16];
+//		float bodymatrix[16];
 
 #if 0
 		Con_Printf("entity %i got changed by QC\n", (int) (ed - prog->edicts));
-		if(!VectorCompare(origin, ed->ode.ode_origin))
-			Con_Printf("  origin: %f %f %f -> %f %f %f\n", ed->ode.ode_origin[0], ed->ode.ode_origin[1], ed->ode.ode_origin[2], origin[0], origin[1], origin[2]);
-		if(!VectorCompare(velocity, ed->ode.ode_velocity))
-			Con_Printf("  velocity: %f %f %f -> %f %f %f\n", ed->ode.ode_velocity[0], ed->ode.ode_velocity[1], ed->ode.ode_velocity[2], velocity[0], velocity[1], velocity[2]);
-		if(!VectorCompare(angles, ed->ode.ode_angles))
-			Con_Printf("  angles: %f %f %f -> %f %f %f\n", ed->ode.ode_angles[0], ed->ode.ode_angles[1], ed->ode.ode_angles[2], angles[0], angles[1], angles[2]);
-		if(!VectorCompare(avelocity, ed->ode.ode_avelocity))
-			Con_Printf("  avelocity: %f %f %f -> %f %f %f\n", ed->ode.ode_avelocity[0], ed->ode.ode_avelocity[1], ed->ode.ode_avelocity[2], avelocity[0], avelocity[1], avelocity[2]);
-		if(gravity != ed->ode.ode_gravity)
+		if(!VectorCompare(origin, ed->rbe.origin))
+			Con_Printf("  origin: %f %f %f -> %f %f %f\n", ed->rbe.origin[0], ed->rbe.origin[1], ed->rbe.origin[2], origin[0], origin[1], origin[2]);
+		if(!VectorCompare(velocity, ed->rbe.velocity))
+			Con_Printf("  velocity: %f %f %f -> %f %f %f\n", ed->rbe.velocity[0], ed->rbe.velocity[1], ed->rbe.velocity[2], velocity[0], velocity[1], velocity[2]);
+		if(!VectorCompare(angles, ed->rbe.angles))
+			Con_Printf("  angles: %f %f %f -> %f %f %f\n", ed->rbe.angles[0], ed->rbe.angles[1], ed->rbe.angles[2], angles[0], angles[1], angles[2]);
+		if(!VectorCompare(avelocity, ed->rbe.avelocity))
+			Con_Printf("  avelocity: %f %f %f -> %f %f %f\n", ed->rbe.avelocity[0], ed->rbe.avelocity[1], ed->rbe.avelocity[2], avelocity[0], avelocity[1], avelocity[2]);
+		if(gravity != ed->rbe.gravity)
 			Con_Printf("  gravity: %i -> %i\n", ed->ide.ode_gravity, gravity);
 #endif
 
 		// values for BodyFromEntity to check if the qc modified anything later
-		VectorCopy(origin, ed->ode.ode_origin);
-		VectorCopy(velocity, ed->ode.ode_velocity);
-		VectorCopy(angles, ed->ode.ode_angles);
-		VectorCopy(avelocity, ed->ode.ode_avelocity);
-		ed->ode.ode_gravity = gravity;
+		VectorCopy(origin, ed->rbe.origin);
+		VectorCopy(velocity, ed->rbe.velocity);
+		VectorCopy(angles, ed->rbe.angles);
+		VectorCopy(avelocity, ed->rbe.avelocity);
+		ed->rbe.gravity = gravity;
 
 //		foo Matrix4x4_RM_FromVectors(entitymatrix, forward, left, up, origin);
-//		foo Matrix4_Multiply(ed->ode.ode_offsetmatrix, entitymatrix, bodymatrix);
+//		foo Matrix4_Multiply(ed->rbe.offsetmatrix, entitymatrix, bodymatrix);
 //		foo Matrix3x4_RM_ToVectors(bodymatrix, forward, left, up, origin);
 
 //		r[0][0] = forward[0];
@@ -1391,7 +1449,7 @@ static void World_Bullet_Frame_BodyFromEntity(world_t *world, wedict_t *ed)
 		// limit movement speed to prevent missed collisions at high speed
 		btVector3 ovelocity = body->getLinearVelocity();
 		btVector3 ospinvelocity = body->getAngularVelocity();
-		movelimit = ed->ode.ode_movelimit * world->ode.ode_movelimit;
+		movelimit = ed->rbe.movelimit * world->rbe.movelimit;
 		test = DotProduct(ovelocity,ovelocity);
 		if (test > movelimit*movelimit)
 		{
@@ -1464,7 +1522,7 @@ static void VARGS nearCallback (void *data, dGeomID o1, dGeomID o2)
 		//ragdolls don't make contact with the bbox of the doll entity
 		//the origional entity should probably not be solid anyway.
 		//these bodies should probably not collide against bboxes of other entities with ragdolls either, but meh.
-		if (ed1->ode.ode_body == b1 || ed2->ode.ode_body == b2)
+		if (ed1->rbe.body.body == b1 || ed2->rbe.body == b2)
 			return;
 	}
 	if(!ed1 || ed1->isfree)
@@ -1528,7 +1586,7 @@ static void VARGS nearCallback (void *data, dGeomID o1, dGeomID o2)
 			bouncefactor1 = bouncefactor2;
 		}
 	}
-	dWorldGetGravity(world->ode.ode_world, grav);
+	dWorldGetGravity(world->rbe.world, grav);
 	bouncestop1 *= fabs(grav[2]);
 
 	erp = (DotProduct(ed1->v->velocity, ed1->v->velocity) > DotProduct(ed2->v->velocity, ed2->v->velocity)) ? ed1->xv->erp : ed2->xv->erp;
@@ -1550,7 +1608,7 @@ static void VARGS nearCallback (void *data, dGeomID o1, dGeomID o2)
 		contact[i].surface.soft_cfm = physics_bullet_contact_cfm.value;
 		contact[i].surface.bounce = bouncefactor1;
 		contact[i].surface.bounce_vel = bouncestop1;
-		c = dJointCreateContact(world->ode.ode_world, world->ode.ode_contactgroup, contact + i);
+		c = dJointCreateContact(world->rbe.world, world->rbe.contactgroup, contact + i);
 		dJointAttach(c, b1, b2);
 	}
 }
@@ -1561,12 +1619,13 @@ static void QDECL World_Bullet_Frame(world_t *world, double frametime, double gr
 	struct bulletcontext_s *ctx = (struct bulletcontext_s*)world->rbe;
 	if (world->rbe_hasphysicsents || ctx->hasextraobjs)
 	{
-		int i;
+		int iters;
+		unsigned int i;
 		wedict_t *ed;
 
-//		world->ode.ode_iterations = bound(1, physics_bullet_iterationsperframe.ival, 1000);
-//		world->ode.ode_step = frametime / world->ode.ode_iterations;
-//		world->ode.ode_movelimit = physics_bullet_movelimit.value / world->ode.ode_step;
+//		world->rbe.iterations = bound(1, physics_bullet_iterationsperframe.ival, 1000);
+//		world->rbe.step = frametime / world->rbe.iterations;
+//		world->rbe.movelimit = physics_bullet_movelimit.value / world->rbe.step;
 
 
 		// copy physics properties from entities to physics engine
@@ -1595,25 +1654,28 @@ static void QDECL World_Bullet_Frame(world_t *world, double frametime, double gr
 
 		ctx->dworld->setGravity(btVector3(0, 0, -gravity));
 
-		ctx->dworld->stepSimulation(frametime, max(0, physics_bullet_maxiterationsperframe->value), 1/bound(1, physics_bullet_framerate->value, 500));
+		iters=physics_bullet_maxiterationsperframe->value;
+		if (iters < 0)
+			iters = 0;
+		ctx->dworld->stepSimulation(frametime, iters, 1/bound(1, physics_bullet_framerate->value, 500));
 
 		// set the tolerance for closeness of objects
-//		dWorldSetContactSurfaceLayer(world->ode.ode_world, max(0, physics_bullet_contactsurfacelayer.value));
+//		dWorldSetContactSurfaceLayer(world->rbe.world, max(0, physics_bullet_contactsurfacelayer.value));
 
 		// run collisions for the current world state, creating JointGroup
-//		dSpaceCollide(world->ode.ode_space, (void *)world, nearCallback);
+//		dSpaceCollide(world->rbe.space, (void *)world, nearCallback);
 
 		// run physics (move objects, calculate new velocities)
 //		if (physics_bullet_worldquickstep.ival)
 //		{
-//			dWorldSetQuickStepNumIterations(world->ode.ode_world, bound(1, physics_bullet_worldquickstep_iterations.ival, 200));
-//			dWorldQuickStep(world->ode.ode_world, world->ode.ode_step);
+//			dWorldSetQuickStepNumIterations(world->rbe.world, bound(1, physics_bullet_worldquickstep_iterations.ival, 200));
+//			dWorldQuickStep(world->rbe.world, world->rbe.step);
 //		}
 //		else
-//			dWorldStep(world->ode.ode_world, world->ode.ode_step);
+//			dWorldStep(world->rbe.world, world->rbe.step);
 
 		// clear the JointGroup now that we're done with it
-//		dJointGroupEmpty(world->ode.ode_contactgroup);
+//		dJointGroupEmpty(world->rbe.contactgroup);
 
 		if (world->rbe_hasphysicsents)
 		{
@@ -1630,7 +1692,7 @@ static void QDECL World_Bullet_Frame(world_t *world, double frametime, double gr
 
 static void World_Bullet_RunCmd(world_t *world, rbecommandqueue_t *cmd)
 {
-	btRigidBody *body = (btRigidBody*)(cmd->edict->ode.ode_body);
+	btRigidBody *body = (btRigidBody*)(cmd->edict->rbe.body.body);
 	switch(cmd->command)
 	{
 	case RBECMD_ENABLE:
@@ -1644,12 +1706,15 @@ static void World_Bullet_RunCmd(world_t *world, rbecommandqueue_t *cmd)
 	case RBECMD_FORCE:
 		if (body)
 		{
+			btVector3 relativepos;
+			const btVector3 &center = body->getCenterOfMassPosition();
+			VectorSubtract(cmd->v2, center, relativepos);
 			body->setActivationState(1);
-			body->applyForce(btVector3(cmd->v1[0], cmd->v1[1], cmd->v1[2]), btVector3(cmd->v2[0], cmd->v2[1], cmd->v2[2]));
+			body->applyImpulse(btVector3(cmd->v1[0], cmd->v1[1], cmd->v1[2]), relativepos);
 		}
 		break;
 	case RBECMD_TORQUE:
-		if (cmd->edict->ode.ode_body)
+		if (cmd->edict->rbe.body.body)
 		{
 			body->setActivationState(1);
 			body->applyTorque(btVector3(cmd->v1[0], cmd->v1[1], cmd->v1[2]));
@@ -1675,23 +1740,47 @@ static void QDECL World_Bullet_PushCommand(world_t *world, rbecommandqueue_t *va
 		ctx->cmdqueuetail = ctx->cmdqueuehead = cmd;
 }
 
-static void QDECL World_Bullet_TraceEntity(world_t *world, vec3_t start, vec3_t end, wedict_t *ed)
+static void QDECL World_Bullet_TraceEntity(world_t *world, wedict_t *ed, vec3_t start, vec3_t end, trace_t *trace)
 {
 	struct bulletcontext_s *ctx = (struct bulletcontext_s*)world->rbe;
-	btCollisionShape *shape = (btCollisionShape*)ed->ode.ode_geom;
+	btCollisionShape *shape = (btCollisionShape*)ed->rbe.body.geom;
 
+//btCollisionAlgorithm
 	class myConvexResultCallback : public btCollisionWorld::ConvexResultCallback
 	{
 	public:
+		void *m_impactent;
+		btVector3 m_impactpos;
+		btVector3 m_impactnorm;
 		virtual	btScalar	addSingleResult(btCollisionWorld::LocalConvexResult& convexResult,bool normalInWorldSpace)
 		{
+			if (m_closestHitFraction > convexResult.m_hitFraction)
+			{
+				m_closestHitFraction = convexResult.m_hitFraction;
+				m_impactpos = convexResult.m_hitPointLocal;
+				m_impactnorm = convexResult.m_hitNormalLocal;
+				m_impactent = convexResult.m_hitCollisionObject->getUserPointer();
+			}
 			return 0;
 		}
 	} result;
+	result.m_impactent = NULL;
+	result.m_closestHitFraction = trace->fraction;
 
 	btTransform from(btMatrix3x3(1, 0, 0, 0, 1, 0, 0, 0, 1), btVector3(start[0], start[1], start[2]));
 	btTransform to(btMatrix3x3(1, 0, 0, 0, 1, 0, 0, 0, 1), btVector3(end[0], end[1], end[2]));
 	ctx->dworld->convexSweepTest((btConvexShape*)shape, from, to, result, 1);
+
+	if (result.m_impactent)
+	{
+		memset(trace, 0, sizeof(*trace));
+		trace->fraction = trace->truefraction = result.m_closestHitFraction;
+		VectorInterpolate(start, result.m_closestHitFraction, end, trace->endpos);
+//		VectorCopy(result.m_impactpos, trace->endpos);
+		VectorCopy(result.m_impactnorm, trace->plane.normal);
+		trace->ent = result.m_impactent;
+		trace->startsolid = qfalse; //FIXME: we don't really know
+	}
 }
 
 static void QDECL World_Bullet_Start(world_t *world)
@@ -1719,6 +1808,7 @@ static void QDECL World_Bullet_Start(world_t *world)
 	ctx->funcs.RagDestroyJoint			= World_Bullet_RagDestroyJoint;
 	ctx->funcs.RunFrame					= World_Bullet_Frame;
 	ctx->funcs.PushCommand				= World_Bullet_PushCommand;
+	ctx->funcs.Trace					= World_Bullet_TraceEntity;
 	world->rbe = &ctx->funcs;
 
 
@@ -1737,34 +1827,34 @@ static void QDECL World_Bullet_Start(world_t *world)
 
 /*
 	if(physics_bullet_world_erp.value >= 0)
-		dWorldSetERP(world->ode.ode_world, physics_bullet_world_erp.value);
+		dWorldSetERP(world->rbe.world, physics_bullet_world_erp.value);
 	if(physics_bullet_world_cfm.value >= 0)
-		dWorldSetCFM(world->ode.ode_world, physics_bullet_world_cfm.value);
+		dWorldSetCFM(world->rbe.world, physics_bullet_world_cfm.value);
 	if (physics_bullet_world_damping.ival)
 	{
-		dWorldSetLinearDamping(world->ode.ode_world, (physics_bullet_world_damping_linear.value >= 0) ? (physics_bullet_world_damping_linear.value * physics_bullet_world_damping.value) : 0);
-		dWorldSetLinearDampingThreshold(world->ode.ode_world, (physics_bullet_world_damping_linear_threshold.value >= 0) ? (physics_bullet_world_damping_linear_threshold.value * physics_bullet_world_damping.value) : 0);
-		dWorldSetAngularDamping(world->ode.ode_world, (physics_bullet_world_damping_angular.value >= 0) ? (physics_bullet_world_damping_angular.value * physics_bullet_world_damping.value) : 0);
-		dWorldSetAngularDampingThreshold(world->ode.ode_world, (physics_bullet_world_damping_angular_threshold.value >= 0) ? (physics_bullet_world_damping_angular_threshold.value * physics_bullet_world_damping.value) : 0);
+		dWorldSetLinearDamping(world->rbe.world, (physics_bullet_world_damping_linear.value >= 0) ? (physics_bullet_world_damping_linear.value * physics_bullet_world_damping.value) : 0);
+		dWorldSetLinearDampingThreshold(world->rbe.world, (physics_bullet_world_damping_linear_threshold.value >= 0) ? (physics_bullet_world_damping_linear_threshold.value * physics_bullet_world_damping.value) : 0);
+		dWorldSetAngularDamping(world->rbe.world, (physics_bullet_world_damping_angular.value >= 0) ? (physics_bullet_world_damping_angular.value * physics_bullet_world_damping.value) : 0);
+		dWorldSetAngularDampingThreshold(world->rbe.world, (physics_bullet_world_damping_angular_threshold.value >= 0) ? (physics_bullet_world_damping_angular_threshold.value * physics_bullet_world_damping.value) : 0);
 	}
 	else
 	{
-		dWorldSetLinearDamping(world->ode.ode_world, 0);
-		dWorldSetLinearDampingThreshold(world->ode.ode_world, 0);
-		dWorldSetAngularDamping(world->ode.ode_world, 0);
-		dWorldSetAngularDampingThreshold(world->ode.ode_world, 0);
+		dWorldSetLinearDamping(world->rbe.world, 0);
+		dWorldSetLinearDampingThreshold(world->rbe.world, 0);
+		dWorldSetAngularDamping(world->rbe.world, 0);
+		dWorldSetAngularDampingThreshold(world->rbe.world, 0);
 	}
 	if (physics_bullet_autodisable.ival)
 	{
-		dWorldSetAutoDisableSteps(world->ode.ode_world, bound(1, physics_bullet_autodisable_steps.ival, 100)); 
-		dWorldSetAutoDisableTime(world->ode.ode_world, physics_bullet_autodisable_time.value);
-		dWorldSetAutoDisableAverageSamplesCount(world->ode.ode_world, bound(1, physics_bullet_autodisable_threshold_samples.ival, 100));
-		dWorldSetAutoDisableLinearThreshold(world->ode.ode_world, physics_bullet_autodisable_threshold_linear.value); 
-		dWorldSetAutoDisableAngularThreshold(world->ode.ode_world, physics_bullet_autodisable_threshold_angular.value); 
-		dWorldSetAutoDisableFlag (world->ode.ode_world, true);
+		dWorldSetAutoDisableSteps(world->rbe.world, bound(1, physics_bullet_autodisable_steps.ival, 100)); 
+		dWorldSetAutoDisableTime(world->rbe.world, physics_bullet_autodisable_time.value);
+		dWorldSetAutoDisableAverageSamplesCount(world->rbe.world, bound(1, physics_bullet_autodisable_threshold_samples.ival, 100));
+		dWorldSetAutoDisableLinearThreshold(world->rbe.world, physics_bullet_autodisable_threshold_linear.value); 
+		dWorldSetAutoDisableAngularThreshold(world->rbe.world, physics_bullet_autodisable_threshold_angular.value); 
+		dWorldSetAutoDisableFlag (world->rbe.world, true);
 	}
 	else
-		dWorldSetAutoDisableFlag (world->ode.ode_world, false);
+		dWorldSetAutoDisableFlag (world->rbe.world, false);
 	*/
 }
 

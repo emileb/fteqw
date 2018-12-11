@@ -49,7 +49,7 @@ char *Skin_FindName (player_info_t *sc)
 	}
 	else
 	{
-		s = Info_ValueForKey(sc->userinfo, "skin");
+		s = InfoBuf_ValueForKey(&sc->userinfo, "skin");
 		if (s && s[0])
 			Q_strncpyz(name, s, sizeof(name));
 		else
@@ -212,7 +212,7 @@ void Skin_WorkerLoad(void *skinptr, void *data, size_t a, size_t b)
 	size_t	pcxsize;
 	
 	Q_snprintfz (name, sizeof(name), "skins/%s.pcx", skin->name);
-	raw = COM_LoadTempFile (name, &pcxsize);
+	raw = COM_LoadTempFile (name, FSLF_IGNOREPURE, &pcxsize);
 	if (!raw)
 	{
 		//use 24bit skins even if gl_load24bit is failed
@@ -223,7 +223,7 @@ void Skin_WorkerLoad(void *skinptr, void *data, size_t a, size_t b)
 			if (*baseskin.string)
 			{
 				Q_snprintfz (name, sizeof(name), "skins/%s.pcx", baseskin.string);
-				raw = COM_LoadTempFile (name, &pcxsize);
+				raw = COM_LoadTempFile (name, FSLF_IGNOREPURE, &pcxsize);
 			}
 		}
 		if (!raw)
@@ -387,9 +387,9 @@ qbyte	*Skin_Cache8 (qwskin_t *skin)
 		skin->width = 320;
 		skin->height = 200;
 
-		skin->skindata = out = BZ_Malloc(320*200);
+		skin->skindata = out = BZ_Malloc(skin->width*skin->height);
 
-		memset (out, bv, 320*200);
+		memset (out, bv, skin->width*skin->height);
 
 		skin->loadstate = SKIN_LOADED;
 
@@ -463,7 +463,7 @@ void Skin_NextDownload (void)
 			sc = &cl.players[i];
 			if (!sc->name[0])
 				continue;
-			skinname = Info_ValueForKey(sc->userinfo, "skin");
+			skinname = InfoBuf_ValueForKey(&sc->userinfo, "skin");
 			slash = strchr(skinname, '/');
 			if (slash)
 			{

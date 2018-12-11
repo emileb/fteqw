@@ -269,7 +269,7 @@ qboolean QDECL Mod_LoadHLModel (model_t *mod, void *buffer, size_t fsize)
 
 	if (header->version != 10)
 	{
-		Con_Printf(CON_ERROR "Cannot load model %s - unknown version %i\n", mod->name, header->version);
+		Con_Printf(CON_ERROR "Cannot load halflife model %s - unknown version %i\n", mod->name, header->version);
 		return false;
 	}
 
@@ -1297,7 +1297,7 @@ static void R_HalfLife_WalkMeshes(entity_t *rent, batch_t *b, batch_t **batches)
 				if (!s->shader)
 				{
 					s->shader = R_RegisterSkin(s->name, rent->model->name);
-					R_BuildDefaultTexnums(&s->defaulttex, s->shader);
+					R_BuildDefaultTexnums(&s->defaulttex, s->shader, 0);
 				}
 				b->skin = NULL;
 				b->shader = s->shader;

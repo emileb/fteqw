@@ -21,7 +21,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 //well, linux or cygwin (windows with posix emulation layer), anyway...
 
 #ifndef _GNU_SOURCE
-#define _GNU_SOURCE
+# define _GNU_SOURCE
 #endif
 #include <unistd.h>
 #include <signal.h>
@@ -37,8 +37,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include <dlfcn.h>
 #include <dirent.h>
 #if !defined(__CYGWIN__) && !defined(__DJGPP__)
-#include <sys/ipc.h>
-#include <sys/shm.h>
+# include <sys/ipc.h>
+# include <sys/shm.h>
 #endif
 #include <sys/stat.h>
 #include <string.h>
@@ -46,11 +46,15 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include <sys/wait.h>
 #include <sys/mman.h>
 #include <errno.h>
-#if !defined(__MACOSX__) && !defined(__DJGPP__)
-#include <X11/Xlib.h>
+#ifndef NO_X11
+# if !defined(__MACOSX__) && !defined(__DJGPP__) && !defined(NO_X11)
+#  include <X11/Xlib.h>
+# else
+#  define NO_X11
+# endif
 #endif
 #ifdef MULTITHREAD
-#include <pthread.h>
+# include <pthread.h>
 #endif
 
 #ifdef __CYGWIN__
@@ -308,24 +312,30 @@ static void Sys_Register_File_Associations_f(void)
 	{
 		char *exe = realpath(host_parms.argv[0], NULL);
 		char *basedir = realpath(com_gamepath, NULL);
+		char *iconname = fs_manifest->installation;
 		const char *desktopfile = 
 			"[Desktop Entry]\n"
 			"Type=Application\n"
 			"Encoding=UTF-8\n"
-			"Name=FTE QuakeWorld\n"	//FIXME: needs to come from the manifest
+			"Name=%s\n"
 			"Comment=Awesome First Person Shooter\n"	//again should be a manicfest item
 			"Exec=\"%s\" %%u\n"	//FIXME: FS_GetManifestArgs! etc!
 			"Path=%s\n"
-			"Icon=quake\n"		//FIXME: fix me!
+			"Icon=%s\n"
 			"Terminal=false\n"
 			"Categories=Game;\n"
-			"MimeType=application/x-quakeworlddemo;x-scheme-handler/qw;\n"
+			"MimeType=" "application/x-quakeworlddemo;" "x-scheme-handler/qw;\n"
 			;
+		if (!strcmp(iconname, "afterquake") || !strcmp(iconname, "nq"))	//hacks so that we don't need to create icons.
+			iconname = "quake";
 		desktopfile = va(desktopfile,
-					exe, basedir);
+					fs_manifest->formalname?fs_manifest->formalname:fs_manifest->installation,
+					exe, basedir, iconname);
 		free(exe);
 		free(basedir);
-		FS_WriteFile(va("%s/applications/fteqw.desktop", xdgbase), desktopfile, strlen(desktopfile), FS_SYSTEM);
+		FS_WriteFile(va("%s/applications/fte-%s.desktop", xdgbase, fs_manifest->installation), desktopfile, strlen(desktopfile), FS_SYSTEM);
+
+		//FIXME: read icon.png and write it to ~/.local/share/icons/hicolor/WxH/apps/foo.png
 	}
 
 	//we need to set some default applications.
@@ -370,7 +380,7 @@ static void Sys_Register_File_Associations_f(void)
 				if (foundassoc)
 				{	//if we found it, or somewhere to insert it, then insert it.
 					VFS_WRITE(out, in, foundassoc-in);
-					VFS_PRINTF(out, "x-scheme-handler/qw=fteqw.desktop\n");
+					VFS_PRINTF(out, "x-scheme-handler/qw=fte-%s.desktop\n", fs_manifest->installation);
 					VFS_WRITE(out, foundassoc, insize - (foundassoc-in));
 				}
 				else
@@ -380,7 +390,7 @@ static void Sys_Register_File_Associations_f(void)
 			if (!foundassoc)
 			{	//if file not found, or no appropriate section, just concat it on the end.
 				VFS_PRINTF(out, "[Added Associations]\n");
-				VFS_PRINTF(out, "x-scheme-handler/qw=fteqw.desktop\n");
+				VFS_PRINTF(out, "x-scheme-handler/qw=fte-%s.desktop\n", fs_manifest->installation);
 			}
 			VFS_FLUSH(out);
 			VFS_CLOSE(out);
@@ -414,9 +424,20 @@ void Sys_Error (const char *error, ...)
 	fprintf(stderr, "Error: %s\n", string);
 
 	Host_Shutdown ();
+
 #ifdef USE_LIBTOOL
 	lt_dlexit();
 #endif
+
+	fflush(stdout);
+	fflush(stderr);
+
+	if (!isatty(STDERR_FILENO))
+	{	//if we're a graphical x11 program then its quite likely that we have no stdout with the user never knowing why the game just disappeared
+		//the crash could have come from malloc failures, this means we can't really depend upon xlib
+		//but we can start some other program to display the message.
+		execl("/usr/bin/xmessage", "xmessage", string, NULL);
+	}
 	exit (1);
 }
 
@@ -432,27 +453,9 @@ void Sys_Warn (char *warning, ...)
 	fprintf(stderr, "Warning: %s", string);
 }
 
-/*
-============
-Sys_FileTime
-
-returns -1 if not present
-============
-*/
-int	Sys_FileTime (char *path)
-{
-	struct	stat	buf;
-
-	if (stat (path,&buf) == -1)
-		return -1;
-
-	return buf.st_mtime;
-}
-
-
 void Sys_mkdir (const char *path)
 {
-	mkdir (path, 0777);
+	mkdir (path, 0760);
 }
 qboolean Sys_rmdir (const char *path)
 {
@@ -464,7 +467,10 @@ qboolean Sys_rmdir (const char *path)
 }
 qboolean Sys_remove (const char *path)
 {
-	return system(va("rm \"%s\"", path));
+	//remove is part of c89.
+	if (remove(path) == -1)
+		return false;
+	return true;
 }
 qboolean Sys_Rename (const char *oldfname, const char *newfname)
 {
@@ -500,7 +506,7 @@ int Sys_DebugLog(char *file, char *fmt, ...)
 	return 1;
 }
 
-int Sys_EnumerateFiles2 (const char *truepath, int apathofs, const char *match, int (*func)(const char *, qofs_t, time_t modtime, void *, searchpathfuncs_t *), void *parm, searchpathfuncs_t *spath)
+static int Sys_EnumerateFiles2 (const char *truepath, int apathofs, const char *match, int (*func)(const char *, qofs_t, time_t modtime, void *, searchpathfuncs_t *), void *parm, searchpathfuncs_t *spath)
 {
 	DIR *dir;
 	char file[MAX_OSPATH];
@@ -541,6 +547,10 @@ int Sys_EnumerateFiles2 (const char *truepath, int apathofs, const char *match, 
 					break;
 				if (*ent->d_name != '.')
 				{
+#ifdef _DIRENT_HAVE_D_TYPE
+					if (ent->d_type != DT_DIR && ent->d_type != DT_UNKNOWN)
+						continue;
+#endif
 					if (wildcmp(subdir, ent->d_name))
 					{
 						memcpy(file, truepath, wild-truepath);
@@ -562,7 +572,7 @@ int Sys_EnumerateFiles2 (const char *truepath, int apathofs, const char *match, 
 	dir = opendir(truepath);
 	if (!dir)
 	{
-		Con_DPrintf("Failed to open dir %s\n", truepath);
+		Con_DLPrintf((errno==ENOENT)?2:1, "Failed to open dir %s\n", truepath);
 		return true;
 	}
 	do
@@ -582,7 +592,7 @@ int Sys_EnumerateFiles2 (const char *truepath, int apathofs, const char *match, 
 
 					if (!func(file, st.st_size, st.st_mtime, parm, spath))
 					{
-						Con_DPrintf("giving up on search after finding %s\n", file);
+//						Con_DPrintf("giving up on search after finding %s\n", file);
 						closedir(dir);
 						return false;
 					}
@@ -661,7 +671,7 @@ dllhandle_t *Sys_LoadLibrary(const char *name, dllfunction_t *funcs)
 		lib = lt_dlopenext (name);
 	if (!lib)
 	{
-		Con_DPrintf("%s: %s\n", name, lt_dlerror());
+		Con_DLPrintf(2, "%s: %s\n", name, lt_dlerror());
 		return NULL;
 	}
 
@@ -708,7 +718,7 @@ dllhandle_t *Sys_LoadLibrary(const char *name, dllfunction_t *funcs)
 		lib = dlopen (va("%s.so", name), RTLD_LAZY);
 	if (!lib)
 	{
-		Con_DPrintf("%s\n", dlerror());
+		Con_DLPrintf(2,"%s\n", dlerror());
 		return NULL;
 	}
 
@@ -781,7 +791,11 @@ static void Friendly_Crash_Handler(int sig, siginfo_t *info, void *vcontext)
 #endif
 
 	// print out all the frames to stderr
+#ifdef SVNREVISION
+	fprintf(stderr, "Error: signal %s (revision "STRINGIFY(SVNREVISION)")\n", signame);
+#else
 	fprintf(stderr, "Error: signal %s:\n", signame);
+#endif
 	backtrace_symbols_fd(array+firstframe, size-firstframe, 2);
 
 	if (sig == SIGINT)
@@ -850,7 +864,7 @@ char *Sys_ConsoleInput(void)
 
 //	if (!qrenderer)
 	{
-		len = read (0, text, sizeof(text));
+		len = read (STDIN_FILENO, text, sizeof(text));
 		if (len < 1)
 			return NULL;
 
@@ -900,10 +914,12 @@ int main (int c, const char **v)
 #endif
 
 #ifdef __linux__
-	uid_t ruid, euid, suid;
-	getresuid(&ruid, &euid, &suid);
-	if (!ruid || !euid || !suid)
-		printf("WARNING: you should NOT be running this as root!\n");
+	{
+		uid_t ruid, euid, suid;
+		getresuid(&ruid, &euid, &suid);
+		if (!ruid || !euid || !suid)
+			printf("WARNING: you should NOT be running this as root!\n");
+	}
 #endif
 
 #ifdef __linux__
@@ -1003,7 +1019,8 @@ int main (int c, const char **v)
 		sleeptime = Host_Frame(time);
 		oldtime = newtime;
 
-		Sys_Sleep(sleeptime);
+		if (sleeptime)
+			Sys_Sleep(sleeptime);
 	}
 }
 
@@ -1042,12 +1059,12 @@ void Sys_ServerActivity(void)
 //from the OS. This will cause problems with framebuffer-only setups.
 qboolean Sys_GetDesktopParameters(int *width, int *height, int *bpp, int *refreshrate)
 {
-#if defined(__MACOSX__) || defined(__DJGPP__)
+#if defined(NO_X11)
 //this about sums up the problem with this function
 	return false;
 #else
 	return X11_GetDesktopParameters(width, height, bpp, refreshrate);
-
+/*
 	Display *xtemp;
 	int scr;
 
@@ -1066,6 +1083,7 @@ qboolean Sys_GetDesktopParameters(int *width, int *height, int *bpp, int *refres
 	XCloseDisplay(xtemp);
 
 	return true;
+*/
 #endif
 }
 
@@ -1073,15 +1091,12 @@ qboolean Sys_GetDesktopParameters(int *width, int *height, int *bpp, int *refres
 #define SYS_CLIPBOARD_SIZE		256
 static char clipboard_buffer[SYS_CLIPBOARD_SIZE] = {0};
 
-char *Sys_GetClipboard(void) {
-	return clipboard_buffer;
-}
-
-void Sys_CloseClipboard(char *bf)
+void Sys_Clipboard_PasteText(clipboardtype_t cbt, void (*callback)(void *cb, char *utf8), void *ctx)
 {
+	callback(ctx, clipboard_buffer);
 }
 
-void Sys_SaveClipboard(char *text) {
+void Sys_SaveClipboard(clipboardtype_t cbt, char *text) {
 	Q_strncpyz(clipboard_buffer, text, SYS_CLIPBOARD_SIZE);
 }
 #endif

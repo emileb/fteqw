@@ -63,7 +63,6 @@ static struct predicted_player
 } predicted_players[MAX_CLIENTS];
 
 static void CL_LerpNetFrameState(framestate_t *fs, lerpents_t *le);
-qboolean CL_PredictPlayer(lerpents_t *le, entity_state_t *state, int sequence);
 void CL_PlayerFrameUpdated(player_state_t *plstate, entity_state_t *state, int sequence);
 void CL_AckedInputFrame(int inseq, int outseq, qboolean worldstateokay);
 
@@ -126,6 +125,8 @@ void CL_FreeDlights(void)
 	if (cl_dlights)
 		for (i = 0; i < rtlights_max; i++)
 		{
+			if (cl_dlights[i].customstyle)
+				Z_Free(cl_dlights[i].customstyle);
 			if (cl_dlights[i].worldshadowmesh)
 				SH_FreeShadowMesh(cl_dlights[i].worldshadowmesh);
 
@@ -148,11 +149,26 @@ void CL_InitDlights(void)
 	memset(cl_dlights, 0, sizeof(*cl_dlights)*cl_maxdlights);
 }
 
+void CL_CloneDlight(dlight_t *dl, dlight_t *src)
+{
+	char *customstyle = dl->customstyle;
+	void *sm = dl->worldshadowmesh;
+	unsigned int oq = dl->coronaocclusionquery;
+	unsigned int oqr = (dl->key == src->key)?dl->coronaocclusionresult:false;
+	memcpy (dl, src, sizeof(*dl));
+	dl->coronaocclusionquery = oq;
+	dl->coronaocclusionresult = oqr;
+	dl->rebuildcache = true;
+	dl->worldshadowmesh = sm;
+	dl->customstyle = src->customstyle?Z_StrDup(src->customstyle):NULL;
+	Z_Free(customstyle);
+}
 static void CL_ClearDlight(dlight_t *dl, int key)
 {
 	void *sm = dl->worldshadowmesh;
 	unsigned int oq = dl->coronaocclusionquery;
 	unsigned int oqr = (dl->key == key)?dl->coronaocclusionresult:false;
+	Z_Free(dl->customstyle);
 	memset (dl, 0, sizeof(*dl));
 	dl->coronaocclusionquery = oq;
 	dl->coronaocclusionresult = oqr;
@@ -180,13 +196,23 @@ static void CL_ClearDlight(dlight_t *dl, int key)
 dlight_t *CL_AllocSlight(void)
 {
 	dlight_t	*dl;
-	if (rtlights_max == cl_maxdlights)
+	int i;
+	for (i = RTL_FIRST; i < rtlights_max; i++)
 	{
-		cl_maxdlights = rtlights_max+8;
-		cl_dlights = BZ_Realloc(cl_dlights, sizeof(*cl_dlights)*cl_maxdlights);
-		memset(&cl_dlights[rtlights_max], 0, sizeof(*cl_dlights)*(cl_maxdlights-rtlights_max));
+		if (cl_dlights[i].radius <= 0)
+			break;
 	}
-	dl = &cl_dlights[rtlights_max++];
+	if (i == rtlights_max)
+	{
+		if (rtlights_max == cl_maxdlights)
+		{
+			cl_maxdlights = rtlights_max+8;
+			cl_dlights = BZ_Realloc(cl_dlights, sizeof(*cl_dlights)*cl_maxdlights);
+			memset(&cl_dlights[rtlights_max], 0, sizeof(*cl_dlights)*(cl_maxdlights-rtlights_max));
+		}
+		i = rtlights_max++;
+	}
+	dl = &cl_dlights[i];
 
 	CL_ClearDlight(dl, 0);
 	dl->flags = LFLAG_REALTIMEMODE;
@@ -1909,16 +1935,15 @@ entity_state_t *CL_FindPacketEntity(int num)
 {
 	int					pnum;
 	entity_state_t		*s1;
-	packet_entities_t	*pack;
-	pack = &cl.inframes[cl.validsequence&UPDATE_MASK].packet_entities;
+	packet_entities_t	*pack = cl.currentpackentities;
+	if (pack)
+		for (pnum=0 ; pnum<pack->num_entities ; pnum++)
+		{
+			s1 = &pack->entities[pnum];
 
-	for (pnum=0 ; pnum<pack->num_entities ; pnum++)
-	{
-		s1 = &pack->entities[pnum];
-
-		if (num == s1->number)
-			return s1;
-	}
+			if (num == s1->number)
+				return s1;
+		}
 	return NULL;
 }
 #endif
@@ -2461,10 +2486,86 @@ void CLQ1_DrawLine(shader_t *shader, vec3_t v1, vec3_t v2, float r, float g, flo
 	t->numidx = cl_numstrisidx - t->firstidx;
 	cl_numstrisvert += 2;
 }
+void CLQ1_AddSpriteQuad(shader_t *shader, vec3_t mid, float radius)
+{
+	float r=1, g=1, b=1;
+	scenetris_t *t;
+	int flags = BEF_NODLIGHT|BEF_NOSHADOWS;
+
+	if (cl_numstris && cl_stris[cl_numstris-1].shader == shader && cl_stris[cl_numstris-1].flags == flags && cl_stris[cl_numstris-1].numvert + 4 <= MAX_INDICIES)
+		t = &cl_stris[cl_numstris-1];
+	else
+	{
+		if (cl_numstris == cl_maxstris)
+		{
+			cl_maxstris+=8;
+			cl_stris = BZ_Realloc(cl_stris, sizeof(*cl_stris)*cl_maxstris);
+		}
+		t = &cl_stris[cl_numstris++];
+		t->shader = shader;
+		t->firstidx = cl_numstrisidx;
+		t->firstvert = cl_numstrisvert;
+		t->numvert = 0;
+		t->numidx = 0;
+		t->flags = flags;
+	}
+
+	if (cl_numstrisidx+6 > cl_maxstrisidx)
+	{
+		cl_maxstrisidx=cl_numstrisidx+6 + 64;
+		cl_strisidx = BZ_Realloc(cl_strisidx, sizeof(*cl_strisidx)*cl_maxstrisidx);
+	}
+	if (cl_numstrisvert+4 > cl_maxstrisvert)
+	{
+		cl_maxstrisvert+=64;
+		cl_strisvertv = BZ_Realloc(cl_strisvertv, sizeof(*cl_strisvertv)*cl_maxstrisvert);
+		cl_strisvertt = BZ_Realloc(cl_strisvertt, sizeof(*cl_strisvertt)*cl_maxstrisvert);
+		cl_strisvertc = BZ_Realloc(cl_strisvertc, sizeof(*cl_strisvertc)*cl_maxstrisvert);
+	}
+
+	{
+		VectorMA(mid, radius, vright,     cl_strisvertv[cl_numstrisvert]);
+		VectorMA(cl_strisvertv[cl_numstrisvert], radius, vup,   cl_strisvertv[cl_numstrisvert]);
+		Vector4Set(cl_strisvertc[cl_numstrisvert], r, g, b, 0.2);
+		Vector2Set(cl_strisvertt[cl_numstrisvert], 1, 1);
+		cl_numstrisvert++;
+
+		VectorMA(mid, radius, vright,  cl_strisvertv[cl_numstrisvert]);
+		VectorMA(cl_strisvertv[cl_numstrisvert], -radius, vup, cl_strisvertv[cl_numstrisvert]);
+		Vector4Set(cl_strisvertc[cl_numstrisvert], r, g, b, 0.2);
+		Vector2Set(cl_strisvertt[cl_numstrisvert], 1, 0);
+		cl_numstrisvert++;
+
+		VectorMA(mid, -radius, vright,    cl_strisvertv[cl_numstrisvert]);
+		VectorMA(cl_strisvertv[cl_numstrisvert], -radius, vup,  cl_strisvertv[cl_numstrisvert]);
+		Vector4Set(cl_strisvertc[cl_numstrisvert], r, g, b, 0.2);
+		Vector2Set(cl_strisvertt[cl_numstrisvert], 0, 0);
+		cl_numstrisvert++;
+
+		VectorMA(mid, -radius, vright,    cl_strisvertv[cl_numstrisvert]);
+		VectorMA(cl_strisvertv[cl_numstrisvert], radius, vup,   cl_strisvertv[cl_numstrisvert]);
+		Vector4Set(cl_strisvertc[cl_numstrisvert], r, g, b, 0.2);
+		Vector2Set(cl_strisvertt[cl_numstrisvert], 0, 1);
+		cl_numstrisvert++;
+	}
+
+	/*build the triangles*/
+	cl_strisidx[cl_numstrisidx++] = t->numvert + 0;
+	cl_strisidx[cl_numstrisidx++] = t->numvert + 1;
+	cl_strisidx[cl_numstrisidx++] = t->numvert + 2;
+
+	cl_strisidx[cl_numstrisidx++] = t->numvert + 0;
+	cl_strisidx[cl_numstrisidx++] = t->numvert + 2;
+	cl_strisidx[cl_numstrisidx++] = t->numvert + 3;
+
+
+	t->numidx = cl_numstrisidx - t->firstidx;
+	t->numvert += 4;
+}
 #include "shader.h"
-//well, 8192
 void CL_DrawDebugPlane(float *normal, float dist, float r, float g, float b, qboolean enqueue)
 {
+	const float radius = 8192;	//infinite is quite small nowadays.
 	scenetris_t *t;
 	if (!enqueue)
 		cl_numstris = 0;
@@ -2503,26 +2604,26 @@ void CL_DrawDebugPlane(float *normal, float dist, float r, float g, float b, qbo
 		VectorNormalize(forward);
 
 		VectorScale(                        normal,    dist,      cl_strisvertv[cl_numstrisvert]);
-		VectorMA(cl_strisvertv[cl_numstrisvert], 8192, right,     cl_strisvertv[cl_numstrisvert]);
-		VectorMA(cl_strisvertv[cl_numstrisvert], 8192, forward,   cl_strisvertv[cl_numstrisvert]);
+		VectorMA(cl_strisvertv[cl_numstrisvert], radius, right,     cl_strisvertv[cl_numstrisvert]);
+		VectorMA(cl_strisvertv[cl_numstrisvert], radius, forward,   cl_strisvertv[cl_numstrisvert]);
 		Vector4Set(cl_strisvertc[cl_numstrisvert], r, g, b, 0.2);
 		cl_numstrisvert++;
 
 		VectorScale(                             normal,    dist, cl_strisvertv[cl_numstrisvert]);
-		VectorMA(cl_strisvertv[cl_numstrisvert], 8192, right,  cl_strisvertv[cl_numstrisvert]);
-		VectorMA(cl_strisvertv[cl_numstrisvert], -8192, forward, cl_strisvertv[cl_numstrisvert]);
+		VectorMA(cl_strisvertv[cl_numstrisvert], radius, right,  cl_strisvertv[cl_numstrisvert]);
+		VectorMA(cl_strisvertv[cl_numstrisvert], -radius, forward, cl_strisvertv[cl_numstrisvert]);
 		Vector4Set(cl_strisvertc[cl_numstrisvert], r, g, b, 0.2);
 		cl_numstrisvert++;
 
 		VectorScale(                             normal,    dist, cl_strisvertv[cl_numstrisvert]);
-		VectorMA(cl_strisvertv[cl_numstrisvert], -8192, right,    cl_strisvertv[cl_numstrisvert]);
-		VectorMA(cl_strisvertv[cl_numstrisvert], -8192, forward,  cl_strisvertv[cl_numstrisvert]);
+		VectorMA(cl_strisvertv[cl_numstrisvert], -radius, right,    cl_strisvertv[cl_numstrisvert]);
+		VectorMA(cl_strisvertv[cl_numstrisvert], -radius, forward,  cl_strisvertv[cl_numstrisvert]);
 		Vector4Set(cl_strisvertc[cl_numstrisvert], r, g, b, 0.2);
 		cl_numstrisvert++;
 
 		VectorScale(                             normal,    dist, cl_strisvertv[cl_numstrisvert]);
-		VectorMA(cl_strisvertv[cl_numstrisvert], -8192, right,    cl_strisvertv[cl_numstrisvert]);
-		VectorMA(cl_strisvertv[cl_numstrisvert], 8192, forward,   cl_strisvertv[cl_numstrisvert]);
+		VectorMA(cl_strisvertv[cl_numstrisvert], -radius, right,    cl_strisvertv[cl_numstrisvert]);
+		VectorMA(cl_strisvertv[cl_numstrisvert], radius, forward,   cl_strisvertv[cl_numstrisvert]);
 		Vector4Set(cl_strisvertc[cl_numstrisvert], r, g, b, 0.2);
 		cl_numstrisvert++;
 	}
@@ -2876,7 +2977,7 @@ static void CL_AddDecal_Callback(void *vctx, vec3_t *fte_restrict points, size_t
 		cl_strisvertc[cl_numstrisvert+v][0] = ctx->rgbavalue[0];
 		cl_strisvertc[cl_numstrisvert+v][1] = ctx->rgbavalue[1];
 		cl_strisvertc[cl_numstrisvert+v][2] = ctx->rgbavalue[2];
-		cl_strisvertc[cl_numstrisvert+v][3] = ctx->rgbavalue[3] * (1-(DotProduct(points[v], ctx->axis[0]) - ctx->offset[0]) * ctx->scale[0]);
+		cl_strisvertc[cl_numstrisvert+v][3] = ctx->rgbavalue[3] * (1-fabs(DotProduct(points[v], ctx->axis[0]) - ctx->offset[0]) * ctx->scale[0]);
 	}
 	for (v = 0; v < numpoints; v++)
 	{
@@ -2891,7 +2992,7 @@ static void CL_AddDecal_Callback(void *vctx, vec3_t *fte_restrict points, size_t
 void CL_AddDecal(shader_t *shader, vec3_t origin, vec3_t up, vec3_t side, vec3_t rgbvalue, float alphavalue)
 {
 	scenetris_t *t;
-	float l, s, radius;
+	float l, s, radius, vradius;
 	cl_adddecal_ctx_t ctx;
 
 	VectorNegate(up, ctx.axis[0]);
@@ -2899,20 +3000,24 @@ void CL_AddDecal(shader_t *shader, vec3_t origin, vec3_t up, vec3_t side, vec3_t
 
 	s = DotProduct(ctx.axis[2], ctx.axis[2]);
 	l = DotProduct(ctx.axis[0], ctx.axis[0]);
+	vradius = 1/sqrt(l);
 	radius = 1/sqrt(s);
 
-	VectorScale(ctx.axis[0], 1/sqrt(l), ctx.axis[0]);
+	VectorScale(ctx.axis[0], vradius, ctx.axis[0]);
 	VectorScale(ctx.axis[2], radius, ctx.axis[2]);
 
 	CrossProduct(ctx.axis[0], ctx.axis[2], ctx.axis[1]);
 
-	ctx.offset[1] = DotProduct(origin, ctx.axis[1]) + 0.5*radius;
 	ctx.offset[2] = DotProduct(origin, ctx.axis[2]) + 0.5*radius;
+	ctx.offset[1] = DotProduct(origin, ctx.axis[1]) + 0.5*radius;
 	ctx.offset[0] = DotProduct(origin, ctx.axis[0]);
 
-	ctx.scale[1] = 1/radius;
 	ctx.scale[2] = 1/radius;
-	ctx.scale[0] = 1;
+	ctx.scale[1] = 1/radius;
+	ctx.scale[0] = 2/vradius;
+
+	if (R2D_Flush)
+		R2D_Flush();
 
 	/*reuse the previous trigroup if its the same shader*/
 	if (cl_numstris && cl_stris[cl_numstris-1].shader == shader && cl_stris[cl_numstris-1].flags == (BEF_NODLIGHT|BEF_NOSHADOWS))
@@ -2936,7 +3041,7 @@ void CL_AddDecal(shader_t *shader, vec3_t origin, vec3_t up, vec3_t side, vec3_t
 	ctx.t = t;
 	VectorCopy(rgbvalue, ctx.rgbavalue);
 	ctx.rgbavalue[3] = alphavalue;
-	Mod_ClipDecal(cl.worldmodel, origin, ctx.axis[0], ctx.axis[1], ctx.axis[2], radius, 0,0, CL_AddDecal_Callback, &ctx);
+	Mod_ClipDecal(cl.worldmodel, origin, ctx.axis[0], ctx.axis[1], ctx.axis[2], max(radius, vradius), 0,0, CL_AddDecal_Callback, &ctx);
 
 	if (!t->numidx)
 		cl_numstris--;
@@ -3282,16 +3387,14 @@ void CL_LinkStaticEntities(void *pvs)
 		if (pvs && !cl.worldmodel->funcs.EdictInFatPVS(cl.worldmodel, &stat->pvscache, pvs))
 			continue;
 
+
 		// emit particles for statics (we don't need to cheat check statics)
 		if (stat->state.u.q1.emiteffectnum)
 			P_EmitEffect (stat->ent.origin, stat->ent.axis, MDLF_EMITFORWARDS, CL_TranslateParticleFromServer(stat->state.u.q1.emiteffectnum), &(stat->emit));
-		else if (clmodel && clmodel->particleeffect >= 0 && gl_part_flame.ival)
+		else if (clmodel)
 		{
-			// TODO: this is ugly.. assumes ent is in static entities, and subtracts
-			// pointer math to get an index to use in cl_static emit
-			// there needs to be a cleaner method for this
-			P_EmitEffect(stat->ent.origin, stat->ent.axis, clmodel->engineflags, clmodel->particleeffect, &stat->emit);
-
+			if (clmodel->particleeffect >= 0 && gl_part_flame.ival)
+				P_EmitEffect(stat->ent.origin, stat->ent.axis, clmodel->engineflags, clmodel->particleeffect, &stat->emit);
 			if ((!r_drawflame.ival) && (clmodel->engineflags & MDLF_FLAME))
 				continue;
 		}
@@ -4002,6 +4105,7 @@ void CL_LinkPacketEntities (void)
 				modelflags = model->flags;
 		}
 
+#ifndef NOLEGACY
 		if (cl.model_precache_vwep[0] && state->modelindex2 < MAX_VWEP_MODELS)
 		{
 			if (state->modelindex == cl_playerindex && cl.model_precache_vwep[0]->loadstate == MLS_LOADED &&
@@ -4013,7 +4117,9 @@ void CL_LinkPacketEntities (void)
 			else
 				model2 = NULL;
 		}
-		else if (state->modelindex2 && state->modelindex2 < MAX_PRECACHE_MODELS)
+		else
+#endif
+			if (state->modelindex2 && state->modelindex2 < MAX_PRECACHE_MODELS)
 			model2 = cl.model_precache[state->modelindex2];
 		else
 			model2 = NULL;
@@ -4095,6 +4201,10 @@ void CL_LinkPacketEntities (void)
 			ent->shaderRGBAf[1] = (state->colormod[1]*8.0f)/256;
 			ent->shaderRGBAf[2] = (state->colormod[2]*8.0f)/256;
 		}
+		if (state->colormod[0] == 32 && state->colormod[1] == 32 && state->colormod[2] == 32)
+			VectorSet(ent->glowmod, 1, 1, 1);
+		else
+			VectorScale(state->glowmod, 1/255.0, ent->glowmod);
 
 #ifdef PEXT_FATNESS
 		//set trans
@@ -4301,6 +4411,10 @@ void CL_LinkPacketEntities (void)
 #endif
 
 	CLQ1_AddVisibleBBoxes();
+
+#ifdef RTLIGHTS
+	R_EditLights_DrawLights();
+#endif
 }
 
 /*
@@ -4972,7 +5086,9 @@ void CL_LinkPlayers (void)
 	static int		flickertime;
 	static int		flicker;
 	float			predictmsmult = 1000*cl_predict_players_frac.value;
+#ifndef NOLEGACY
 	int				modelindex2;
+#endif
 	extern cvar_t	cl_demospeed;
 	int displayseq;
 
@@ -5023,15 +5139,19 @@ void CL_LinkPlayers (void)
 			continue;
 
 		//the extra modelindex check is to stop lame mods from using vweps with rings
+#ifndef NOLEGACY
 		if (state->command.impulse && cl.model_precache_vwep[0] && cl.model_precache_vwep[0]->type != mod_dummy && state->modelindex == cl_playerindex)
 		{
 			model = cl.model_precache_vwep[0];
 			modelindex2 = state->command.impulse;
 		}
 		else
+#endif
 		{
 			model = cl.model_precache[state->modelindex];
+#ifndef NOLEGACY
 			modelindex2 = 0;
+#endif
 		}
 
 		// spawn light flashes, even ones coming from invisible objects
@@ -5221,8 +5341,10 @@ void CL_LinkPlayers (void)
 			CL_AddFlagModels (ent, 0);
 		else if (state->effects & QWEF_FLAG2)
 			CL_AddFlagModels (ent, 1);
+#ifndef NOLEGACY
 		if (modelindex2)
 			CL_AddVWeapModel (ent, cl.model_precache_vwep[modelindex2]);
+#endif
 
 		CLQ1_AddShadow(ent);
 		CLQ1_AddPowerupShell(ent, false, state->effects);
@@ -5261,12 +5383,14 @@ void CL_LinkPlayers (void)
 void CL_LinkViewModel(void)
 {
 #ifdef QUAKESTATS
+	extern cvar_t r_viewpreselgun;
 	entity_t	ent;
 
 	unsigned int plnum;
 	unsigned int playereffects;
 	float alpha;
 	playerview_t *pv = r_refdef.playerview;
+	const char *preselectedmodelname;
 
 	extern cvar_t cl_gunx, cl_guny, cl_gunz;
 	extern cvar_t cl_gunanglex, cl_gunangley, cl_gunanglez;
@@ -5347,6 +5471,12 @@ void CL_LinkViewModel(void)
 		ent.flags |= RF_TRANSLUCENT;
 	}
 
+	preselectedmodelname = r_viewpreselgun.ival?IN_GetPreselectedViewmodelName(pv-cl.playerview):NULL;
+	if (preselectedmodelname)
+		ent.model = Mod_ForName(preselectedmodelname, MLV_SILENT);
+	else
+		ent.model = NULL;
+	if (!ent.model)
 	ent.model = cl.model_precache[pv->stats[STAT_WEAPONMODELI]];
 	if (!ent.model)
 	{
@@ -5486,7 +5616,7 @@ void CL_SetSolidEntities (void)
 			so we need to make sure that item pickups are not erroneously considered solid, but doors etc are.
 			yes, this probably means that externally loaded models will be predicted non-solid - you'll need to upgrade your network protocol for the gamecode to be able to specify solidity.
 			*/
-			if (!(cls.fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS) && !((*cl.model_precache[state->modelindex]->name == '*' || cl.model_precache[state->modelindex]->numsubmodels) && cl.model_precache[state->modelindex]->hulls[1].firstclipnode))
+			if (!(cls.fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS) && !((*cl.model_precache[state->modelindex]->name == '*' || cl.model_precache[state->modelindex]->numsubmodels) && cl.model_precache[state->modelindex]->funcs.NativeTrace))
 				continue;
 	
 			pent = &pmove.physents[pmove.numphysent];

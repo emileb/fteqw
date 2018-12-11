@@ -41,7 +41,7 @@ BUILTINR(funcptr_t, Plug_GetEngineFunction, (const char *funcname));
 #undef ARGNAMES
 
 #define ARGNAMES ,funcname,expnum
-BUILTINR(int, Plug_ExportToEngine, (const char *funcname, quintptr_t expnum));
+static BUILTINR(int, Plug_ExportToEngine, (const char *funcname, quintptr_t expnum));
 #undef ARGNAMES
 
 #ifndef Q3_VM
@@ -64,8 +64,8 @@ BUILTINR(qhandle_t, Con_POpen, (const char *conname, quintptr_t flags));
 #define ARGNAMES ,conname,text
 BUILTIN(void, Con_SubPrint, (const char *conname, const char *text));	//on to named sub console (creating it too).
 #undef ARGNAMES
-#define ARGNAMES ,old,new
-BUILTIN(void, Con_RenameSub, (const char *old, const char *new));	//rename a subconsole
+#define ARGNAMES ,old,newname
+BUILTIN(void, Con_RenameSub, (const char *old, const char *newname));	//rename a subconsole
 #undef ARGNAMES
 #define ARGNAMES ,conname
 BUILTINR(int, Con_IsActive, (const char *conname));
@@ -112,7 +112,7 @@ BUILTIN(void, Cmd_Argv, (int argnum, char *buffer, int bufsize));	//retrieve a s
 BUILTINR(int, Cmd_Argc, (void));	//get the argument count.
 #undef ARGNAMES
 #define ARGNAMES ,msg
-BUILTIN(void, Cmd_TokenizeString, (char *msg));	//tokenize a string.
+BUILTIN(void, Cmd_TokenizeString, (const char *msg));	//tokenize a string.
 #undef ARGNAMES
 
 #define ARGNAMES ,text,insert
@@ -405,12 +405,7 @@ void Sys_Errorf(const char *format, ...)
 	pSys_Error(string);	
 }
 
-void BadBuiltin(void)
-{
-	pSys_Error("Plugin tried calling a missing builtin\n");
-}
-
-void Plug_InitStandardBuiltins(void)
+static void Plug_InitStandardBuiltins(void)
 {
 	//con_print is used if the others don't exist, and MUST come first (for the sake of sanity)
 	CHECKBUILTIN(Con_Print);
@@ -534,14 +529,14 @@ void Plug_InitStandardBuiltins(void)
 }
 
 #ifndef Q3_VM
-void NATIVEEXPORT dllEntry(qintptr_t (QDECL *funcptr)(qintptr_t,...))
+NATIVEEXPORT void QDECL dllEntry(qintptr_t (QDECL *funcptr)(qintptr_t,...))
 {
 	plugin_syscall = funcptr;
 }
 #endif
 
 vmvideo_t pvid;
-qintptr_t QDECL Plug_UpdateVideo(qintptr_t *args)
+static qintptr_t QDECL Plug_UpdateVideo(qintptr_t *args)
 {
 	pvid.width = args[0];
 	pvid.height = args[1];
@@ -549,7 +544,7 @@ qintptr_t QDECL Plug_UpdateVideo(qintptr_t *args)
 	return true;
 }
 
-qintptr_t QDECL Plug_InitAPI(qintptr_t *args)
+static qintptr_t QDECL Plug_InitAPI(qintptr_t *args)
 {
 #ifdef Q3_VM
 	Plug_GetEngineFunction = (void*)args[0];
@@ -565,18 +560,18 @@ qintptr_t QDECL Plug_InitAPI(qintptr_t *args)
 
 qboolean Plug_Export(const char *name, export_t func)
 {
-	int i;
+	size_t i;
 	for (i = 0; i < sizeof(exports)/sizeof(exports[0]); i++)
 	{
 		if (!exports[i].name)
 		{
 			exports[i].name = name;
 			exports[i].func = func;
-			return pPlug_ExportToEngine(name, i);
+			return pPlug_ExportToEngine(name, i)?qtrue:qfalse;
 		}
 	}
 	pSys_Error("Plugin exports too many functions");
-	return 0;
+	return qfalse;
 }
 
 

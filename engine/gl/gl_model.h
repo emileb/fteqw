@@ -121,6 +121,7 @@ typedef struct batch_s
 	struct vbo_s *vbo;
 	entity_t *ent;	/*used for shader properties*/
 	struct mfog_s *fog;
+	image_t		*envmap;
 
 	short lightmap[MAXRLIGHTMAPS];	/*used for shader lightmap textures*/
 	unsigned char lmlightstyle[MAXRLIGHTMAPS];
@@ -171,7 +172,7 @@ m*_t structures are in-memory
 #define	EF_BLUE					(1<<6)
 #define	EF_RED					(1<<7)
 #define	H2EF_NODRAW				(1<<7)	//this is going to get complicated... emulated server side.
-#define	DPEF_NOGUNBOB			(1<<8)	//viewmodel attachment does not bob
+#define	DPEF_NOGUNBOB			(1<<8)	//viewmodel attachment does not bob. only applies to viewmodelforclient/RF_WEAPONMODEL
 #define	EF_FULLBRIGHT			(1<<9)	//abslight=1
 #define	DPEF_FLAME				(1<<10)	//'onfire'
 #define	DPEF_STARDUST			(1<<11)	//'showering sparks'
@@ -390,6 +391,19 @@ typedef struct mfog_s
 	mplane_t		**planes;
 } mfog_t;
 
+typedef struct
+{
+	vec3_t origin;
+	int cubesize;	//pixels
+} denvmap_t;
+typedef struct
+{
+	vec3_t origin;
+	int cubesize;	//pixels
+
+	texid_t image;
+} menvmap_t;
+
 #define LMSHIFT_DEFAULT 4
 typedef struct msurface_s
 {
@@ -405,6 +419,7 @@ typedef struct msurface_s
 
 	unsigned short	light_s[MAXRLIGHTMAPS], light_t[MAXRLIGHTMAPS];	// gl lightmap coordinates
 
+	image_t		*envmap;
 	mfog_t		*fog;
 	mesh_t		*mesh;
 
@@ -527,10 +542,12 @@ typedef struct hull_s
 
 void Q1BSP_CheckHullNodes(hull_t *hull);
 void Q1BSP_SetModelFuncs(struct model_s *mod);
-void Q1BSP_LoadBrushes(struct model_s *model);
+void Q1BSP_LoadBrushes(struct model_s *model, bspx_header_t *bspx, void *mod_base);
 void Q1BSP_Init(void);
-void *Q1BSPX_FindLump(char *lumpname, int *lumpsize);
-void Q1BSPX_Setup(struct model_s *mod, char *filebase, unsigned int filelen, lump_t *lumps, int numlumps);
+
+void BSPX_LoadEnvmaps(struct model_s *mod, bspx_header_t *bspx, void *mod_base);
+void *BSPX_FindLump(bspx_header_t *bspxheader, void *mod_base, char *lumpname, int *lumpsize);
+bspx_header_t *BSPX_Setup(struct model_s *mod, char *filebase, unsigned int filelen, lump_t *lumps, int numlumps);
 
 typedef struct fragmentdecal_s fragmentdecal_t;
 void Fragment_ClipPoly(fragmentdecal_t *dec, int numverts, float *inverts, shader_t *surfshader);
@@ -972,6 +989,8 @@ typedef struct model_s
 	q3lightgridinfo_t *lightgrid;
 	mfog_t		*fogs;
 	int			numfogs;
+	menvmap_t	*envmaps;
+	unsigned	numenvmaps;
 	struct {unsigned int id; char *keyvals;} *entityinfo;
 	size_t		numentityinfo;
 	const char	*entities_raw;
@@ -1108,7 +1127,7 @@ void	CMQ2_SetAreaPortalState (model_t *mod, unsigned int portalnum, qboolean ope
 void	CMQ3_SetAreaPortalState (model_t *mod, unsigned int area1, unsigned int area2, qboolean open);
 
 //for saved games to write the raw state.
-void	CM_WritePortalState (model_t *mod, vfsfile_t *f);
+size_t	CM_WritePortalState (model_t *mod, void **data);
 qofs_t	CM_ReadPortalState (model_t *mod, qbyte *ptr, qofs_t ptrsize);
 
 #endif
@@ -1116,3 +1135,6 @@ qofs_t	CM_ReadPortalState (model_t *mod, qbyte *ptr, qofs_t ptrsize);
 
 
 #endif	//Q2BSPS
+
+void CategorizePlane ( mplane_t *plane );
+void CalcSurfaceExtents (model_t *mod, msurface_t *s);

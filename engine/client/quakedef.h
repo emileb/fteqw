@@ -164,11 +164,12 @@ extern "C" {
 #include "mathlib.h"
 #include "cvar.h"
 #include "net.h"
+#ifndef WEBSVONLY
 #include "protocol.h"
 #include "cmd.h"
-#include "wad.h"
 #include "console.h"
 #include "screen.h"
+#include "wad.h"
 #include "sbar.h"
 #include "sound.h"
 #include "merged.h"
@@ -196,6 +197,7 @@ extern "C" {
 #define SSV_IsSubServer() false
 #else
 #include "server.h"
+#endif
 #endif
 
 #ifndef max
@@ -301,7 +303,9 @@ extern	cvar_t		com_protocolname;
 extern	cvar_t		com_protocolversion;
 extern	cvar_t		com_nogamedirnativecode;
 extern	cvar_t		com_parseutf8;
+#ifndef NOLEGACY
 extern	cvar_t		com_parseezquake;
+#endif
 extern	cvar_t		sys_ticrate;
 extern	cvar_t		sys_nostdout;
 extern	cvar_t		developer;

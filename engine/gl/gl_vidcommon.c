@@ -58,6 +58,7 @@ void (APIENTRY *qglBindFramebufferEXT)(GLenum target, GLuint id);
 void (APIENTRY *qglDeleteRenderbuffersEXT)(GLsizei n, const GLuint* ids);
 void (APIENTRY *qglFramebufferTexture2DEXT)(GLenum target, GLenum attachmentPoint, GLenum textureTarget, GLuint textureId, GLint  level);
 FTEPFNGLVERTEXATTRIBPOINTER			qglVertexAttribPointer;
+FTEPFNGLVERTEXATTRIB4FARBPROC		qglVertexAttrib4f;
 FTEPFNGLGETVERTEXATTRIBIV			qglGetVertexAttribiv;
 FTEPFNGLENABLEVERTEXATTRIBARRAY		qglEnableVertexAttribArray;
 FTEPFNGLDISABLEVERTEXATTRIBARRAY	qglDisableVertexAttribArray;
@@ -513,7 +514,7 @@ void GL_CheckExtensions (void *(*getglfunction) (char *name))
 	{
 		int i;
 		qglGetIntegerv(GL_NUM_EXTENSIONS, &gl_num_extensions);
-		if (developer.value)
+		if (developer.value>1)
 		{
 			Con_Printf ("GL_EXTENSIONS:\n");
 			for (i = 0; i < gl_num_extensions; i++)
@@ -948,6 +949,7 @@ void GL_CheckExtensions (void *(*getglfunction) (char *name))
 		qglLinkProgramARB			= NULL;
 		qglBindAttribLocationARB	= NULL;
 		qglGetAttribLocationARB		= NULL;
+		qglVertexAttrib4f			= NULL;
 		qglVertexAttribPointer		= NULL;
 		qglGetVertexAttribiv		= NULL;
 		qglGetVertexAttribPointerv	= NULL;
@@ -1009,6 +1011,7 @@ void GL_CheckExtensions (void *(*getglfunction) (char *name))
 		qglUniform2fvARB			= (void *)getglext("glUniform2fv");
 		qglUniform1iARB				= (void *)getglext("glUniform1i");
 		qglUniform1fARB				= (void *)getglext("glUniform1f");
+		qglVertexAttrib4f			= (void *)getglext("glVertexAttrib4f");
 		qglVertexAttribPointer		= (void *)getglext("glVertexAttribPointer");
 		qglGetVertexAttribiv		= (void *)getglext("glGetVertexAttribiv");
 		qglGetVertexAttribPointerv	= (void *)getglext("glGetVertexAttribPointerv");
@@ -1037,6 +1040,7 @@ void GL_CheckExtensions (void *(*getglfunction) (char *name))
 		qglLinkProgramARB			= (void *)getglext("glLinkProgramARB");
 		qglBindAttribLocationARB	= (void *)getglext("glBindAttribLocationARB");
 		qglGetAttribLocationARB		= (void *)getglext("glGetAttribLocationARB");
+		qglVertexAttrib4f			= (void *)getglext("glVertexAttrib4fARB");
 		qglVertexAttribPointer		= (void *)getglext("glVertexAttribPointerARB");
 		qglGetVertexAttribiv		= (void *)getglext("glGetVertexAttribivARB");
 		qglGetVertexAttribPointerv	= (void *)getglext("glGetVertexAttribPointervARB");
@@ -1340,7 +1344,7 @@ static const char *glsl_hdrs[] =
 				"#define SPECMUL 1.0\n"
 			"#endif\n"
 			"#define FTE_SPECULAR_MULTIPLIER (SPECULAR_BASE_MUL*float(SPECMUL))\n"
-#ifndef NOLEGACY
+#if 0//ndef NOLEGACY
 			"uniform sampler2DShadow s_shadowmap;"
 			"uniform samplerCube s_projectionmap;"
 			"uniform sampler2D s_diffuse;"
@@ -1353,16 +1357,23 @@ static const char *glsl_hdrs[] =
 			"uniform samplerCube s_reflectcube;"
 			"uniform sampler2D s_reflectmask;"
 			"uniform sampler2D s_lightmap;"
-			"uniform sampler2D s_deluxmap;"
+			"uniform sampler2D s_deluxemap;"
 			"\n#define s_lightmap0 s_lightmap\n"
-			"#define s_deluxmap0 s_deluxmap\n"
+			"#define s_deluxemap0 s_deluxemap\n"
 #if MAXRLIGHTMAPS > 1
 			"uniform sampler2D s_lightmap1;"
 			"uniform sampler2D s_lightmap2;"
 			"uniform sampler2D s_lightmap3;"
-			"uniform sampler2D s_deluxmap1;"
-			"uniform sampler2D s_deluxmap2;"
-			"uniform sampler2D s_deluxmap3;\n"
+			"uniform sampler2D s_deluxemap1;"
+			"uniform sampler2D s_deluxemap2;"
+			"uniform sampler2D s_deluxemap3;\n"
+
+			//FIXME: remove these some time.
+//			"#define s_deluxmap s_deluxemap\n"
+//			"#define s_deluxmap0 s_deluxemap0\n"
+//			"#define s_deluxmap1 s_deluxemap1\n"
+//			"#define s_deluxmap2 s_deluxemap2\n"
+//			"#define s_deluxmap3 s_deluxemap3\n"
 #endif
 #endif
 			"#ifdef USEUBOS\n"
@@ -1466,6 +1477,7 @@ static const char *glsl_hdrs[] =
 				"uniform float	l_lightradius;"
 				"uniform vec3	l_lightcolour;"
 				"uniform vec3	l_lightposition;"
+				"uniform vec3	l_lightdirection;"
 				"uniform vec3	l_lightcolourscale;"
 				"uniform mat4	l_cubematrix;"
 				"uniform vec4	l_shadowmapproj;"
@@ -1769,7 +1781,7 @@ static const char *glsl_hdrs[] =
 					"return ((cubeproj.yxz-vec3(0.0,0.0,0.015))/cubeproj.w + vec3(1.0, 1.0, 1.0)) * vec3(0.5, 0.5, 0.5);\n"
 				"#elif defined(ORTHO)\n"
 					//the light's origin is in the center of the 'cube', projecting from one side to the other, so don't bias the z.
-					"return ((cubeproj.xyz-vec3(0.0,0.0,0.015))/cubeproj.w + vec3(1.0, 1.0, 0.0)) * vec3(0.5, 0.5, 1.0);\n"
+					"return ((cubeproj.xyz-vec3(0.0,0.0,0.015))/cubeproj.w + vec3(1.0, 1.0, 1.0)) * vec3(0.5, 0.5, 0.5);\n"
 				//"#elif defined(CUBESHADOW)\n"
 				//	vec3 shadowcoord = vshadowcoord.xyz / vshadowcoord.w;
 				//	#define dosamp(x,y) shadowCube(s_t4, shadowcoord + vec2(x,y)*texscale.xy).r
@@ -1869,26 +1881,74 @@ static const char *glsl_hdrs[] =
 	NULL
 };
 
-qboolean GLSlang_GenerateIncludes(int maxstrings, int *strings, const GLchar *prstrings[], GLint length[], const char *shadersource)
+#define GLSLPARTS (64+16)
+struct glslparts_s
+{
+	const GLchar *str[GLSLPARTS];
+	GLint len[GLSLPARTS];
+	const GLchar *file[GLSLPARTS];
+	int line[GLSLPARTS];
+	int strings;
+
+	const char *error;
+};
+
+static void GLSlang_GenerateInternal(struct glslparts_s *glsl, const char *shadersource)
+{
+	if (glsl->strings == GLSLPARTS)
+	{
+		glsl->error = "Too many parts";
+		return;
+	}
+	glsl->str[glsl->strings] = shadersource;
+	glsl->len[glsl->strings] = strlen(shadersource);
+	glsl->file[glsl->strings] = NULL;
+	glsl->line[glsl->strings] = 0;
+	glsl->strings += 1;
+}
+
+static void GLSlang_Generate(struct glslparts_s *glsl, const char *shadersource, GLint length, const char *filename, int linenumber)
+{
+	if (glsl->strings == GLSLPARTS)
+	{
+		glsl->error = "Too many parts";
+		return;
+	}
+	glsl->str[glsl->strings] = shadersource;
+	glsl->len[glsl->strings] = length;
+	glsl->file[glsl->strings] = filename;
+	glsl->line[glsl->strings] = linenumber;
+	glsl->strings += 1;
+}
+
+static qboolean GLSlang_GenerateIncludes(struct glslparts_s *glsl, const char *shadersource, const char *filename, int linenumber)
 {
 	int i;
 	char *incline, *inc;
 	char incname[256];
 	while((incline=strstr(shadersource, "#include")))
 	{
-		if (*strings == maxstrings)
-			return false;
-
 		/*emit up to the include*/
 		if (incline - shadersource)
 		{
-			prstrings[*strings] = shadersource;
-			length[*strings] = incline - shadersource;
-			*strings += 1;
+			char *e = incline;
+			while(e > shadersource && (e[-1] == ' ' || e[-1] == '\t'))
+				e--;
+			if (e > shadersource && e[-1] == '\n')
+				GLSlang_Generate(glsl, shadersource, e-shadersource, filename, linenumber);
+			else
+				GLSlang_Generate(glsl, shadersource, incline-shadersource, filename, linenumber);
 		}
 
 		incline += 8;
 		incline = COM_ParseOut (incline, incname, sizeof(incname));
+		if (!incline)
+		{
+			glsl->error = "missing include name";
+			return false;
+		}
+		while (*incline == ' ' || *incline == '\t')
+			incline++;
 
 		if (!strncmp(incname, "cvar/", 5))
 		{
@@ -1896,17 +1956,13 @@ qboolean GLSlang_GenerateIncludes(int maxstrings, int *strings, const GLchar *pr
 			if (var)
 			{
 				var->flags |= CVAR_SHADERSYSTEM;
-				if (!GLSlang_GenerateIncludes(maxstrings, strings, prstrings, length, var->string))
+				if (!GLSlang_GenerateIncludes(glsl, var->string, NULL, 0))
 					return false;
 			}
 			else
 			{
 				/*dump something if the cvar doesn't exist*/
-				if (*strings == maxstrings)
-					return false;
-				prstrings[*strings] = "0";
-				length[*strings] = strlen("0");
-				*strings += 1;
+				GLSlang_Generate(glsl, "0", strlen("0"), filename, linenumber);
 			}
 		}
 		else
@@ -1915,38 +1971,39 @@ qboolean GLSlang_GenerateIncludes(int maxstrings, int *strings, const GLchar *pr
 			{
 				if (!strcmp(incname, glsl_hdrs[i]))
 				{
-					if (!GLSlang_GenerateIncludes(maxstrings, strings, prstrings, length, glsl_hdrs[i+1]))
+					if (!GLSlang_GenerateIncludes(glsl, glsl_hdrs[i+1], glsl_hdrs[i], 1))
 						return false;
 					break;
 				}
 			}
 			if (!glsl_hdrs[i])
 			{
-				if (FS_LoadFile(incname, (void**)&inc) != (qofs_t)-1)
+				size_t sz;
+				inc = COM_LoadTempMoreFile(incname, &sz);
+				if (inc)
 				{
-					if (!GLSlang_GenerateIncludes(maxstrings, strings, prstrings, length, inc))
-					{
-						FS_FreeFile(inc);
+					if (!GLSlang_GenerateIncludes(glsl, inc, NULL, 1))
 						return false;
-					}
-					FS_FreeFile(inc);
+				}
+				else
+				{
+					glsl->error = "include file not found";
+					return false;	//FIXME: add a warning
 				}
 			}
 		}
 
 		/*move the pointer past the include*/
-		shadersource = incline;
+		while (shadersource < incline)
+		{
+			if (*shadersource == '\n')
+				linenumber++;
+			shadersource++;
+		}
 	}
-	if (*shadersource)
-	{
-		if (*strings == maxstrings)
-			return false;
 
-		/*dump the remaining shader string*/
-		prstrings[*strings] = shadersource;
-		length[*strings] = strlen(prstrings[*strings]);
-		*strings += 1;
-	}
+	if (*shadersource)
+		GLSlang_Generate(glsl, shadersource, strlen(shadersource), filename, linenumber);
 	return true;
 }
 
@@ -1957,10 +2014,11 @@ static GLhandleARB GLSlang_CreateShader (program_t *prog, const char *name, int 
 {
 	GLhandleARB shader;
 	int i;
-	const GLchar *prstrings[64+16];
-	GLint length[sizeof(prstrings)/sizeof(prstrings[0])];
-	int strings = 0;
+	struct glslparts_s glsl;
 	char verline[64];
+
+	glsl.strings = 0;
+	glsl.error = NULL;
 
 	if (!shadersource)
 		return 0;
@@ -2005,44 +2063,32 @@ static GLhandleARB GLSlang_CreateShader (program_t *prog, const char *name, int 
 				Q_snprintfz(verline, sizeof(verline), "#version %u compatibility\n", ver);
 			else
 				Q_snprintfz(verline, sizeof(verline), "#version %u\n", ver);	//core assumed, where defined
-			prstrings[strings] = verline;
-			length[strings] = strlen(prstrings[strings]);
-			strings++;
+			GLSlang_GenerateInternal(&glsl, verline);
 		}
 	}
 
 	while(*precompilerconstants)
-	{
-		prstrings[strings] = *precompilerconstants++;
-		length[strings] = strlen(prstrings[strings]);
-		strings++;
-	}
+		GLSlang_GenerateInternal(&glsl, *precompilerconstants++);
 
-	prstrings[strings] = "#define ENGINE_"DISTRIBUTION"\n";
-	length[strings] = strlen(prstrings[strings]);
-	strings++;
+	GLSlang_GenerateInternal(&glsl, "#define ENGINE_"DISTRIBUTION"\n");
 
 	switch (shadertype)
 	{
 	case GL_FRAGMENT_SHADER_ARB:
-		prstrings[strings] = "#define FRAGMENT_SHADER\n";
-		length[strings] = strlen(prstrings[strings]);
-		strings++;
+		GLSlang_GenerateInternal(&glsl, "#define FRAGMENT_SHADER\n");
 		if (gl_config.gles)
 		{
-			prstrings[strings] =
+			GLSlang_GenerateInternal(&glsl, 
 					"#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
 					"precision highp float;\n"
 					"#else\n"
 					"precision mediump float;\n"
 					"#endif\n"
-				;
-			length[strings] = strlen(prstrings[strings]);
-			strings++;
+				);
 		}
 		if (ver >= 130)
 		{
-			prstrings[strings] =
+			GLSlang_GenerateInternal(&glsl, 
 				//gl3+ deprecated the some things. these are removed in forwards-compatible / core contexts.
 				//varying became either in or out, which is important if you have geometry shaders...
 				"#define varying in\n"
@@ -2063,36 +2109,21 @@ static GLhandleARB GLSlang_CreateShader (program_t *prog, const char *name, int 
 					"out vec4 fte_fragdata3;"
 				"\n#endif\n"	//gles3 requires this
 				"#define gl_FragColor fte_fragdata0\n"
-			;
-			length[strings] = strlen(prstrings[strings]);
-			strings++;
+			);
 		}
 		else
 		{
-			prstrings[strings] =
+			GLSlang_GenerateInternal(&glsl,
 				"#define fte_fragdata0 gl_FragData[0]\n"
 				"#define fte_fragdata1 gl_FragData[1]\n"
 				"#define fte_fragdata2 gl_FragData[2]\n"
 				"#define fte_fragdata3 gl_FragData[3]\n"
-			;
-			length[strings] = strlen(prstrings[strings]);
-			strings++;
+			);
 		}
 
 		if (prog)
-		{	//for compat with vulkan, that injects samplers...
-			const char *numberedsamplernames[] =
-			{
-				"uniform sampler2D s_t0;\n",
-				"uniform sampler2D s_t1;\n",
-				"uniform sampler2D s_t2;\n",
-				"uniform sampler2D s_t3;\n",
-				"uniform sampler2D s_t4;\n",
-				"uniform sampler2D s_t5;\n",
-				"uniform sampler2D s_t6;\n",
-				"uniform sampler2D s_t7;\n",
-			};
-#ifdef NOLEGACY
+		{	//for compat with our vulkan processor, which injects samplers in order to control layouts.
+#if 1//def NOLEGACY
 			const char *defaultsamplernames[] =
 			{
 				"uniform sampler2DShadow s_shadowmap;\n",
@@ -2107,94 +2138,75 @@ static GLhandleARB GLSlang_CreateShader (program_t *prog, const char *name, int 
 				"uniform samplerCube s_reflectcube;\n",
 				"uniform sampler2D s_reflectmask;\n",
 				"uniform sampler2D s_lightmap;\n#define s_lightmap0 s_lightmap\n",
-				"uniform sampler2D s_deluxmap;\n#define s_deluxmap0 s_deluxmap\n",
+				"uniform sampler2D s_deluxemap;\n#define s_deluxemap0 s_deluxemap\n",
 
 				"uniform sampler2D s_lightmap1;\n",
 				"uniform sampler2D s_lightmap2;\n",
 				"uniform sampler2D s_lightmap3;\n",
-				"uniform sampler2D s_deluxmap1;\n",
-				"uniform sampler2D s_deluxmap2;\n",
-				"uniform sampler2D s_deluxmap3;\n",
+				"uniform sampler2D s_deluxemap1;\n",
+				"uniform sampler2D s_deluxemap2;\n",
+				"uniform sampler2D s_deluxemap3;\n",
 			};
 			for (i = 0; i < countof(defaultsamplernames); i++)
 			{
 				if (prog->defaulttextures & (1u<<i))
-				{
-					prstrings[strings] = defaultsamplernames[i];
-					length[strings] = strlen(prstrings[strings]);
-					strings++;
-				}
+					GLSlang_GenerateInternal(&glsl, defaultsamplernames[i]);
 			}
 #endif
-			for (i = 0; i < prog->numsamplers && i < countof(numberedsamplernames); i++)
-			{
-				prstrings[strings] = numberedsamplernames[i];
-				length[strings] = strlen(prstrings[strings]);
-				strings++;
-			}
 		}
 		break;
 	case GL_GEOMETRY_SHADER_ARB:
-		prstrings[strings] = "#define GEOMETRY_SHADER\n";
-		length[strings] = strlen(prstrings[strings]);
-		strings++;
+		GLSlang_GenerateInternal(&glsl, "#define GEOMETRY_SHADER\n");
 		break;
 	case GL_TESS_CONTROL_SHADER_ARB:
-		prstrings[strings] =
+		GLSlang_GenerateInternal(&glsl,
 			"#define TESS_CONTROL_SHADER\n"
 			"#if __VERSION__ < 400\n"
 				"#extension GL_ARB_tessellation_shader : enable\n"
-			"#endif\n";
+			"#endif\n"
 			//varyings are arrays, so don't bother defining that here.
-		length[strings] = strlen(prstrings[strings]);
-		strings++;
+		);
 		break;
 	case GL_TESS_EVALUATION_SHADER_ARB:
-		prstrings[strings] = 
+		GLSlang_GenerateInternal(&glsl,
 			"#define TESS_EVALUATION_SHADER\n"
 			"#if __VERSION__ < 400\n"
 				"#extension GL_ARB_tessellation_shader : enable\n"
 			"#endif\n"
-			"#define varying out\n";
-		length[strings] = strlen(prstrings[strings]);
-		strings++;
+			"#define varying out\n"
+		);
 		break;
 	case GL_VERTEX_SHADER_ARB:
-		prstrings[strings] = "#define VERTEX_SHADER\n";
-		length[strings] = strlen(prstrings[strings]);
-		strings++;
+		GLSlang_GenerateInternal(&glsl, "#define VERTEX_SHADER\n");
 #ifdef RTLIGHTS
 		if (!r_shadow_shadowmapping.ival && ver >= 120)
 		{
-			prstrings[strings] = "invariant gl_Position;\n";
-			length[strings] = strlen(prstrings[strings]);
-			strings++;
+			GLSlang_GenerateInternal(&glsl, "invariant gl_Position;\n");
 		}
 #endif
 		if (gl_config.gles)
 		{
-			prstrings[strings] =
+			GLSlang_GenerateInternal(&glsl,
 					"#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
 					"precision highp float;\n"
 					"#else\n"
 					"precision mediump float;\n"
 					"#endif\n"
-				;
-			length[strings] = strlen(prstrings[strings]);
-			strings++;
+				);
 		}
 		if (ver >= 130)
 		{
-			prstrings[strings] =
-				"#define attribute in\n"
-				"#define varying out\n"
-			;
-			length[strings] = strlen(prstrings[strings]);
-			strings++;
+			GLSlang_GenerateInternal(&glsl,
+					"#define attribute in\n"
+					"#define varying out\n"
+				);
 		}
+		else if (ver < 120)
+			GLSlang_GenerateInternal(&glsl, "#define PACKEDBONES\n");
+
 		if (gl_config_nofixedfunc)
 		{
-			prstrings[strings] =
+			GLSlang_GenerateInternal(&glsl,
 					"attribute vec3 v_position1;\n"
 					"#ifdef FRAMEBLEND\n"
 					"attribute vec3 v_position2;\n"
@@ -2210,13 +2222,11 @@ static GLhandleARB GLSlang_CreateShader (program_t *prog, const char *name, int 
 #else
 					"#define ftetransform() (m_modelviewprojection * vec4(v_position, 1.0))\n"
 #endif
-				;
-			length[strings] = strlen(prstrings[strings]);
-			strings++;
+				);
 		}
 		else
 		{
-			prstrings[strings] =
+			GLSlang_GenerateInternal(&glsl,
 					"#ifdef FRAMEBLEND\n"
 					"attribute vec3 v_position2;\n"
 					"uniform vec2 e_vblend;\n"
@@ -2228,24 +2238,57 @@ static GLhandleARB GLSlang_CreateShader (program_t *prog, const char *name, int 
 					"uniform mat4 m_modelviewprojection;\n"
 					"#define ftetransform ftransform\n"
 					"#endif\n"
-				;
-			length[strings] = strlen(prstrings[strings]);
-			strings++;
+				);
 		}
 
 		break;
 	default:
-		prstrings[strings] = "#define UNKNOWN_SHADER\n";
-		length[strings] = strlen(prstrings[strings]);
-		strings++;
+		GLSlang_GenerateInternal(&glsl, "#define UNKNOWN_SHADER\n");
 		break;
 	}
 
-	GLSlang_GenerateIncludes(sizeof(prstrings)/sizeof(prstrings[0]), &strings, prstrings, length, shadersource);
+	GLSlang_GenerateIncludes(&glsl, shadersource, name, 1);
 
 	shader = qglCreateShaderObjectARB(shadertype);
 
-	if (gl_workaround_ati_shadersource.ival)
+	if (developer.ival)
+	{
+		GLcharARB *combined;
+		int totallen = 1;
+		for (i = 0; i < glsl.strings; i++)
+			totallen += glsl.len[i] + 64 + (glsl.file[i]?strlen(glsl.file[i]):0);
+		combined = malloc(totallen);
+		totallen = 0;
+		combined[totallen] = 0;
+		for (i = 0; i < glsl.strings; i++)
+		{
+			if (ver && !i)
+				; //#version MUST be the first line, don't prefix it with a #line, it'll just break things.
+			else if (!totallen || combined[totallen-1] == '\n')
+			{	//last line was a newline, hurrah. safe to insert without breaking anything
+				if (glsl.file[i])
+					Q_snprintfz(combined+totallen, 64+strlen(glsl.file[i]), "#line %i %i //%s\n", glsl.line[i], i, glsl.file[i]);
+				else
+					Q_snprintfz(combined+totallen, 64, "#line %i %i\n", glsl.line[i], i);
+				totallen += strlen(combined+totallen);
+			}
+			else if (glsl.len[i] && *glsl.str[i] == '\n')
+			{	//last line didn't end with a newline, but there is one after. that's okay too, but we need to play it safe.
+				if (glsl.file[i])
+					Q_snprintfz(combined+totallen, 64+strlen(glsl.file[i]), "\n#line %i %i //%s\n", glsl.line[i], i, glsl.file[i]);
+				else
+					Q_snprintfz(combined+totallen, 64, "\n#line %i %i\n", glsl.line[i], i);
+				totallen += strlen(combined+totallen);
+			}
+			//now shove stuff there.
+			memcpy(combined+totallen, glsl.str[i], glsl.len[i]);
+			totallen += glsl.len[i];
+			combined[totallen] = 0;
+		}
+		qglShaderSourceARB(shader, 1, (const GLcharARB**)&combined, NULL);
+		free(combined);
+	}
+	else if (gl_workaround_ati_shadersource.ival)
 	{
 		/*ATI Driver Bug: ATI drivers ignore the 'length' array.
 		this code does what the drivers fail to do.
@@ -2254,22 +2297,22 @@ static GLhandleARB GLSlang_CreateShader (program_t *prog, const char *name, int 
 		*/
 		GLcharARB *combined;
 		int totallen = 1;
-		for (i = 0; i < strings; i++)
-			totallen += length[i];
+		for (i = 0; i < glsl.strings; i++)
+			totallen += glsl.len[i];
 		combined = malloc(totallen);
 		totallen = 0;
 		combined[totallen] = 0;
-		for (i = 0; i < strings; i++)
+		for (i = 0; i < glsl.strings; i++)
 		{
-			memcpy(combined + totallen, prstrings[i], length[i]);
-			totallen += length[i];
+			memcpy(combined + totallen, glsl.str[i], glsl.len[i]);
+			totallen += glsl.len[i];
 			combined[totallen] = 0;
 		}
 		qglShaderSourceARB(shader, 1, (const GLcharARB**)&combined, NULL);
 		free(combined);
 	}
 	else
-		qglShaderSourceARB(shader, strings, prstrings, length);
+		qglShaderSourceARB(shader, glsl.strings, glsl.str, glsl.len);
 	qglCompileShaderARB(shader);
 
 	return shader;
@@ -2314,13 +2357,13 @@ static GLhandleARB GLSlang_FinishShader(GLhandleARB shader, const char *name, GL
 				typedesc = "???";
 				break;
 			}
-			Con_Printf("%s shader (%s) compilation error:\n----------\n%s----------\n", typedesc, name, str);
+			Con_Printf("%s shader (%s) compilation error:\n"CON_ERROR"%s"CON_DEFAULT"----------\n", typedesc, name, str);
 
 			//if there's no fixed function then failure to compile the default2d shader should be considered fatal. this should help avoid black screens on android.
 			if (gl_config_nofixedfunc && !strcmp(name, "default2d"))
 				Sys_Error("%s shader (%s) compilation error:\n----------\n%s----------\n", typedesc, name, str);
 
-			if (developer.ival)
+			if (developer.ival>1)
 			{	//could use echo console-link I guess (with embedded line numbers). shaders can get quite big though.
 				unsigned int line;
 				char *eol, *start;
@@ -2533,11 +2576,13 @@ union programhandle_u GLSlang_CreateProgram(program_t *prog, const char *name, i
 	return ret;
 }
 
-qboolean GLSlang_ValidateProgramPermu(program_t *prog, const char *name, unsigned int permu, qboolean noerrors, vfsfile_t *blobfile)
+qboolean GLSlang_ValidateProgramPermu(program_t *prog, struct programpermu_s *permu, qboolean noerrors, vfsfile_t *blobfile)
 {
-	return GLSlang_ValidateProgram(&prog->permu[permu].h, name, noerrors, blobfile);
+	if (!permu)
+		return false;
+	return GLSlang_ValidateProgram(&permu->h, prog->name, noerrors, blobfile);
 }
-qboolean GLSlang_CreateProgramPermu(program_t *prog, const char *name, unsigned int permu, int ver, const char **precompilerconstants, const char *vert, const char *tcs, const char *tes, const char *geom, const char *frag, qboolean noerrors, vfsfile_t *blobfile)
+qboolean GLSlang_CreateProgramPermu(program_t *prog, struct programpermu_s *permu, int ver, const char **precompilerconstants, const char *vert, const char *tcs, const char *tes, const char *geom, const char *frag, qboolean noerrors, vfsfile_t *blobfile)
 {
 	if (!ver)
 	{
@@ -2546,19 +2591,19 @@ qboolean GLSlang_CreateProgramPermu(program_t *prog, const char *name, unsigned 
 		else
 		{
 			ver = 110;
-			if (sh_config.maxver>=120 && (permu & PERMUTATION_SKELETAL))
+			if (sh_config.maxver>=120 && (permu->permutation & PERMUTATION_SKELETAL))
 				ver = 120;
 		}
 	}
-	if ((permu & PERMUTATION_SKELETAL) && gl_config.maxattribs < 10)
+	if ((permu->permutation & PERMUTATION_SKELETAL) && gl_config.maxattribs < 10)
 		return false;	//can happen in gles2
 #if MAXRLIGHTMAPS > 1
-	if ((permu & PERMUTATION_LIGHTSTYLES) && gl_config.maxattribs < 16)
+	if ((permu->permutation & PERMUTATION_LIGHTSTYLES) && gl_config.maxattribs < 16)
 		return false;	//can happen in gles2
 #endif
 
-	prog->permu[permu].h = GLSlang_CreateProgram(prog, name, ver, precompilerconstants, vert, tcs, tes, geom, frag, noerrors, blobfile);
-	if (prog->permu[permu].h.glsl.handle)
+	permu->h = GLSlang_CreateProgram(prog, prog->name, ver, precompilerconstants, vert, tcs, tes, geom, frag, noerrors, blobfile);
+	if (permu->h.glsl.handle)
 		return true;
 	return false;
 }
@@ -2573,8 +2618,10 @@ GLint GLSlang_GetUniformLocation (int prog, char *name)
 	return i;
 }
 
-static qboolean GLSlang_LoadBlob(program_t *prog, const char *name, unsigned int permu, vfsfile_t *blobfile)
+static qboolean GLSlang_LoadBlob(program_t *prog, unsigned int permu, vfsfile_t *blobfile)
 {
+	return false;
+/*
 	unsigned int fmt;
 	unsigned int length;
 	void *binary;
@@ -2598,120 +2645,113 @@ static qboolean GLSlang_LoadBlob(program_t *prog, const char *name, unsigned int
 		memset(&prog->permu[permu].h, 0, sizeof(prog->permu[permu].h));
 	}
 	return !!success;
+*/
 }
 
 static void GLSlang_DeleteProg(program_t *prog)
 {
 	unsigned int permu;
-	for (permu = 0; permu < countof(prog->permu); permu++)
+	struct programpermu_s *pp;
+	for (permu = countof(prog->permu); permu-- > 0; )
 	{
-		if (prog->permu[permu].h.loaded)
+		pp = prog->permu[permu];
+		if (pp)
 		{
-			qglDeleteProgramObject_(prog->permu[permu].h.glsl.handle);
-			prog->permu[permu].h.glsl.handle = 0;
+			prog->permu[permu] = NULL;
+			if (pp == prog->permu[0] && permu)
+				continue;	//entry 0 (only) can get copied to avoid constant recompile failures (0 is always precompiled)
 
-			BZ_Free(prog->permu[permu].parm);
-			prog->permu[permu].parm = NULL;
-			prog->permu[permu].numparms = 0;
+			qglDeleteProgramObject_(pp->h.glsl.handle);
+			pp->h.glsl.handle = 0;
+
+			BZ_Free(pp->parm);
+			pp->parm = NULL;
+			pp->numparms = 0;
+
+			Z_Free(pp);
 		}
 	}
 }
 
-static void GLSlang_ProgAutoFields(program_t *prog, const char *progname, cvar_t **cvars, char **cvarnames, int *cvartypes)
+static void GLSlang_ProgAutoFields(program_t *prog, struct programpermu_s *pp, cvar_t **cvars, char **cvarnames, int *cvartypes)
 {
-#define ALTLIGHTMAPSAMP 13
-#define ALTDELUXMAPSAMP 16
-
-	unsigned int i, p;
+	unsigned int i;
 	int uniformloc;
 	char tmpname[128];
-	struct programpermu_s *pp;
+	int maxparms = 0;
 
 	//figure out visible attributes
-	for (p = 0; p < PERMUTATIONS; p++)
+	GLSlang_UseProgram(pp->h.glsl.handle);
+	for (i = 0; shader_attr_names[i].name; i++)
 	{
-		if (!prog->permu[p].h.loaded)
-			continue;
-		GLSlang_UseProgram(prog->permu[p].h.glsl.handle);
-		for (i = 0; shader_attr_names[i].name; i++)
+		uniformloc = qglGetAttribLocationARB(pp->h.glsl.handle, shader_attr_names[i].name);
+		if (uniformloc != -1)
 		{
-			uniformloc = qglGetAttribLocationARB(prog->permu[p].h.glsl.handle, shader_attr_names[i].name);
-			if (uniformloc != -1)
-			{
-				if (shader_attr_names[i].ptype != uniformloc)
-					Con_Printf("Bad attribute: %s\n", shader_attr_names[i].name);
-				else
-					prog->permu[p].attrmask |= 1u<<uniformloc;
-			}
+			if (shader_attr_names[i].ptype != uniformloc)
+				Con_Printf("Bad attribute: %s\n", shader_attr_names[i].name);
+			else
+				pp->attrmask |= 1u<<uniformloc;
 		}
 	}
 
-	prog->numsamplers = 0;
-	prog->defaulttextures = 0;
-	for (p = 0; p < PERMUTATIONS; p++)
+	pp->numparms = 0;
+	pp->parm = NULL;
+
+	for (i = 0; shader_unif_names[i].name; i++)
 	{
-		int maxparms = 0;
-		pp = &prog->permu[p];
-		if (!pp->h.loaded)
+		uniformloc = qglGetUniformLocationARB(pp->h.glsl.handle, shader_unif_names[i].name);
+		if (uniformloc >= 0)
+		{
+			if (pp->numparms >= maxparms)
+			{
+				maxparms = pp->numparms?pp->numparms * 2:8;
+				pp->parm = BZ_Realloc(pp->parm, sizeof(*pp->parm) * maxparms);
+			}
+			pp->parm[pp->numparms].type = shader_unif_names[i].ptype;
+			pp->parm[pp->numparms].handle = uniformloc;
+			pp->parm[pp->numparms].pval = NULL;
+			pp->numparms++;
+		}
+	}
+
+	/*set cvar uniforms*/
+	/*FIXME: enumerate cvars automatically instead*/
+	for (i = 0; cvarnames[i]; i++)
+	{
+		if (!cvars[i])
 			continue;
-		pp->numparms = 0;
-		pp->parm = NULL;
 
-		GLSlang_UseProgram(prog->permu[p].h.glsl.handle);	//we'll probably be setting samplers anyway.
-		for (i = 0; shader_unif_names[i].name; i++)
+		Q_snprintfz(tmpname, sizeof(tmpname), "cvar_%s", cvarnames[i]);
+		uniformloc = qglGetUniformLocationARB(pp->h.glsl.handle, tmpname);
+		if (uniformloc >= 0)
 		{
-			uniformloc = qglGetUniformLocationARB(pp->h.glsl.handle, shader_unif_names[i].name);
-			if (uniformloc >= 0)
+			if (pp->numparms >= maxparms)
 			{
-				if (pp->numparms >= maxparms)
-				{
-					maxparms = pp->numparms?pp->numparms * 2:8;
-					pp->parm = BZ_Realloc(pp->parm, sizeof(*pp->parm) * maxparms);
-				}
-				pp->parm[pp->numparms].type = shader_unif_names[i].ptype;
-				pp->parm[pp->numparms].handle = uniformloc;
-				pp->parm[pp->numparms].pval = NULL;
-				pp->numparms++;
+				maxparms = pp->numparms?pp->numparms * 2:8;
+				pp->parm = BZ_Realloc(pp->parm, sizeof(*pp->parm) * maxparms);
 			}
+			pp->parm[pp->numparms].type = cvartypes[i];
+			pp->parm[pp->numparms].pval = cvars[i];
+			pp->parm[pp->numparms].handle = uniformloc;
+			pp->numparms++;
 		}
+	}
 
-		/*set cvar uniforms*/
-		/*FIXME: enumerate cvars automatically instead*/
-		for (i = 0; cvarnames[i]; i++)
-		{			
-			if (!cvars[i])
-				continue;
-
-			Q_snprintfz(tmpname, sizeof(tmpname), "cvar_%s", cvarnames[i]);
-			uniformloc = qglGetUniformLocationARB(pp->h.glsl.handle, tmpname);
-			if (uniformloc >= 0)
-			{
-				if (pp->numparms >= maxparms)
-				{
-					maxparms = pp->numparms?pp->numparms * 2:8;
-					pp->parm = BZ_Realloc(pp->parm, sizeof(*pp->parm) * maxparms);
-				}
-				pp->parm[pp->numparms].type = cvartypes[i];
-				pp->parm[pp->numparms].pval = cvars[i];
-				pp->parm[pp->numparms].handle = uniformloc;
-				pp->numparms++;
-			}
-		}
-
-		//now scan/set texture uniforms
-		if (!(pp->attrmask & (1u<<VATTR_VERTEX1)))	//a shader kinda has to use one of these...
-			pp->attrmask |= (1u<<VATTR_LEG_VERTEX);
-		for (i = 0; i < 8; i++)
+	//now scan/set texture uniforms
+	if (!(pp->attrmask & (1u<<VATTR_VERTEX1)))	//a shader kinda has to use one of these...
+		pp->attrmask |= (1u<<VATTR_LEG_VERTEX);
+	for (i = 0; i < prog->numsamplers; i++)
+	{
+		Q_snprintfz(tmpname, sizeof(tmpname), "s_t%i", i);
+		uniformloc = qglGetUniformLocationARB(pp->h.glsl.handle, tmpname);
+		if (uniformloc != -1)
 		{
-			Q_snprintfz(tmpname, sizeof(tmpname), "s_t%i", i);
-			uniformloc = qglGetUniformLocationARB(pp->h.glsl.handle, tmpname);
-			if (uniformloc != -1)
-			{
-				qglUniform1iARB(uniformloc, i);
-				if (prog->numsamplers < i+1)
-					prog->numsamplers = i+1;
-			}
+			qglUniform1iARB(uniformloc, i);
+//			if (prog->numsamplers < i+1)
+//				prog->numsamplers = i+1;
 		}
+	}
+	if (developer.ival)
 		for (i = 0; sh_defaultsamplers[i].name; i++)
 		{
 			//figure out which ones are needed.
@@ -2719,35 +2759,22 @@ static void GLSlang_ProgAutoFields(program_t *prog, const char *progname, cvar_t
 				continue;	//don't spam
 			uniformloc = qglGetUniformLocationARB(pp->h.glsl.handle, sh_defaultsamplers[i].name);
 			if (uniformloc != -1)
-				prog->defaulttextures |= sh_defaultsamplers[i].defaulttexbits;
+				Con_Printf("glsl \"%s\" needs %s but doesn't declare so\n", prog->name, sh_defaultsamplers[i].name);
 		}
-	}
-
-	//multiple lightmaps is kinda hacky. if any are set, all must be. 
-	if (prog->defaulttextures & ((1u<<(ALTLIGHTMAPSAMP+0)) | (1u<<(ALTLIGHTMAPSAMP+1)) | (1u<<(ALTLIGHTMAPSAMP+2))))
-		prog->defaulttextures |=((1u<<(ALTLIGHTMAPSAMP+0)) | (1u<<(ALTLIGHTMAPSAMP+1)) | (1u<<(ALTLIGHTMAPSAMP+2)));
-	if (prog->defaulttextures & ((1u<<(ALTDELUXMAPSAMP+0)) | (1u<<(ALTDELUXMAPSAMP+1)) | (1u<<(ALTDELUXMAPSAMP+2))))
-		prog->defaulttextures |=((1u<<(ALTDELUXMAPSAMP+0)) | (1u<<(ALTDELUXMAPSAMP+1)) | (1u<<(ALTDELUXMAPSAMP+2)));
 
 	if (prog->defaulttextures)
 	{
-		unsigned int sampnum;
+		unsigned int sampnum = prog->numsamplers;
 		/*set default texture uniforms now that we know the right sampler ids*/
-		for (p = 0; p < PERMUTATIONS; p++)
+
+		for (i = 0; sh_defaultsamplers[i].name; i++)
 		{
-			if (!prog->permu[p].h.glsl.handle)
-				continue;
-			sampnum = prog->numsamplers;
-			GLSlang_UseProgram(prog->permu[p].h.glsl.handle);
-			for (i = 0; sh_defaultsamplers[i].name; i++)
+			if (prog->defaulttextures & sh_defaultsamplers[i].defaulttexbits)
 			{
-				if (prog->defaulttextures & sh_defaultsamplers[i].defaulttexbits)
-				{
-					uniformloc = qglGetUniformLocationARB(prog->permu[p].h.glsl.handle, sh_defaultsamplers[i].name);
-					if (uniformloc != -1)
-						qglUniform1iARB(uniformloc, sampnum);
-					sampnum++;
-				}
+				uniformloc = qglGetUniformLocationARB(pp->h.glsl.handle, sh_defaultsamplers[i].name);
+				if (uniformloc != -1)
+					qglUniform1iARB(uniformloc, sampnum);
+				sampnum++;
 			}
 		}
 	}
@@ -2970,6 +2997,7 @@ void GL_ForgetPointers(void)
 	qglLinkProgramARB			= NULL;
 	qglBindAttribLocationARB	= NULL;
 	qglGetAttribLocationARB		= NULL;
+	qglVertexAttrib4f			= NULL;
 	qglVertexAttribPointer		= NULL;
 	qglGetVertexAttribiv		= NULL;
 	qglGetVertexAttribPointerv	= NULL;
@@ -3327,8 +3355,6 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 		sh_config.nv_tex_env_combine4	= gl_config.nv_tex_env_combine4;
 		sh_config.env_add				= gl_config.env_add;
 	}
-
-	GL_SetupFormats();
 
 	return true;
 }

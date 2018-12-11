@@ -10,6 +10,8 @@ struct edict_s;
 #define NOENDIAN
 #endif
 
+#define qcc_iswhite(c) ((c) == ' ' || (c) == '\r' || (c) == '\n' || (c) == '\t' || (c) == '\v')
+
 pbool	ED_ParseEpair (progfuncs_t *progfuncs, size_t qcptr, unsigned int fldofs, int fldtype, char *s);
 
 /*
@@ -186,9 +188,9 @@ void PDECL ED_Free (pubprogfuncs_t *ppf, struct edict_s *ed)
 	if (e->ereftype == ER_FREE)	//this happens on start.bsp where an onlyregistered trigger killtargets itself (when all of this sort die after 1 trigger anyway).
 	{
 		if (pr_depth)
-			printf("Tried to free free entity within %s\n", pr_xfunction->s_name+progfuncs->funcs.stringtable);
+			externs->Printf("Tried to free free entity within %s\n", pr_xfunction->s_name+progfuncs->funcs.stringtable);
 		else
-			printf("Engine tried to free free entity\n");
+			externs->Printf("Engine tried to free free entity\n");
 //		if (developer.value == 1)
 //			progfuncs->funcs.pr_trace = true;
 		return;
@@ -270,7 +272,7 @@ fdef_t *ED_ClassFieldAtOfs (progfuncs_t *progfuncs, unsigned int ofs, const char
 {
 	int classnamelen = strlen(classname);
 	unsigned int j;
-	char *mname;
+	const char *mname;
 	for (j = 0; j < prinst.numfields; j++)
 	{
 		if (prinst.field[j].ofs == ofs)
@@ -314,7 +316,7 @@ fdef_t *ED_FindField (progfuncs_t *progfuncs, const char *name)
 ED_FindGlobal
 ============
 */
-ddef16_t *ED_FindGlobal16 (progfuncs_t *progfuncs, char *name)
+ddef16_t *ED_FindGlobal16 (progfuncs_t *progfuncs, const char *name)
 {
 	ddef16_t		*def;
 	unsigned int			i;
@@ -327,7 +329,7 @@ ddef16_t *ED_FindGlobal16 (progfuncs_t *progfuncs, char *name)
 	}
 	return NULL;
 }
-ddef32_t *ED_FindGlobal32 (progfuncs_t *progfuncs, char *name)
+ddef32_t *ED_FindGlobal32 (progfuncs_t *progfuncs, const char *name)
 {
 	ddef32_t		*def;
 	unsigned int			i;
@@ -360,46 +362,46 @@ unsigned int ED_FindGlobalOfs (progfuncs_t *progfuncs, char *name)
 	return 0;
 }
 
-ddef16_t *ED_FindGlobalFromProgs16 (progfuncs_t *progfuncs, const char *name, progsnum_t prnum)
+ddef16_t *ED_FindGlobalFromProgs16 (progfuncs_t *progfuncs, progstate_t *ps, const char *name)
 {
 	ddef16_t		*def;
 	unsigned int			i;
 
-	for (i=1 ; i<pr_progstate[prnum].progs->numglobaldefs ; i++)
+	for (i=1 ; i<ps->progs->numglobaldefs ; i++)
 	{
-		def = &pr_progstate[prnum].globaldefs16[i];
+		def = &ps->globaldefs16[i];
 		if (!strcmp(def->s_name+progfuncs->funcs.stringtable,name) )
 			return def;
 	}
 	return NULL;
 }
-ddef32_t *ED_FindGlobalFromProgs32 (progfuncs_t *progfuncs, const char *name, progsnum_t prnum)
+ddef32_t *ED_FindGlobalFromProgs32 (progfuncs_t *progfuncs, progstate_t *ps, const char *name)
 {
 	ddef32_t		*def;
 	unsigned int			i;
 
-	for (i=1 ; i<pr_progstate[prnum].progs->numglobaldefs ; i++)
+	for (i=1 ; i<ps->progs->numglobaldefs ; i++)
 	{
-		def = &pr_progstate[prnum].globaldefs32[i];
+		def = &ps->globaldefs32[i];
 		if (!strcmp(def->s_name+progfuncs->funcs.stringtable,name) )
 			return def;
 	}
 	return NULL;
 }
 
-ddef16_t *ED_FindTypeGlobalFromProgs16 (progfuncs_t *progfuncs, const char *name, progsnum_t prnum, int type)
+ddef16_t *ED_FindTypeGlobalFromProgs16 (progfuncs_t *progfuncs, progstate_t *ps, const char *name, int type)
 {
 	ddef16_t		*def;
 	unsigned int			i;
 
-	for (i=1 ; i<pr_progstate[prnum].progs->numglobaldefs ; i++)
+	for (i=1 ; i<ps->progs->numglobaldefs ; i++)
 	{
-		def = &pr_progstate[prnum].globaldefs16[i];
+		def = &ps->globaldefs16[i];
 		if (!strcmp(def->s_name+progfuncs->funcs.stringtable,name) )
 		{
-			if (pr_progstate[prnum].types)
+			if (ps->types)
 			{
-				if (pr_progstate[prnum].types[def->type&~DEF_SAVEGLOBAL].type != type)
+				if (ps->types[def->type&~DEF_SAVEGLOBAL].type != type)
 					continue;
 			}
 			else if ((def->type&(~DEF_SAVEGLOBAL)) != type)
@@ -411,19 +413,19 @@ ddef16_t *ED_FindTypeGlobalFromProgs16 (progfuncs_t *progfuncs, const char *name
 }
 
 
-ddef32_t *ED_FindTypeGlobalFromProgs32 (progfuncs_t *progfuncs, const char *name, progsnum_t prnum, int type)
+ddef32_t *ED_FindTypeGlobalFromProgs32 (progfuncs_t *progfuncs, progstate_t *ps, const char *name, int type)
 {
 	ddef32_t		*def;
 	unsigned int			i;
 
-	for (i=1 ; i<pr_progstate[prnum].progs->numglobaldefs ; i++)
+	for (i=1 ; i<ps->progs->numglobaldefs ; i++)
 	{
-		def = &pr_progstate[prnum].globaldefs32[i];
+		def = &ps->globaldefs32[i];
 		if (!strcmp(def->s_name+progfuncs->funcs.stringtable,name) )
 		{
-			if (pr_progstate[prnum].types)
+			if (ps->types)
 			{
-				if (pr_progstate[prnum].types[def->type&~DEF_SAVEGLOBAL].type != type)
+				if (ps->types[def->type&~DEF_SAVEGLOBAL].type != type)
 					continue;
 			}
 			else if ((def->type&(~DEF_SAVEGLOBAL)) != (unsigned)type)
@@ -434,23 +436,23 @@ ddef32_t *ED_FindTypeGlobalFromProgs32 (progfuncs_t *progfuncs, const char *name
 	return NULL;
 }
 
-unsigned int *ED_FindGlobalOfsFromProgs (progfuncs_t *progfuncs, char *name, progsnum_t prnum, int type)
+unsigned int *ED_FindGlobalOfsFromProgs (progfuncs_t *progfuncs, progstate_t *ps, char *name, int type)
 {
 	ddef16_t		*def16;
 	ddef32_t		*def32;
 	static unsigned int pos;
-	switch(pr_progstate[prnum].structtype)
+	switch(ps->structtype)
 	{
 	case PST_DEFAULT:
 	case PST_KKQWSV:
-		def16 = ED_FindTypeGlobalFromProgs16(progfuncs, name, prnum, type);
+		def16 = ED_FindTypeGlobalFromProgs16(progfuncs, ps, name, type);
 		if (!def16)
 			return NULL;
 		pos = def16->ofs;
 		return &pos;
 	case PST_QTEST:
 	case PST_FTE32:
-		def32 = ED_FindTypeGlobalFromProgs32(progfuncs, name, prnum, type);
+		def32 = ED_FindTypeGlobalFromProgs32(progfuncs, ps, name, type);
 		if (!def32)
 			return NULL;
 		return &def32->ofs;
@@ -494,7 +496,7 @@ mfunction_t *ED_FindFunction (progfuncs_t *progfuncs, const char *name, progsnum
 
 	if ((unsigned)pnum > (unsigned)prinst.maxprogs)
 	{
-		printf("Progsnum %i out of bounds\n", pnum);
+		externs->Printf("Progsnum %i out of bounds\n", pnum);
 		return NULL;
 	}
 
@@ -995,16 +997,16 @@ void PDECL ED_Print (pubprogfuncs_t *ppf, struct edict_s *ed)
 	fdef_t	*d;
 	int		*v;
 	unsigned int		i;unsigned int j;
-	char	*name;
+	const char	*name;
 	int		type;
 
 	if (((edictrun_t *)ed)->ereftype == ER_FREE)
 	{
-		printf ("FREE\n");
+		externs->Printf ("FREE\n");
 		return;
 	}
 
-	printf("\nEDICT %i:\n", NUM_FOR_EDICT(progfuncs, (struct edict_s *)ed));
+	externs->Printf("\nEDICT %i:\n", NUM_FOR_EDICT(progfuncs, (struct edict_s *)ed));
 	for (i=1 ; i<prinst.numfields ; i++)
 	{
 		d = &prinst.field[i];
@@ -1028,12 +1030,12 @@ void PDECL ED_Print (pubprogfuncs_t *ppf, struct edict_s *ed)
 		if (j == type_size[type])
 			continue;
 
-		printf ("%s",name);
+		externs->Printf ("%s",name);
 		l = strlen (name);
 		while (l++ < 15)
-			printf (" ");
+			externs->Printf (" ");
 
-		printf ("%s\n", PR_ValueString(progfuncs, d->type, (eval_t *)v, false));
+		externs->Printf ("%s\n", PR_ValueString(progfuncs, d->type, (eval_t *)v, false));
 	}
 }
 #if 0
@@ -1053,7 +1055,7 @@ void ED_PrintEdicts (progfuncs_t *progfuncs)
 {
 	unsigned int		i;
 
-	printf ("%i entities\n", sv_num_edicts);
+	externs->Printf ("%i entities\n", sv_num_edicts);
 	for (i=0 ; i<sv_num_edicts ; i++)
 		ED_PrintNum (progfuncs, i);
 }
@@ -1086,8 +1088,8 @@ void ED_Count (progfuncs_t *progfuncs)
 //			step++;
 	}
 
-	printf ("num_edicts:%3i\n", sv_num_edicts);
-	printf ("active    :%3i\n", active);
+	externs->Printf ("num_edicts:%3i\n", sv_num_edicts);
+	externs->Printf ("active    :%3i\n", active);
 //	Con_Printf ("view      :%3i\n", models);
 //	Con_Printf ("touch     :%3i\n", solid);
 //	Con_Printf ("step      :%3i\n", step);
@@ -1215,7 +1217,7 @@ pbool	PDECL ED_ParseEval (pubprogfuncs_t *ppf, eval_t *eval, int type, const cha
 		def = ED_FindField (progfuncs, s);
 		if (!def)
 		{
-			printf ("Can't find field %s\n", s);
+			externs->Printf ("Can't find field %s\n", s);
 			return false;
 		}
 		eval->_int = def->ofs;
@@ -1230,7 +1232,7 @@ pbool	PDECL ED_ParseEval (pubprogfuncs_t *ppf, eval_t *eval, int type, const cha
 		func = ED_FindFunction (progfuncs, s, &i, -1);
 		if (!func)
 		{
-			printf ("Can't find function %s\n", s);
+			externs->Printf ("Can't find function %s\n", s);
 			return false;
 		}
 		eval->function = (func - pr_progstate[i].functions) | (i<<24);
@@ -1245,12 +1247,11 @@ pbool	PDECL ED_ParseEval (pubprogfuncs_t *ppf, eval_t *eval, int type, const cha
 pbool	ED_ParseEpair (progfuncs_t *progfuncs, size_t qcptr, unsigned int fldofs, int fldtype, char *s)
 {
 	int		i;
-	char	string[128];
 	fdef_t	*def;
-	char	*v, *w;
 	string_t st;
 	mfunction_t	*func;
 	int type = fldtype & ~DEF_SAVEGLOBAL;
+	double d;
 	qcptr += fldofs*sizeof(int);
 
 	switch (type)
@@ -1265,51 +1266,54 @@ pbool	ED_ParseEpair (progfuncs_t *progfuncs, size_t qcptr, unsigned int fldofs, 
 		break;
 
 	case ev_float:
-		*(float *)(progfuncs->funcs.stringtable + qcptr) = (float)atof (s);
+		while(*s == ' ' || *s == '\t')
+			s++;
+		d = strtod(s, &s);
+		while(*s == ' ' || *s == '\t')
+			s++;
+		*(float *)(progfuncs->funcs.stringtable + qcptr) = d;
+		if (*s)
+			return false;	//some kind of junk in there.
 		break;
 
+	case ev_entity:	//ent references are simple ints for us.
 	case ev_integer:
-		*(int *)(progfuncs->funcs.stringtable + qcptr) = atoi (s);
+		while(*s == ' ' || *s == '\t')
+			s++;
+		i = strtol(s, &s, 0);
+		while(*s == ' ' || *s == '\t')
+			s++;
+		*(int *)(progfuncs->funcs.stringtable + qcptr) = i;
+		if (*s)
+			return false;	//some kind of junk in there.
 		break;
 
 	case ev_vector:
-		strcpy (string, s);
-		v = string;
-		w = string;
 		for (i=0 ; i<3 ; i++)
 		{
-			while (*v && *v != ' ')
-				v++;
-			if (!*v)
-			{
-				((float *)(progfuncs->funcs.stringtable + qcptr))[i] = (float)atof (w);
-				w = v;
-			}
-			else
-			{
-				*v = 0;
-				((float *)(progfuncs->funcs.stringtable + qcptr))[i] = (float)atof (w);
-				w = v = v+1;
-			}
+			while(*s == ' ' || *s == '\t')
+				s++;
+			d = strtod(s, &s);
+			((float *)(progfuncs->funcs.stringtable + qcptr))[i] = d;
 		}
-		break;
-
-	case ev_entity:
-		*(int *)(progfuncs->funcs.stringtable + qcptr) = atoi (s);
+		while(*s == ' ' || *s == '\t')
+			s++;
+		if (*s)
+			return false;	//some kind of junk in there.
 		break;
 
 	case ev_field:
 		def = ED_FindField (progfuncs, s);
 		if (!def)
 		{
-			printf ("Can't find field %s\n", s);
+			externs->Printf ("Can't find field %s\n", s);
 			return false;
 		}
 		*(int *)(progfuncs->funcs.stringtable + qcptr) = def->ofs;
 		break;
 
 	case ev_function:
-		if (s[1]==':'&&s[2]=='\0')
+		if (s[0] && s[1]==':'&&s[2]=='\0')	//this isn't right...
 		{
 			*(func_t *)(progfuncs->funcs.stringtable + qcptr) = 0;
 			return true;
@@ -1317,14 +1321,14 @@ pbool	ED_ParseEpair (progfuncs_t *progfuncs, size_t qcptr, unsigned int fldofs, 
 		func = ED_FindFunction (progfuncs, s, &i, -1);
 		if (!func)
 		{
-			printf ("Can't find function %s\n", s);
+			externs->Printf ("Can't find function %s\n", s);
 			return false;
 		}
 		*(func_t *)(progfuncs->funcs.stringtable + qcptr) = (func - pr_progstate[i].functions) | (i<<24);
 		break;
 
 	default:
-		break;
+		return false;
 	}
 	return true;
 }
@@ -1339,7 +1343,7 @@ Used for initial level load and for savegames.
 ====================
 */
 #if 1
-const char *ED_ParseEdict (progfuncs_t *progfuncs, const char *data, edictrun_t *ent)
+static const char *ED_ParseEdict (progfuncs_t *progfuncs, const char *data, edictrun_t *ent, pbool *out_maphack)
 {
 	fdef_t		*key;
 	pbool	init;
@@ -1370,7 +1374,7 @@ const char *ED_ParseEdict (progfuncs_t *progfuncs, const char *data, edictrun_t 
 			nest++;
 		if (!data)
 		{
-			printf ("ED_ParseEntity: EOF without closing brace\n");
+			externs->Printf ("ED_ParseEntity: EOF without closing brace\n");
 			return NULL;
 		}
 		if (nest > 1)
@@ -1391,13 +1395,13 @@ const char *ED_ParseEdict (progfuncs_t *progfuncs, const char *data, edictrun_t 
 		data = QCC_COM_Parse (data);
 		if (!data)
 		{
-			printf ("ED_ParseEntity: EOF without closing brace\n");
+			externs->Printf ("ED_ParseEntity: EOF without closing brace\n");
 			return NULL;
 		}
 
 		if (qcc_token[0] == '}')
 		{
-			printf ("ED_ParseEntity: closing brace without data\n");
+			externs->Printf ("ED_ParseEntity: closing brace without data\n");
 			return NULL;
 		}
 
@@ -1430,8 +1434,19 @@ const char *ED_ParseEdict (progfuncs_t *progfuncs, const char *data, edictrun_t 
 		}
 
 cont:
+		switch(key->type)
+		{
+		case ev_function:
+		case ev_field:
+		case ev_entity:
+		case ev_pointer:
+			*out_maphack = true;	//one of these types of fields means evil maphacks are at play.
+			break;
+		}
 		if (!ED_ParseEpair (progfuncs, (char*)ent->fields - progfuncs->funcs.stringtable, key->ofs, key->type, qcc_token))
 		{
+			if (externs->badfield && externs->badfield(&progfuncs->funcs, (struct edict_s*)ent, keyname, qcc_token))
+				continue;
 			continue;
 //			Sys_Error ("ED_ParseEdict: parse error on entities");
 		}
@@ -1618,7 +1633,7 @@ char *ED_WriteEdict(progfuncs_t *progfuncs, edictrun_t *ed, char *buf, size_t *b
 	fdef_t	*d;
 	int		*v;
 	unsigned int		i;unsigned int j;
-	char	*name;
+	const char	*name;
 	int		type;
 	int len;
 	char *tmp;
@@ -1801,9 +1816,11 @@ char *PDECL PR_SaveEnts(pubprogfuncs_t *ppf, char *buf, size_t *bufofs, size_t b
 		//write the ents
 		for (a = 0; a < sv_num_edicts; a++)
 		{
+			char head[64];
 			edictrun_t *ed = (edictrun_t *)EDICT_NUM(progfuncs, a);
 
-			AddS ("{\n");
+			QC_snprintfz(head, sizeof(head), "{//%i\n", a);
+			AddS (head);
 
 			if (ed->ereftype == ER_ENTITY)	//free entities write a {} with no data. the loader detects this specifically.
 				ED_WriteEdict(progfuncs, ed, buf, bufofs, bufmax, true);
@@ -1885,7 +1902,7 @@ char *PDECL PR_SaveEnts(pubprogfuncs_t *ppf, char *buf, size_t *bufofs, size_t b
 int header_crc;
 
 //if 'general' block is found, this is a compleate state, otherwise, we should spawn entities like
-int PDECL PR_LoadEnts(pubprogfuncs_t *ppf, const char *file, void *ctx, void (PDECL *callback) (pubprogfuncs_t *progfuncs, struct edict_s *ed, void *ctx, const char *entstart, const char *entend))
+int PDECL PR_LoadEnts(pubprogfuncs_t *ppf, const char *file, void *ctx, void (PDECL *entspawned) (pubprogfuncs_t *progfuncs, struct edict_s *ed, void *ctx, const char *entstart, const char *entend), pbool(PDECL *extendedterm)(pubprogfuncs_t *progfuncs, void *ctx, const char **extline))
 {
 	progfuncs_t *progfuncs = (progfuncs_t*)ppf;
 	const char *datastart;
@@ -1907,11 +1924,12 @@ int PDECL PR_LoadEnts(pubprogfuncs_t *ppf, const char *file, void *ctx, void (PD
 	int crc = 1;
 	int entsize = 0;
 	int numents = 0;
+	pbool maphacks = false;
 
 	pbool resethunk=0;
 	pbool isloadgame;
 	if (file && !strncmp(file, "loadgame", 8))
-	{
+	{	//this is internally inserted for legacy saved games.
 		isloadgame = true;
 		numents = -1;
 		file+=8;
@@ -1922,6 +1940,51 @@ int PDECL PR_LoadEnts(pubprogfuncs_t *ppf, const char *file, void *ctx, void (PD
 	while(1)
 	{
 		datastart = file;
+
+		if (extendedterm)
+		{
+			//skip simple leading whitespace
+			while (qcc_iswhite(*file))
+				file++;
+			if (file[0] == '/' && file[1] == '*')
+			{	//looks like we have a hidden extension.
+				file+=2;
+				for(;;)
+				{
+					//skip to end of line
+					if (!*file)
+						break;	//unexpected EOF
+					else if (file[0] == '*' && file[1] == '/')
+					{	//end of comment
+						file+=2;
+						break;
+					}
+					else if (*file != '\n')
+					{
+						file++;
+						continue;
+					}
+					file++;	//skip past the \n
+					while (*file == ' ' || *file == '\t')
+						file++;	//skip leading indentation
+
+					if (file[0] == '*' && file[1] == '/')
+					{	//end of comment
+						file+=2;
+						break;
+					}
+					else if (*file == '/')
+						continue;	//embedded comment. ignore the line. not going to do nested comments, because those are not normally valid anyway, just C++-style inside C-style.
+					else if (extendedterm(ppf, ctx, &file))
+						;	//found a term we recognised
+					else
+						;	//unknown line, but this is a comment so whatever
+
+				}
+				continue;
+			}
+		}
+
 		file = QCC_COM_Parse(file);
 		if (file == NULL)
 			break;	//finished reading file
@@ -1972,10 +2035,10 @@ int PDECL PR_LoadEnts(pubprogfuncs_t *ppf, const char *file, void *ctx, void (PD
 			ed->ereftype = ER_ENTITY;
 			if (externs->entspawn)
 				externs->entspawn((struct edict_s *) ed, true);
-			file = ED_ParseEdict(progfuncs, file, ed);
+			file = ED_ParseEdict(progfuncs, file, ed, &maphacks);
 
-			if (callback)
-				callback(ppf, (struct edict_s *)ed, ctx, datastart, file);
+			if (entspawned)
+				entspawned(ppf, (struct edict_s *)ed, ctx, datastart, file);
 		}
 		else if (!strcmp(qcc_token, "progs"))
 		{
@@ -2063,7 +2126,7 @@ int PDECL PR_LoadEnts(pubprogfuncs_t *ppf, const char *file, void *ctx, void (PD
 				case PST_KKQWSV:
 					if (!(d16 = ED_FindGlobal16(progfuncs, qcc_token)))
 					{
-						printf("global value %s not found\n", qcc_token);
+						externs->Printf("global value %s not found\n", qcc_token);
 						file = QCC_COM_Parse(file);
 					}
 					else
@@ -2076,7 +2139,7 @@ int PDECL PR_LoadEnts(pubprogfuncs_t *ppf, const char *file, void *ctx, void (PD
 				case PST_FTE32:
 					if (!(d32 = ED_FindGlobal32(progfuncs, qcc_token)))
 					{
-						printf("global value %s not found\n", qcc_token);
+						externs->Printf("global value %s not found\n", qcc_token);
 						file = QCC_COM_Parse(file);
 					}
 					else
@@ -2140,7 +2203,7 @@ int PDECL PR_LoadEnts(pubprogfuncs_t *ppf, const char *file, void *ctx, void (PD
 					memcpy(oldglobals, pr_progstate[0].globals, oldglobalssize);
 				}
 				else
-					printf("Unable to alloc %i bytes\n", pr_progstate[0].globals_size);
+					externs->Printf("Unable to alloc %i bytes\n", pr_progstate[0].globals_size);
 			}
 
 			PRAddressableFlush(progfuncs, 0);
@@ -2178,7 +2241,7 @@ int PDECL PR_LoadEnts(pubprogfuncs_t *ppf, const char *file, void *ctx, void (PD
 						case PST_KKQWSV:
 							if (!(d16 = ED_FindGlobal16(progfuncs, qcc_token)))
 							{
-								printf("global value %s not found\n", qcc_token);
+								externs->Printf("global value %s not found\n", qcc_token);
 								file = QCC_COM_Parse(file);
 							}
 							else
@@ -2191,7 +2254,7 @@ int PDECL PR_LoadEnts(pubprogfuncs_t *ppf, const char *file, void *ctx, void (PD
 						case PST_FTE32:
 							if (!(d32 = ED_FindGlobal32(progfuncs, qcc_token)))
 							{
-								printf("global value %s not found\n", qcc_token);
+								externs->Printf("global value %s not found\n", qcc_token);
 								file = QCC_COM_Parse(file);
 							}
 							else
@@ -2207,15 +2270,13 @@ int PDECL PR_LoadEnts(pubprogfuncs_t *ppf, const char *file, void *ctx, void (PD
 				}
 				else
 				{
-					ed = (edictrun_t *)EDICT_NUM(progfuncs, numents);
-					if (!ed)
-						ed = ED_AllocIntoTable(progfuncs, numents, false, prinst.fields_size);
+					ed = ED_AllocIntoTable(progfuncs, numents, false, prinst.fields_size);
 
 					if (externs->entspawn)
 						externs->entspawn((struct edict_s *) ed, true);
 
 					ed->ereftype = ER_ENTITY;
-					file = ED_ParseEdict (progfuncs, file, ed);
+					file = ED_ParseEdict (progfuncs, file, ed, &maphacks);
 				}
 				sv_num_edicts = ++numents;
 				continue;
@@ -2245,10 +2306,13 @@ int PDECL PR_LoadEnts(pubprogfuncs_t *ppf, const char *file, void *ctx, void (PD
 			ed->ereftype = ER_ENTITY;
 			if (externs->entspawn)
 				externs->entspawn((struct edict_s *) ed, true);
-			file = ED_ParseEdict(progfuncs, file, ed);
+			file = ED_ParseEdict(progfuncs, file, ed, &maphacks);
 
-			callback(ppf, (struct edict_s *)ed, ctx, datastart, file);
+			if (entspawned)
+				entspawned(ppf, (struct edict_s *)ed, ctx, datastart, file);
 		}
+		else if (extendedterm && extendedterm(ppf, ctx, &datastart))
+			file = datastart;
 		else
 			Sys_Error("Bad entity lump: '%s' not recognised (last ent was %i)", qcc_token, ed?ed->entnum:0);
 	}
@@ -2281,7 +2345,7 @@ char *PDECL PR_SaveEnt (pubprogfuncs_t *ppf, char *buf, size_t *size, size_t max
 	fdef_t	*d;
 	int		*v;
 	unsigned int		i;unsigned int j;
-	char	*name, *mname;
+	const char	*name, *mname;
 	const char	*classname = NULL;
 	int		classnamelen = 0;
 	int		type;
@@ -2359,6 +2423,7 @@ struct edict_s *PDECL PR_RestoreEnt (pubprogfuncs_t *ppf, const char *buf, size_
 	progfuncs_t *progfuncs = (progfuncs_t*)ppf;
 	edictrun_t *ent;
 	const char *start = buf;
+	pbool maphacks = false;	//don't really care.
 
 	buf = QCC_COM_Parse(buf);	//read the key
 	if (!buf || !*qcc_token)
@@ -2375,7 +2440,7 @@ struct edict_s *PDECL PR_RestoreEnt (pubprogfuncs_t *ppf, const char *buf, size_
 	if (ent->ereftype == ER_FREE && externs->entspawn)
 		externs->entspawn((struct edict_s *) ent, false);
 
-	buf = ED_ParseEdict(progfuncs, buf, ent);
+	buf = ED_ParseEdict(progfuncs, buf, ent, &maphacks);
 
 	*size = buf - start;
 
@@ -2428,7 +2493,7 @@ void PR_TestForWierdness(progfuncs_t *progfuncs)
 		if ((pr_globaldefs16[i].type&~(DEF_SHARED|DEF_SAVEGLOBAL)) == ev_string)
 		{
 			if (G_INT(pr_globaldefs16[i].ofs) < 0 || G_INT(pr_globaldefs16[i].ofs) >= addressableused)
-				printf("String type irregularity on \"%s\" \"%s\"\n", pr_globaldefs16[i].s_name+progfuncs->funcs.stringtable, G_INT(pr_globaldefs16[i].ofs)+progfuncs->funcs.stringtable);
+				externs->Printf("String type irregularity on \"%s\" \"%s\"\n", pr_globaldefs16[i].s_name+progfuncs->funcs.stringtable, G_INT(pr_globaldefs16[i].ofs)+progfuncs->funcs.stringtable);
 		}
 	}
 
@@ -2442,7 +2507,7 @@ void PR_TestForWierdness(progfuncs_t *progfuncs)
 				if (ed->isfree)
 					continue;
 				if (((int *)ed->fields)[field[i].ofs] < 0 || ((int *)ed->fields)[field[i].ofs] >= addressableused)
-					printf("String type irregularity \"%s\" \"%s\"\n", field[i].name, ((int *)ed->fields)[field[i].ofs]+progfuncs->funcs.stringtable);
+					externs->Printf("String type irregularity \"%s\" \"%s\"\n", field[i].name, ((int *)ed->fields)[field[i].ofs]+progfuncs->funcs.stringtable);
 			}
 		}
 	}
@@ -2564,7 +2629,7 @@ int PR_ReallyLoadProgs (progfuncs_t *progfuncs, const char *filename, progstate_
 
 	if (externs->autocompile == PR_COMPILEALWAYS)	//always compile before loading
 	{
-		printf("Forcing compile of progs %s\n", filename);
+		externs->Printf("Forcing compile of progs %s\n", filename);
 		if (!CompileFile(progfuncs, filename))
 			return false;
 	}
@@ -2580,13 +2645,13 @@ retry:
 		{
 			if (hmark==0xffffffff)	//first try
 			{
-				printf("couldn't open progs %s. Attempting to compile.\n", filename);
+				externs->Printf("couldn't open progs %s. Attempting to compile.\n", filename);
 				CompileFile(progfuncs, filename);
 			}
 			pr_progs = externs->ReadFile(filename, PR_GetHeapBuffer, progfuncs, &fsz, false);
 			if (!pr_progs)
 			{
-				printf("Couldn't find or compile file %s\n", filename);
+				externs->Printf("Couldn't find or compile file %s\n", filename);
 				return false;
 			}
 		}
@@ -2594,7 +2659,7 @@ retry:
 			return false;
 		else
 		{
-			printf("Couldn't find file %s\n", filename);
+			externs->Printf("Couldn't find file %s\n", filename);
 			return false;
 		}
 	}
@@ -2610,7 +2675,7 @@ retry:
 
 	if (pr_progs->version == PROG_VERSION)
 	{
-//		printf("Opening standard progs file \"%s\"\n", filename);
+//		externs->Printf("Opening standard progs file \"%s\"\n", filename);
 		current_progstate->structtype = PST_DEFAULT;
 	}
 	else if (pr_progs->version == PROG_QTESTVERSION)
@@ -2625,23 +2690,23 @@ retry:
 #endif
 		if (pr_progs->secondaryversion == PROG_SECONDARYVERSION16)
 		{
-//			printf("Opening 16bit fte progs file \"%s\"\n", filename);
+//			externs->Printf("Opening 16bit fte progs file \"%s\"\n", filename);
 			current_progstate->structtype = PST_DEFAULT;
 		}
 		else if (pr_progs->secondaryversion == PROG_SECONDARYVERSION32)
 		{
-//			printf("Opening 32bit fte progs file \"%s\"\n", filename);
+//			externs->Printf("Opening 32bit fte progs file \"%s\"\n", filename);
 			current_progstate->structtype = PST_FTE32;
 		}
 		else
 		{
-//			printf("Opening KK7 progs file \"%s\"\n", filename);
+//			externs->Printf("Opening KK7 progs file \"%s\"\n", filename);
 			current_progstate->structtype = PST_KKQWSV;	//KK progs. Yuck. Disabling saving would be a VERY good idea.
 			pr_progs->version = PROG_VERSION;	//not fte.
 		}
 /*		else
 		{
-			printf ("Progs extensions are not compatible\nTry recompiling with the FTE compiler\n");
+			externs->Printf ("Progs extensions are not compatible\nTry recompiling with the FTE compiler\n");
 			HunkFree(hmark);
 			pr_progs=NULL;
 			return false;
@@ -2649,7 +2714,7 @@ retry:
 */	}
 	else
 	{
-		printf ("%s has wrong version number (%i should be %i)\n", filename, pr_progs->version, PROG_VERSION);
+		externs->Printf ("%s has wrong version number (%i should be %i)\n", filename, pr_progs->version, PROG_VERSION);
 		PRHunkFree(progfuncs, hmark);
 		pr_progs=NULL;
 		return false;
@@ -2660,7 +2725,7 @@ retry:
 	{
 		if (PR_TestRecompile(progfuncs))
 		{
-			printf("Source file has changed\nRecompiling.\n");
+			externs->Printf("Source file has changed\nRecompiling.\n");
 			if (CompileFile(progfuncs, filename))
 			{
 				PRHunkFree(progfuncs, hmark);
@@ -2672,11 +2737,11 @@ retry:
 		}
 	}
 	if (!trysleft)	//the progs exists, let's just be happy about it.
-		printf("Progs is out of date and uncompilable\n");
+		externs->Printf("Progs is out of date and uncompilable\n");
 
 	if (externs->CheckHeaderCrc && !externs->CheckHeaderCrc(&progfuncs->funcs, prinst.pr_typecurrent, pr_progs->crc))
 	{
-//		printf ("%s system vars have been modified, progdefs.h is out of date\n", filename);
+//		externs->Printf ("%s system vars have been modified, progdefs.h is out of date\n", filename);
 		PRHunkFree(progfuncs, hmark);
 		pr_progs=NULL;
 		return false;
@@ -2684,7 +2749,7 @@ retry:
 
 	if (pr_progs->version == PROG_EXTENDEDVERSION && pr_progs->blockscompressed && !QC_decodeMethodSupported(2))
 	{
-		printf ("%s uses compression\n", filename);
+		externs->Printf ("%s uses compression\n", filename);
 		PRHunkFree(progfuncs, hmark);
 		pr_progs=NULL;
 		return false;
@@ -3262,7 +3327,7 @@ retry:
 				break;
 			case ev_string:
 				if (((unsigned int *)glob)[gd16[i].ofs]>=progstate->progs->numstrings)
-					printf("PR_LoadProgs: invalid string value (%x >= %x) in '%s'\n", ((unsigned int *)glob)[gd16[i].ofs], progstate->progs->numstrings, gd16[i].s_name+pr_strings-stringadjust);
+					externs->Printf("PR_LoadProgs: invalid string value (%x >= %x) in '%s'\n", ((unsigned int *)glob)[gd16[i].ofs], progstate->progs->numstrings, gd16[i].s_name+pr_strings-stringadjust);
 				else if (isfriked != -1)
 				{
 					if (pr_strings[((int *)glob)[gd16[i].ofs]])	//quakec uses string tables. 0 must remain null, or 'if (s)' can break.
@@ -3326,7 +3391,7 @@ retry:
 			for (i = 0; i < pr_progs->numbodylessfuncs; i++)
 			{
 				d32 = ED_FindGlobal32(progfuncs, s);
-				d2 = ED_FindGlobalOfsFromProgs(progfuncs, s, 0, ev_function);
+				d2 = ED_FindGlobalOfsFromProgs(progfuncs, &pr_progstate[0], s, ev_function);
 				if (!d2)
 					Sys_Error("Runtime-linked function %s was not found in existing progs", s);
 				if (!d32)
@@ -3343,7 +3408,7 @@ retry:
 
 	if ((isfriked && prinst.pr_typecurrent))	//friked progs only allow one file.
 	{
-		printf("You are trying to load a string-stripped progs as an addon.\nThis behaviour is not supported. Try removing some optimizations.");
+		externs->Printf("You are trying to load a string-stripped progs as an addon.\nThis behaviour is not supported. Try removing some optimizations.");
 		PRHunkFree(progfuncs, hmark);
 		pr_progs=NULL;
 		return false;
@@ -3380,7 +3445,7 @@ retry:
 				d16 = ED_FindGlobal16(progfuncs, s);
 				if (!d16)
 				{
-					printf("\"%s\" requires the external function \"%s\", but the definition was stripped\n", filename, s);
+					externs->Printf("\"%s\" requires the external function \"%s\", but the definition was stripped\n", filename, s);
 					PRHunkFree(progfuncs, hmark);
 					pr_progs=NULL;
 					return false;
@@ -3388,7 +3453,7 @@ retry:
 
 				((int *)glob)[d16->ofs] = PR_FindFunc(&progfuncs->funcs, s, PR_ANY);
 				if (!((int *)glob)[d16->ofs])
-					printf("Warning: Runtime-linked function %s could not be found (loading %s)\n", s, filename);
+					externs->Printf("Warning: Runtime-linked function %s could not be found (loading %s)\n", s, filename);
 				s+=strlen(s)+1;
 			}
 		}
@@ -3405,7 +3470,7 @@ retry:
 				d32 = ED_FindGlobal32(progfuncs, s);
 				if (!d32)
 				{
-					printf("\"%s\" requires the external function \"%s\", but the definition was stripped\n", filename, s);
+					externs->Printf("\"%s\" requires the external function \"%s\", but the definition was stripped\n", filename, s);
 					PRHunkFree(progfuncs, hmark);
 					pr_progs=NULL;
 					return false;
@@ -3413,7 +3478,7 @@ retry:
 
 				((int *)glob)[d32->ofs] = PR_FindFunc(&progfuncs->funcs, s, PR_ANY);
 				if (!((int *)glob)[d32->ofs])
-					printf("Warning: Runtime-linked function %s could not be found (loading %s)\n", s, filename);
+					externs->Printf("Warning: Runtime-linked function %s could not be found (loading %s)\n", s, filename);
 				s+=strlen(s)+1;
 			}
 		}

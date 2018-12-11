@@ -292,6 +292,7 @@ void QCBUILTIN PF_CL_loadfont (pubprogfuncs_t *prinst, struct globalvars_s *pr_g
 	G_FLOAT(OFS_RETURN) = slotnum;
 }
 
+#ifndef NOLEGACY
 void CL_LoadFont_f(void)
 {
 	//console command for compat with dp/debug.
@@ -405,6 +406,7 @@ void CL_LoadFont_f(void)
 			Cvar_Set(&gl_font, facename);
 	}
 }
+#endif
 
 //scrolling could be done with scissoring.
 //selection could be done with some substrings
@@ -424,6 +426,9 @@ void QCBUILTIN PF_CL_DrawTextField (pubprogfuncs_t *prinst, struct globalvars_s 
 		scale[1] *= world->g.drawfontscale[1];
 	}
 	font = PR_CL_ChooseFont(world->g.drawfont, scale[0], scale[1]);
+
+	// Oversight ~eukara
+	R2D_ImageColours(1.0f, 1.0f, 1.0f, 1.0f);
 
 	R_DrawTextField(pos[0], pos[1], size[0], size[1], text, CON_WHITEMASK, flags, font, scale);
 }
@@ -585,7 +590,7 @@ void QCBUILTIN PF_CL_drawrotpic (pubprogfuncs_t *prinst, struct globalvars_s *pr
 
 	r2d_be_flags = PF_SelectDPDrawFlag(flag);
 	R2D_ImageColours(rgb[0], rgb[1], rgb[2], alpha);
-	R2D_Image2dQuad(points, tcoords, p);
+	R2D_Image2dQuad((const vec2_t*)points, (const vec2_t*)tcoords, NULL, p);
 	r2d_be_flags = 0;
 
 	G_FLOAT(OFS_RETURN) = 1;
@@ -657,7 +662,7 @@ void QCBUILTIN PF_CL_drawrotsubpic (pubprogfuncs_t *prinst, struct globalvars_s 
 
 	r2d_be_flags = PF_SelectDPDrawFlag(flag);
 	R2D_ImageColours(rgb[0], rgb[1], rgb[2], alpha);
-	R2D_Image2dQuad(points, tcoords, p);
+	R2D_Image2dQuad((const vec2_t*)points, (const vec2_t*)tcoords, NULL, p);
 	r2d_be_flags = 0;
 
 	G_FLOAT(OFS_RETURN) = 1;
@@ -711,7 +716,8 @@ void QCBUILTIN PF_CL_uploadimage (pubprogfuncs_t *prinst, struct globalvars_s *p
 	int width = G_INT(OFS_PARM1);
 	int height = G_INT(OFS_PARM2);
 	int src = G_INT(OFS_PARM3);	//ptr
-	int size = width * height * 4;
+	int size = (prinst->callargc > 4)?G_INT(OFS_PARM4):(width * height * 4);
+	uploadfmt_t format = (prinst->callargc > 5)?PR_TranslateTextureFormat(G_INT(OFS_PARM5)):TF_RGBA32;
 	void *imgptr;
 	texid_t tid;
 
@@ -735,11 +741,30 @@ void QCBUILTIN PF_CL_uploadimage (pubprogfuncs_t *prinst, struct globalvars_s *p
 	if (!TEXVALID(tid))
 		tid = Image_CreateTexture(imagename, NULL, RT_IMAGEFLAGS);
 
-	Image_Upload(tid, TF_RGBA32, imgptr, NULL, width, height, RT_IMAGEFLAGS);
-	tid->width = width;
-	tid->height = height;
-
-	G_INT(OFS_RETURN) = 1;
+	if (!format)
+	{
+		void *data = BZ_Malloc(size);
+		memcpy(data, imgptr, size);
+		G_INT(OFS_RETURN) = Image_LoadTextureFromMemory(tid, tid->flags, tid->ident, imagename, data, size);
+	}
+	else
+	{
+		unsigned int blockbytes, blockwidth, blockheight;
+		//get format info
+		Image_BlockSizeForEncoding(format, &blockbytes, &blockwidth, &blockheight);
+		//round up as appropriate
+		blockwidth = ((width+blockwidth-1)/blockwidth)*blockwidth;
+		blockheight = ((height+blockheight-1)/blockheight)*blockheight;
+		if (size != blockwidth*blockheight*blockbytes)
+			G_INT(OFS_RETURN) = 0;	//size isn't right. which means the pointer might be invalid too.
+		else
+		{
+			Image_Upload(tid, format, imgptr, NULL, width, height, RT_IMAGEFLAGS);
+			tid->width = width;
+			tid->height = height;
+			G_INT(OFS_RETURN) = 1;
+		}
+	}
 }
 
 //warning: not threadable. hopefully noone abuses it.
@@ -749,7 +774,7 @@ void QCBUILTIN PF_CL_readimage (pubprogfuncs_t *prinst, struct globalvars_s *pr_
 	const char *filename = PR_GetStringOfs(prinst, OFS_PARM0);
 
 	int imagewidth, imageheight;
-	qboolean hasalpha;
+	uploadfmt_t format;
 	void *filedata;
 
 	G_INT(OFS_RETURN) = 0;	//assume the worst
@@ -760,7 +785,7 @@ void QCBUILTIN PF_CL_readimage (pubprogfuncs_t *prinst, struct globalvars_s *pr_
 
 	if (filedata)
 	{
-		qbyte *imagedata = Read32BitImageFile(filedata, filesize, &imagewidth, &imageheight, &hasalpha, filename);
+		qbyte *imagedata = ReadRawImageFile(filedata, filesize, &imagewidth, &imageheight, &format, true, filename);
 		Z_Free(filedata);
 
 		if (imagedata)
@@ -848,7 +873,7 @@ void QCBUILTIN PF_CL_drawrawstring (pubprogfuncs_t *prinst, struct globalvars_s 
 	while(*text)
 	{
 		if (1)//VMUTF8)
-			c = unicode_decode(&error, text, (char**)&text, false);
+			c = unicode_decode(&error, text, &text, false);
 		else
 		{
 			//FIXME: which charset is this meant to be using?
@@ -974,7 +999,7 @@ void QCBUILTIN PF_SubConGetSet (pubprogfuncs_t *prinst, struct globalvars_s *pr_
 	else if (!strcmp(field, "next"))
 	{
 		con = con->next;
-		if (con && con != &con_main)
+		if (con)
 			RETURN_TSTRING(con->name);
 	}
 	else if (!strcmp(field, "unseen"))
@@ -1188,7 +1213,8 @@ int menuentsize;
 // cvars
 #define MENUPROGSGROUP "Menu progs control"
 cvar_t forceqmenu = CVAR("forceqmenu", "0");
-cvar_t pr_menuqc_coreonerror = CVAR("pr_menuqc_coreonerror", "1");
+cvar_t pr_menu_coreonerror = CVAR("pr_menu_coreonerror", "1");
+cvar_t pr_menu_memsize = CVAR("pr_menu_memsize", "64m");
 
 
 //new generic functions.
@@ -1236,7 +1262,7 @@ static void QCBUILTIN PF_menu_cvar (pubprogfuncs_t *prinst, struct globalvars_s 
 	else
 	{
 		str = RemapCvarNameFromDPToFTE(str);
-		var = Cvar_Get(str, "", 0, "menu cvars");
+		var = PF_Cvar_FindOrGet(str);
 		if (var && !(var->flags & CVAR_NOUNSAFEEXPAND))
 		{
 			//menuqc sees desired settings, not latched settings.
@@ -1258,8 +1284,8 @@ static void QCBUILTIN PF_menu_cvar_set (pubprogfuncs_t *prinst, struct globalvar
 	var_name = RemapCvarNameFromDPToFTE(var_name);
 	val = PR_GetStringOfs(prinst, OFS_PARM1);
 
-	var = Cvar_Get(var_name, val, 0, "QC variables");
-	if (var->flags & CVAR_NOTFROMSERVER)
+	var = PF_Cvar_FindOrGet(var_name);
+	if (var && var->flags & CVAR_NOTFROMSERVER)
 	{
 		//fixme: menuqc needs some way to display a prompt to allow it anyway.
 		return;
@@ -1269,7 +1295,7 @@ static void QCBUILTIN PF_menu_cvar_set (pubprogfuncs_t *prinst, struct globalvar
 static void QCBUILTIN PF_menu_cvar_string (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	const char	*str = PR_GetStringOfs(prinst, OFS_PARM0);
-	cvar_t *cv = Cvar_Get(RemapCvarNameFromDPToFTE(str), "", 0, "QC variables");
+	cvar_t *cv = PF_Cvar_FindOrGet(RemapCvarNameFromDPToFTE(str));
 	if (!cv)
 		G_INT(OFS_RETURN) = 0;
 	else if (cv->flags & CVAR_NOUNSAFEEXPAND)
@@ -1794,6 +1820,8 @@ static void QCBUILTIN PF_m_setmodel(pubprogfuncs_t *prinst, struct globalvars_s 
 	model_t *mod = Mod_ForName(modelname, MLV_WARN);
 	if (modelval)
 		modelval->string = G_INT(OFS_PARM1);	//lets hope garbage collection is enough.
+	else
+		Con_Printf("PF_m_setmodel: no model field!\n");
 
 	if (mod)
 		while(mod->loadstate == MLS_LOADING)
@@ -1811,7 +1839,10 @@ static void QCBUILTIN PF_m_setcustomskin(pubprogfuncs_t *prinst, struct globalva
 	const char *skindata = PF_VarString(prinst, 2, pr_globals);
 	eval_t *val = prinst->GetEdictFieldValue(prinst, (void*)ent, "skinobject", ev_string, &menuc_eval.skinobject);
 	if (!val)
+	{
+		Con_Printf("PF_m_setcustomskin: no skinobject field!\n");
 		return;
+	}
 
 	if (val->_float > 0)
 	{
@@ -1835,6 +1866,8 @@ static void QCBUILTIN PF_m_setorigin(pubprogfuncs_t *prinst, struct globalvars_s
 	eval_t *val = prinst->GetEdictFieldValue(prinst, (void*)ent, "origin", ev_vector, &menuc_eval.origin);
 	if (val)
 		VectorCopy(org, val->_vector);
+	else
+		Con_Printf("PF_m_setorigin: no origin field!\n");
 }
 static void QCBUILTIN PF_m_clearscene(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
@@ -2127,6 +2160,7 @@ static struct {
 	{"strtrim",					PF_strtrim,					0},
 															//gap
 	{"shaderforname",			PF_shaderforname,			238},
+	{"sendpacket",				PF_cl_SendPacket,			242},
 															//gap
 	{"hash_createtab",			PF_hash_createtab,			287},
 	{"hash_destroytab",			PF_hash_destroytab,			288},
@@ -2150,6 +2184,9 @@ static struct {
 	{"getproperty",				PF_R_GetViewFlag,			309},//should be okay to share
 //unproject													310
 //project													311
+
+	{"r_uploadimage",			PF_CL_uploadimage,			0},
+	{"r_readimage",				PF_CL_readimage,			0},
 
 
 	{"print_csqc",				PF_print,					339},
@@ -2316,6 +2353,7 @@ static struct {
 	{"crypto_getmykeyfp",		PF_crypto_getmykeyfp,		636},
 	{"crypto_getmyidfp",		PF_crypto_getmyidfp,		637},
 	{"digest_hex",				PF_digest_hex,				639},
+	{"digest_ptr",				PF_digest_ptr,				0},
 	{"crypto_getmyidstatus",	PF_crypto_getmyidfp,		641},
 	{NULL}
 };
@@ -2384,15 +2422,19 @@ menuedict_t *menu_edicts;
 int num_menu_edicts;
 world_t menu_world;
 
-func_t mp_init_function;
-func_t mp_shutdown_function;
-func_t mp_draw_function;
-func_t mp_drawloading_function;
-func_t mp_keydown_function;
-func_t mp_keyup_function;
-func_t mp_inputevent_function;
-func_t mp_toggle_function;
-func_t mp_consolecommand_function;
+static struct
+{
+	func_t init;
+	func_t shutdown;
+	func_t draw;
+	func_t drawloading;
+	func_t keydown;
+	func_t keyup;
+	func_t inputevent;
+	func_t toggle;
+	func_t consolecommand;
+	func_t gethostcachecategory;
+} mpfuncs;
 
 jmp_buf mp_abort;
 
@@ -2412,8 +2454,8 @@ void MP_Shutdown (void)
 		Z_Free(buffer);
 	}
 */
-	temp = mp_shutdown_function;
-	mp_shutdown_function = 0;
+	temp = mpfuncs.shutdown;
+	mpfuncs.shutdown = 0;
 	if (temp && !inmenuprogs)
 		PR_ExecuteProgram(menu_world.progs, temp);
 
@@ -2447,7 +2489,7 @@ void VARGS Menu_Abort (char *format, ...)
 
 	Con_Printf("Menu_Abort: %s\nShutting down menu.dat\n", string);
 
-	if (pr_menuqc_coreonerror.value)
+	if (pr_menu_coreonerror.value)
 	{
 		char *buffer;
 		size_t size = 1024*1024*8;
@@ -2585,7 +2627,7 @@ qboolean MP_Init (void)
 		int mprogs;
 		Con_DPrintf("Initializing menu.dat\n");
 		menu_world.progs = InitProgs(&menuprogparms);
-		PR_Configure(menu_world.progs, 64*1024*1024, 1, pr_enable_profiling.ival);
+		PR_Configure(menu_world.progs, PR_ReadBytesString(pr_menu_memsize.string), 1, pr_enable_profiling.ival);
 		mprogs = PR_LoadProgs(menu_world.progs, "menu.dat");
 		if (mprogs < 0) //no per-progs builtins.
 		{
@@ -2617,6 +2659,12 @@ qboolean MP_Init (void)
 
 		PR_ProgsAdded(menu_world.progs, mprogs, "menu.dat");
 
+		//ensure that there's space for these fields in.
+		//other fields will always be referenced/defined by the qc, or 0.
+		PR_RegisterFieldVar(menu_world.progs, ev_string, "model", -1, -1);
+		PR_RegisterFieldVar(menu_world.progs, ev_vector, "origin", -1, -1);
+		PR_RegisterFieldVar(menu_world.progs, ev_float, "skinobject", -1, -1);
+
 		menuentsize = PR_InitEnts(menu_world.progs, 8192);
 
 
@@ -2625,17 +2673,18 @@ qboolean MP_Init (void)
 		EDICT_NUM_PB(menu_world.progs, 0)->ereftype = ER_ENTITY;
 
 
-		mp_init_function = PR_FindFunction(menu_world.progs, "m_init", PR_ANY);
-		mp_shutdown_function = PR_FindFunction(menu_world.progs, "m_shutdown", PR_ANY);
-		mp_draw_function = PR_FindFunction(menu_world.progs, "m_draw", PR_ANY);
-		mp_drawloading_function = PR_FindFunction(menu_world.progs, "m_drawloading", PR_ANY);
-		mp_inputevent_function = PR_FindFunction(menu_world.progs, "Menu_InputEvent", PR_ANY);
-		mp_keydown_function = PR_FindFunction(menu_world.progs, "m_keydown", PR_ANY);
-		mp_keyup_function = PR_FindFunction(menu_world.progs, "m_keyup", PR_ANY);
-		mp_toggle_function = PR_FindFunction(menu_world.progs, "m_toggle", PR_ANY);
-		mp_consolecommand_function = PR_FindFunction(menu_world.progs, "m_consolecommand", PR_ANY);
-		if (mp_init_function)
-			PR_ExecuteProgram(menu_world.progs, mp_init_function);
+		mpfuncs.init = PR_FindFunction(menu_world.progs, "m_init", PR_ANY);
+		mpfuncs.shutdown = PR_FindFunction(menu_world.progs, "m_shutdown", PR_ANY);
+		mpfuncs.draw = PR_FindFunction(menu_world.progs, "m_draw", PR_ANY);
+		mpfuncs.drawloading = PR_FindFunction(menu_world.progs, "m_drawloading", PR_ANY);
+		mpfuncs.inputevent = PR_FindFunction(menu_world.progs, "Menu_InputEvent", PR_ANY);
+		mpfuncs.keydown = PR_FindFunction(menu_world.progs, "m_keydown", PR_ANY);
+		mpfuncs.keyup = PR_FindFunction(menu_world.progs, "m_keyup", PR_ANY);
+		mpfuncs.toggle = PR_FindFunction(menu_world.progs, "m_toggle", PR_ANY);
+		mpfuncs.consolecommand = PR_FindFunction(menu_world.progs, "m_consolecommand", PR_ANY);
+		mpfuncs.gethostcachecategory = PR_FindFunction(menu_world.progs, "m_gethostcachecategory", PR_ANY);
+		if (mpfuncs.init)
+			PR_ExecuteProgram(menu_world.progs, mpfuncs.init);
 		inmenuprogs--;
 
 		EDICT_NUM_PB(menu_world.progs, 0)->readonly = true;
@@ -2670,7 +2719,7 @@ qboolean MP_ConsoleCommand(const char *cmdtext)
 	void *pr_globals;
 	if (!menu_world.progs)
 		return false;
-	if (!mp_consolecommand_function)
+	if (!mpfuncs.consolecommand)
 		return false;
 
 	if (setjmp(mp_abort))
@@ -2678,7 +2727,7 @@ qboolean MP_ConsoleCommand(const char *cmdtext)
 	inmenuprogs++;
 	pr_globals = PR_globals(menu_world.progs, PR_CURRENT);
 	(((string_t *)pr_globals)[OFS_PARM0] = PR_TempString(menu_world.progs, cmdtext));
-	PR_ExecuteProgram (menu_world.progs, mp_consolecommand_function);
+	PR_ExecuteProgram (menu_world.progs, mpfuncs.consolecommand);
 	inmenuprogs--;
 	return G_FLOAT(OFS_RETURN);
 }
@@ -2740,13 +2789,16 @@ void MP_RegisterCvarsAndCmds(void)
 	Cmd_AddCommand("coredump_menuqc", MP_CoreDump_f);
 	Cmd_AddCommand("menu_cmd", MP_GameCommand_f);
 	Cmd_AddCommand("breakpoint_menu", MP_Breakpoint_f);
+#ifndef NOLEGACY
 	Cmd_AddCommand("loadfont", CL_LoadFont_f);
+#endif
 
 	Cmd_AddCommand("poke_menuqc", MP_Poke_f);
 
 
 	Cvar_Register(&forceqmenu, MENUPROGSGROUP);
-	Cvar_Register(&pr_menuqc_coreonerror, MENUPROGSGROUP);
+	Cvar_Register(&pr_menu_coreonerror, MENUPROGSGROUP);
+	Cvar_Register(&pr_menu_memsize, MENUPROGSGROUP);
 
 	if (COM_CheckParm("-qmenu"))
 		Cvar_Set(&forceqmenu, "1");
@@ -2754,7 +2806,25 @@ void MP_RegisterCvarsAndCmds(void)
 
 qboolean MP_UsingGamecodeLoadingScreen(void)
 {
-	return menu_world.progs && mp_drawloading_function;
+	return menu_world.progs && mpfuncs.drawloading;
+}
+
+int MP_GetServerCategory(int index)
+{
+	int category = 0;
+	if (menu_world.progs && mpfuncs.gethostcachecategory)
+	{
+		void *pr_globals = PR_globals(menu_world.progs, PR_CURRENT);
+		if (!setjmp(mp_abort))
+		{
+			inmenuprogs++;
+			G_FLOAT(OFS_PARM0) = index;
+			PR_ExecuteProgram(menu_world.progs, mpfuncs.gethostcachecategory);
+			category = G_FLOAT(OFS_RETURN);
+			inmenuprogs--;
+		}
+	}
+	return category;
 }
 
 void MP_Draw(void)
@@ -2781,14 +2851,14 @@ void MP_Draw(void)
 	if (scr_drawloading||scr_disabled_for_loading)
 	{	//don't draw the menu if we're meant to be drawing a loading screen
 		//the menu should provide a special function if it wants to draw custom loading screens. this is for compat with old/dp/lazy/crappy menus.
-		if (mp_drawloading_function)
+		if (mpfuncs.drawloading)
 		{
 			((float *)pr_globals)[OFS_PARM1] = scr_disabled_for_loading;
-			PR_ExecuteProgram(menu_world.progs, mp_drawloading_function);
+			PR_ExecuteProgram(menu_world.progs, mpfuncs.drawloading);
 		}
 	}
-	else if (mp_draw_function)
-		PR_ExecuteProgram(menu_world.progs, mp_draw_function);
+	else if (mpfuncs.draw)
+		PR_ExecuteProgram(menu_world.progs, mpfuncs.draw);
 	inmenuprogs--;
 }
 
@@ -2825,24 +2895,24 @@ qboolean MP_Keydown(int key, int unicode, unsigned int devid)
 		*menu_world.g.time = menutime;
 
 	inmenuprogs++;
-	if (mp_inputevent_function)
+	if (mpfuncs.inputevent)
 	{
 		void *pr_globals = PR_globals(menu_world.progs, PR_CURRENT);
 		G_FLOAT(OFS_PARM0) = CSIE_KEYDOWN;
 		G_FLOAT(OFS_PARM1) = qcinput_scan = MP_TranslateFTEtoQCCodes(key);
 		G_FLOAT(OFS_PARM2) = qcinput_unicode = unicode;
 		G_FLOAT(OFS_PARM3) = devid;
-		PR_ExecuteProgram(menu_world.progs, mp_inputevent_function);
+		PR_ExecuteProgram(menu_world.progs, mpfuncs.inputevent);
 		result = G_FLOAT(OFS_RETURN);
 		qcinput_scan = 0;
 		qcinput_unicode = 0;
 	}
-	else if (mp_keydown_function)
+	else if (mpfuncs.keydown)
 	{
 		void *pr_globals = PR_globals(menu_world.progs, PR_CURRENT);
 		G_FLOAT(OFS_PARM0) = MP_TranslateFTEtoQCCodes(key);
 		G_FLOAT(OFS_PARM1) = unicode;
-		PR_ExecuteProgram(menu_world.progs, mp_keydown_function);
+		PR_ExecuteProgram(menu_world.progs, mpfuncs.keydown);
 		result = true;	//doesn't have a return value, so if the menu is set up for key events, all events are considered eaten.
 	}
 	inmenuprogs--;
@@ -2868,21 +2938,21 @@ void MP_Keyup(int key, int unicode, unsigned int devid)
 		*menu_world.g.time = menutime;
 
 	inmenuprogs++;
-	if (mp_inputevent_function)
+	if (mpfuncs.inputevent)
 	{
 		void *pr_globals = PR_globals(menu_world.progs, PR_CURRENT);
 		G_FLOAT(OFS_PARM0) = CSIE_KEYUP;
 		G_FLOAT(OFS_PARM1) = MP_TranslateFTEtoQCCodes(key);
 		G_FLOAT(OFS_PARM2) = unicode;
 		G_FLOAT(OFS_PARM3) = devid;
-		PR_ExecuteProgram(menu_world.progs, mp_inputevent_function);
+		PR_ExecuteProgram(menu_world.progs, mpfuncs.inputevent);
 	}
-	else if (mp_keyup_function)
+	else if (mpfuncs.keyup)
 	{
 		void *pr_globals = PR_globals(menu_world.progs, PR_CURRENT);
 		G_FLOAT(OFS_PARM0) = MP_TranslateFTEtoQCCodes(key);
 		G_FLOAT(OFS_PARM1) = unicode;
-		PR_ExecuteProgram(menu_world.progs, mp_keyup_function);
+		PR_ExecuteProgram(menu_world.progs, mpfuncs.keyup);
 	}
 	inmenuprogs--;
 }
@@ -2891,7 +2961,7 @@ qboolean MP_MousePosition(float xabs, float yabs, unsigned int devid)
 {
 	void *pr_globals;
 
-	if (!menu_world.progs || !mp_inputevent_function)
+	if (!menu_world.progs || !mpfuncs.inputevent)
 		return false;
 
 	if (setjmp(mp_abort))
@@ -2902,7 +2972,7 @@ qboolean MP_MousePosition(float xabs, float yabs, unsigned int devid)
 	G_FLOAT(OFS_PARM1) = (xabs * vid.width) / vid.pixelwidth;
 	G_FLOAT(OFS_PARM2) = (yabs * vid.height) / vid.pixelheight;
 	G_FLOAT(OFS_PARM3) = devid;
-	PR_ExecuteProgram (menu_world.progs, mp_inputevent_function);
+	PR_ExecuteProgram (menu_world.progs, mpfuncs.inputevent);
 	inmenuprogs--;
 	return G_FLOAT(OFS_RETURN);
 }
@@ -2910,7 +2980,7 @@ qboolean MP_MouseMove(float xdelta, float ydelta, unsigned int devid)
 {
 	void *pr_globals;
 
-	if (!menu_world.progs || !mp_inputevent_function)
+	if (!menu_world.progs || !mpfuncs.inputevent)
 		return false;
 
 	if (setjmp(mp_abort))
@@ -2921,7 +2991,7 @@ qboolean MP_MouseMove(float xdelta, float ydelta, unsigned int devid)
 	G_FLOAT(OFS_PARM1) = (xdelta * vid.width) / vid.pixelwidth;
 	G_FLOAT(OFS_PARM2) = (ydelta * vid.height) / vid.pixelheight;
 	G_FLOAT(OFS_PARM3) = devid;
-	PR_ExecuteProgram (menu_world.progs, mp_inputevent_function);
+	PR_ExecuteProgram (menu_world.progs, mpfuncs.inputevent);
 	inmenuprogs--;
 	return G_FLOAT(OFS_RETURN);
 }
@@ -2929,7 +2999,7 @@ qboolean MP_MouseMove(float xdelta, float ydelta, unsigned int devid)
 qboolean MP_JoystickAxis(int axis, float value, unsigned int devid)
 {
 	void *pr_globals;
-	if (!menu_world.progs || !mp_inputevent_function)
+	if (!menu_world.progs || !mpfuncs.inputevent)
 		return false;
 	if (setjmp(mp_abort))
 		return false;
@@ -2939,7 +3009,7 @@ qboolean MP_JoystickAxis(int axis, float value, unsigned int devid)
 	G_FLOAT(OFS_PARM1) = axis;
 	G_FLOAT(OFS_PARM2) = value;
 	G_FLOAT(OFS_PARM3) = devid;
-	PR_ExecuteProgram (menu_world.progs, mp_inputevent_function);
+	PR_ExecuteProgram (menu_world.progs, mpfuncs.inputevent);
 	inmenuprogs--;
 	return G_FLOAT(OFS_RETURN);
 }
@@ -2964,11 +3034,11 @@ qboolean MP_Toggle(int mode)
 		*menu_world.g.time = menutime;
 
 	inmenuprogs++;
-	if (mp_toggle_function)
+	if (mpfuncs.toggle)
 	{
 		void *pr_globals = PR_globals(menu_world.progs, PR_CURRENT);
 		G_FLOAT(OFS_PARM0) = mode;
-		PR_ExecuteProgram(menu_world.progs, mp_toggle_function);
+		PR_ExecuteProgram(menu_world.progs, mpfuncs.toggle);
 	}
 	inmenuprogs--;
 

@@ -664,7 +664,7 @@ void UI_RegisterFont(char *fontName, int pointSize, fontInfo_t *font)
 
 	snprintf(name, sizeof(name), "fonts/fontImage_%i.dat",pointSize);
 
-	in.c = COM_LoadTempFile(name, &sz);
+	in.c = COM_LoadTempFile(name, 0, &sz);
 	if (sz == sizeof(fontInfo_t))
 	{
 		for(i=0; i<GLYPHS_PER_FONT; i++)
@@ -1035,6 +1035,7 @@ static qintptr_t UI_SystemCalls(void *offset, quintptr_t mask, qintptr_t fn, con
 //		Con_Printf("ui_getclientstate\n");
 		VALIDATEPOINTER(arg[0], sizeof(uiClientState_t));
 		{
+			extern cvar_t cl_disconnectreason;
 			uiClientState_t *state = VM_POINTER(arg[0]);
 			state->connectPacketCount = 0;//clc.connectPacketCount;
 
@@ -1061,7 +1062,7 @@ static qintptr_t UI_SystemCalls(void *offset, quintptr_t mask, qintptr_t fn, con
 			}
 			Q_strncpyz( state->servername, cls.servername, sizeof( state->servername ) );
 			Q_strncpyz( state->updateInfoString, "FTE!", sizeof( state->updateInfoString ) );	//warning/motd message from update server
-			Q_strncpyz( state->messageString, "", sizeof( state->messageString ) );				//error message from game server
+			Q_strncpyz( state->messageString, cl_disconnectreason.string, sizeof( state->messageString ) );				//error message from game server
 			state->clientNum = cl.playerview[0].playernum;
 		}
 		break;
@@ -1561,8 +1562,6 @@ qboolean UI_KeyPress(int key, int unicode, qboolean down)
 			}
 
 			UI_OpenMenu();
-
-			scr_conlines = 0;
 			return true;
 		}
 		return false;

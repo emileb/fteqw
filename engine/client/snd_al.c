@@ -317,6 +317,17 @@ static cvar_t s_al_velocityscale = CVAR("s_al_velocityscale", "1");
 static cvar_t s_al_static_listener = CVAR("s_al_static_listener", "0");	//cheat
 extern cvar_t snd_doppler;
 
+enum distancemodel_e
+{
+	DM_INVERSE			= 0,
+	DM_INVERSE_CLAMPED	= 1,
+	DM_LINEAR			= 2,
+	DM_LINEAR_CLAMPED	= 3,
+	DM_EXPONENT			= 4,
+	DM_EXPONENT_CLAMPED	= 5,
+	DM_NONE				= 6
+};
+
 typedef struct
 {
 	ALuint *source;
@@ -372,7 +383,7 @@ static void PrintALError(char *string)
 	Con_Printf("OpenAL - %s: %x: %s\n",string,err,text);
 }
 
-qboolean OpenAL_LoadCache(unsigned int *bufptr, sfxcache_t *sc, float volume)
+static qboolean OpenAL_LoadCache(unsigned int *bufptr, sfxcache_t *sc, float volume)
 {
 	unsigned int fmt;
 	unsigned int size;
@@ -673,7 +684,7 @@ static void OpenAL_ChannelUpdate(soundcardinfo_t *sc, channel_t *chan, unsigned 
 	}
 
 	cvolume = chan->master_vol/255.0f;
-	if (!(chan->flags & CF_ABSVOLUME))
+	if (!(chan->flags & CF_CL_ABSVOLUME))
 		cvolume *= volume.value*voicevolumemod;
 
 	//openal doesn't support loopstart (entire sample loops or not at all), so if we're meant to skip the first half then we need to stream it.
@@ -683,7 +694,7 @@ static void OpenAL_ChannelUpdate(soundcardinfo_t *sc, channel_t *chan, unsigned 
 	{
 		if (!sfx->openal_buffer)
 		{
-			if (!S_LoadSound(sfx))
+			if (!S_LoadSound(sfx, false))
 				return;	//can't load it
 			if (sfx->loadstate != SLS_LOADED)
 			{
@@ -842,6 +853,7 @@ static void OpenAL_ChannelUpdate(soundcardinfo_t *sc, channel_t *chan, unsigned 
 		}
 
 		pitch = (float)chan->rate/(1<<PITCHSHIFT);
+		pitch = bound(0.5, pitch, 2.0);	//openal documents a limit on the allowed range of pitches. clamp to avoid error spam. openal-soft doesn't enforce anything other than it >=0
 		palSourcef(src, AL_PITCH, pitch);
 
 #ifdef USEEFX
@@ -872,20 +884,20 @@ static void OpenAL_ChannelUpdate(soundcardinfo_t *sc, channel_t *chan, unsigned 
 		if (srcrel)
 		{
 #ifdef FTE_TARGET_WEB
-			switch(0)	//emscripten omits it, and this is webaudio's default too.
+			switch(DM_INVERSE)	//emscripten omits it, and this is webaudio's default too.
 #else
-			switch(s_al_distancemodel.ival)
+			switch((enum distancemodel_e)s_al_distancemodel.ival)
 #endif
 			{
 			default:
-			case 0:
-			case 1:
+			case DM_INVERSE:
+			case DM_INVERSE_CLAMPED:
 				palSourcef(src, AL_ROLLOFF_FACTOR, 0);
 				palSourcef(src, AL_REFERENCE_DISTANCE, 1);	//0 would be silent, or a division by 0
 				palSourcef(src, AL_MAX_DISTANCE, 1);	//only used for clamped mode
 				break;
-			case 2:
-			case 3:
+			case DM_LINEAR:
+			case DM_LINEAR_CLAMPED:
 				palSourcef(src, AL_ROLLOFF_FACTOR, 0);
 				palSourcef(src, AL_REFERENCE_DISTANCE, 0);	//doesn't matter when rolloff is 0
 				palSourcef(src, AL_MAX_DISTANCE, 1);	//doesn't matter, so long as its not a nan
@@ -895,20 +907,20 @@ static void OpenAL_ChannelUpdate(soundcardinfo_t *sc, channel_t *chan, unsigned 
 		else
 		{
 #ifdef FTE_TARGET_WEB
-			switch(2)	//emscripten hardcodes it.
+			switch(DM_LINEAR)	//emscripten hardcodes it in a buggy kind of way.
 #else
-			switch(s_al_distancemodel.ival)
+			switch((enum distancemodel_e)s_al_distancemodel.ival)
 #endif
 			{
 			default:
-			case 0:
-			case 1:
+			case DM_INVERSE:
+			case DM_INVERSE_CLAMPED:
 				palSourcef(src, AL_ROLLOFF_FACTOR, s_al_reference_distance.value);
 				palSourcef(src, AL_REFERENCE_DISTANCE, 1);
 				palSourcef(src, AL_MAX_DISTANCE, 1/chan->dist_mult);	//clamp to the maximum distance you'd normally be allowed to hear... this is probably going to be annoying.
 				break;
-			case 2:	//linear, mimic quake.
-			case 3: //linear clamped to further than ref distance
+			case DM_LINEAR:	//linear, mimic quake.
+			case DM_LINEAR_CLAMPED: //linear clamped to further than ref distance
 				palSourcef(src, AL_ROLLOFF_FACTOR, 1);
 #ifdef FTE_TARGET_WEB
 				//chrome complains about 0.
@@ -956,7 +968,7 @@ static void S_Info (void)
 
 static qboolean OpenAL_InitLibrary(void)
 {
-#if FTE_TARGET_WEB
+#ifdef FTE_TARGET_WEB
 	firefoxstaticsounds = !!strstr(emscripten_run_script_string("navigator.userAgent"), "Firefox");
 	if (firefoxstaticsounds)
 		Con_DPrintf("Firefox detected - disabling static sounds to avoid SORRY, I CAN'T HEAR YOU\n");
@@ -1004,11 +1016,16 @@ static qboolean OpenAL_InitLibrary(void)
 		{NULL}
 	};
 
+	if (COM_CheckParm("-noopenal"))
+		return false;
+
 	if (!openallib_tried)
 	{
 		openallib_tried = true;
 #ifdef _WIN32
 		openallib = Sys_LoadLibrary("OpenAL32", openalfuncs);
+		if (!openallib)
+			openallib = Sys_LoadLibrary("soft_oal", openalfuncs);
 #else
 		openallib = Sys_LoadLibrary("libopenal.so.1", openalfuncs);
 		if (!openallib)
@@ -1092,45 +1109,45 @@ static void QDECL OnChangeALSettings (cvar_t *var, char *value)
 
 		if (palDistanceModel)
 		{
-			switch (s_al_distancemodel.ival)
+			switch ((enum distancemodel_e)s_al_distancemodel.ival)
 			{
-				case 0:
-					//gain = AL_REFERENCE_DISTANCE / (AL_REFERENCE_DISTANCE +  AL_ROLLOFF_FACTOR * (distance – AL_REFERENCE_DISTANCE) )
+				case DM_INVERSE:
+					//gain = AL_REFERENCE_DISTANCE / (AL_REFERENCE_DISTANCE +  AL_ROLLOFF_FACTOR * (distance - AL_REFERENCE_DISTANCE) )
 					palDistanceModel(AL_INVERSE_DISTANCE);
 					break;
-				case 1:	//openal's default mode
+				case DM_INVERSE_CLAMPED:	//openal's default mode
 					//istance = max(distance,AL_REFERENCE_DISTANCE); 
 					//distance = min(distance,AL_MAX_DISTANCE); 
-					//gain = AL_REFERENCE_DISTANCE / (AL_REFERENCE_DISTANCE +  AL_ROLLOFF_FACTOR * (distance – AL_REFERENCE_DISTANCE) )
+					//gain = AL_REFERENCE_DISTANCE / (AL_REFERENCE_DISTANCE +  AL_ROLLOFF_FACTOR * (distance - AL_REFERENCE_DISTANCE) )
 					palDistanceModel(AL_INVERSE_DISTANCE_CLAMPED);
 					break;
-				case 2:	//most quake-like
+				case DM_LINEAR:	//most quake-like. linear
 					//distance = min(distance, AL_MAX_DISTANCE) // avoid negative gain 
-					//gain = ( 1 – AL_ROLLOFF_FACTOR * (distance – AL_REFERENCE_DISTANCE) / (AL_MAX_DISTANCE – AL_REFERENCE_DISTANCE) )
+					//gain = ( 1 - AL_ROLLOFF_FACTOR * (distance - AL_REFERENCE_DISTANCE) / (AL_MAX_DISTANCE - AL_REFERENCE_DISTANCE) )
 					palDistanceModel(AL_LINEAR_DISTANCE);
 					break;
-				case 3:
+				case DM_LINEAR_CLAMPED: //linear, with near stuff clamped to further away
 					//distance = max(distance, AL_REFERENCE_DISTANCE) 
 					//distance = min(distance, AL_MAX_DISTANCE) 
-					//gain = ( 1 – AL_ROLLOFF_FACTOR * (distance – AL_REFERENCE_DISTANCE) / (AL_MAX_DISTANCE – AL_REFERENCE_DISTANCE) )
+					//gain = ( 1 - AL_ROLLOFF_FACTOR * (distance - AL_REFERENCE_DISTANCE) / (AL_MAX_DISTANCE - AL_REFERENCE_DISTANCE) )
 					palDistanceModel(AL_LINEAR_DISTANCE_CLAMPED);
 					break;
-				case 4:
+				case DM_EXPONENT:
 					//gain = (distance / AL_REFERENCE_DISTANCE) ^ (- AL_ROLLOFF_FACTOR)
 					palDistanceModel(AL_EXPONENT_DISTANCE);
 					break;
-				case 5:
+				case DM_EXPONENT_CLAMPED:
 					//distance = max(distance, AL_REFERENCE_DISTANCE) 
 					//distance = min(distance, AL_MAX_DISTANCE) 
 					//gain = (distance / AL_REFERENCE_DISTANCE) ^ (- AL_ROLLOFF_FACTOR)
 					palDistanceModel(AL_EXPONENT_DISTANCE_CLAMPED);
 					break;
-				case 6:
+				case DM_NONE:
 					//gain = 1
 					palDistanceModel(AL_NONE);
 					break;
 				default:
-					Cvar_ForceSet(&s_al_distancemodel, "0");
+					Cvar_ForceSet(&s_al_distancemodel, "2");
 			}
 		}
 	}
@@ -1257,7 +1274,6 @@ static ALuint OpenAL_LoadEffect(const struct reverbproperties_s *reverb)
 	{
 		/* EAX Reverb is available. Set the EAX effect type then load the
 		 * reverb properties. */
-
 		palEffectf(effect, AL_EAXREVERB_DENSITY, reverb->flDensity);
 		palEffectf(effect, AL_EAXREVERB_DIFFUSION, reverb->flDiffusion);
 		palEffectf(effect, AL_EAXREVERB_GAIN, reverb->flGain);
@@ -1283,7 +1299,9 @@ static ALuint OpenAL_LoadEffect(const struct reverbproperties_s *reverb)
 		palEffecti(effect, AL_EAXREVERB_DECAY_HFLIMIT, reverb->iDecayHFLimit);
 	}
 	else
+#endif
 	{
+#ifdef AL_EFFECT_REVERB
 		/* No EAX Reverb. Set the standard reverb effect type then load the
 		 * available reverb properties. */
 		palEffecti(effect, AL_EFFECT_TYPE, AL_EFFECT_REVERB);
@@ -1301,8 +1319,8 @@ static ALuint OpenAL_LoadEffect(const struct reverbproperties_s *reverb)
 		palEffectf(effect, AL_REVERB_AIR_ABSORPTION_GAINHF, reverb->flAirAbsorptionGainHF);
 		palEffectf(effect, AL_REVERB_ROOM_ROLLOFF_FACTOR, reverb->flRoomRolloffFactor);
 		palEffecti(effect, AL_REVERB_DECAY_HFLIMIT, reverb->iDecayHFLimit);
-	}
 #endif
+	}
 	return effect;
 }
 
@@ -1405,7 +1423,7 @@ sounddriver_t OPENAL_Output =
 
 #if defined(VOICECHAT)
 
-qboolean OpenAL_InitCapture(void)
+static qboolean OpenAL_InitCapture(void)
 {
 	if (!OpenAL_InitLibrary())
 		return false;
@@ -1429,7 +1447,7 @@ qboolean OpenAL_InitCapture(void)
 
 	return palcGetIntegerv&&palcCaptureOpenDevice&&palcCaptureStart&&palcCaptureSamples&&palcCaptureStop&&palcCaptureCloseDevice;
 }
-qboolean QDECL OPENAL_Capture_Enumerate (void (QDECL *callback) (const char *drivername, const char *devicecode, const char *readablename))
+static qboolean QDECL OPENAL_Capture_Enumerate (void (QDECL *callback) (const char *drivername, const char *devicecode, const char *readablename))
 {
 	const char *devnames;
 	if (!OpenAL_InitCapture())
@@ -1444,7 +1462,7 @@ qboolean QDECL OPENAL_Capture_Enumerate (void (QDECL *callback) (const char *dri
 	return true;
 }
 //fte's capture api specifies mono 16.
-void *QDECL OPENAL_Capture_Init (int samplerate, const char *device)
+static void *QDECL OPENAL_Capture_Init (int samplerate, const char *device)
 {
 #ifndef OPENAL_STATIC
 	if (!device)	//no default devices please, too buggy for that.
@@ -1459,12 +1477,12 @@ void *QDECL OPENAL_Capture_Init (int samplerate, const char *device)
 
 	return palcCaptureOpenDevice(device, samplerate, AL_FORMAT_MONO16, 0.5*samplerate);
 }
-void QDECL OPENAL_Capture_Start (void *ctx)
+static void QDECL OPENAL_Capture_Start (void *ctx)
 {
 	ALCdevice *device = ctx;
 	palcCaptureStart(device);
 }
-unsigned int QDECL OPENAL_Capture_Update (void *ctx, unsigned char *buffer, unsigned int minbytes, unsigned int maxbytes)
+static unsigned int QDECL OPENAL_Capture_Update (void *ctx, unsigned char *buffer, unsigned int minbytes, unsigned int maxbytes)
 {
 #define samplesize sizeof(short)
 	ALCdevice *device = ctx;
@@ -1475,12 +1493,12 @@ unsigned int QDECL OPENAL_Capture_Update (void *ctx, unsigned char *buffer, unsi
 	palcCaptureSamples(device, (ALCvoid *)buffer, avail);
 	return avail * samplesize;
 }
-void QDECL OPENAL_Capture_Stop (void *ctx)
+static void QDECL OPENAL_Capture_Stop (void *ctx)
 {
 	ALCdevice *device = ctx;
 	palcCaptureStop(device);
 }
-void QDECL OPENAL_Capture_Shutdown (void *ctx)
+static void QDECL OPENAL_Capture_Shutdown (void *ctx)
 {
 	ALCdevice *device = ctx;
 	palcCaptureCloseDevice(device);

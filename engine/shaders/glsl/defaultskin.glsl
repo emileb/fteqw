@@ -11,7 +11,8 @@
 !!cvarf gl_specular
 !!cvardf gl_affinemodels=0
 !!cvardf r_tessellation_level=5
-!!samps diffuse normalmap specular fullbright upper lower paletted reflectmask reflectcube
+!!samps !EIGHTBIT diffuse normalmap specular fullbright upper lower reflectmask reflectcube
+!!samps =EIGHTBIT paletted 1
 
 #include "sys/defs.h"
 
@@ -50,16 +51,13 @@ varying vec3 normal;
 
 void main ()
 {
-#if defined(SPECULAR)||defined(OFFSETMAPPING) || defined(REFLECTCUBEMASK)
 	vec3 n, s, t, w;
 	gl_Position = skeletaltransform_wnst(w,n,s,t);
+#if defined(SPECULAR)||defined(OFFSETMAPPING) || defined(REFLECTCUBEMASK)
 	vec3 eyeminusvertex = e_eyepos - w.xyz;
 	eyevector.x = dot(eyeminusvertex, s.xyz);
 	eyevector.y = dot(eyeminusvertex, t.xyz);
 	eyevector.z = dot(eyeminusvertex, n.xyz);
-#else
-	vec3 n, s, t, w;
-	gl_Position = skeletaltransform_wnst(w,n,s,t);
 #endif
 #ifdef REFLECTCUBEMASK
 	invsurface[0] = s;
@@ -211,7 +209,6 @@ uniform float cvar_gl_specular;
 
 #ifdef EIGHTBIT
 #define s_colourmap s_t0
-uniform sampler2D s_colourmap;
 #endif
 
 affine varying vec2 tc;
@@ -258,7 +255,7 @@ void main ()
 		vec3 bumps = normalize(vec3(texture2D(s_normalmap, tc)) - 0.5);
 		vec4 specs = texture2D(s_specular, tc);
 
-		vec3 halfdir = normalize(normalize(eyevector) + vec3(0.0, 0.0, 1.0));
+		vec3 halfdir = normalize(normalize(eyevector) + e_light_dir);
 		float spec = pow(max(dot(halfdir, bumps), 0.0), FTE_SPECULAR_EXPONENT * specs.a);
 		col.rgb += FTE_SPECULAR_MULTIPLIER * spec * specs.rgb;
 	#elif defined(REFLECTCUBEMASK)
@@ -273,6 +270,7 @@ void main ()
 	#endif
 
 	col.rgb *= light;
+	col *= e_colourident;
 
 	#ifdef FULLBRIGHT
 		vec4 fb = texture2D(s_fullbright, tc);
@@ -281,7 +279,7 @@ void main ()
 	#endif
 #endif
 
-	gl_FragColor = fog4(col * e_colourident);
+	gl_FragColor = fog4(col);
 }
 #endif
 

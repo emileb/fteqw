@@ -175,6 +175,7 @@ typedef void		(APIENTRYP FTEPFNGLLINKPROGRAMARBPROC)			(GLhandleARB programObj);
 typedef void        (APIENTRYP FTEPFNGLBINDATTRIBLOCATIONARBPROC)   (GLhandleARB programObj, GLuint index, GLcharARB *name);
 typedef GLint		(APIENTRYP FTEPFNGLGETATTRIBLOCATIONARBPROC)	(GLhandleARB programObj, const GLcharARB *name);
 typedef void		(APIENTRYP FTEPFNGLVERTEXATTRIBPOINTER)			(GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const GLvoid *pointer);
+typedef void		(APIENTRYP FTEPFNGLVERTEXATTRIB4FARBPROC)		(GLuint index, GLfloat x, GLfloat y, GLfloat z, GLfloat w);
 typedef void		(APIENTRYP FTEPFNGLENABLEVERTEXATTRIBARRAY)		(GLuint index);
 typedef void		(APIENTRYP FTEPFNGLDISABLEVERTEXATTRIBARRAY)	(GLuint index);
 typedef GLint		(APIENTRYP FTEPFNGLGETUNIFORMLOCATIONARBPROC)	(GLhandleARB programObj, const GLcharARB *name);
@@ -405,10 +406,8 @@ void R_InitFlashblends(void);
 void GLR_MarkQ2Lights (dlight_t *light, int bit, mnode_t *node);
 #endif
 void GLQ3_LightGrid(model_t *mod, vec3_t point, vec3_t res_diffuse, vec3_t res_ambient, vec3_t res_dir);
-void R_ReloadRTLights_f(void);
 qboolean R_LoadRTLights(void);
 qboolean R_ImportRTLights(const char *entlump);
-void R_SaveRTLights_f(void);
 
 //doom
 #ifdef MAP_DOOM
@@ -717,6 +716,7 @@ extern FTEPFNGLUNIFORM3FVARBPROC			qglUniform3fvARB;
 extern FTEPFNGLUNIFORM2FVARBPROC			qglUniform2fvARB;
 extern FTEPFNGLUNIFORM1IARBPROC			qglUniform1iARB;
 extern FTEPFNGLUNIFORM1FARBPROC			qglUniform1fARB;
+extern FTEPFNGLVERTEXATTRIB4FARBPROC		qglVertexAttrib4f;
 extern FTEPFNGLVERTEXATTRIBPOINTER			qglVertexAttribPointer;
 extern FTEPFNGLGETVERTEXATTRIBIV			qglGetVertexAttribiv;
 extern FTEPFNGLENABLEVERTEXATTRIBARRAY		qglEnableVertexAttribArray;

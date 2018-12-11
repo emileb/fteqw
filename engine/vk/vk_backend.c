@@ -247,7 +247,7 @@ typedef struct
 	vec4_t lightinfo;	//org+radius
 
 	VkBuffer staticbuf;	//holds fallback vertex info so we don't crash from it
-	VkDeviceMemory staticbufmem;
+	vk_poolmem_t staticbufmem;
 
 	texid_t tex_currentrender;
 
@@ -1028,9 +1028,9 @@ VkShaderModule VK_CreateGLSLModule(program_t *prog, const char *name, int ver, c
 	return mod;
 }
 
-qboolean VK_LoadGLSL(program_t *prog, const char *name, unsigned int permu, int ver, const char **precompilerconstants, const char *vert, const char *tcs, const char *tes, const char *geom, const char *frag, qboolean noerrors, vfsfile_t *blobfile)
+qboolean VK_LoadGLSL(program_t *prog, struct programpermu_s *permu, int ver, const char **precompilerconstants, const char *vert, const char *tcs, const char *tes, const char *geom, const char *frag, qboolean noerrors, vfsfile_t *blobfile)
 {
-	if (permu)	//FIXME...
+	if (permu->permutation)	//FIXME...
 		return false;
 
 	prog->nofixedcompat = false;
@@ -1038,10 +1038,10 @@ qboolean VK_LoadGLSL(program_t *prog, const char *name, unsigned int permu, int 
 	prog->cvardata = NULL;
 	prog->cvardatasize = 0;
 	prog->pipelines = NULL;
-	prog->vert = VK_CreateGLSLModule(prog, name, ver, precompilerconstants, vert, false);
-	prog->frag = VK_CreateGLSLModule(prog, name, ver, precompilerconstants, frag, true);
+	prog->vert = VK_CreateGLSLModule(prog, prog->name, ver, precompilerconstants, vert, false);
+	prog->frag = VK_CreateGLSLModule(prog, prog->name, ver, precompilerconstants, frag, true);
 
-	VK_FinishProg(prog, name);
+	VK_FinishProg(prog, prog->name);
 
 	return true;
 }
@@ -1647,7 +1647,7 @@ void VKBE_Shutdown(void)
 	shaderstate.wbatches = NULL;
 
 	vkDestroyBuffer(vk.device, shaderstate.staticbuf, vkallocationcb);
-	vkFreeMemory(vk.device, shaderstate.staticbufmem, vkallocationcb);
+	VK_ReleasePoolMemory(&shaderstate.staticbufmem);
 }
 
 static texid_t SelectPassTexture(const shaderpass_t *pass)
@@ -1750,7 +1750,7 @@ static void T_Gen_CurrentRender(void)
 	if (img->width != vid.fbpwidth || img->height != vid.fbpheight)
 	{
 		//FIXME: free the old image when its safe to do so.
-		*img = VK_CreateTexture2DArray(vid.fbpwidth, vid.fbpheight, 1, 1, -vk.backbufformat, PTI_2D, true);
+		*img = VK_CreateTexture2DArray(vid.fbpwidth, vid.fbpheight, 1, 1, -vk.backbufformat, PTI_2D, true, shaderstate.tex_currentrender->ident);
 
 		if (!img->sampler)
 			VK_CreateSampler(shaderstate.tex_currentrender->flags, img);
@@ -2849,7 +2849,7 @@ static void BE_CreatePipeline(program_t *p, unsigned int shaderflags, unsigned i
 		((blendflags&SBITS_MASK_BLUE)?0:VK_COLOR_COMPONENT_B_BIT) |
 		((blendflags&SBITS_MASK_ALPHA)?0:VK_COLOR_COMPONENT_A_BIT);
 
-	if (blendflags & SBITS_BLEND_BITS)
+	if ((blendflags & SBITS_BLEND_BITS) && (blendflags & SBITS_BLEND_BITS)!=(SBITS_SRCBLEND_ONE|SBITS_DSTBLEND_ZERO))
 	{
 		switch(blendflags & SBITS_SRCBLEND_BITS)
 		{
@@ -3017,7 +3017,7 @@ static void BE_CreatePipeline(program_t *p, unsigned int shaderflags, unsigned i
 	pipeCreateInfo.basePipelineHandle	= VK_NULL_HANDLE;
 	pipeCreateInfo.basePipelineIndex	= -1;	//used to create derivatives for pipelines created in the same call.
 
-//				pipeCreateInfo.flags = VK_PIPELINE_CREATE_ALLOW_DERIVATIVES_BIT;
+//	pipeCreateInfo.flags = VK_PIPELINE_CREATE_ALLOW_DERIVATIVES_BIT;
 
 	err = vkCreateGraphicsPipelines(vk.device, vk.pipelinecache, 1, &pipeCreateInfo, vkallocationcb, &pipe->pipeline);
 
@@ -3597,7 +3597,10 @@ static void BE_DrawMeshChain_Internal(void)
 
 		vkCmdBindVertexBuffers(vk.rendertarg->cbuf, 0, VK_BUFF_MAX, vertexbuffers, vertexoffsets);
 		if (BE_SetupMeshProgram(altshader->prog, altshader->passes, altshader->flags, idxcount))
+		{
+//			vkCmdPushConstants(vk.rendertarg->cbuf, altshader->prog->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(shaderstate.curtexnums->factors), shaderstate.curtexnums->factors);
 			vkCmdDrawIndexed(vk.rendertarg->cbuf, idxcount, 1, idxfirst, 0, 0);
+		}
 	}
 	else if (1)
 	{
@@ -3776,13 +3779,15 @@ void VKBE_SelectEntity(entity_t *ent)
 	BE_RotateForEntity(ent, ent->model);
 }
 
-//fixme: create allocations within larger buffers, use separate staging.
+//fixme: create allocations within larger ring buffers, use separate staging.
 void *VKBE_CreateStagingBuffer(struct stagingbuf *n, size_t size, VkBufferUsageFlags usage)
 {
 	void *ptr;
 	VkBufferCreateInfo bufinf = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
 	VkMemoryRequirements mem_reqs;
 	VkMemoryAllocateInfo memAllocInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+
+	memset(&n->mem, 0, sizeof(n->mem));
 
 	n->retbuf = VK_NULL_HANDLE;
 	n->usage = usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -3801,9 +3806,9 @@ void *VKBE_CreateStagingBuffer(struct stagingbuf *n, size_t size, VkBufferUsageF
 	if (memAllocInfo.memoryTypeIndex == ~0)
 		Sys_Error("Unable to allocate buffer memory");
 
-	VkAssert(vkAllocateMemory(vk.device, &memAllocInfo, vkallocationcb, &n->memory));
-	VkAssert(vkBindBufferMemory(vk.device, n->buf, n->memory, 0));
-	VkAssert(vkMapMemory(vk.device, n->memory, 0, n->size, 0, &ptr));
+	VkAssert(vkAllocateMemory(vk.device, &memAllocInfo, vkallocationcb, &n->mem.memory));
+	VkAssert(vkBindBufferMemory(vk.device, n->buf, n->mem.memory, n->mem.offset));
+	VkAssert(vkMapMemory(vk.device, n->mem.memory, 0, n->size, 0, &ptr));
 
 	return ptr;
 }
@@ -3813,21 +3818,21 @@ struct fencedbufferwork
 	struct vk_fencework fw;
 
 	VkBuffer buf;
-	VkDeviceMemory mem;
+	vk_poolmem_t mem;
 };
 static void VKBE_DoneBufferStaging(void *staging)
 {
 	struct fencedbufferwork *n = staging;
 	vkDestroyBuffer(vk.device, n->buf, vkallocationcb);
-	vkFreeMemory(vk.device, n->mem, vkallocationcb);
+	VK_ReleasePoolMemory(&n->mem);
 }
-VkBuffer VKBE_FinishStaging(struct stagingbuf *n, VkDeviceMemory *memptr)
+VkBuffer VKBE_FinishStaging(struct stagingbuf *n, vk_poolmem_t *mem)
 {
 	struct fencedbufferwork *fence;
 	VkBuffer retbuf;
 	
 	//caller filled the staging buffer, and now wants to copy stuff to the gpu.
-	vkUnmapMemory(vk.device, n->memory);
+	vkUnmapMemory(vk.device, n->mem.memory);
 
 	//create the hardware buffer
 	if (n->retbuf)
@@ -3848,20 +3853,38 @@ VkBuffer VKBE_FinishStaging(struct stagingbuf *n, VkDeviceMemory *memptr)
 	//sort out its memory
 	{
 		VkMemoryRequirements mem_reqs;
-		VkMemoryAllocateInfo memAllocInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
 		vkGetBufferMemoryRequirements(vk.device, retbuf, &mem_reqs);
-		memAllocInfo.allocationSize = mem_reqs.size;
-		memAllocInfo.memoryTypeIndex = vk_find_memory_require(mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-		if (memAllocInfo.memoryTypeIndex == ~0)
-			Sys_Error("Unable to allocate buffer memory");
-		VkAssert(vkAllocateMemory(vk.device, &memAllocInfo, vkallocationcb, memptr));
-		VkAssert(vkBindBufferMemory(vk.device, retbuf, *memptr, 0));
+		if (!VK_AllocatePoolMemory(vk_find_memory_require(mem_reqs.memoryTypeBits, 0), mem_reqs.size, mem_reqs.alignment, mem))
+		{
+			VkMemoryAllocateInfo memAllocInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+			VkMemoryDedicatedAllocateInfoKHR khr_mdai = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO_KHR};
+
+			//shouldn't really happen, but just in case...
+			mem_reqs.size = max(1,mem_reqs.size);
+
+			memAllocInfo.allocationSize = mem_reqs.size;
+			memAllocInfo.memoryTypeIndex = vk_find_memory_require(mem_reqs.memoryTypeBits, 0);
+			if (vk.khr_dedicated_allocation)
+			{
+				khr_mdai.buffer = retbuf;
+				khr_mdai.pNext = memAllocInfo.pNext;
+				memAllocInfo.pNext = &khr_mdai;
+			}
+
+			mem->pool = NULL;
+			mem->offset = 0;
+			mem->size = mem_reqs.size;
+			mem->memory = VK_NULL_HANDLE;
+
+			VkAssert(vkAllocateMemory(vk.device, &memAllocInfo, vkallocationcb, &mem->memory));
+		}
+		VkAssert(vkBindBufferMemory(vk.device, retbuf, mem->memory, mem->offset));
 	}
 	
 
 	fence = VK_FencedBegin(VKBE_DoneBufferStaging, sizeof(*fence));
 	fence->buf = n->buf;
-	fence->mem = n->memory;
+	fence->mem = n->mem;
 
 	//FIXME: barrier?
 
@@ -3893,7 +3916,7 @@ void VKBE_GenBatchVBOs(vbo_t **vbochain, batch_t *firstbatch, batch_t *stopbatch
 	index_t *vboedata;
 	qbyte *vbovdatastart, *vbovdata;
 	struct stagingbuf vbuf, ebuf;
-	VkDeviceMemory *retarded;
+	vk_poolmem_t *poolmem;
 
 	vbo = Z_Malloc(sizeof(*vbo));
 
@@ -3960,17 +3983,17 @@ void VKBE_GenBatchVBOs(vbo_t **vbochain, batch_t *firstbatch, batch_t *stopbatch
 		}
 	}
 
-	vbo->vbomem = retarded = Z_Malloc(sizeof(*retarded));
+	vbo->vbomem = poolmem = Z_Malloc(sizeof(*poolmem));
 	vbo->coord.vk.buff = 
 	vbo->texcoord.vk.buff = 
 	vbo->lmcoord[0].vk.buff = 
 	vbo->normals.vk.buff = 
 	vbo->svector.vk.buff = 
 	vbo->tvector.vk.buff = 
-	vbo->colours[0].vk.buff = VKBE_FinishStaging(&vbuf, retarded);
+	vbo->colours[0].vk.buff = VKBE_FinishStaging(&vbuf, poolmem);
 
-	vbo->ebomem = retarded = Z_Malloc(sizeof(*retarded));
-	vbo->indicies.vk.buff = VKBE_FinishStaging(&ebuf, retarded);
+	vbo->ebomem = poolmem = Z_Malloc(sizeof(*poolmem));
+	vbo->indicies.vk.buff = VKBE_FinishStaging(&ebuf, poolmem);
 	vbo->indicies.vk.offs = 0;
 
 	vbo->indexcount = maxvboelements;
@@ -4022,22 +4045,19 @@ struct vkbe_clearvbo
 static void VKBE_SafeClearVBO(void *vboptr)
 {
 	vbo_t *vbo = *(vbo_t**)vboptr;
-	VkDeviceMemory *retarded;
 
 	if (vbo->indicies.vk.buff)
 	{
 		vkDestroyBuffer(vk.device, vbo->indicies.vk.buff, vkallocationcb);
-		retarded = vbo->ebomem;
-		vkFreeMemory(vk.device, *retarded, vkallocationcb);
-		BZ_Free(retarded);
+		VK_ReleasePoolMemory(vbo->ebomem);
+		BZ_Free(vbo->ebomem);
 	}
 
 	if (vbo->coord.vk.buff)
 	{
 		vkDestroyBuffer(vk.device, vbo->coord.vk.buff, vkallocationcb);
-		retarded = vbo->vbomem;
-		vkFreeMemory(vk.device, *retarded, vkallocationcb);
-		BZ_Free(retarded);
+		VK_ReleasePoolMemory(vbo->vbomem);
+		BZ_Free(vbo->vbomem);
 	}
 
 	BZ_Free(vbo);
@@ -4117,7 +4137,7 @@ void VK_UploadLightmap(lightmapinfo_t *lm)
 		mips.mip[0].width = lm->width;
 		mips.mip[0].height = lm->height;
 		mips.mip[0].depth = 1;
-		switch(lightmap_fmt)
+		switch(lm->fmt)
 		{
 		default:
 		case PTI_A2BGR10:
@@ -4125,7 +4145,7 @@ void VK_UploadLightmap(lightmapinfo_t *lm)
 		case PTI_RGBA16F:
 		case PTI_RGBA32F:
 		case PTI_L8:
-			mips.encoding = lightmap_fmt;
+			mips.encoding = lm->fmt;
 			break;
 		case PTI_BGRA8:
 			mips.encoding = PTI_BGRX8;
@@ -4531,6 +4551,7 @@ static void BE_RotateForEntity (const entity_t *e, const model_t *mod)
 void VKBE_SubmitBatch(batch_t *batch)
 {
 	shader_t *shader = batch->shader;
+	unsigned int bf;
 	shaderstate.nummeshes = batch->meshes - batch->firstmesh;
 	if (!shaderstate.nummeshes)
 		return;
@@ -4538,8 +4559,10 @@ void VKBE_SubmitBatch(batch_t *batch)
 	shaderstate.batchvbo = batch->vbo;
 	shaderstate.meshlist = batch->mesh + batch->firstmesh;
 	shaderstate.curshader = shader->remapto;
-	if (shaderstate.curentity != batch->ent)
+	bf = batch->flags | shaderstate.forcebeflags;
+	if (shaderstate.curentity != batch->ent || shaderstate.flags != bf)
 	{
+		shaderstate.flags = bf;
 		BE_RotateForEntity(batch->ent, batch->ent->model);
 		shaderstate.curtime = r_refdef.time - shaderstate.curentity->shaderTime;
 	}
@@ -4549,7 +4572,6 @@ void VKBE_SubmitBatch(batch_t *batch)
 		shaderstate.curtexnums = shader->defaulttextures + ((int)(shader->defaulttextures_fps * shaderstate.curtime) % shader->numdefaulttextures);
 	else
 		shaderstate.curtexnums = shader->defaulttextures;
-	shaderstate.flags = batch->flags | shaderstate.forcebeflags;
 
 	BE_DrawMeshChain_Internal();
 }
@@ -4678,26 +4700,8 @@ void VKBE_RT_Gen(struct vk_rendertarg *targ, uint32_t width, uint32_t height, qb
 	depth_imginfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT;
 	VkAssert(vkCreateImage(vk.device, &depth_imginfo, vkallocationcb, &targ->depth.image));
 
-
-	{
-		VkMemoryRequirements mem_reqs;
-		VkMemoryAllocateInfo memAllocInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-		vkGetImageMemoryRequirements(vk.device, targ->colour.image, &mem_reqs);
-		memAllocInfo.allocationSize = mem_reqs.size;
-		memAllocInfo.memoryTypeIndex = vk_find_memory_require(mem_reqs.memoryTypeBits, 0);
-		VkAssert(vkAllocateMemory(vk.device, &memAllocInfo, vkallocationcb, &targ->colour.memory));
-		VkAssert(vkBindImageMemory(vk.device, targ->colour.image, targ->colour.memory, 0));
-	}
-
-	{
-		VkMemoryRequirements mem_reqs;
-		VkMemoryAllocateInfo memAllocInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-		vkGetImageMemoryRequirements(vk.device, targ->depth.image, &mem_reqs);
-		memAllocInfo.allocationSize = mem_reqs.size;
-		memAllocInfo.memoryTypeIndex = vk_find_memory_require(mem_reqs.memoryTypeBits, 0);
-		VkAssert(vkAllocateMemory(vk.device, &memAllocInfo, vkallocationcb, &targ->depth.memory));
-		VkAssert(vkBindImageMemory(vk.device, targ->depth.image, targ->depth.memory, 0));
-	}
+	VK_AllocateBindImageMemory(&targ->colour, true);
+	VK_AllocateBindImageMemory(&targ->depth, true);
 
 //		set_image_layout(vk.frame->cbuf, targ->colour.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 //		set_image_layout(vk.frame->cbuf, targ->depth.image, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
@@ -4867,26 +4871,8 @@ void VKBE_RT_Gen_Cube(struct vk_rendertarg_cube *targ, uint32_t size, qboolean c
 	depth_imginfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT;
 	VkAssert(vkCreateImage(vk.device, &depth_imginfo, vkallocationcb, &targ->depth.image));
 
-
-	{
-		VkMemoryRequirements mem_reqs;
-		VkMemoryAllocateInfo memAllocInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-		vkGetImageMemoryRequirements(vk.device, targ->colour.image, &mem_reqs);
-		memAllocInfo.allocationSize = mem_reqs.size;
-		memAllocInfo.memoryTypeIndex = vk_find_memory_require(mem_reqs.memoryTypeBits, 0);
-		VkAssert(vkAllocateMemory(vk.device, &memAllocInfo, vkallocationcb, &targ->colour.memory));
-		VkAssert(vkBindImageMemory(vk.device, targ->colour.image, targ->colour.memory, 0));
-	}
-
-	{
-		VkMemoryRequirements mem_reqs;
-		VkMemoryAllocateInfo memAllocInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-		vkGetImageMemoryRequirements(vk.device, targ->depth.image, &mem_reqs);
-		memAllocInfo.allocationSize = mem_reqs.size;
-		memAllocInfo.memoryTypeIndex = vk_find_memory_require(mem_reqs.memoryTypeBits, 0);
-		VkAssert(vkAllocateMemory(vk.device, &memAllocInfo, vkallocationcb, &targ->depth.memory));
-		VkAssert(vkBindImageMemory(vk.device, targ->depth.image, targ->depth.memory, 0));
-	}
+	VK_AllocateBindImageMemory(&targ->colour, true);
+	VK_AllocateBindImageMemory(&targ->depth, true);
 
 //		set_image_layout(vk.frame->cbuf, targ->colour.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 //		set_image_layout(vk.frame->cbuf, targ->depth.image, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
@@ -5088,7 +5074,6 @@ void VKBE_RT_End(struct vk_rendertarg *targ)
 
 static qboolean BE_GenerateRefraction(batch_t *batch, shader_t *bs)
 {
-	extern cvar_t r_refractreflect_scale;
 	float oldil;
 	int oldbem;
 //	struct vk_rendertarg *targ;
@@ -5112,8 +5097,8 @@ static qboolean BE_GenerateRefraction(batch_t *batch, shader_t *bs)
 
 		r_refdef.vrect.x = 0;
 		r_refdef.vrect.y = 0;
-		r_refdef.vrect.width = max(1, vid.fbvwidth*r_refractreflect_scale.value);
-		r_refdef.vrect.height = max(1, vid.fbvheight*r_refractreflect_scale.value);
+		r_refdef.vrect.width = max(1, vid.fbvwidth*bs->portalfboscale);
+		r_refdef.vrect.height = max(1, vid.fbvheight*bs->portalfboscale);
 		VKBE_RT_Gen(&shaderstate.rt_reflection, r_refdef.vrect.width, r_refdef.vrect.height, false, RT_IMAGEFLAGS);
 		VKBE_RT_Begin(&shaderstate.rt_reflection);
 		R_DrawPortal(batch, cl.worldmodel->batches, NULL, 1);
@@ -5809,12 +5794,12 @@ struct vk_shadowbuffer
 
 	VkBuffer vbuffer;
 	VkDeviceSize voffset;
-	VkDeviceMemory vmemory;
+	vk_poolmem_t vmemory;
 	unsigned int numverts;
 
 	VkBuffer ibuffer;
 	VkDeviceSize ioffset;
-	VkDeviceMemory imemory;
+	vk_poolmem_t imemory;
 	unsigned int numindicies;
 };
 //FIXME: needs context for threading
@@ -5830,12 +5815,10 @@ struct vk_shadowbuffer *VKBE_GenerateShadowBuffer(vecV_t *verts, int numverts, i
 
 		map = VKBE_AllocateBufferSpace(DB_VBO, sizeof(*verts)*numverts, &buf->vbuffer, &buf->voffset);
 		memcpy(map, verts, sizeof(*verts)*numverts);
-		buf->vmemory = VK_NULL_HANDLE;
 		buf->numverts = numverts;
 
 		map = VKBE_AllocateBufferSpace(DB_EBO, sizeof(*indicies)*numindicies, &buf->ibuffer, &buf->ioffset);
 		memcpy(map, indicies, sizeof(*indicies)*numindicies);
-		buf->imemory = VK_NULL_HANDLE;
 		buf->numindicies = numindicies;
 		return buf;
 	}
@@ -5866,8 +5849,8 @@ static void VKBE_DestroyShadowBuffer_Delayed(void *ctx)
 	struct vk_shadowbuffer *buf = ctx;
 	vkDestroyBuffer(vk.device, buf->vbuffer, vkallocationcb);
 	vkDestroyBuffer(vk.device, buf->ibuffer, vkallocationcb);
-	vkFreeMemory(vk.device, buf->vmemory, vkallocationcb);
-	vkFreeMemory(vk.device, buf->imemory, vkallocationcb);
+	VK_ReleasePoolMemory(&buf->vmemory);
+	VK_ReleasePoolMemory(&buf->imemory);
 }
 void VKBE_DestroyShadowBuffer(struct vk_shadowbuffer *buf)
 {
@@ -5974,7 +5957,9 @@ qboolean VKBE_BeginShadowmap(qboolean isspot, uint32_t width, uint32_t height)
 			VkMemoryAllocateInfo memAllocInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
 			vkGetImageMemoryRequirements(vk.device, shad->image, &mem_reqs);
 			memAllocInfo.allocationSize = mem_reqs.size;
-			memAllocInfo.memoryTypeIndex = vk_find_memory_require(mem_reqs.memoryTypeBits, 0);
+			memAllocInfo.memoryTypeIndex = vk_find_memory_try(mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+			if (memAllocInfo.memoryTypeIndex == ~0)
+				memAllocInfo.memoryTypeIndex = vk_find_memory_require(mem_reqs.memoryTypeBits, 0);
 			VkAssert(vkAllocateMemory(vk.device, &memAllocInfo, vkallocationcb, &shad->memory));
 			VkAssert(vkBindImageMemory(vk.device, shad->image, shad->memory, 0));
 		}
@@ -6359,33 +6344,33 @@ void VKBE_VBO_Finish(vbobctx_t *ctx, void *edata, size_t esize, vboarray_t *earr
 {
 	struct stagingbuf *n;
 	struct stagingbuf ebo;
-	VkDeviceMemory *retarded;
+	vk_poolmem_t *poolmem;
 	index_t *map = VKBE_CreateStagingBuffer(&ebo, esize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 	memcpy(map, edata, esize);
-	*ebomem = retarded = Z_Malloc(sizeof(*retarded));
-	earray->vk.buff = VKBE_FinishStaging(&ebo, retarded);
+	*ebomem = poolmem = Z_Malloc(sizeof(*poolmem));
+	earray->vk.buff = VKBE_FinishStaging(&ebo, poolmem);
 	earray->vk.offs = 0;
 
 	if (ctx)
 	{
 		n = ctx->vboptr[0];
-		*vbomem = retarded = Z_Malloc(sizeof(*retarded));
-		VKBE_FinishStaging(n, retarded);
+		*vbomem = poolmem = Z_Malloc(sizeof(*poolmem));
+		/*buffer was pre-created*/VKBE_FinishStaging(n, poolmem);
 		Z_Free(n);
 	}
 }
 void VKBE_VBO_Destroy(vboarray_t *vearray, void *mem)
 {
-	VkDeviceMemory *retarded = mem;
+	vk_poolmem_t *poolmem = mem;
 	struct fencedbufferwork *fence;
 	if (!vearray->vk.buff)
 		return;	//not actually allocated...
 
 	fence = VK_AtFrameEnd(VKBE_DoneBufferStaging, NULL, sizeof(*fence));
 	fence->buf = vearray->vk.buff;
-	fence->mem = *retarded;
+	fence->mem = *poolmem;
 
-	Z_Free(retarded);
+	Z_Free(poolmem);
 }
 
 void VKBE_Scissor(srect_t *rect)

@@ -358,22 +358,19 @@ typedef unsigned char stmap;
 struct mesh_s;
 typedef struct {
 	texid_t lightmap_texture;
-	qboolean	modified;
-	qboolean	external;
-	qboolean	hasdeluxe;
-	uploadfmt_t	fmt;
+	qboolean	modified;	//data was changed. consult rectchange to see the bounds.
+	qboolean	external;	//the data was loaded from a file (q3bsp feature where we shouldn't be blending lightmaps at all)
+	qboolean	hasdeluxe;	//says that the next lightmap index contains deluxemap info
+	uploadfmt_t	fmt;		//texture format that we're using
+	qbyte		pixbytes;	//yes, this means no compressed formats.
 	int			width;
 	int			height;
 	glRect_t	rectchange;
-	qbyte		*lightmaps;//[4*LMBLOCK_WIDTH*LMBLOCK_HEIGHT];
-	stmap		*stainmaps;//[3*LMBLOCK_WIDTH*LMBLOCK_HEIGHT];	//rgb no a. added to lightmap for added (hopefully) speed.
+	qbyte		*lightmaps;	//[pixbytes*LMBLOCK_WIDTH*LMBLOCK_HEIGHT];
+	stmap		*stainmaps;	//[3*LMBLOCK_WIDTH*LMBLOCK_HEIGHT];	//rgb no a. added to lightmap for added (hopefully) speed.
 } lightmapinfo_t;
 extern lightmapinfo_t **lightmap;
 extern int numlightmaps;
-//extern texid_t		*lightmap_textures;
-//extern texid_t		*deluxmap_textures;
-extern int				lightmap_bytes;		// 1, 3, or 4
-extern uploadfmt_t		lightmap_fmt;	//bgra32, rgba32, rgb24, lum8
 
 void QDECL Surf_RebuildLightmap_Callback (struct cvar_s *var, char *oldvalue);
 
@@ -422,6 +419,8 @@ enum imageflags
 	IF_MIPCAP = 1<<12,
 	IF_PREMULTIPLYALPHA = 1<<13,	//rgb *= alpha
 
+	IF_WORLDTEX = 1<<18,	//gl_picmip_world
+	IF_SPRITETEX = 1<<19,	//gl_picmip_sprites
 	IF_NOSRGB = 1<<20,	//ignore srgb when loading. this is guarenteed to be linear, for normalmaps etc.
 
 	IF_PALETTIZE = 1<<21,
@@ -447,11 +446,14 @@ image_t *Image_CreateTexture(const char *identifier, const char *subpath, unsign
 image_t *QDECL Image_GetTexture	(const char *identifier, const char *subpath, unsigned int flags, void *fallbackdata, void *fallbackpalette, int fallbackwidth, int fallbackheight, uploadfmt_t fallbackfmt);
 qboolean Image_UnloadTexture(image_t *tex);	//true if it did something.
 void Image_DestroyTexture	(image_t *tex);
-qboolean Image_LoadTextureFromMemory(texid_t tex, int flags, const char *iname, char *fname, qbyte *filedata, int filesize);	//intended really for worker threads, but should be fine from the main thread too
+qboolean Image_LoadTextureFromMemory(texid_t tex, int flags, const char *iname, const char *fname, qbyte *filedata, int filesize);	//intended really for worker threads, but should be fine from the main thread too
+qboolean Image_LocateHighResTexture(image_t *tex, flocation_t *bestloc, char *bestname, size_t bestnamesize, unsigned int *bestflags);
 void Image_Upload			(texid_t tex, uploadfmt_t fmt, void *data, void *palette, int width, int height, unsigned int flags);
 void Image_Purge(void);	//purge any textures which are not needed any more (releases memory, but doesn't give null pointers).
 void Image_Init(void);
 void Image_Shutdown(void);
+qboolean Image_WriteKTXFile(const char *filename, enum fs_relative fsroot, struct pendingtextureinfo *mips);
+qboolean Image_WriteDDSFile(const char *filename, enum fs_relative fsroot, struct pendingtextureinfo *mips);
 void Image_BlockSizeForEncoding(uploadfmt_t encoding, unsigned int *blockbytes, unsigned int *blockwidth, unsigned int *blockheight);
 const char *Image_FormatName(uploadfmt_t encoding);
 
@@ -481,7 +483,7 @@ texid_tf R_LoadHiResTexture(const char *name, const char *subpath, unsigned int 
 texid_tf R_LoadBumpmapTexture(const char *name, const char *subpath);
 void R_LoadNumberedLightTexture(struct dlight_s *dl, int cubetexnum);
 
-qbyte *Read32BitImageFile(qbyte *buf, int len, int *width, int *height, qboolean *hasalpha, const char *fname);
+qbyte *ReadRawImageFile(qbyte *buf, int len, int *width, int *height, uploadfmt_t *format, qboolean force_rgba8, const char *fname);
 
 extern	texid_t	particletexture;
 extern	texid_t particlecqtexture;
@@ -516,7 +518,8 @@ typedef struct
 	unsigned char *styles;
 	unsigned char *shifts;
 } lightmapoverrides_t;
-void Mod_LoadLighting (struct model_s *loadmodel, qbyte *mod_base, lump_t *l, qboolean interleaveddeluxe, lightmapoverrides_t *overrides);
+typedef struct bspx_header_s bspx_header_t;
+void Mod_LoadLighting (struct model_s *loadmodel, bspx_header_t *bspx, qbyte *mod_base, lump_t *l, qboolean interleaveddeluxe, lightmapoverrides_t *overrides);
 
 struct mleaf_s *Mod_PointInLeaf (struct model_s *model, float *p);
 
@@ -575,13 +578,14 @@ void RQ_Shutdown(void);
 
 void WritePCXfile (const char *filename, enum fs_relative fsroot, qbyte *data, int width, int height, int rowbytes, qbyte *palette, qboolean upload); //data is 8bit.
 qbyte *ReadPCXFile(qbyte *buf, int length, int *width, int *height);
-qbyte *ReadTargaFile(qbyte *buf, int length, int *width, int *height, qboolean *hasalpha, int asgrey);
+qbyte *ReadTargaFile(qbyte *buf, int length, int *width, int *height, uploadfmt_t *format, qboolean greyonly, uploadfmt_t forceformat);
 qbyte *ReadJPEGFile(qbyte *infile, int length, int *width, int *height);
 qbyte *ReadPNGFile(qbyte *buf, int length, int *width, int *height, const char *name);
 qbyte *ReadPCXPalette(qbyte *buf, int len, qbyte *out);
 void Image_ResampleTexture (unsigned *in, int inwidth, int inheight, unsigned *out,  int outwidth, int outheight);
+void Image_ResampleTexture8 (unsigned char *in, int inwidth, int inheight, unsigned char *out,  int outwidth, int outheight);
 
-void BoostGamma(qbyte *rgba, int width, int height);
+void BoostGamma(qbyte *rgba, int width, int height, uploadfmt_t fmt);
 void SaturateR8G8B8(qbyte *data, int size, float sat);
 void AddOcranaLEDsIndexed (qbyte *image, int h, int w);
 
@@ -610,10 +614,6 @@ extern	cvar_t	r_shadow_realtime_dlight_diffuse;
 extern	cvar_t	r_shadow_realtime_dlight_specular;
 extern	cvar_t	r_shadow_realtime_world, r_shadow_realtime_world_shadows, r_shadow_realtime_world_lightmaps;
 extern	cvar_t	r_shadow_shadowmapping;
-extern	cvar_t	r_editlights_import_radius;
-extern	cvar_t	r_editlights_import_ambient;
-extern	cvar_t	r_editlights_import_diffuse;
-extern	cvar_t	r_editlights_import_specular;
 extern	cvar_t	r_mirroralpha;
 extern	cvar_t	r_wateralpha;
 extern	cvar_t	r_lavaalpha;
@@ -626,8 +626,8 @@ extern	cvar_t	r_telestyle;
 extern	cvar_t	r_dynamic;
 extern	cvar_t	r_novis;
 extern	cvar_t	r_netgraph;
-extern	cvar_t	r_deluxmapping_cvar;
-extern	qboolean r_deluxmapping;
+extern	cvar_t	r_deluxemapping_cvar;
+extern	qboolean r_deluxemapping;
 extern	cvar_t r_softwarebanding_cvar;
 extern	qboolean r_softwarebanding;
 extern	cvar_t r_lightprepass_cvar;

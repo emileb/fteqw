@@ -736,6 +736,13 @@ void Mod_Purge(enum mod_purge_e ptype)
 	}
 }
 
+#ifndef SERVERONLY
+void Mod_FindCubemaps_f(void);
+void Mod_Realign_f(void);
+void Mod_BSPX_List_f(void);
+void Mod_BSPX_Strip_f(void);
+#endif
+
 /*
 ===============
 Mod_Init
@@ -771,6 +778,13 @@ void Mod_Init (qboolean initial)
 		Cvar_Register(&temp_lit2support, NULL);
 		Cmd_AddCommand("sv_saveentfile", Mod_SaveEntFile_f);
 		Cmd_AddCommand("version_modelformats", Mod_PrintFormats_f);
+
+#ifndef SERVERONLY
+		Cmd_AddCommandD("mod_findcubemaps", Mod_FindCubemaps_f, "Scans the entities of a map to find reflection envmap sites and determines the nearest one to each surface.");
+		Cmd_AddCommandD("mod_realign", Mod_Realign_f, "Reads the named bsp and writes it back out with only alignment changes.");
+		Cmd_AddCommandD("mod_bspx_list", Mod_BSPX_List_f, "Lists all lumps (and their sizes) in the specified bsp.");
+		Cmd_AddCommandD("mod_bspx_strip", Mod_BSPX_Strip_f, "Strips a named extension lump from a bsp file.");
+#endif
 	}
 
 	if (initial)
@@ -786,7 +800,13 @@ void Mod_Init (qboolean initial)
 
 		//q2/q3bsps
 #if defined(Q2BSPS) || defined(Q3BSPS)
+#ifndef Q2BSPS
+		Mod_RegisterModelFormatMagic(NULL, "Quake3 Map (bsp)",				IDBSPHEADER,							Mod_LoadQ2BrushModel);
+#elif !defined(Q3BSPS)
+		Mod_RegisterModelFormatMagic(NULL, "Quake2 Map (bsp)",				IDBSPHEADER,							Mod_LoadQ2BrushModel);
+#else
 		Mod_RegisterModelFormatMagic(NULL, "Quake2/Quake3 Map (bsp)",		IDBSPHEADER,							Mod_LoadQ2BrushModel);
+#endif
 #endif
 #ifdef RFBSPS
 		Mod_RegisterModelFormatMagic(NULL, "Raven Map (bsp)",				('R'<<0)+('B'<<8)+('S'<<16)+('P'<<24),	Mod_LoadQ2BrushModel);
@@ -805,11 +825,11 @@ void Mod_Init (qboolean initial)
 
 #ifdef Q1BSPS
 		//q1-based formats
-		Mod_RegisterModelFormatMagic(NULL, "Quake1 2PSB Map(bsp)",			BSPVERSION_LONG1,						Mod_LoadBrushModel);
-		Mod_RegisterModelFormatMagic(NULL, "Quake1 BSP2 Map(bsp)",			BSPVERSION_LONG2,						Mod_LoadBrushModel);
-		Mod_RegisterModelFormatMagic(NULL, "Half-Life Map (bsp)",			30,										Mod_LoadBrushModel);
-		Mod_RegisterModelFormatMagic(NULL, "Quake1 Map (bsp)",				29,										Mod_LoadBrushModel);
-		Mod_RegisterModelFormatMagic(NULL, "Quake1 Prerelease Map (bsp)",	28,										Mod_LoadBrushModel);
+		Mod_RegisterModelFormatMagic(NULL, "Quake1 2PSB Map (bsp)",			BSPVERSION_LONG1,						Mod_LoadBrushModel);
+		Mod_RegisterModelFormatMagic(NULL, "Quake1 BSP2 Map (bsp)",			BSPVERSION_LONG2,						Mod_LoadBrushModel);
+		Mod_RegisterModelFormatMagic(NULL, "Half-Life Map (bsp)",			BSPVERSIONHL,							Mod_LoadBrushModel);
+		Mod_RegisterModelFormatMagic(NULL, "Quake1 Map (bsp)",				BSPVERSION,								Mod_LoadBrushModel);
+		Mod_RegisterModelFormatMagic(NULL, "Quake1 Prerelease Map (bsp)",	BSPVERSIONPREREL,						Mod_LoadBrushModel);
 #endif
 	}
 }
@@ -1131,7 +1151,7 @@ void Mod_ModelLoaded(void *ctx, void *data, size_t a, size_t b)
 				char *buf;
 				char dollname[MAX_QPATH];
 				Q_snprintfz(dollname, sizeof(dollname), "%s.doll", mod->name);
-				buf = COM_LoadFile(dollname, 5, &filesize);
+				buf = FS_LoadMallocFile(dollname, &filesize);
 				if (buf)
 				{
 					mod->dollinfo = rag_createdollfromstring(mod, dollname, numbones, buf);
@@ -1210,19 +1230,25 @@ static void Mod_LoadModelWorker (void *ctx, void *data, size_t a, size_t b)
 	// set necessary engine flags for loading purposes
 	if (!strcmp(mod->publicname, "progs/player.mdl"))
 		mod->engineflags |= MDLF_PLAYER | MDLF_DOCRC;
-	else if (!strcmp(mod->publicname, "progs/flame.mdl") || 
-		!strcmp(mod->publicname, "progs/flame2.mdl") ||
-		!strcmp(mod->publicname, "models/flame1.mdl") ||	//hexen2 small standing flame
-		!strcmp(mod->publicname, "models/flame2.mdl") ||	//hexen2 large standing flame
-		!strcmp(mod->publicname, "models/cflmtrch.mdl"))	//hexen2 wall torch
+	else if (!strcmp(mod->publicname, "progs/flame.mdl")
+		|| !strcmp(mod->publicname, "progs/flame2.mdl")
+#ifdef HEXEN2
+		|| !strcmp(mod->publicname, "models/flame1.mdl")	//hexen2 small standing flame
+		|| !strcmp(mod->publicname, "models/flame2.mdl")	//hexen2 large standing flame
+		|| !strcmp(mod->publicname, "models/cflmtrch.mdl")	//hexen2 wall torch
+#endif
+			)
 		mod->engineflags |= MDLF_FLAME;
-	else if (!strcmp(mod->publicname, "progs/bolt.mdl") ||
-		!strcmp(mod->publicname, "progs/bolt2.mdl") ||
-		!strcmp(mod->publicname, "progs/bolt3.mdl") ||
-		!strcmp(mod->publicname, "progs/beam.mdl") || 
-		!strcmp(mod->publicname, "models/stsunsf2.mdl") || 
-		!strcmp(mod->publicname, "models/stsunsf1.mdl") ||
-		!strcmp(mod->publicname, "models/stice.mdl"))
+	else if (!strcmp(mod->publicname, "progs/bolt.mdl")
+		|| !strcmp(mod->publicname, "progs/bolt2.mdl")
+		|| !strcmp(mod->publicname, "progs/bolt3.mdl")
+		|| !strcmp(mod->publicname, "progs/beam.mdl")
+#ifdef HEXEN2
+		|| !strcmp(mod->publicname, "models/stsunsf2.mdl")
+		|| !strcmp(mod->publicname, "models/stsunsf1.mdl")
+		|| !strcmp(mod->publicname, "models/stice.mdl")
+#endif
+			 )
 		mod->engineflags |= MDLF_BOLT;
 	else if (!strcmp(mod->publicname, "progs/backpack.mdl"))
 		mod->engineflags |= MDLF_NOTREPLACEMENTS;
@@ -1273,7 +1299,7 @@ static void Mod_LoadModelWorker (void *ctx, void *data, size_t a, size_t b)
 			char altname[MAX_QPATH];
 			Q_snprintfz(altname, sizeof(altname), "%s.%s", mdlbase, token);
 			TRACE(("Mod_LoadModel: Trying to load (replacement) model \"%s\"\n", altname));
-			buf = (unsigned *)COM_LoadFile (altname, 5, &filesize);
+			buf = (unsigned *)FS_LoadMallocFile (altname, &filesize);
 
 			if (buf)
 				Q_strncpyz(mod->name, altname, sizeof(mod->name));
@@ -1281,7 +1307,7 @@ static void Mod_LoadModelWorker (void *ctx, void *data, size_t a, size_t b)
 		else
 		{
 			TRACE(("Mod_LoadModel: Trying to load model \"%s\"\n", mod->publicname));
-			buf = (unsigned *)COM_LoadFile (mod->publicname, 5, &filesize);
+			buf = (unsigned *)FS_LoadMallocFile (mod->publicname, &filesize);
 			if (buf)
 				Q_strncpyz(mod->name, mod->publicname, sizeof(mod->name));
 			else if (!buf)
@@ -1677,7 +1703,7 @@ typedef struct
 Mod_LoadLighting
 =================
 */
-void Mod_LoadLighting (model_t *loadmodel, qbyte *mod_base, lump_t *l, qboolean interleaveddeluxe, lightmapoverrides_t *overrides)
+void Mod_LoadLighting (model_t *loadmodel, bspx_header_t *bspx, qbyte *mod_base, lump_t *l, qboolean interleaveddeluxe, lightmapoverrides_t *overrides)
 {
 	qboolean luxtmp = true;
 	qboolean exptmp = true;
@@ -1718,11 +1744,11 @@ void Mod_LoadLighting (model_t *loadmodel, qbyte *mod_base, lump_t *l, qboolean 
 		samples >>= 1;
 	if (!samples)
 	{
-		expdata = Q1BSPX_FindLump("LIGHTING_E5BGR9", &samples);	//expressed as a big-endian packed int - 0xEBGR type thing, except misaligned and 32bit.
+		expdata = BSPX_FindLump(bspx, mod_base, "LIGHTING_E5BGR9", &samples);	//expressed as a big-endian packed int - 0xEBGR type thing, except misaligned and 32bit.
 		samples /= 4;
 		if (!samples)
 		{
-			litdata = Q1BSPX_FindLump("RGBLIGHTING", &samples); //RGB packed data
+			litdata = BSPX_FindLump(bspx, mod_base, "RGBLIGHTING", &samples); //RGB packed data
 			samples /= 3;
 			if (!samples)
 				return;
@@ -1837,7 +1863,7 @@ void Mod_LoadLighting (model_t *loadmodel, qbyte *mod_base, lump_t *l, qboolean 
 					samples = ql2->lmsize;
 
 					litdata = shifts+ql2->numsurfs;
-					if (r_deluxmapping)
+					if (r_deluxemapping)
 						luxdata = litdata+samples*3;
 				}
 			}
@@ -1853,13 +1879,13 @@ void Mod_LoadLighting (model_t *loadmodel, qbyte *mod_base, lump_t *l, qboolean 
 		{
 			int size;
 			/*FIXME: bspx support for extents+lmscale, may require style+offset lumps too, not sure what to do here*/
-			expdata = Q1BSPX_FindLump("LIGHTING_E5BGR9", &size);
+			expdata = BSPX_FindLump(bspx, mod_base, "LIGHTING_E5BGR9", &size);
 			exptmp = true;
 			if (size != samples*4)
 			{
 				expdata = NULL;
 
-				litdata = Q1BSPX_FindLump("RGBLIGHTING", &size);
+				litdata = BSPX_FindLump(bspx, mod_base, "RGBLIGHTING", &size);
 				littmp = true;
 				if (size != samples*3)
 					litdata = NULL;
@@ -1906,7 +1932,7 @@ void Mod_LoadLighting (model_t *loadmodel, qbyte *mod_base, lump_t *l, qboolean 
 	}
 
 
-	if (!luxdata && r_loadlits.ival && r_deluxmapping)
+	if (!luxdata && r_loadlits.ival && r_deluxemapping)
 	{	//the map util has a '-scalecos X' parameter. use 0 if you're going to use only just lux. without lux scalecos 0 is hideous.
 		char luxname[MAX_QPATH];
 		size_t luxsz = 0;
@@ -1944,7 +1970,7 @@ void Mod_LoadLighting (model_t *loadmodel, qbyte *mod_base, lump_t *l, qboolean 
 		if (!luxdata)
 		{
 			int size;
-			luxdata = Q1BSPX_FindLump("LIGHTINGDIR", &size);
+			luxdata = BSPX_FindLump(bspx, mod_base, "LIGHTINGDIR", &size);
 			if (size != samples*3)
 				luxdata = NULL;
 			luxtmp = true;
@@ -1971,23 +1997,26 @@ void Mod_LoadLighting (model_t *loadmodel, qbyte *mod_base, lump_t *l, qboolean 
 #endif
 
 #ifdef RUNTIMELIGHTING
-	if (!lightmodel && r_loadlits.value == 2 && (!litdata || (!luxdata && r_deluxmapping)))
-	{
-		writelitfile = !litdata;
-		numlightdata = l->filelen;
-		lightmodel = loadmodel;
-		relitsurface = 0;
-	}
-	else if (!lightmodel && r_deluxmapping_cvar.value>1 && r_deluxmapping && !luxdata
+	if ((loadmodel->type == mod_brush && loadmodel->fromgame == fg_quake) || loadmodel->type == mod_heightmap)
+	{	//we only support a couple of formats. :(
+		if (!lightmodel && r_loadlits.value == 2 && (!litdata || (!luxdata && r_deluxemapping)))
+		{
+			writelitfile = !litdata;
+			numlightdata = l->filelen;
+			lightmodel = loadmodel;
+			relitsurface = 0;
+		}
+		else if (!lightmodel && r_deluxemapping_cvar.value>1 && r_deluxemapping && !luxdata
 #ifdef RTLIGHTS
-		&& !(r_shadow_realtime_world.ival && r_shadow_realtime_world_lightmaps.value<=0)
+			&& !(r_shadow_realtime_world.ival && r_shadow_realtime_world_lightmaps.value<=0)
 #endif
-		)
-	{	//if deluxemapping is on, generate missing lux files a little more often, but don't bother if we have rtlights on anyway.
-		writelitfile = false;
-		numlightdata = l->filelen;
-		lightmodel = loadmodel;
-		relitsurface = 0;
+			)
+		{	//if deluxemapping is on, generate missing lux files a little more often, but don't bother if we have rtlights on anyway.
+			writelitfile = false;
+			numlightdata = l->filelen;
+			lightmodel = loadmodel;
+			relitsurface = 0;
+		}
 	}
 
 	/*if we're relighting, make sure there's the proper lit data to be updated*/
@@ -2008,7 +2037,7 @@ void Mod_LoadLighting (model_t *loadmodel, qbyte *mod_base, lump_t *l, qboolean 
 		}
 	}
 	/*if we're relighting, make sure there's the proper lux data to be updated*/
-	if (lightmodel == loadmodel && r_deluxmapping && !luxdata)
+	if (lightmodel == loadmodel && r_deluxemapping && !luxdata)
 	{
 		int i;
 		luxdata = ZG_Malloc(&loadmodel->memgroup, samples*3);
@@ -2024,7 +2053,7 @@ void Mod_LoadLighting (model_t *loadmodel, qbyte *mod_base, lump_t *l, qboolean 
 	if (overrides && !overrides->shifts)
 	{
 		int size;
-		overrides->shifts = Q1BSPX_FindLump("LMSHIFT", &size);
+		overrides->shifts = BSPX_FindLump(bspx, mod_base, "LMSHIFT", &size);
 		if (size != loadmodel->numsurfaces)
 			overrides->shifts = NULL;
 
@@ -2032,14 +2061,14 @@ void Mod_LoadLighting (model_t *loadmodel, qbyte *mod_base, lump_t *l, qboolean 
 		if (!overrides->offsets)
 		{
 			int size;
-			overrides->offsets = Q1BSPX_FindLump("LMOFFSET", &size);
+			overrides->offsets = BSPX_FindLump(bspx, mod_base, "LMOFFSET", &size);
 			if (size != loadmodel->numsurfaces * sizeof(int))
 				overrides->offsets = NULL;
 		}
 		if (!overrides->styles)
 		{
 			int size;
-			overrides->styles = Q1BSPX_FindLump("LMSTYLE", &size);
+			overrides->styles = BSPX_FindLump(bspx, mod_base, "LMSTYLE", &size);
 			if (size != loadmodel->numsurfaces * sizeof(qbyte)*MAXQ1LIGHTMAPS)
 				overrides->styles = NULL;
 		}
@@ -2305,7 +2334,7 @@ qboolean Mod_LoadVertexes (model_t *loadmodel, qbyte *mod_base, lump_t *l)
 	return true;
 }
 
-qboolean Mod_LoadVertexNormals (model_t *loadmodel, qbyte *mod_base, lump_t *l)
+qboolean Mod_LoadVertexNormals (model_t *loadmodel, bspx_header_t *bspx, qbyte *mod_base, lump_t *l)
 {
 	float	*in;
 	float	*out;
@@ -2323,7 +2352,7 @@ qboolean Mod_LoadVertexNormals (model_t *loadmodel, qbyte *mod_base, lump_t *l)
 	}
 	else
 	{
-		in = Q1BSPX_FindLump("VERTEXNORMALS", &count); 
+		in = BSPX_FindLump(bspx, mod_base, "VERTEXNORMALS", &count); 
 		if (in)
 			count /= sizeof(vec3_t);
 		else
@@ -2718,7 +2747,8 @@ static int Mod_Batches_Generate(model_t *mod)
 					lbatch->lightmap[2] == lmmerge(surf->lightmaptexturenums[2]) &&
 					lbatch->lightmap[3] == lmmerge(surf->lightmaptexturenums[3]) &&
 #endif
-					lbatch->fog == surf->fog))
+					lbatch->fog == surf->fog &&
+					lbatch->envmap == surf->envmap))
 			batch = lbatch;
 		else
 		{
@@ -2735,7 +2765,8 @@ static int Mod_Batches_Generate(model_t *mod)
 							batch->lightmap[2] == lmmerge(surf->lightmaptexturenums[2]) &&
 							batch->lightmap[3] == lmmerge(surf->lightmaptexturenums[3]) &&
 #endif
-							batch->fog == surf->fog)
+							batch->fog == surf->fog &&
+							batch->envmap == surf->envmap)
 					break;
 			}
 		}
@@ -2772,6 +2803,7 @@ static int Mod_Batches_Generate(model_t *mod)
 			batch->next = mod->batches[sortid];
 			batch->ent = &r_worldentity;
 			batch->fog = surf->fog;
+			batch->envmap = surf->envmap;
 			Vector4Copy(plane, batch->plane);
 
 			mod->batches[sortid] = batch;
@@ -2938,7 +2970,7 @@ static void Mod_LightmapAllocSurf(lmalloc_t *lmallocator, msurface_t *surf, int 
 
 	if (isDedicated ||
 		(surf->texinfo->texture->shader && !(surf->texinfo->texture->shader->flags & SHADER_HASLIGHTMAP)) || //fte
-		(surf->flags & (SURF_DRAWSKY|SURF_DRAWTURB)) ||	//q1
+		(surf->flags & (SURF_DRAWSKY|SURF_DRAWTILED)) ||	//q1
 		(surf->texinfo->flags & TEX_SPECIAL) ||	//the original 'no lightmap'
 		(surf->texinfo->flags & (TI_SKY|TI_TRANS33|TI_TRANS66|TI_WARP)) ||	//q2 surfaces
 		smax > lmallocator->width || tmax > lmallocator->height || smax < 0 || tmax < 0)	//bugs/bounds/etc
@@ -3421,11 +3453,8 @@ TRACE(("dbg: Mod_LoadTextures: inittexturedescs\n"));
 		tx = ZG_Malloc(&loadmodel->memgroup, sizeof(texture_t));
 		loadmodel->textures[i] = tx;
 
-#ifdef __arm__
-	    memcpy ((void*)(tx->name), (void*)(mt->name), sizeof(tx->name));
-#else
-		memcpy (tx->name, mt->name, sizeof(tx->name));
-#endif
+		Q_strncpyz(tx->name, mt->name, min(sizeof(mt->name)+1, sizeof(tx->name)));
+
 		tx->width = mt->width;
 		tx->height = mt->height;
 
@@ -3687,8 +3716,18 @@ static qboolean Mod_LoadTexinfo (model_t *loadmodel, qbyte *mod_base, lump_t *l)
 			out->texture = r_notexture_mip; // texture not found
 			out->flags = 0;
 		}
-		else if (!strncmp(out->texture->name, "scroll", 6) || ((*out->texture->name == '*' || *out->texture->name == '{' || *out->texture->name == '!') && !strncmp(out->texture->name+1, "scroll", 6)))
-			out->flags |= TI_FLOWING;
+		else
+		{
+			if (*out->texture->name == '*' || (*out->texture->name == '!' && loadmodel->fromgame == fg_halflife))		// turbulent
+			{
+				if (!(out->flags & TEX_SPECIAL) && !strchr(out->texture->name, '#'))
+					Q_strncatz(out->texture->name, "#LIT", sizeof(out->texture->name));
+			}
+
+			if (!strncmp(out->texture->name, "scroll", 6) || ((*out->texture->name == '*' || *out->texture->name == '{' || *out->texture->name == '!') && !strncmp(out->texture->name+1, "scroll", 6)))
+				out->flags |= TI_FLOWING;
+
+		}
 	}
 
 	return true;
@@ -3756,7 +3795,7 @@ void CalcSurfaceExtents (model_t *mod, msurface_t *s);
 Mod_LoadFaces
 =================
 */
-static qboolean Mod_LoadFaces (model_t *loadmodel, qbyte *mod_base, lump_t *l, lump_t *lightlump, qboolean lm)
+static qboolean Mod_LoadFaces (model_t *loadmodel, bspx_header_t *bspx, qbyte *mod_base, lump_t *l, lump_t *lightlump, qboolean lm)
 {
 	dsface_t		*ins;
 	dlface_t		*inl;
@@ -3811,7 +3850,7 @@ static qboolean Mod_LoadFaces (model_t *loadmodel, qbyte *mod_base, lump_t *l, l
 	loadmodel->surfaces = out;
 	loadmodel->numsurfaces = count;
 
-	Mod_LoadLighting (loadmodel, mod_base, lightlump, false, &overrides);
+	Mod_LoadLighting (loadmodel, bspx, mod_base, lightlump, false, &overrides);
 
 	switch(loadmodel->lightmaps.fmt)
 	{
@@ -3900,14 +3939,17 @@ static qboolean Mod_LoadFaces (model_t *loadmodel, qbyte *mod_base, lump_t *l, l
 			out->flags |= (SURF_DRAWSKY | SURF_DRAWTILED);
 			continue;
 		}
-		
 		if (*out->texinfo->texture->name == '*' || (*out->texinfo->texture->name == '!' && loadmodel->fromgame == fg_halflife))		// turbulent
 		{
-			out->flags |= (SURF_DRAWTURB | SURF_DRAWTILED);
-			for (i=0 ; i<2 ; i++)
+			out->flags |= SURF_DRAWTURB;
+			if (out->texinfo->flags & TEX_SPECIAL)
 			{
-				out->extents[i] = 16384;
-				out->texturemins[i] = -8192;
+				out->flags |= SURF_DRAWTILED;
+				for (i=0 ; i<2 ; i++)
+				{
+					out->extents[i] = 16384;
+					out->texturemins[i] = -8192;
+				}
 			}
 			continue;
 		}
@@ -4407,6 +4449,8 @@ static qboolean Mod_LoadClipnodes (model_t *loadmodel, qbyte *mod_base, lump_t *
 	if (hexen2map)
 	{	//hexen2.
 		hexen2map=false;
+
+		//compatible with Q1.
 		hull = &loadmodel->hulls[1];
 		hull->clipnodes = out;
 		hull->firstclipnode = 0;
@@ -4420,6 +4464,7 @@ static qboolean Mod_LoadClipnodes (model_t *loadmodel, qbyte *mod_base, lump_t *
 		hull->clip_maxs[2] = 32;
 		hull->available = true;
 
+		//NOT compatible with Q1
 		hull = &loadmodel->hulls[2];
 		hull->clipnodes = out;
 		hull->firstclipnode = 0;
@@ -4887,7 +4932,7 @@ void ModBrush_LoadGLStuff(void *ctx, void *data, size_t a, size_t b)
 		for (a = 0; a < mod->numfogs; a++)
 		{
 			mod->fogs[a].shader = R_RegisterShader_Lightmap(mod->fogs[a].shadername);
-			R_BuildDefaultTexnums(NULL, mod->fogs[a].shader);
+			R_BuildDefaultTexnums(NULL, mod->fogs[a].shader, IF_WORLDTEX);
 			if (!mod->fogs[a].shader->fog_dist)
 			{
 				//invalid fog shader, don't use.
@@ -4904,10 +4949,10 @@ void ModBrush_LoadGLStuff(void *ctx, void *data, size_t a, size_t b)
 				for(a = 0; a < mod->numtexinfo; a++)
 				{
 					mod->textures[a]->shader = R_RegisterShader_Lightmap(va("%s#BUMPMODELSPACE", mod->textures[a]->name));
-					R_BuildDefaultTexnums(NULL, mod->textures[a]->shader);
+					R_BuildDefaultTexnums(NULL, mod->textures[a]->shader, IF_WORLDTEX);
 
-					mod->textures[a+mod->numtexinfo]->shader = R_RegisterShader_Vertex (mod->textures[a+mod->numtexinfo]->name);
-					R_BuildDefaultTexnums(NULL, mod->textures[a+mod->numtexinfo]->shader);
+					mod->textures[a+mod->numtexinfo]->shader = R_RegisterShader_Vertex (va("%s#VERTEXLIT", mod->textures[a+mod->numtexinfo]->name));
+					R_BuildDefaultTexnums(NULL, mod->textures[a+mod->numtexinfo]->shader, IF_WORLDTEX);
 				}
 			}
 			else
@@ -4915,10 +4960,10 @@ void ModBrush_LoadGLStuff(void *ctx, void *data, size_t a, size_t b)
 				for(a = 0; a < mod->numtexinfo; a++)
 				{
 					mod->textures[a]->shader = R_RegisterShader_Lightmap(mod->textures[a]->name);
-					R_BuildDefaultTexnums(NULL, mod->textures[a]->shader);
+					R_BuildDefaultTexnums(NULL, mod->textures[a]->shader, IF_WORLDTEX);
 
-					mod->textures[a+mod->numtexinfo]->shader = R_RegisterShader_Vertex (mod->textures[a+mod->numtexinfo]->name);
-					R_BuildDefaultTexnums(NULL, mod->textures[a+mod->numtexinfo]->shader);
+					mod->textures[a+mod->numtexinfo]->shader = R_RegisterShader_Vertex (va("%s#VERTEXLIT", mod->textures[a+mod->numtexinfo]->name));
+					R_BuildDefaultTexnums(NULL, mod->textures[a+mod->numtexinfo]->shader, IF_WORLDTEX);
 				}
 			}
 			mod->textures[2*mod->numtexinfo]->shader = R_RegisterShader_Flare("noshader");
@@ -4942,7 +4987,7 @@ void ModBrush_LoadGLStuff(void *ctx, void *data, size_t a, size_t b)
 //					maps |= SHADER_HASNORMALMAP;
 				if (gl_specular.ival)
 					maps |= SHADER_HASGLOSS;
-				R_BuildLegacyTexnums(mod->textures[a]->shader, mod->textures[a]->name, loadname, maps, 0, TF_MIP4_8PAL24, mod->textures[a]->width, mod->textures[a]->height, mod->textures[a]->mips, mod->textures[a]->palette);
+				R_BuildLegacyTexnums(mod->textures[a]->shader, mod->textures[a]->name, loadname, maps, IF_WORLDTEX, TF_MIP4_8PAL24, mod->textures[a]->width, mod->textures[a]->height, mod->textures[a]->mips, mod->textures[a]->palette);
 				BZ_Free(mod->textures[a]->mips[0]);
 			}
 		}
@@ -5063,6 +5108,7 @@ static qboolean QDECL Mod_LoadBrushModel (model_t *mod, void *buffer, size_t fsi
 	qboolean isnotmap;
 	qboolean using_rbe = true;
 	qboolean misaligned = false;
+	bspx_header_t *bspx;
 
 	COM_FileBase (mod->name, loadname, sizeof(loadname));
 	mod->type = mod_brush;
@@ -5148,7 +5194,7 @@ static qboolean QDECL Mod_LoadBrushModel (model_t *mod, void *buffer, size_t fsi
 	{	//pre-phong versions of tyrutils wrote misaligned lumps. These crash on arm/etc.
 		char *tmp;
 		int ofs = 0;
-		Con_Printf(CON_WARNING"%s: Misaligned lumps detected\n", mod->name);
+		Con_DPrintf(CON_WARNING"%s: Misaligned lumps detected\n", mod->name);
 		tmp = BZ_Malloc(fsize);
 		memcpy(tmp, mod_base, fsize);
 		for (i = 0; i < HEADER_LUMPS; i++)
@@ -5164,12 +5210,13 @@ static qboolean QDECL Mod_LoadBrushModel (model_t *mod, void *buffer, size_t fsi
 			ofs += header.lumps[i].filelen;
 		}
 		BZ_Free(tmp);
+		bspx = NULL;
 	}
 	else
 	{
-		Q1BSPX_Setup(mod, mod_base, fsize, header.lumps, HEADER_LUMPS);
+		bspx = BSPX_Setup(mod, mod_base, fsize, header.lumps, HEADER_LUMPS);
 
-		if (1)//mod_ebfs.value)
+		/*if (1)//mod_ebfs.value)
 		{
 			char *id;
 			id = (char *)mod_base + sizeof(dheader_t);
@@ -5177,7 +5224,7 @@ static qboolean QDECL Mod_LoadBrushModel (model_t *mod, void *buffer, size_t fsi
 			{	//EBFS detected.
 				COM_LoadMapPackFile(mod->name, sizeof(dheader_t));
 			}
-		}
+		}*/
 	}
 		
 	noerrors = true;
@@ -5217,7 +5264,7 @@ static qboolean QDECL Mod_LoadBrushModel (model_t *mod, void *buffer, size_t fsi
 		TRACE(("Loading Texinfo\n"));
 		noerrors = noerrors && Mod_LoadTexinfo (mod, mod_base, &header.lumps[LUMP_TEXINFO]);
 		TRACE(("Loading Faces\n"));
-		noerrors = noerrors && Mod_LoadFaces (mod, mod_base, &header.lumps[LUMP_FACES], &header.lumps[LUMP_LIGHTING], longm);
+		noerrors = noerrors && Mod_LoadFaces (mod, bspx, mod_base, &header.lumps[LUMP_FACES], &header.lumps[LUMP_LIGHTING], longm);
 	}
 	if (!isDedicated)
 	{
@@ -5258,7 +5305,7 @@ static qboolean QDECL Mod_LoadBrushModel (model_t *mod, void *buffer, size_t fsi
 	}
 
 	TRACE(("LoadBrushModel %i\n", __LINE__));
-	Q1BSP_LoadBrushes(mod);
+	Q1BSP_LoadBrushes(mod, bspx, mod_base);
 	TRACE(("LoadBrushModel %i\n", __LINE__));
 	Q1BSP_SetModelFuncs(mod);
 	TRACE(("LoadBrushModel %i\n", __LINE__));

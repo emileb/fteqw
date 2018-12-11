@@ -296,7 +296,7 @@ skinid_t Mod_ReadSkinFile(const char *skinname, const char *skintext)
 				skintext = COM_ParseToken(skintext, NULL);
 				Q_strncpyz(shadername, com_token, sizeof(shadername));
 				skin->mappings[skin->nummappings].shader = R_RegisterSkin(shadername, skin->skinname);
-				R_BuildDefaultTexnums(NULL, skin->mappings[skin->nummappings].shader);
+				R_BuildDefaultTexnums(NULL, skin->mappings[skin->nummappings].shader, 0);
 				skin->mappings[skin->nummappings].texnums = *skin->mappings[skin->nummappings].shader->defaulttextures;
 				skin->nummappings++;
 			}
@@ -317,7 +317,7 @@ skinid_t Mod_ReadSkinFile(const char *skinname, const char *skintext)
 				skintext = COM_ParseToken(skintext, NULL);
 				Q_strncpyz(shadername, com_token, sizeof(shadername));
 				skin->mappings[skin->nummappings].shader = R_RegisterSkin(shadername, skin->skinname);
-				R_BuildDefaultTexnums(NULL, skin->mappings[skin->nummappings].shader);
+				R_BuildDefaultTexnums(NULL, skin->mappings[skin->nummappings].shader, 0);
 				skin->mappings[skin->nummappings].texnums = *skin->mappings[skin->nummappings].shader->defaulttextures;
 
 				//parse the lines, and start to load the various shaders.
@@ -396,7 +396,7 @@ skinid_t Mod_ReadSkinFile(const char *skinname, const char *skintext)
 				skintext = COM_ParseToken(skintext+1, NULL);
 				Q_strncpyz(shadername, com_token, sizeof(shadername));
 				skin->mappings[skin->nummappings].shader = R_RegisterCustom (shadername, 0, Shader_DefaultSkin, NULL);
-				R_BuildDefaultTexnums(NULL, skin->mappings[skin->nummappings].shader);
+				R_BuildDefaultTexnums(NULL, skin->mappings[skin->nummappings].shader, 0);
 				skin->mappings[skin->nummappings].texnums = *skin->mappings[skin->nummappings].shader->defaulttextures;
 				skin->nummappings++;
 			}
@@ -656,7 +656,7 @@ static shader_t *GL_ChooseSkin(galiasinfo_t *inf, model_t *model, int surfnum, e
 		if (s)
 		{
 			if (!TEXVALID(s->defaulttextures->base))
-				R_BuildDefaultTexnums(NULL, s);
+				R_BuildDefaultTexnums(NULL, s, 0);
 			return s;
 		}
 	}
@@ -676,7 +676,11 @@ static shader_t *GL_ChooseSkin(galiasinfo_t *inf, model_t *model, int surfnum, e
 			if (e->playerindex >= 0 && e->playerindex <= MAX_CLIENTS)
 			{
 				//heads don't get skinned, only players (and weaponless players), they do still get recoloured.
-				if (model==cl.model_precache[cl_playerindex] || model==cl.model_precache_vwep[0])
+				if (model==cl.model_precache[cl_playerindex]
+#ifndef NOLEGACY
+					|| model==cl.model_precache_vwep[0]
+#endif
+				)
 				{
 					if (!cl.players[e->playerindex].qwskin)
 						Skin_Find(&cl.players[e->playerindex]);
@@ -1326,22 +1330,24 @@ qboolean R_CalcModelLighting(entity_t *e, model_t *clmodel)
 		return e->light_known-1;
 
 	e->light_dir[0] = 0; e->light_dir[1] = 1; e->light_dir[2] = 0;
-	if (clmodel->engineflags & MDLF_FLAME || r_fullbright.ival)
+	if ((clmodel->engineflags & MDLF_FLAME) || r_fullbright.ival)
 	{
 		e->light_avg[0] = e->light_avg[1] = e->light_avg[2] = 1;
 		e->light_range[0] = e->light_range[1] = e->light_range[2] = 0;
 		e->light_known = 2;
 		return e->light_known-1;
 	}
+	if (
 #ifdef HEXEN2
-	if ((e->drawflags & MLS_MASK) == MLS_FULLBRIGHT || (e->flags & Q2RF_FULLBRIGHT))
+		(e->drawflags & MLS_MASK) == MLS_FULLBRIGHT ||
+#endif
+		(e->flags & RF_FULLBRIGHT))
 	{
 		e->light_avg[0] = e->light_avg[1] = e->light_avg[2] = 1;
 		e->light_range[0] = e->light_range[1] = e->light_range[2] = 0;
 		e->light_known = 2;
 		return e->light_known-1;
 	}
-#endif
 	if (r_fb_models.ival == 1 && ruleset_allow_fbmodels.ival && (clmodel->engineflags & MDLF_EZQUAKEFBCHEAT) && cls.protocol == CP_QUAKEWORLD && cl.deathmatch)
 	{
 		e->light_avg[0] = e->light_avg[1] = e->light_avg[2] = 1;
@@ -1493,13 +1499,14 @@ qboolean R_CalcModelLighting(entity_t *e, model_t *clmodel)
 			}
 		}
 
-		switch(lightmap_fmt)
+		switch(PTI_E5BGR9)//lightmap_fmt)
 		{
+		//don't clamp model lighting if we're not clamping world lighting either.
 		case PTI_E5BGR9:
 		case PTI_RGBA16F:
 		case PTI_RGBA32F:
 			break;
-		default:
+		default:	//non-hdr lightmap format. clamp model lighting to match the lightmap's clamps.
 			m = max(max(ambientlight[0], ambientlight[1]), ambientlight[2]);
 			if (m > 255)
 			{
@@ -1535,6 +1542,10 @@ qboolean R_CalcModelLighting(entity_t *e, model_t *clmodel)
 				{
 					ambientlight[0] = ambientlight[1] = ambientlight[2] = 1;
 					shadelight[0] = shadelight[1] = shadelight[2] = 1;
+
+					VectorSet(e->light_dir, 1, 0, 0);
+					VectorClear(e->light_range);
+					VectorScale(shadelight, fb, e->light_avg);
 
 					e->light_known = 2;
 					return e->light_known-1;
@@ -1675,7 +1686,7 @@ void R_GAlias_GenerateBatches(entity_t *e, batch_t **batches)
 
 	texnums_t *skin;
 
-	if ((r_refdef.externalview || r_refdef.recurse) && e->flags & RF_WEAPONMODEL)
+	if ((r_refdef.externalview || r_refdef.recurse) && (e->flags & RF_WEAPONMODEL))
 		return;
 
 	clmodel = e->model;
@@ -1734,6 +1745,7 @@ void R_GAlias_GenerateBatches(entity_t *e, batch_t **batches)
 
 			b->buildmeshes = R_GAlias_DrawBatch;
 			b->ent = e;
+			b->envmap = Mod_CubemapForOrigin(cl.worldmodel, e->origin);
 #if defined(Q3BSPS) || defined(RFBSPS)
 			b->fog = Mod_FogForOrigin(cl.worldmodel, e->origin);
 #endif
@@ -2747,6 +2759,7 @@ void BE_GenModelBatches(batch_t **batches, const dlight_t *dl, unsigned int bemo
 	unsigned int orig_numvisedicts = cl_numvisedicts;
 //	unsigned int orig_numstrisidx = cl_numstrisidx;
 //	unsigned int orig_numstrisvert = cl_numstrisvert;
+	extern cvar_t chase_active;	//I fucking hate this cvar. die die die.
 
 	/*clear the batch list*/
 	for (i = 0; i < SHADER_SORT_COUNT; i++)
@@ -2781,7 +2794,7 @@ void BE_GenModelBatches(batch_t **batches, const dlight_t *dl, unsigned int bemo
 	{
 		ent = &cl_visedicts[i];
 
-		if (!r_refdef.externalview && (ent->flags & RF_EXTERNALMODEL))
+		if (!r_refdef.externalview && (ent->flags & RF_EXTERNALMODEL) && !chase_active.ival)
 			continue;
 
 #ifdef RTLIGHTS
@@ -2817,7 +2830,7 @@ void BE_GenModelBatches(batch_t **batches, const dlight_t *dl, unsigned int bemo
 			{
 				if (gl_part_flame.value)
 				{
-					if (ent->model->engineflags & MDLF_EMITREPLACE)
+					if (emodel->engineflags & MDLF_EMITREPLACE)
 						continue;
 				}
 			}
@@ -2849,7 +2862,6 @@ void BE_GenModelBatches(batch_t **batches, const dlight_t *dl, unsigned int bemo
 				R_HalfLife_GenerateBatches(ent, batches);
 #endif
 				break;
-			// warning: enumeration value ‘mod_*’ not handled in switch
 			case mod_dummy:
 			case mod_heightmap:
 #if defined(TERRAIN)

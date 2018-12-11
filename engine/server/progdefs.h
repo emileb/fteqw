@@ -283,12 +283,6 @@ and the extension fields are added on the end and can have extra vm-specific stu
 	comfieldentity(drawonlytoclient,"This entity will be sent *only* to the player named by this field. To other players they will be invisible and not emit dlights/particles. Does not work in MVD-recorded game.")\
 	comfieldentity(viewmodelforclient,"This entity will be sent only to the player named by this field, and this entity will be attached to the player's view as an additional weapon model.")/*DP_ENT_VIEWMODEL*/\
 	comfieldentity(exteriormodeltoclient,"This entity will be invisible to the player named by this field, except in mirrors or mirror-like surfaces, where it will be visible as normal. It may still cast shadows as normal, and generate lights+particles, depending on client settings. Does not affect how other players see the entity.")\
-	comfieldfloat(button3,"DP_INPUTBUTTONS (note in qw, we set 1 to equal 3, to match zquake/fuhquake/mvdsv)")\
-	comfieldfloat(button4,NULL)\
-	comfieldfloat(button5,NULL)\
-	comfieldfloat(button6,NULL)\
-	comfieldfloat(button7,NULL)\
-	comfieldfloat(button8,NULL)\
 	comfieldfloat(glow_size,NULL)\
 	comfieldfloat(glow_color,NULL)\
 	comfieldfloat(glow_trail,NULL)\
@@ -326,17 +320,27 @@ and the extension fields are added on the end and can have extra vm-specific stu
 #define HALFLIFEMODEL_FIELDS
 #endif
 
+#if FRAME_BLENDS >= 4
+#define frame34fields \
+	comfieldfloat(frame3,"Some people just don't understand how to use framegroups...")		/**/\
+	comfieldfloat(frame3time,".frame3 equivelent of frame1time.")	/*EXT_CSQC_1*/\
+	comfieldfloat(lerpfrac3,"Weight of .frame3 - .frame's weight is automatically calculated as 1-(lerpfrac+lerpfrac3+lerpfrac4), as a result these fields should NEVER add to above 1.")	/**/\
+	comfieldfloat(frame4,NULL)		/**/\
+	comfieldfloat(frame4time,".frame4 equivelent of frame1time.")	/*EXT_CSQC_1*/\
+	comfieldfloat(lerpfrac4,NULL)	/**/\
+
+#else
+#define frame34fields
+#endif
+
 //this is the list for all the csqc fields.
 //(the #define is so the list always matches the ones pulled out)
 #define csqcextfields	\
 	comfieldfloat(entnum,"This is the number of the entity that the ssqc is using.")		\
 	comfieldfloat(frame2,"This is typically the old frame of the entity. if lerpfrac is 1, .frame will be ignored and .frame2 will be used solely. lerpfrac 0.5 will give an even 50/50 blend.")		/*EXT_CSQC_1*/\
-	comfieldfloat(frame3,"Some people just don't understand how to use framegroups...")		/**/\
-	comfieldfloat(frame4,NULL)		/**/\
 	comfieldfloat(frame2time,".frame2 equivelent of frame1time.")	/*EXT_CSQC_1*/\
-	comfieldfloat(lerpfrac,"The value 0 means the entity will animate using only .frame, which will be jerky. As this value is incremented, more of frame2 will be used. If you wish to use .frame2 as the 'old' frame, it is generally recommended to start this field with the value 1, to decrement it by frametime, and when it drops below 0 add 1 to it and update .frame2 and .frame to lerp into the new frame.")	/*EXT_CSQC_1*/\
-	comfieldfloat(lerpfrac3,NULL)	/**/\
-	comfieldfloat(lerpfrac4,NULL)	/**/\
+	comfieldfloat(lerpfrac,"The weight of .frame2. A value of 0 means the entity will animate using only .frame, while 1 would exclusively be .frame2. As this value is incremented, more of frame2 will be used. If you wish to use .frame2 as the 'old' frame, it is generally recommended to start this field with the value 1, to decrement it by frametime, and when it drops below 0 add 1 to it and update .frame2 and .frame to lerp into the new frame.")	/*EXT_CSQC_1*/\
+	frame34fields	\
 	comfieldfloat(renderflags,NULL)\
 	comfieldfloat(forceshader,"Contains a shader handle used to replace all surfaces upon the entity.")/*FTE_CSQC_SHADERS*/\
 							\
@@ -426,7 +430,6 @@ comextqcfields
 } comentvars_t;
 #endif
 
-
 #ifdef USEAREAGRID
 #define AREAGRIDPERENT 16
 #endif
@@ -448,7 +451,7 @@ typedef struct
 	qboolean isoffset:1;
 	int orientpeer;
 
-	//ode info
+	//physics engine info
 	int geomshape;
 	float relmatrix[12];
 	float inverserelmatrix[12];
@@ -503,43 +506,32 @@ typedef struct rbecommandqueue_s
 typedef struct
 {
 	// physics parameters
-	qboolean ode_physics;
-	void *ode_body;
-	void *ode_geom;
-	void *ode_joint;
-	float *ode_vertex3f;
-	int *ode_element3i;
-	int ode_numvertices;
-	int ode_numtriangles;
-	vec3_t ode_mins;
-	vec3_t ode_maxs;
-	vec_t ode_mass;
-	vec3_t ode_origin;
-	vec3_t ode_velocity;
-	vec3_t ode_angles;
-	vec3_t ode_avelocity;
-	qboolean ode_gravity;
-	int ode_modelindex;
-	vec_t ode_movelimit; // smallest component of (maxs[]-mins[])
-	float ode_offsetmatrix[16];
-	float ode_offsetimatrix[16];
-	int ode_joint_type;
-	int ode_joint_enemy;
-	int ode_joint_aiment;
-	vec3_t ode_joint_origin; // joint anchor
-	vec3_t ode_joint_angles; // joint axis
-	vec3_t ode_joint_velocity; // second joint axis
-	vec3_t ode_joint_movedir; // parameters
-	void *ode_massbuf;
-} entityode_t;
-/*
-typedef struct
-{
-	void *ode_body;
-} skelbodyode_t;
-typedef struct
-{
-	int dummy;
-} skeljointode_t;
-*/
+	qboolean physics;
+	rbebody_t body;
+	rbejoint_t joint;
+	float *vertex3f;
+	int *element3i;
+	int numvertices;
+	int numtriangles;
+	vec3_t mins;
+	vec3_t maxs;
+	vec_t mass;
+	vec3_t origin;
+	vec3_t velocity;
+	vec3_t angles;
+	vec3_t avelocity;
+	qboolean gravity;
+	int modelindex;
+	vec_t movelimit; // smallest component of (maxs[]-mins[])
+	float offsetmatrix[16];
+	float offsetimatrix[16];
+	int joint_type;
+	int joint_enemy;
+	int joint_aiment;
+	vec3_t joint_origin; // joint anchor
+	vec3_t joint_angles; // joint axis
+	vec3_t joint_velocity; // second joint axis
+	vec3_t joint_movedir; // parameters
+	void *massbuf;
+} entityrbe_t;
 #endif

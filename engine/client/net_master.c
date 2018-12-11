@@ -50,6 +50,26 @@ void Master_DetermineMasterTypes(void)
 		}
 	}
 }
+qboolean Master_MasterProtocolIsEnabled(enum masterprotocol_e protocol)
+{
+	switch (protocol)
+	{
+	case MP_DPMASTER:
+		return sb_enabledarkplaces;
+	#ifdef Q2SERVER
+	case MP_QUAKE2:
+		return sb_enablequake2;
+	#endif
+	#ifdef Q3SERVER
+	case MP_QUAKE3:
+		return sb_enablequake3;
+	#endif
+	case MP_QUAKEWORLD:
+		return sb_enablequakeworld;
+	default:
+		return false;
+	}
+}
 
 #define MAX_MASTER_ADDRESSES 4	//each master might have multiple dns addresses, typically both ipv4+ipv6. we want to report to both address families so we work with remote single-stack hosts.
 
@@ -368,7 +388,7 @@ void SV_Master_Worker_Resolved(void *ctx, void *data, size_t a, size_t b)
 				{
 					//tcp masters require a route
 					if (NET_AddrIsReliable(na))
-						NET_EnsureRoute(svs.sockets, master->cv.name, master->cv.string);
+						NET_EnsureRoute(svs.sockets, master->cv.name, master->cv.string, na);
 
 					//q2+qw masters are given a ping to verify that they're still up
 					switch (master->protocol)
@@ -429,7 +449,6 @@ let it know we are alive, and log information
 void SV_Master_Heartbeat (void)
 {
 	int			i;
-	qboolean	enabled;
 
 	if (sv_public.ival<=0 || SSV_IsSubServer())
 		return;
@@ -446,19 +465,7 @@ void SV_Master_Heartbeat (void)
 	// send to group master
 	for (i = 0; net_masterlist[i].cv.name; i++)
 	{
-		switch (net_masterlist[i].protocol)
-		{
-		case MP_DPMASTER:	enabled = sb_enabledarkplaces;	break;
-#ifdef Q2SERVER
-		case MP_QUAKE2:		enabled = sb_enablequake2;		break;
-#endif
-#ifdef Q3SERVER
-		case MP_QUAKE3:		enabled = sb_enablequake3;		break;
-#endif
-		case MP_QUAKEWORLD:	enabled = sb_enablequakeworld;	break;
-		default:			enabled = false;				break;
-		}
-		if (!enabled)
+		if (!Master_MasterProtocolIsEnabled(net_masterlist[i].protocol))
 			continue;
 
 		if (net_masterlist[i].resolving)
@@ -650,7 +657,10 @@ static int numvisibleservers;
 static int maxvisibleservers;
 
 static hostcachekey_t sortfield;
-static qboolean decreasingorder;
+static qboolean sort_decreasing;
+static qboolean sort_favourites;
+static qboolean sort_categories;
+static serverinfo_t *categorisingserver;	//returned for sorted server -1 (hacky)
 
 
 
@@ -684,14 +694,14 @@ int slist_customkeys;
 #define POLLUDP4SOCKETS 64	//it's big so we can have lots of messages when behind a firewall. Basically if a firewall only allows replys, and only remembers 3 servers per socket, we need this big cos it can take a while for a packet to find a fast optimised route and we might be waiting for a few secs for a reply the first time around.
 int lastpollsockUDP4;
 
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 #define POLLUDP6SOCKETS 4	//it's non-zero so we can have lots of messages when behind a firewall. Basically if a firewall only allows replys, and only remembers 3 servers per socket, we need this big cos it can take a while for a packet to find a fast optimised route and we might be waiting for a few secs for a reply the first time around.
 int lastpollsockUDP6;
 #else
 #define POLLUDP6SOCKETS 0
 #endif
 
-#ifdef USEIPX
+#ifdef HAVE_IPX
 #define POLLIPXSOCKETS	2	//ipx isn't used as much. In fact, we only expect local servers to be using it. I'm not sure why I implemented it anyway. You might see a q2 server using it. Rarely.
 int lastpollsockIPX;
 #else
@@ -802,6 +812,14 @@ qboolean Master_CompareString(const char *a, const char *b, slist_test_t rule)
 
 qboolean Master_ServerIsGreater(serverinfo_t *a, serverinfo_t *b)
 {
+	if (sort_categories)
+		if (a->qccategory != b->qccategory)
+			return Master_CompareInteger(a->qccategory, b->qccategory, SLIST_TEST_LESS);
+
+	if (sort_favourites)
+		if ((a->special & SS_FAVORITE) != (b->special & SS_FAVORITE))
+			return Master_CompareInteger(a->special & SS_FAVORITE, b->special & SS_FAVORITE, SLIST_TEST_LESS);
+
 	switch(sortfield)
 	{
 	case SLKEY_ADDRESS:
@@ -868,6 +886,9 @@ qboolean Master_ServerIsGreater(serverinfo_t *a, serverinfo_t *b)
 	case SLKEY_ISFAVORITE:
 		return Master_CompareInteger(a->special & SS_FAVORITE, b->special & SS_FAVORITE, SLIST_TEST_LESS);
 
+	case SLKEY_CATEGORY:
+		return Master_CompareInteger(a->qccategory, b->qccategory, SLIST_TEST_LESS);
+
 	case SLKEY_MOD:
 	case SLKEY_PROTOCOL:
 	case SLKEY_QCSTATUS:
@@ -890,18 +911,6 @@ qboolean Master_PassesMasks(serverinfo_t *a)
 	if (!(a->status & 1))
 		return false;
 
-/*	switch(a->special & SS_PROTOCOLMASK)
-	{
-	case SS_QUAKE3: enabled = sb_enablequake3; break;
-	case SS_QUAKE2: enabled = sb_enablequake2; break;
-	case SS_NETQUAKE: enabled = sb_enablenetquake; break;
-	case SS_QUAKEWORLD: enabled = sb_enablequakeworld; break;
-	case SS_DARKPLACES: enabled = sb_enabledarkplaces; break;
-	default: enabled = true; break;
-	}
-	if (!enabled)
-		return false;
-*/
 	val = 1;
 
 	for (i = 0; i < numvisrules; i++)
@@ -961,6 +970,9 @@ qboolean Master_PassesMasks(serverinfo_t *a)
 		case SLKEY_QCSTATUS:
 			res = Master_CompareString(a->qcstatus, visrules[i].operands, visrules[i].compareop);
 			break;
+		case SLKEY_CATEGORY:
+			res = Master_CompareInteger(a->qccategory, visrules[i].operandi, visrules[i].compareop);
+			break;
 		default:
 			continue;
 		}
@@ -1000,10 +1012,12 @@ void Master_SetMaskInteger(qboolean or, hostcachekey_t field, int param, slist_t
 	visrules[numvisrules].or = or;
 	numvisrules++;
 }
-void Master_SetSortField(hostcachekey_t field, qboolean descending)
+void Master_SetSortField(hostcachekey_t field, unsigned int sortflags)
 {
 	sortfield = field;
-	decreasingorder = descending;
+	sort_decreasing = sortflags & 1;
+	sort_favourites = sortflags & 2;
+	sort_categories = sortflags & 4;
 }
 hostcachekey_t Master_GetSortField(void)
 {
@@ -1011,7 +1025,7 @@ hostcachekey_t Master_GetSortField(void)
 }
 qboolean Master_GetSortDescending(void)
 {
-	return decreasingorder;
+	return sort_decreasing;
 }
 
 void Master_ShowServer(serverinfo_t *server)
@@ -1023,7 +1037,7 @@ void Master_ShowServer(serverinfo_t *server)
 		return;
 	}
 
-	if (decreasingorder)
+	if (sort_decreasing)
 	{
 		for (i = 0; i < numvisibleservers; i++)
 		{
@@ -1092,7 +1106,11 @@ int Master_SortServers(void)
 serverinfo_t *Master_SortedServer(int idx)
 {
 	if (idx < 0 || idx >= numvisibleservers)
+	{
+		if (idx == -1)
+			return categorisingserver;
 		return NULL;
+	}
 
 	return visibleservers[idx];
 }
@@ -1141,6 +1159,8 @@ float Master_ReadKeyFloat(serverinfo_t *server, hostcachekey_t keynum)
 			return !!(server->special & SS_LOCAL);
 		case SLKEY_ISPROXY:
 			return !!(server->special & SS_PROXY);
+		case SLKEY_CATEGORY:
+			return server->qccategory;
 
 		default:
 			return atof(Master_ReadKeyString(server, keynum));
@@ -1277,6 +1297,8 @@ hostcachekey_t Master_KeyForName(const char *keyname)
 		return SLKEY_ISLOCAL;
 	else if (!strcmp(keyname, "isproxy"))
 		return SLKEY_ISPROXY;
+	else if (!strcmp(keyname, "category"))
+		return SLKEY_CATEGORY;
 	else if (!strcmp(keyname, "serverinfo"))
 		return SLKEY_SERVERINFO;
 	else if (!strncmp(keyname, "player", 6))
@@ -1425,7 +1447,9 @@ void CLMaster_AddMaster_Worker_Resolved(void *ctx, void *data, size_t a, size_t 
 
 	if (mast->adr.type == NA_INVALID)
 	{
-		Con_Printf("Failed to resolve master address \"%s\"\n", mast->address);
+		if (b)
+			Con_Printf("Failed to resolve master address \"%s\"\n", mast->address);
+		//else master not enabled anyway. the lookup was skipped.
 	}
 	else if (mast->adr.type != NA_IP && mast->adr.type != NA_IPV6 && mast->adr.type != NA_IPX)
 	{
@@ -1492,18 +1516,24 @@ void CLMaster_AddMaster_Worker_Resolve(void *ctx, void *data, size_t a, size_t b
 //	qboolean first = true;
 	char *str;
 	master_t *work = data;
-	//resolve all the addresses
-	str = work->address;
-	while (str && *str)
+
+	if (!b)
+		;
+	else
 	{
-		str = COM_ParseOut(str, token, sizeof(token));
-		if (*token)
-			found += NET_StringToAdr2(token, 0, &adrs[found], MAX_MASTER_ADDRESSES-found);
-		//we don't do this logic because windows doesn't look up ipv6 names if it only has teredo
-		//this means an ipv4+teredo client cannot see ivp6-only servers. and that sucks.
-//		if (first && found)
-//			break;	//if we found one by name, don't try any fallback ip addresses.
-//		first = false;
+		//resolve all the addresses
+		str = work->address;
+		while (str && *str)
+		{
+			str = COM_ParseOut(str, token, sizeof(token));
+			if (*token)
+				found += NET_StringToAdr2(token, 0, &adrs[found], MAX_MASTER_ADDRESSES-found);
+			//we don't do this logic because windows doesn't look up ipv6 names if it only has teredo
+			//this means an ipv4+teredo client cannot see ivp6-only servers. and that sucks.
+//			if (first && found)
+//				break;	//if we found one by name, don't try any fallback ip addresses.
+//			first = false;
+		}
 	}
 
 	//add the main ip address
@@ -1563,7 +1593,7 @@ void Master_AddMaster (char *address, enum mastertype_e mastertype, enum masterp
 	strcpy(mast->address, address);
 	mast->sends = 1;
 
-	COM_AddWork(WG_LOADER, CLMaster_AddMaster_Worker_Resolve, NULL, mast, 0, 0);
+	COM_AddWork(WG_LOADER, CLMaster_AddMaster_Worker_Resolve, NULL, mast, 0, true/*Master_MasterProtocolIsEnabled(protocol)*/);
 }
 
 void MasterInfo_Shutdown(void)
@@ -1800,7 +1830,7 @@ qboolean NET_SendPollPacket(int len, void *data, netadr_t to)
 	char buf[128];
 
 	NetadrToSockadr (&to, &addr);
-#ifdef USEIPX
+#ifdef HAVE_IPX
 	if (((struct sockaddr*)&addr)->sa_family == AF_IPX)
 	{
 		lastpollsockIPX++;
@@ -1923,7 +1953,7 @@ int Master_CheckPollSockets(void)
 				continue;
 			if (e == NET_EMSGSIZE)
 			{
-				SockadrToNetadr (&from, &net_from);
+				SockadrToNetadr (&from, fromlen, &net_from);
 				Con_Printf ("Warning:  Oversize packet from %s\n",
 					NET_AdrToString (adr, sizeof(adr), &net_from));
 				continue;
@@ -1938,7 +1968,7 @@ int Master_CheckPollSockets(void)
 			Con_Printf ("NET_CheckPollSockets: %i, %s\n", e, strerror(e));
 			continue;
 		}
-		SockadrToNetadr (&from, &net_from);
+		SockadrToNetadr (&from, fromlen, &net_from);
 
 		net_message.cursize = ret;
 		if (ret >= sizeof(net_message_buffer) )
@@ -1968,7 +1998,7 @@ int Master_CheckPollSockets(void)
 				CL_ReadServerInfo(MSG_ReadString(), MP_QUAKE2, false);
 				continue;
 			}
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 			if (!strncmp(s, "server6", 7))	//parse a bit more...
 			{
 				msg_readcount = c+7;
@@ -1991,7 +2021,7 @@ int Master_CheckPollSockets(void)
 			}
 #endif
 
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 			if (!strncmp(s, "getserversResponse6", 19) && (s[19] == '\\' || s[19] == '/'))	//parse a bit more...
 			{
 				msg_readcount = c+19-1;
@@ -2017,7 +2047,7 @@ int Master_CheckPollSockets(void)
 				continue;
 			}
 
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 			if (!strncmp(s, "qw_slist6\\", 10))	//parse a bit more...
 			{
 				msg_readcount = c+9-1;
@@ -2450,7 +2480,6 @@ void MasterInfo_ProcessHTTPJSON(struct dl_download *dl)
 //don't try sending to servers we don't support
 void MasterInfo_Request(master_t *mast)
 {
-	//static int mastersequence; // warning: unused variable âmastersequenceâ
 	if (!mast)
 		return;
 
@@ -2645,21 +2674,21 @@ void MasterInfo_Refresh(qboolean doreset)
 		Master_AddMaster("255.255.255.255:"STRINGIFY(PORT_DEFAULTSERVER),			MT_BCAST,			MP_DPMASTER, "Nearby Game Servers.");
 #ifndef QUAKETC
 		Master_AddMaster("255.255.255.255:"STRINGIFY(PORT_QWSERVER),				MT_BCAST,			MP_QUAKEWORLD, "Nearby QuakeWorld UDP servers.");
-		Master_AddMasterHTTP("http://www.gameaholic.com/servers/qspy-quakeworld",	MT_MASTERHTTP,		MP_QUAKEWORLD, "gameaholic's QW master");
+//		Master_AddMasterHTTP("http://www.gameaholic.com/servers/qspy-quakeworld",	MT_MASTERHTTP,		MP_QUAKEWORLD, "gameaholic's QW master");
 		Master_AddMasterHTTP("https://www.quakeservers.net/lists/servers/global.txt",MT_MASTERHTTP,		MP_QUAKEWORLD, "QuakeServers.net (http)");
 #endif
 #ifdef NQPROT
-		Master_AddMasterHTTP("http://www.gameaholic.com/servers/qspy-quake",		MT_MASTERHTTP,		MP_NETQUAKE, "gameaholic's NQ master");
+//		Master_AddMasterHTTP("http://www.gameaholic.com/servers/qspy-quake",		MT_MASTERHTTP,		MP_NETQUAKE, "gameaholic's NQ master");
 //		Master_AddMasterHTTP("http://servers.quakeone.com/index.php?format=json",	MT_MASTERHTTPJSON,	MP_NETQUAKE, "quakeone's server listing");
 		Master_AddMaster("255.255.255.255:"STRINGIFY(PORT_NQSERVER),				MT_BCAST,			MP_NETQUAKE, "Nearby Quake1 servers");
-		Master_AddMaster("255.255.255.255:"STRINGIFY(PORT_NQSERVER),				MT_BCAST,			MP_DPMASTER, "Nearby DarkPlaces servers");
+		Master_AddMaster("255.255.255.255:"STRINGIFY(PORT_NQSERVER),				MT_BCAST,			MP_DPMASTER, "Nearby DarkPlaces servers");	//only responds to one type, depending on active protocol.
 #endif
 #ifdef Q2CLIENT
-		Master_AddMasterHTTP("http://www.gameaholic.com/servers/qspy-quake2",		MT_MASTERHTTP,		MP_QUAKE2, "gameaholic's Q2 master");
+//		Master_AddMasterHTTP("http://www.gameaholic.com/servers/qspy-quake2",		MT_MASTERHTTP,		MP_QUAKE2, "gameaholic's Q2 master");
 		Master_AddMaster("255.255.255.255:27910",									MT_BCAST,			MP_QUAKE2, "Nearby Quake2 UDP servers.");
 #endif
 #ifdef Q3CLIENT
-		Master_AddMasterHTTP("http://www.gameaholic.com/servers/qspy-quake3",		MT_MASTERHTTP,		MP_QUAKE3, "gameaholic's Q3 master");
+//		Master_AddMasterHTTP("http://www.gameaholic.com/servers/qspy-quake3",		MT_MASTERHTTP,		MP_QUAKE3, "gameaholic's Q3 master");
 		Master_AddMaster("255.255.255.255:"STRINGIFY(PORT_Q3SERVER),				MT_BCAST,			MP_QUAKE3, "Nearby Quake3 UDP servers.");
 #endif
 
@@ -3128,7 +3157,7 @@ int CL_ReadServerInfo(char *msg, enum masterprotocol_e prototype, qboolean favor
 	info->maxplayers = bound(0, ping, 255);
 
 	ping = atoi(Info_ValueForKey(msg, "timelimit"));
-	info->tl = bound(-327678, ping, 32767);
+	info->tl = bound(-32768, ping, 32767);
 	ping = atoi(Info_ValueForKey(msg, "fraglimit"));
 	info->fl = bound(-32768, ping, 32767);
 
@@ -3362,6 +3391,13 @@ int CL_ReadServerInfo(char *msg, enum masterprotocol_e prototype, qboolean favor
 			memcpy(info->moreinfo, &details, sizeof(serverdetailedinfo_t));
 	}
 
+	info->qccategory = 0;
+#ifdef MENU_DAT
+	categorisingserver = info;
+	info->qccategory = MP_GetServerCategory(-1);
+	categorisingserver = NULL;
+#endif
+
 	return true;
 }
 
@@ -3457,7 +3493,7 @@ void CL_MasterListParse(netadrtype_t adrtype, int type, qboolean slashpad)
 			info->special = type;
 			info->refreshtime = 0;
 
-			snprintf(info->name, sizeof(info->name), "%s (via %s)", NET_AdrToString(adr, sizeof(adr), &info->adr), madr);
+			Q_snprintfz(info->name, sizeof(info->name), "%s (via %s)", NET_AdrToString(adr, sizeof(adr), &info->adr), madr);
 
 			info->next = last;
 			last = info;

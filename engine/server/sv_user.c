@@ -121,6 +121,9 @@ cvar_t sv_realiphostname_ipv4 = CVARD("sv_realiphostname_ipv4", "", "This is the
 cvar_t sv_realiphostname_ipv6 = CVARD("sv_realiphostname_ipv6", "", "This is the server's public ip:port. This is needed for realip to work when the autodetected/local ip is not globally routable");
 cvar_t sv_realip_timeout = CVAR("sv_realip_timeout", "10");
 
+cvar_t sv_userinfo_keylimit = CVARD("sv_userinfo_keylimit", "128", "This is the maximum number of userinfo keys each user may create.");
+cvar_t sv_userinfo_bytelimit = CVARD("sv_userinfo_bytelimit", "8192", "This is the maximum number of bytes that may be stored into each user's userinfo. Note that this includes key names too.");
+
 #ifdef VOICECHAT
 cvar_t sv_voip = CVARD("sv_voip", "1", "Enable reception of voice packets.");
 cvar_t sv_voip_record = CVARD("sv_voip_record", "0", "Record voicechat into mvds. Requires player support. 0=noone, 1=everyone, 2=spectators only");
@@ -255,7 +258,7 @@ void SV_New_f (void)
 	}
 	else
 	{
-		char *srv = Info_ValueForKey(host_client->userinfo, "*redirect");
+		const char *srv = InfoBuf_ValueForKey(&host_client->userinfo, "*redirect");
 		if (*srv)
 		{
 			char *msg = va("connect \"%s\"\n", srv);
@@ -284,7 +287,7 @@ void SV_New_f (void)
 //	SV_FullClientUpdate (host_client, &sv.reliable_datagram);
 //	host_client->sendinfo = true;
 
-	gamedir = Info_ValueForKey (svs.info, "*gamedir");
+	gamedir = InfoBuf_ValueForKey (&svs.info, "*gamedir");
 	if (!gamedir[0])
 	{
 		if (ISQWCLIENT(host_client) || ISQ2CLIENT(host_client))
@@ -346,7 +349,7 @@ void SV_New_f (void)
 		for (split = host_client; split; split = split->controlled)
 		{
 			playernum = split - svs.clients;// NUM_FOR_EDICT(svprogfuncs, split->edict)-1;
-			if (sv.state == ss_cinematic)
+			if (ISQ2CLIENT(host_client) && sv.state == ss_cinematic)
 				playernum = -1;
 			ClientReliableWrite_Byte (host_client, playernum);
 
@@ -388,9 +391,6 @@ void SV_New_f (void)
 				if (split->spectator)
 				playernum |= 128;
 
-			if (sv.state == ss_cinematic)
-				playernum = -1;
-
 			split->state = cs_connected;
 			split->connection_started = realtime;
 		#ifdef SVRANKING
@@ -400,6 +400,8 @@ void SV_New_f (void)
 
 			if (ISQ2CLIENT(host_client))
 			{
+				if (sv.state == ss_cinematic)
+					playernum = -1;
 				ClientReliableWrite_Short (host_client, playernum);
 				break;
 			}
@@ -458,6 +460,16 @@ void SV_New_f (void)
 	SV_CheckRealIP(host_client, false);
 
 	SV_LogPlayer(host_client, "new (QW)");
+
+	if (sv.state == ss_cinematic)
+	{
+		char tmp[1024];
+		MSG_WriteByte (&host_client->netchan.message, svc_stufftext);
+		MSG_WriteString(&host_client->netchan.message, va("\nplayfilm %s\n", COM_QuotedString(svs.name, tmp, sizeof(tmp), false)));
+		host_client->prespawn_stage = PRESPAWN_INVALID;
+		host_client->prespawn_idx = 0;
+		return;
+	}
 
 	host_client->prespawn_stage = PRESPAWN_SERVERINFO;
 	host_client->prespawn_idx = 0;
@@ -650,7 +662,7 @@ void SVNQ_New_f (void)
 		Q_snprintfz(build, sizeof(build), "%s", __DATE__);
 #endif
 
-	gamedir = Info_ValueForKey (svs.info, "*gamedir");
+	gamedir = InfoBuf_ValueForKey (&svs.info, "*gamedir");
 	if (!gamedir[0])
 	{
 		gamedir = FS_GetGamedir(true);
@@ -694,7 +706,7 @@ void SVNQ_New_f (void)
 		MSG_WriteByte (&host_client->netchan.message, svc_stufftext);
 		MSG_WriteString (&host_client->netchan.message, "cl_serverextension_download 1\n");
 
-		f = COM_LoadTempFile("csprogs.dat", &sz);
+		f = COM_LoadTempFile("csprogs.dat", 0, &sz);
 		if (f)
 		{
 			MSG_WriteByte (&host_client->netchan.message, svc_stufftext);
@@ -713,6 +725,16 @@ void SVNQ_New_f (void)
 		//it is annoying to have prints about unknown commands however, hence the above pext checks (which are unfortunate).
 		MSG_WriteByte (&host_client->netchan.message, svc_stufftext);
 		MSG_WriteString (&host_client->netchan.message, "cl_serverextension_download 1\n");
+	}
+
+	if (sv.state == ss_cinematic)
+	{
+		MSG_WriteByte (&host_client->netchan.message, svc_stufftext);
+		MSG_WriteString(&host_client->netchan.message, va("\nplayfilm %s\n", COM_QuotedString(svs.name, message, sizeof(message), false)));
+		host_client->prespawn_stage = PRESPAWN_INVALID;
+		host_client->prespawn_idx = 0;
+		host_client->netchan.nqunreliableonly = 2;
+		return;
 	}
 
 	MSG_WriteByte (&host_client->netchan.message, svc_serverdata);
@@ -802,14 +824,7 @@ void SVQ2_ConfigStrings_f (void)
 		return;
 	}
 
-	start = atoi(Cmd_Argv(2));
-
-	if (start < 0)
-	{
-		Con_Printf ("SV_Configstrings_f: %s tried crashing us\n", host_client->name);
-		host_client->drop = true;
-		return;
-	}
+	start = strtoul(Cmd_Argv(2), NULL, 0);
 
 	// write a packet full of data
 
@@ -820,7 +835,7 @@ void SVQ2_ConfigStrings_f (void)
 		if (str && *str)
 		{
 			MSG_WriteByte (&host_client->netchan.message, svcq2_configstring);
-			MSG_WriteShort (&host_client->netchan.message, start);
+			MSG_WriteShort (&host_client->netchan.message, (unsigned short)start);
 			MSG_WriteString (&host_client->netchan.message, str);
 		}
 		start++;
@@ -1014,32 +1029,34 @@ void SV_SendClientPrespawnInfo(client_t *client)
 		{
 			if (client->prespawn_idx == 0)
 			{
-				if (!ISNQCLIENT(client) || (client->fteprotocolextensions2 & PEXT2_PREDINFO))
-				{	//nq does not normally get serverinfo sent to it.
-					ClientReliableWrite_Begin(client, svc_stufftext, 20 + strlen(svs.info));
-					ClientReliableWrite_String (client, va("fullserverinfo \"%s\"\n", svs.info) );
-				}
-				else if (sv.csqcdebug)
-				{
-					ClientReliableWrite_Begin(client, svc_stufftext, 22 + strlen(svs.info));
-					ClientReliableWrite_String (client, va("//fullserverinfo \"%s\"\n", svs.info) );
-				}
-			}
-			else if (client->prespawn_idx == 1)
-			{
 				FS_GetPackNames(buffer, sizeof(buffer), 2, true); /*retain extensions, or we'd have to assume pk3*/
 				ClientReliableWrite_Begin(client, svc_stufftext, 1+11+strlen(buffer)+1+1);
 				ClientReliableWrite_SZ(client, "//paknames ", 11);
 				ClientReliableWrite_SZ(client, buffer, strlen(buffer));
 				ClientReliableWrite_String(client, "\n");
 			}
-			else if (client->prespawn_idx == 2)
+			else if (client->prespawn_idx == 1)
 			{
 				FS_GetPackHashes(buffer, sizeof(buffer), false);
 				ClientReliableWrite_Begin(client, svc_stufftext, 1+7+strlen(buffer)+1+1);
 				ClientReliableWrite_SZ(client, "//paks ", 7);
 				ClientReliableWrite_SZ(client, buffer, strlen(buffer));
 				ClientReliableWrite_String(client, "\n");
+			}
+			else if (client->prespawn_idx == 2)
+			{
+				if (!ISNQCLIENT(client) || (client->fteprotocolextensions2 & PEXT2_PREDINFO))
+				{	//nq does not normally get serverinfo sent to it.
+					i = InfoBuf_ToString(&svs.info, buffer, sizeof(buffer), NULL, NULL, NULL, &client->infosync, &svs.info);
+					ClientReliableWrite_Begin(client, svc_stufftext, 20 + i);
+					ClientReliableWrite_String (client, va("fullserverinfo \"%s\"\n", buffer) );
+				}
+				else if (sv.csqcdebug)
+				{
+					i = InfoBuf_ToString(&svs.info, buffer, sizeof(buffer), NULL, NULL, NULL, &client->infosync, &svs.info);
+					ClientReliableWrite_Begin(client, svc_stufftext, 22 + i);
+					ClientReliableWrite_String (client, va("//fullserverinfo \"%s\"\n", buffer) );
+				}
 			}
 			else if (client->prespawn_idx == 3)
 			{
@@ -1052,24 +1069,41 @@ void SV_SendClientPrespawnInfo(client_t *client)
 			else if (client->prespawn_idx == 4)
 			{
 				int track = 0;
+				const char *noise = "";
 
+#ifdef HEXEN2
 				if (progstype == PROG_H2)
+				{
 					track = sv.h2cdtrack;	//hexen2 has a special hack
-				else if (svprogfuncs)
+				} else
+#endif
+				if (svprogfuncs)
+				{
 					track = ((edict_t*)sv.world.edicts)->v->sounds;
+					noise = PR_GetString(svprogfuncs, ((edict_t*)sv.world.edicts)->v->noise);
+				}
 
-				ClientReliableWrite_Begin(client, svc_cdtrack, 2);
-				ClientReliableWrite_Byte (client, track);
-				if (ISNQCLIENT(client))
+				if (track == -1 && *noise)
+					SV_StuffcmdToClient(client, va("cd loop \"%s\"\n", noise));
+				else
+				{
+					ClientReliableWrite_Begin(client, svc_cdtrack, 2);
 					ClientReliableWrite_Byte (client, track);
-
-				if (!track && *sv.h2miditrack)
-					SV_StuffcmdToClient(client, va("music \"%s\"\n", sv.h2miditrack));
+					if (ISNQCLIENT(client))
+						ClientReliableWrite_Byte (client, track);
+#ifdef HEXEN2
+					if (!track && *sv.h2miditrack)
+						SV_StuffcmdToClient(client, va("music \"%s\"\n", sv.h2miditrack));
+#endif
+				}
 			}
 			else if (client->prespawn_idx == 5)
 			{
 				ClientReliableWrite_Begin(client, svc_setpause, 2);
-				ClientReliableWrite_Byte (client, sv.paused!=0);
+				ClientReliableWrite_Byte (client, sv.oldpaused!=0);
+
+				if (sv.oldpaused && sv.oldpaused&~PAUSE_AUTO)
+					SV_PrintToClient(client, PRINT_HIGH, "server is paused\n");
 			}
 			else
 			{
@@ -1082,6 +1116,7 @@ void SV_SendClientPrespawnInfo(client_t *client)
 		}
 	}
 
+#ifdef MVD_RECORDING
 	if (client->prespawn_stage == PRESPAWN_CSPROGS)
 	{
 		extern cvar_t sv_demo_write_csqc;
@@ -1146,6 +1181,7 @@ void SV_SendClientPrespawnInfo(client_t *client)
 		client->prespawn_stage++;
 		client->prespawn_idx = 0;
 	}
+#endif
 
 	if (client->prespawn_stage == PRESPAWN_SOUNDLIST)
 	{
@@ -1220,6 +1256,7 @@ void SV_SendClientPrespawnInfo(client_t *client)
 		}
 	}
 
+#ifndef NOLEGACY
 	if (client->prespawn_stage == PRESPAWN_VWEPMODELLIST)
 	{
 		//no indicies. the protocol can't cope with them.
@@ -1233,9 +1270,9 @@ void SV_SendClientPrespawnInfo(client_t *client)
 			{
 				//grab the model name... without a progs/ prefix if it has one
 				if (!strncmp(sv.strings.vw_model_precache[i], "progs/", 6))
-					Q_strncpy(mname, sv.strings.vw_model_precache[i]+6, sizeof(mname));
+					Q_strncpyz(mname, sv.strings.vw_model_precache[i]+6, sizeof(mname));
 				else
-					Q_strncpy(mname, sv.strings.vw_model_precache[i], sizeof(mname));
+					Q_strncpyz(mname, sv.strings.vw_model_precache[i], sizeof(mname));
 
 				//strip .mdl extensions, for compat with ezquake
 				COM_FileExtension(mname, ext, sizeof(ext));
@@ -1259,6 +1296,7 @@ void SV_SendClientPrespawnInfo(client_t *client)
 		}
 		client->prespawn_stage++;
 	}
+#endif
 
 	if (client->prespawn_stage == PRESPAWN_MODELLIST)
 	{
@@ -1704,7 +1742,7 @@ void SVQW_PreSpawn_f (void)
 	}
 
 	// handle the case of a level changing while a client was connecting
-	if ( atoi(Cmd_Argv(1)) != svs.spawncount && !sv.msgfromdemo)
+	if ( atoi(Cmd_Argv(1)) != svs.spawncount)
 	{
 		Con_Printf ("SV_PreSpawn_f from different level\n");
 		//FIXME: we shouldn't need the following line.
@@ -1771,7 +1809,7 @@ void SVQW_Spawn_f (void)
 	}
 
 // handle the case of a level changing while a client was connecting
-	if ( atoi(Cmd_Argv(1)) != svs.spawncount && !sv.msgfromdemo)
+	if ( atoi(Cmd_Argv(1)) != svs.spawncount)
 	{
 		Con_Printf ("SV_Spawn_f from different level\n");
 		SV_New_f ();
@@ -1780,14 +1818,16 @@ void SVQW_Spawn_f (void)
 
 // send all current names, colors, and frag counts
 	// FIXME: is this a good thing?
-	SZ_Clear (&host_client->netchan.message);
+//	SZ_Clear (&host_client->netchan.message);
 
 // send current status of all other players
 
 	// normally this could overflow, but no need to check due to backbuf
 	for (i=0, client = svs.clients ; i<svs.allocated_client_slots ; i++, client++)
 		SV_FullClientUpdate(client, host_client);
+#ifdef MVD_RECORDING
 	SV_MVD_FullClientUpdate(NULL, host_client);
+#endif
 
 // send all current light styles
 	for (i=0 ; i<MAX_LIGHTSTYLES ; i++)
@@ -1953,7 +1993,9 @@ void SV_Begin_Core(client_t *split)
 #ifdef Q2SERVER
 	if (ge)
 	{
-		ge->ClientUserinfoChanged (split->q2edict, split->userinfo);	//tell the gamecode
+		char userinfo[8192];
+		InfoBuf_ToString(&split->userinfo, userinfo, sizeof(userinfo), NULL, NULL, NULL, NULL, NULL);
+		ge->ClientUserinfoChanged (split->q2edict, userinfo);	//tell the gamecode
 		SV_ExtractFromUserinfo(split, true);	//let the server routines know
 
 		ge->ClientBegin(split->q2edict);
@@ -1987,11 +2029,11 @@ void SV_Begin_Core(client_t *split)
 
 			eval = svprogfuncs->GetEdictFieldValue(svprogfuncs, ent, "playermodel", ev_string, NULL);
 			if (eval)
-				svprogfuncs->SetStringField(svprogfuncs, ent, &eval->string, Info_ValueForKey(split->userinfo, "model"), false);
+				svprogfuncs->SetStringField(svprogfuncs, ent, &eval->string, InfoBuf_ValueForKey(&split->userinfo, "model"), false);
 
 			eval = svprogfuncs->GetEdictFieldValue(svprogfuncs, ent, "playerskin", ev_string, NULL);
 			if (eval)
-				svprogfuncs->SetStringField(svprogfuncs, ent, &eval->string, Info_ValueForKey(split->userinfo, "skin"), false);
+				svprogfuncs->SetStringField(svprogfuncs, ent, &eval->string, InfoBuf_ValueForKey(&split->userinfo, "skin"), false);
 
 			eval = svprogfuncs->GetEdictFieldValue(svprogfuncs, ent, "netaddress", ev_string, NULL);
 			if (eval)
@@ -2020,9 +2062,15 @@ void SV_Begin_Core(client_t *split)
 				SV_SpawnParmsToQC(split);
 
 				// call the spawn function
-				pr_global_struct->time = sv.world.physicstime;
-				pr_global_struct->self = EDICT_TO_PROG(svprogfuncs, split->edict);
-				PR_ExecuteProgram (svprogfuncs, SpectatorConnect);
+				{
+					globalvars_t *pr_globals = PR_globals(svprogfuncs, PR_CURRENT);
+					pr_global_struct->time = sv.world.physicstime;
+					pr_global_struct->self = EDICT_TO_PROG(svprogfuncs, split->edict);
+
+					if (pr_globals)
+						G_FLOAT(OFS_PARM0) = split->csqcactive;	//this arg is part of EXT_CSQC_1, but doesn't have to be supported by the mod
+					PR_ExecuteProgram (svprogfuncs, SpectatorConnect);
+				}
 			}
 			sv.spawned_observer_slots++;
 		}
@@ -2110,6 +2158,7 @@ void SV_Begin_Core(client_t *split)
 						SV_RunCmd(&cmd, false);
 					}
 					SV_PostRunCmd();
+					split->lastruncmd = sv.time*1000;
 					host_client = oh;
 					sv_player = oh?oh->edict:NULL;
 				}
@@ -2156,7 +2205,7 @@ void SV_Begin_f (void)
 		split->state = cs_spawned;
 
 	// handle the case of a level changing while a client was connecting
-	if ( atoi(Cmd_Argv(1)) != svs.spawncount && !sv.msgfromdemo)
+	if ( atoi(Cmd_Argv(1)) != svs.spawncount)
 	{
 		Con_Printf ("SV_Begin_f from different level\n");
 		SV_New_f ();
@@ -2183,24 +2232,12 @@ void SV_Begin_f (void)
 	//check he's not cheating
 	if (progstype == PROG_QW)
 	{
-		pmodel = atoi(Info_ValueForKey (host_client->userinfo, "pmodel"));
-		emodel = atoi(Info_ValueForKey (host_client->userinfo, "emodel"));
+		pmodel = atoi(InfoBuf_ValueForKey (&host_client->userinfo, "pmodel"));
+		emodel = atoi(InfoBuf_ValueForKey (&host_client->userinfo, "emodel"));
 
 		if (pmodel != sv.model_player_checksum ||
 			emodel != sv.eyes_player_checksum)
 			SV_BroadcastTPrintf (PRINT_HIGH, "warning: %s eyes or player model does not match\n", host_client->name);
-	}
-
-	// if we are paused, tell the client
-	if (sv.paused)
-	{
-		if (!ISQ2CLIENT(host_client))
-		{
-			ClientReliableWrite_Begin (host_client, svc_setpause, 2);
-			ClientReliableWrite_Byte (host_client, sv.paused!=0);
-		}
-		if (sv.paused&~PAUSE_AUTO)
-			SV_ClientTPrintf(host_client, PRINT_HIGH, "server is paused\n");
 	}
 
 	if (sendangles)
@@ -2216,10 +2253,15 @@ void SV_Begin_f (void)
 		MSG_WriteAngle (&host_client->netchan.message, host_client->edict->v->angles[1] );
 		MSG_WriteAngle (&host_client->netchan.message, 0 );
 	}
+
+#ifdef MVD_RECORDING
+	SV_MVD_AutoRecord();
+#endif
 }
 
 //=============================================================================
 
+#ifdef NQPROT
 //dp downloads are a 2-stream system
 //the server->client stream is as you'd expect. except that its unreliable rather than reliable
 //the client->server stream contains no actual data.
@@ -2327,6 +2369,7 @@ void SV_DarkPlacesDownloadAck(client_t *cl)
 		host_client->downloadsize = 0;
 	}
 }
+#endif
 
 static void SV_NextChunkedDownload(unsigned int chunknum, int ezpercent, int ezfilenum, int chunks)
 {
@@ -2708,6 +2751,7 @@ void SV_VoiceReadPacket(void)
 		ring->receiver[j>>3] |= 1<<(j&3);
 	}
 
+#ifdef MVD_RECORDING
 	if (sv.mvdrecording && sv_voip_record.ival && !(sv_voip_record.ival == 2 && !host_client->spectator))
 	{
 		sizebuf_t *msg;
@@ -2733,6 +2777,7 @@ void SV_VoiceReadPacket(void)
 		MSG_WriteShort(msg, ring->datalen);
 		SZ_Write(msg, ring->data, ring->datalen);
 	}
+#endif
 }
 void SV_VoiceInitClient(client_t *client)
 {
@@ -3041,7 +3086,6 @@ qboolean SV_AllowDownload (const char *name)
 static int SV_LocateDownload(const char *name, flocation_t *loc, char **replacementname, qboolean redirectpaks)
 {
 	extern	cvar_t	allow_download_anymap, allow_download_pakcontents;
-	extern cvar_t sv_demoDir;
 	qboolean protectedpak;
 	qboolean found;
 	static char tmpname[MAX_QPATH];
@@ -3049,6 +3093,7 @@ static int SV_LocateDownload(const char *name, flocation_t *loc, char **replacem
 	if (replacementname)
 		*replacementname = NULL;
 
+#ifdef MVD_RECORDING
 	//mvdsv demo downloading support demonum/ -> demos/XXXX (sets up the client paths)
 	if (!Q_strncasecmp(name, "demonum/", 8))
 	{
@@ -3066,6 +3111,7 @@ static int SV_LocateDownload(const char *name, flocation_t *loc, char **replacem
 			return DLERR_REDIRECTFILE;
 		}
 	}
+#endif
 
 	if (!SV_AllowDownload(name))
 	{
@@ -3073,12 +3119,14 @@ static int SV_LocateDownload(const char *name, flocation_t *loc, char **replacem
 		return DLERR_PERMISSIONS;	//not permitted (even if it exists).
 	}
 
+#ifdef MVD_RECORDING
 	//mvdsv demo downloading support. demos/ -> demodir (sets up the server paths)
 	if (!Q_strncasecmp(name, "demos/", 6))
 	{
 		Q_snprintfz(tmpname, sizeof(tmpname), "%s/%s", sv_demoDir.string, name+6);
 		name = tmpname;
 	}
+#endif
 
 	if (!Q_strncasecmp(name, "package/", 8))
 	{
@@ -3151,7 +3199,7 @@ static int SV_LocateDownload(const char *name, flocation_t *loc, char **replacem
 		{
 			if (!allow_download_anymap.value && !Q_strncasecmp(name, "maps/", 5))
 			{
-				Sys_Printf ("%s denied download of %s - it is in a pak\n", host_client->name, name+8);
+				Sys_Printf ("%s denied download of %s - it is in a pak\n", host_client->name, name);
 				return DLERR_PERMISSIONS;
 			}
 		}
@@ -3194,7 +3242,7 @@ static int SV_LocateDownload(const char *name, flocation_t *loc, char **replacem
 		{	//if its in a pak file, don't allow downloads if we don't allow the contents of paks to be sent.
 			if (!allow_download_pakcontents.value)
 			{
-				Sys_Printf ("%s denied download of %s - it is in a pak\n", host_client->name, name+8);
+				Sys_Printf ("%s denied download of %s - it is in a pak\n", host_client->name, name);
 				return DLERR_PERMISSIONS;
 			}
 		}
@@ -3241,6 +3289,7 @@ void SV_DownloadSize_f(void)
 	}
 }
 
+#ifdef MVD_RECORDING
 void SV_DemoDownload_f(void)
 {
 	int arg;
@@ -3298,6 +3347,7 @@ void SV_DemoDownload_f(void)
 		}
 	}
 }
+#endif
 
 /*
 ==================
@@ -3309,7 +3359,6 @@ void SV_BeginDownload_f(void)
 	char *name = Cmd_Argv(1);
 	char *redirection = NULL;
 	extern	cvar_t	allow_download_anymap, allow_download_pakcontents;
-	extern cvar_t sv_demoDir;
 	flocation_t loc;
 	int result;
 
@@ -3682,12 +3731,13 @@ void SV_Say (qboolean team)
 	char	t1[32], *t2;
 	int cls = 0;
 	float floodtime;
+#ifdef MVD_RECORDING
 	sizebuf_t *msg;
+	qboolean mvdrecording;
+#endif
 
 	qboolean sent[MAX_CLIENTS];	//so we don't send to the same splitscreen connection twice. (it's ugly)
 	int cln;
-
-	qboolean mvdrecording;
 
 	char *s, *s2;
 
@@ -3701,7 +3751,7 @@ void SV_Say (qboolean team)
 
 	if (team)
 	{
-		Q_strncpyz (t1, Info_ValueForKey (host_client->userinfo, "team"), sizeof(t1));
+		Q_strncpyz (t1, InfoBuf_ValueForKey(&host_client->userinfo, "team"), sizeof(t1));
 	}
 
 	if (host_client->spectator && (!sv_spectalk.value || team))
@@ -3780,8 +3830,10 @@ void SV_Say (qboolean team)
 	if (!(host_client->penalties & BAN_MUTE))
 		Sys_Printf ("%s", text);
 
+#ifdef MVD_RECORDING
 	mvdrecording = sv.mvdrecording;
 	sv.mvdrecording = false;	//so that the SV_ClientPrintf doesn't send to all players.
+#endif
 	for (j = 0, client = svs.clients; j < svs.allocated_client_slots; j++, client++)
 	{
 		if (client->state != cs_spawned && client->state != cs_connected)
@@ -3797,7 +3849,7 @@ void SV_Say (qboolean team)
 				if (!client->spectator)
 					continue;
 			} else {
-				t2 = Info_ValueForKey (client->userinfo, "team");
+				t2 = InfoBuf_ValueForKey (&client->userinfo, "team");
 				if (strcmp(t1, t2) || client->spectator)
 					continue;	// on different teams
 			}
@@ -3828,6 +3880,7 @@ void SV_Say (qboolean team)
 
 		SV_ClientPrintf(client, PRINT_CHAT, "%s", text);
 	}
+#ifdef MVD_RECORDING
 	sv.mvdrecording = mvdrecording;
 
 	if (!sv.mvdrecording || !cls)
@@ -3842,6 +3895,7 @@ void SV_Say (qboolean team)
 	MSG_WriteByte (msg, svc_print);
 	MSG_WriteByte (msg, PRINT_CHAT);
 	MSG_WriteString (msg, text);
+#endif
 }
 
 
@@ -4029,7 +4083,7 @@ void SV_Pause_f (void)
 		return;
 	}
 
-	if (host_client->spectator && !svs.demoplayback)
+	if (host_client->spectator)
 	{
 		SV_ClientTPrintf (host_client, PRINT_HIGH, "Spectators may not pause the game\n");
 		return;
@@ -4183,7 +4237,14 @@ void SV_PTrack_f (void)
 
 	if (!SV_CanTrack(host_client, i+1))
 	{
-		SV_ClientTPrintf (host_client, PRINT_HIGH, "invalid player to track\n");
+		if (i < 0 || i >= sv.allocated_client_slots)
+			SV_ClientTPrintf (host_client, PRINT_HIGH, "invalid player to track\n");
+		else if (svs.clients[i].spectator)
+			SV_ClientTPrintf (host_client, PRINT_HIGH, "cannot track other spectators\n");
+		else if (svs.clients[i].state != cs_spawned)
+			SV_ClientTPrintf (host_client, PRINT_HIGH, "cannot track - player not spawned yet\n");
+		else
+			SV_ClientTPrintf (host_client, PRINT_HIGH, "invalid player to track\n");
 		host_client->spec_track = 0;
 		ent = EDICT_NUM_PB(svprogfuncs, host_client - svs.clients + 1);
 		tent = EDICT_NUM_PB(svprogfuncs, 0);
@@ -4229,7 +4290,7 @@ void SV_Rate_f (void)
 		return;
 	}
 
-	Info_SetValueForKey (host_client->userinfo, "rate", Cmd_Argv(1), sizeof(host_client->userinfo));
+	InfoBuf_SetKey (&host_client->userinfo, "rate", Cmd_Argv(1));
 	SV_ExtractFromUserinfo (host_client, true);
 
 	if (host_client->state > cs_connected)
@@ -4261,20 +4322,9 @@ void SV_Msg_f (void)
 qboolean SV_UserInfoIsBasic(const char *infoname)
 {
 	int i;
-	char *basicinfos[] = {
-
-		"name",
-		"team",
-		"skin",
-		"topcolor",
-		"bottomcolor",
-		"chat",	//ezquake's afk indicators
-
-		NULL};
-
-	for (i = 0; basicinfos[i]; i++)
+	for (i = 1; basicuserinfos[i]; i++)
 	{
-		if (*infoname == '*' || !strcmp(infoname, basicinfos[i]))
+		if (*infoname == '*' || !strcmp(infoname, basicuserinfos[i]))
 			return true;
 	}
 	return false;
@@ -4284,6 +4334,8 @@ qboolean SV_UserInfoIsBasic(const char *infoname)
 static void SV_SetInfo_PrintCB (void *ctx, const char *key, const char *value)
 {
 	client_t *cl = ctx;
+	if (cl->num_backbuf > MAX_BACK_BUFFERS/2)
+		return;	//stop printing if there's too many...
 	SV_ClientPrintf(cl, PRINT_HIGH, "\t%-20s%s\n", key, value);
 }
 
@@ -4297,89 +4349,113 @@ Allow clients to change userinfo
 void SV_SetInfo_f (void)
 {
 	char oldval[MAX_INFO_KEY];
-	char *key, *val;
+	char *key, *val, *t;
+	size_t offset, keysize, valsize, k;
+	qboolean final;
 
 	if (Cmd_Argc() == 1)
 	{
 		SV_ClientPrintf(host_client, PRINT_HIGH, "User info settings:\n");
-		Info_Enumerate(host_client->userinfo, (void*)host_client, SV_SetInfo_PrintCB);
+		InfoBuf_Enumerate(&host_client->userinfo, (void*)host_client, SV_SetInfo_PrintCB);
+		SV_ClientPrintf(host_client, PRINT_HIGH, "[%u/%i, %u/%i]\n", (unsigned int)host_client->userinfo.numkeys, sv_userinfo_keylimit.ival, (unsigned int)host_client->userinfo.totalsize, sv_userinfo_bytelimit.ival);
 		return;
 	}
 
-	if (Cmd_Argc() != 3)
+	if (Cmd_Argc() == 4 && (host_client->fteprotocolextensions2 & PEXT2_INFOBLOBS))
+	{
+		offset = strtoul(Cmd_Argv(3), &t, 0);
+		final = (*t != '+');
+	}
+	else if (Cmd_Argc() == 3)
+	{
+		offset = 0;
+		final = true;
+	}
+	else
 	{
 		SV_ClientPrintf(host_client, PRINT_HIGH, "usage: setinfo [ <key> <value> ]\n");
 		return;
 	}
-
-	key = Cmd_Argv(1);
-
-	if (key[0] == '*')
-		return;		// don't set priveledged values
-
-	if (strstr(key, "\\") || strstr(Cmd_Argv(2), "\\"))
-		return;		// illegal char
-
-	Q_strncpyz(oldval, Info_ValueForKey(host_client->userinfo, key), sizeof(oldval));
 
 #ifdef VM_Q1
 	if (Q1QVM_UserInfoChanged(sv_player))
 		return;
 #endif
 
-	Info_SetValueForKey (host_client->userinfo, key, Cmd_Argv(2), sizeof(host_client->userinfo));
-// name is extracted below in ExtractFromUserInfo
-//	strncpy (host_client->name, Info_ValueForKey (host_client->userinfo, "name")
-//		, sizeof(host_client->name)-1);
-//	SV_FullClientUpdate (host_client, &sv.reliable_datagram);
-//	host_client->sendinfo = true;
+	key = Cmd_Argv(1);
+	val = Cmd_Argv(2);
+	if (strstr(key, "\\") || strstr(val, "\\"))
+		return;		// illegal char, at least at this point.
+	if (host_client->fteprotocolextensions2 & PEXT2_INFOBLOBS)
+	{
+		key = InfoBuf_DecodeString(key, key+strlen(key), &keysize);
+		val = InfoBuf_DecodeString(val, val+strlen(val), &valsize);
+	}
+	else
+	{
+		keysize = strlen(key);
+		key = Z_StrDup(key);
+		valsize = strlen(val);
+		val = Z_StrDup(val);
+	}
 
-	if (!strcmp(Info_ValueForKey(host_client->userinfo, key), oldval))
-		return; // key hasn't changed
 
+	if (key[0] == '*' && !(ISNQCLIENT(host_client) && !host_client->spawned && !strcmp(key, "*ver")))	//nq clients are allowed to set some * keys if ClientConnect wasn't called yet. FIXME: saved games may still be an issue.
+		SV_ClientPrintf(host_client, PRINT_HIGH, "setinfo: %s may not be changed mid-game\n", key);
+	else if (sv_userinfo_keylimit.ival >= 0 && host_client->userinfo.numkeys >= sv_userinfo_keylimit.ival && !offset && *val && !InfoBuf_FindKey(&host_client->userinfo, key, &k))	//when the limit is hit, allow people to freely change existing keys, but not new ones. they can also silently remove any that don't exist yet, too.
+		SV_ClientPrintf(host_client, PRINT_MEDIUM, "setinfo: userinfo is limited to %i keys. Ignoring setting %s\n", sv_userinfo_keylimit.ival, key);
+	else if (sv_userinfo_bytelimit.ival >= 0 && host_client->userinfo.totalsize >= sv_userinfo_bytelimit.ival && *val)
+	{
+		SV_ClientPrintf(host_client, PRINT_MEDIUM, "setinfo: userinfo is limited to %i bytes. Ignoring setting %s\n", sv_userinfo_bytelimit.ival, key);
+		if (offset)	//kill it if they're part way through sending one, so that they're not penalised by the presence of partials that will never complete.
+			InfoBuf_RemoveKey(&host_client->userinfo, key);
+	}
+	else if (InfoBuf_SyncReceive(&host_client->userinfo, key, keysize, val, valsize, offset, final))
+	{
 #ifdef Q2SERVER
-	if (svs.gametype == GT_QUAKE2)
-	{
-		ge->ClientUserinfoChanged (host_client->q2edict, host_client->userinfo);	//tell the gamecode
-		SV_ExtractFromUserinfo(host_client, true);	//let the server routines know
-		return;
-	}
+		if (svs.gametype == GT_QUAKE2)
+		{
+			char tempbuffer[32768];
+			InfoBuf_ToString(&host_client->userinfo, tempbuffer, sizeof(tempbuffer), NULL, NULL, NULL, NULL, NULL);
+			ge->ClientUserinfoChanged (host_client->q2edict, tempbuffer);	//tell the gamecode
+			SV_ExtractFromUserinfo(host_client, true);	//let the server routines know
+		}
+		else
 #endif
+		{
 
-	if (progstype != PROG_QW && !strcmp(key, "bottomcolor"))
-	{	//team fortress has a nasty habit of booting people without this
-		sv_player->v->team = atoi(Cmd_Argv(2))+1;
-	}
+			if (progstype != PROG_QW && !strcmp(key, "bottomcolor"))
+			{	//team fortress has a nasty habit of booting people without this
+				sv_player->v->team = atoi(Cmd_Argv(2))+1;
+			}
 #ifndef NOLEGACY
-	if (progstype != PROG_QW && !strcmp(key, "model"))
-	{
-		eval_t *eval = svprogfuncs->GetEdictFieldValue(svprogfuncs, sv_player, "playermodel", ev_string, NULL);
-		if (eval)
-			svprogfuncs->SetStringField(svprogfuncs, sv_player, &eval->string, Cmd_Argv(2), false);
-	}
-	if (progstype != PROG_QW && !strcmp(key, "skin"))
-	{
-		eval_t *eval = svprogfuncs->GetEdictFieldValue(svprogfuncs, sv_player, "playerskin", ev_string, NULL);
-		if (eval)
-			svprogfuncs->SetStringField(svprogfuncs, sv_player, &eval->string, Cmd_Argv(2), false);
-	}
+			if (progstype != PROG_QW && !strcmp(key, "model"))
+			{
+				eval_t *eval = svprogfuncs->GetEdictFieldValue(svprogfuncs, sv_player, "playermodel", ev_string, NULL);
+				if (eval)
+					svprogfuncs->SetStringField(svprogfuncs, sv_player, &eval->string, Cmd_Argv(2), false);
+			}
+			if (progstype != PROG_QW && !strcmp(key, "skin"))
+			{
+				eval_t *eval = svprogfuncs->GetEdictFieldValue(svprogfuncs, sv_player, "playerskin", ev_string, NULL);
+				if (eval)
+					svprogfuncs->SetStringField(svprogfuncs, sv_player, &eval->string, Cmd_Argv(2), false);
+			}
 #endif
 
-	// process any changed values
-	SV_ExtractFromUserinfo (host_client, true);
+			// process any changed values
+			// chat happens far too often and makes debugging annoying, as well as making logs spammy
+			if (strcmp(key, "chat"))
+			{
+				SV_ExtractFromUserinfo (host_client, true);
+				SV_LogPlayer(host_client, "userinfo changed");
+			}
 
-	if (*key != '_')
-	{
-		val = Info_ValueForKey(host_client->userinfo, key);
-
-		SV_BroadcastUserinfoChange(host_client, SV_UserInfoIsBasic(key), key, val);
+			PR_ClientUserInfoChanged(key, oldval, InfoBuf_ValueForKey(&host_client->userinfo, key));
+		}
 	}
-
-	//doh't spam chat changes. they're not interesting, and just spammy.
-	if (strcmp(key, "chat"))
-		SV_LogPlayer(host_client, "userinfo changed");
-
-	PR_ClientUserInfoChanged(key, oldval, Info_ValueForKey(host_client->userinfo, key));
+	Z_Free(key);
+	Z_Free(val);
 }
 
 /*
@@ -4392,7 +4468,7 @@ Dumps the serverinfo info string
 void SV_ShowServerinfo_f (void)
 {
 	SV_BeginRedirect(RD_CLIENT, host_client->language);
-	Info_Print (svs.info, "");
+	InfoBuf_Print (&svs.info, "");
 	SV_EndRedirect();
 }
 
@@ -4957,8 +5033,8 @@ void SV_SetUpClientEdict (client_t *cl, edict_t *ent)
 	}
 
 	{
-		int tc = atoi(Info_ValueForKey(cl->userinfo, "topcolor"));
-		int bc = atoi(Info_ValueForKey(cl->userinfo, "bottomcolor"));
+		int tc = atoi(InfoBuf_ValueForKey(&cl->userinfo, "topcolor"));
+		int bc = atoi(InfoBuf_ValueForKey(&cl->userinfo, "bottomcolor"));
 		if (tc < 0 || tc > 13)
 			tc = 0;
 		if (bc < 0 || bc > 13)
@@ -5159,7 +5235,7 @@ void Cmd_Join_f (void)
 
 		// turn the spectator into a player
 		host_client->spectator = false;
-		Info_RemoveKey (host_client->userinfo, "*spectator");
+		InfoBuf_RemoveKey (&host_client->userinfo, "*spectator");
 
 		// FIXME, bump the client's userid?
 
@@ -5294,7 +5370,7 @@ void Cmd_Observe_f (void)
 
 		// turn the player into a spectator
 		host_client->spectator = true;
-		Info_SetValueForStarKey (host_client->userinfo, "*spectator", "1", sizeof(host_client->userinfo));
+		InfoBuf_SetValueForStarKey (&host_client->userinfo, "*spectator", "1");
 
 		// FIXME, bump the client's userid?
 
@@ -5430,14 +5506,6 @@ void SV_DisableClientsCSQC(void)
 }
 
 void SV_UserCmdMVDList_f (void);
-static void SV_STFU_f(void)
-{
-	char *msg;
-	SV_ClientPrintf(host_client, 255, "stfu\n");
-	msg = "cl_antilag 0\n";
-	ClientReliableWrite_Begin(host_client, svc_stufftext, 2+strlen(msg));
-	ClientReliableWrite_String(host_client, msg);
-}
 
 #ifdef NQPROT
 static void SVNQ_Spawn_f (void)
@@ -5455,14 +5523,16 @@ static void SVNQ_Spawn_f (void)
 
 // send all current names, colors, and frag counts
 	// FIXME: is this a good thing?
-	SZ_Clear (&host_client->netchan.message);
+//	SZ_Clear (&host_client->netchan.message);
 
 // send current status of all other players
 
 	// normally this could overflow, but no need to check due to backbuf
 	for (i=0, client = svs.clients; i<sv.allocated_client_slots ; i++, client++)
 		SV_FullClientUpdate(client, host_client);
+#ifdef MVD_RECORDING
 	SV_MVD_FullClientUpdate(NULL, host_client);
+#endif
 
 // send all current light styles
 	for (i=0 ; i<MAX_LIGHTSTYLES ; i++)
@@ -5533,7 +5603,12 @@ static void SVNQ_Spawn_f (void)
 		ClientReliableWrite_Long (host_client, pr_global_struct->killed_monsters);
 	}
 
-	//SV_Begin_Core(host_client);
+	//nq servers call ClientConnect early.
+	//qw servers hold off until the last possible moment.
+	//so qw servers prevent the player from getting shot too early.
+	//while nq ensures that reliables sent in ClientConnect are actually flushed before unreliables/entities start to arrive.
+//	if (nqcompat_spawnbeforeready.ival)
+		SV_Begin_Core(host_client);
 
 	ClientReliableWrite_Begin (host_client, svcnq_signonnum, 2);
 	ClientReliableWrite_Byte (host_client, 3);
@@ -5562,25 +5637,12 @@ static void SVNQ_Begin_f (void)
 
 	if (sv_playermodelchecks.value)
 	{
-		pmodel = atoi(Info_ValueForKey (host_client->userinfo, "pmodel"));
-		emodel = atoi(Info_ValueForKey (host_client->userinfo, "emodel"));
+		pmodel = atoi(InfoBuf_ValueForKey (&host_client->userinfo, "pmodel"));
+		emodel = atoi(InfoBuf_ValueForKey (&host_client->userinfo, "emodel"));
 
 		if (pmodel != sv.model_player_checksum ||
 			emodel != sv.eyes_player_checksum)
 			SV_BroadcastTPrintf (PRINT_HIGH, "warning: %s eyes or player model not verified\n", host_client->name);
-	}
-
-
-	// if we are paused, tell the client
-	if (sv.paused)
-	{
-		if (!ISQ2CLIENT(host_client))
-		{
-			ClientReliableWrite_Begin (host_client, svc_setpause, 2);
-			ClientReliableWrite_Byte (host_client, sv.paused!=0);
-		}
-		if (sv.paused&~PAUSE_AUTO)
-			SV_ClientTPrintf(host_client, PRINT_HIGH, "server is paused\n");
 	}
 
 	if (sendangles)
@@ -5608,6 +5670,7 @@ static void SVNQ_Begin_f (void)
 	host_client->lastcmd.msec = 0;
 	SV_RunCmd (&host_client->lastcmd, false);
 	SV_PostRunCmd();
+	host_client->lastruncmd = sv.time*1000;
 }
 static void SVNQ_PreSpawn_f (void)
 {
@@ -5650,7 +5713,8 @@ static void SVNQ_PreSpawn_f (void)
 }
 static void SVNQ_NQInfo_f (void)
 {
-	Cmd_TokenizeString(va("setinfo \"%s\" \"%s\"\n", Cmd_Argv(0), Cmd_Argv(1)), false, false);
+	char buf[8192];
+	Cmd_TokenizeString(va("setinfo \"%s\" %s\n", Cmd_Argv(0), COM_QuotedString(Cmd_Argv(1), buf, sizeof(buf), false)), false, false);
 	SV_SetInfo_f();
 }
 
@@ -5679,18 +5743,12 @@ static void SVNQ_NQColour_f (void)
 		host_client->edict->v->team = bottom + 1;
 
 	val = va("%i", top);
-	if (strcmp(val, Info_ValueForKey(host_client->userinfo, "topcolor")))
-	{
-		Info_SetValueForKey(host_client->userinfo, "topcolor", val, sizeof(host_client->userinfo));
+	if (InfoBuf_SetValueForKey(&host_client->userinfo, "topcolor", val))
 		SV_BroadcastUserinfoChange(host_client, true, "topcolor", NULL);
-	}
 
 	val = va("%i", bottom);
-	if (strcmp(val, Info_ValueForKey(host_client->userinfo, "bottomcolor")))
-	{
-		Info_SetValueForKey(host_client->userinfo, "bottomcolor", val, sizeof(host_client->userinfo));
+	if (InfoBuf_SetValueForKey(&host_client->userinfo, "bottomcolor", val))
 		SV_BroadcastUserinfoChange(host_client, true, "bottomcolor", NULL);
-	}
 
 	switch(bottom)
 	{
@@ -5704,9 +5762,9 @@ static void SVNQ_NQColour_f (void)
 		val = va("t%i", bottom+1);
 		break;
 	}
-	if (strcmp(val, Info_ValueForKey(host_client->userinfo, "team")))
+	if (strcmp(val, InfoBuf_ValueForKey(&host_client->userinfo, "team")))
 	{
-		Info_SetValueForKey(host_client->userinfo, "team", val, sizeof(host_client->userinfo));
+		InfoBuf_SetValueForKey(&host_client->userinfo, "team", val);
 		SV_BroadcastUserinfoChange(host_client, true, "team", NULL);
 	}
 
@@ -5917,7 +5975,7 @@ typedef struct
 {
 	char	*name;
 	void	(*func) (void);
-	qboolean	noqchandling;
+	int	noqchandling;
 } ucmd_t;
 
 ucmd_t ucmds[] =
@@ -5929,9 +5987,6 @@ ucmd_t ucmds[] =
 	{"prespawn", SVQW_PreSpawn_f, true},
 	{"spawn", SVQW_Spawn_f, true},
 	{"begin", SV_Begin_f, true},
-
-	/*ezquake warning*/
-	{"al", SV_STFU_f, true},	//can probably be removed now.
 
 	{"drop", SV_Drop_f},
 	{"disconnect", SV_Drop_f},
@@ -5950,11 +6005,13 @@ ucmd_t ucmds[] =
 	{"setinfo", SV_SetInfo_f},
 	{"serverinfo", SV_ShowServerinfo_f},
 
+#ifdef MVD_RECORDING
 	/*demo/download commands*/
 	{"demolist", SV_UserCmdMVDList_f},
 	{"dlist", SV_UserCmdMVDList_f},	//apparently people are too lazy to type.
 	{"demoinfo", SV_MVDInfo_f},
 	{"dl", SV_DemoDownload_f},
+#endif
 
 	{"stopdownload", SV_StopDownload_f},
 	{"dlsize", SV_DownloadSize_f},
@@ -5968,8 +6025,8 @@ ucmd_t ucmds[] =
 	{"ptrack", SV_PTrack_f}, //ZOID - used with autocam
 	{"snap", SV_NoSnap_f},	//cheat detection
 
-	{"enablecsqc", SV_EnableClientsCSQC, true},
-	{"disablecsqc", SV_DisableClientsCSQC, true},
+	{"enablecsqc", SV_EnableClientsCSQC, 2},
+	{"disablecsqc", SV_DisableClientsCSQC, 2},
 
 	{"vote", SV_Vote_f},
 
@@ -6073,6 +6130,7 @@ ucmd_t nqucmds[] =
 	{"download",	SV_BeginDownload_f},
 	{"sv_startdownload",	SVDP_StartDownload_f},
 
+	{"serverinfo", SV_ShowServerinfo_f},
 	/*userinfo stuff*/
 	{"setinfo",		SV_SetInfo_f},
 	{"name",		SVNQ_NQInfo_f},
@@ -6089,8 +6147,8 @@ ucmd_t nqucmds[] =
 	/*various misc extensions*/
 	{"protocols",	SVNQ_Protocols_f, true},
 	{"pext",		SV_Pext_f, true},
-	{"enablecsqc",	SV_EnableClientsCSQC},
-	{"disablecsqc",	SV_DisableClientsCSQC},
+	{"enablecsqc",	SV_EnableClientsCSQC, 2},
+	{"disablecsqc",	SV_DisableClientsCSQC, 2},
 	{"challengeconnect", NULL},
 
 	/*spectating, this should be fun...*/
@@ -6169,15 +6227,27 @@ void SV_ExecuteUserCommand (const char *s, qboolean fromQC)
 	for ( ; u->name ; u++)
 		if (!strcmp (Cmd_Argv(0), u->name) )
 		{
+			if (u->noqchandling==2)
+			{	//issue the command then let the QC handle it too
+				if (!fromQC)
+				{
+					if (u->func)
+						u->func();
+					if (host_client->spawned)
+						PR_KrimzonParseCommand(s);
+				}
+				host_client = oldhost;
+				return;
+			}
 			if (!fromQC && !u->noqchandling)
-				if (PR_KrimzonParseCommand(s))	//KRIMZON_SV_PARSECLIENTCOMMAND has the opertunity to parse out certain commands.
+				if (PR_KrimzonParseCommand(s))	//KRIMZON_SV_PARSECLIENTCOMMAND has the opportunity to parse out certain commands.
 				{
 					host_client = oldhost;
 					return;
 				}
 //			SV_BeginRedirect (RD_CLIENT, host_client->language);
 			if (u->func)
-				u->func ();
+				u->func();
 			host_client = oldhost;
 //			SV_EndRedirect ();
 			return;
@@ -6967,17 +7037,7 @@ void SV_RunCmd (usercmd_t *ucmd, qboolean recurse)
 	}
 #endif
 
-	sv_player->v->button0 = ucmd->buttons & 1;
-	sv_player->v->button2 = (ucmd->buttons >> 1) & 1;
-	if (pr_allowbutton1.ival && progstype == PROG_QW)	//many mods use button1 - it's just a wasted field to many mods. So only work it if the cvar allows.
-		sv_player->v->button1 = ((ucmd->buttons >> 2) & 1);
-// DP_INPUTBUTTONS
-	sv_player->xv->button3 = ((ucmd->buttons >> 2) & 1);
-	sv_player->xv->button4 = ((ucmd->buttons >> 3) & 1);
-	sv_player->xv->button5 = ((ucmd->buttons >> 4) & 1);
-	sv_player->xv->button6 = ((ucmd->buttons >> 5) & 1);
-	sv_player->xv->button7 = ((ucmd->buttons >> 6) & 1);
-	sv_player->xv->button8 = ((ucmd->buttons >> 7) & 1);
+	SV_SetEntityButtons(sv_player, ucmd->buttons);
 	if (ucmd->impulse && SV_FilterImpulse(ucmd->impulse, host_client->trustlevel))
 		sv_player->v->impulse = ucmd->impulse;
 
@@ -7350,11 +7410,11 @@ if (sv_player->v->health > 0 && before && !after )
 					VectorCopy(pmove.touchvel[i], old_vel);
 					VectorCopy(pmove.touchvel[i], sv_player->v->velocity);
 				}
-				sv.world.Event_Touch(&sv.world, (wedict_t*)ent, (wedict_t*)sv_player);
+				sv.world.Event_Touch(&sv.world, (wedict_t*)ent, (wedict_t*)sv_player, NULL);
 			}
 
 			if (sv_player->v->touch && !ED_ISFREE(ent))
-				sv.world.Event_Touch(&sv.world, (wedict_t*)sv_player, (wedict_t*)ent);
+				sv.world.Event_Touch(&sv.world, (wedict_t*)sv_player, (wedict_t*)ent, NULL);
 		}
 	}
 
@@ -7471,6 +7531,7 @@ void SV_ReadQCRequest(void)
 	int i;
 	globalvars_t *pr_globals;
 	client_t *cl = host_client;
+	edict_t *ed;
 
 	if (!svprogfuncs)
 	{
@@ -7530,7 +7591,14 @@ void SV_ReadQCRequest(void)
 			e = MSGSV_ReadEntity(host_client);
 			if (e < 0 || e >= sv.world.num_edicts)
 				e = 0;
-			G_INT(OFS_PARM0+i*3) = EDICT_TO_PROG(svprogfuncs, EDICT_NUM_PB(svprogfuncs, e));
+			ed = EDICT_NUM_PB(svprogfuncs, e);
+			if (!ed)
+			{
+				ed = (edict_t*)sv.world.edicts;
+				Con_Printf("client %s sent invalid entity\n", host_client->name);
+				host_client->drop = true;
+			}
+			G_INT(OFS_PARM0+i*3) = EDICT_TO_PROG(svprogfuncs, ed);
 			break;
 		}
 		i++;
@@ -7541,9 +7609,12 @@ done:
 	rname = MSG_ReadString();
 	if (i)
 		fname = va("CSEv_%s_%s", rname, args);
+	else if (strchr(rname, '_'))	//this is awkward, as not forcing an underscore would allow people to mis-call things with lingering data (the alternative is to block underscores entirely).
+		fname = va("CSEv_%s_", rname);
 	else
 		fname = va("CSEv_%s", rname);
 	f = PR_FindFunction(svprogfuncs, fname, PR_ANY);
+#ifndef NOLEGACY
 	if (!f)
 	{
 		if (i)
@@ -7551,8 +7622,13 @@ done:
 		else
 			rname = va("Cmd_%s", rname);
 		f = PR_FindFunction(svprogfuncs, rname, PR_ANY);
+		if (f)
+			SV_ClientPrintf(host_client, PRINT_HIGH, "the name \"%s\" is deprecated\n", rname);
 	}
-	if (!cl)
+#endif
+	if (host_client->drop)
+		;
+	else if (!cl)
 		;	//bad seat! not going to warn as they might have been removed recently
 	else if (f)
 	{
@@ -7781,17 +7857,7 @@ void SV_ExecuteClientMessage (client_t *cl)
 						if (newcmd.impulse)// && SV_FilterImpulse(newcmd.impulse, host_client->trustlevel))
 							split->edict->v->impulse = newcmd.impulse;
 
-						split->edict->v->button0 = newcmd.buttons & 1;
-						split->edict->v->button2 = (newcmd.buttons >> 1) & 1;
-						if (pr_allowbutton1.ival)	//many mods use button1 - it's just a wasted field to many mods. So only work it if the cvar allows.
-							split->edict->v->button1 = ((newcmd.buttons >> 2) & 1);
-					// DP_INPUTBUTTONS
-						split->edict->xv->button3 = ((newcmd.buttons >> 2) & 1);
-						split->edict->xv->button4 = ((newcmd.buttons >> 3) & 1);
-						split->edict->xv->button5 = ((newcmd.buttons >> 4) & 1);
-						split->edict->xv->button6 = ((newcmd.buttons >> 5) & 1);
-						split->edict->xv->button7 = ((newcmd.buttons >> 6) & 1);
-						split->edict->xv->button8 = ((newcmd.buttons >> 7) & 1);
+						SV_SetEntityButtons(split->edict, newcmd.buttons);
 					}
 					else
 					{
@@ -7815,6 +7881,7 @@ void SV_ExecuteClientMessage (client_t *cl)
 
 						if (!SV_PlayerPhysicsQC || host_client->spectator)
 							SV_PostRunCmd();
+						host_client->lastruncmd = sv.time*1000;
 					}
 
 				}
@@ -7885,6 +7952,8 @@ void SV_ExecuteClientMessage (client_t *cl)
 #endif
 		case clcdp_ackframe:
 			cl->delta_sequence = MSG_ReadLong();
+			if (cl->delta_sequence == -1 && cl->pendingdeltabits)
+				cl->pendingdeltabits[0] = UF_REMOVE;
 			SV_AckEntityFrame(cl, cl->delta_sequence);
 			break;
 		}
@@ -7898,7 +7967,7 @@ void SV_ExecuteClientMessage (client_t *cl)
 #ifdef Q2SERVER
 void SVQ2_ExecuteClientMessage (client_t *cl)
 {
-	enum clcq2_ops_e		c;
+	int		c;
 	char	*s;
 	usercmd_t	oldest, oldcmd, newcmd;
 	q2client_frame_t	*frame;
@@ -7978,7 +8047,7 @@ void SVQ2_ExecuteClientMessage (client_t *cl)
 		if (c == -1)
 			break;
 
-		switch (c)
+		switch ((enum clcq2_ops_e)c)
 		{
 		default:
 			Con_Printf ("SVQ2_ReadClientMessage: unknown command char %i\n", c);
@@ -8074,9 +8143,11 @@ void SVQ2_ExecuteClientMessage (client_t *cl)
 			break;
 
 		case clcq2_userinfo:
-			strncpy (cl->userinfo, MSG_ReadString (), sizeof(cl->userinfo)-1);
-			ge->ClientUserinfoChanged (cl->q2edict, cl->userinfo);	//tell the gamecode
+			//FIXME: allows the client to set * keys mid-game.
+			s = MSG_ReadString();
+			InfoBuf_FromString(&cl->userinfo, s, false);
 			SV_ExtractFromUserinfo(cl, true);	//let the server routines know
+			ge->ClientUserinfoChanged (cl->q2edict, s);	//tell the gamecode
 			break;
 
 		case clcq2_stringcmd:
@@ -8252,17 +8323,7 @@ void SVNQ_ReadClientMove (usercmd_t *move, qboolean forceangle16)
 //	if (i && SV_FilterImpulse(i, host_client->trustlevel))
 //		host_client->edict->v->impulse = i;
 
-	host_client->edict->v->button0 = bits & 1;
-	host_client->edict->v->button2 = (bits >> 1) & 1;
-	if (pr_allowbutton1.ival && progstype == PROG_QW)	//many mods use button1 - it's just a wasted field to many mods. So only work it if the cvar allows.
-		host_client->edict->v->button1 = ((bits >> 2) & 1);
-// DP_INPUTBUTTONS
-	host_client->edict->xv->button3 = ((bits >> 2) & 1);
-	host_client->edict->xv->button4 = ((bits >> 3) & 1);
-	host_client->edict->xv->button5 = ((bits >> 4) & 1);
-	host_client->edict->xv->button6 = ((bits >> 5) & 1);
-	host_client->edict->xv->button7 = ((bits >> 6) & 1);
-	host_client->edict->xv->button8 = ((bits >> 7) & 1);
+	SV_SetEntityButtons(host_client->edict, bits);
 
 	if (host_client->last_sequence && !sv_nqplayerphysics.ival && host_client->state == cs_spawned)
 	{
@@ -8273,6 +8334,7 @@ void SVNQ_ReadClientMove (usercmd_t *move, qboolean forceangle16)
 		SV_RunCmd (move, false);
 		SV_PostRunCmd();
 		move->impulse = 0;
+		host_client->lastruncmd = sv.time*1000;
 	}
 	else
 	{
@@ -8465,6 +8527,9 @@ void SV_UserInit (void)
 	Cvar_Register (&sv_realiphostname_ipv4, cvargroup_servercontrol);
 	Cvar_Register (&sv_realiphostname_ipv6, cvargroup_servercontrol);
 	Cvar_Register (&sv_realip_timeout, cvargroup_servercontrol);
+
+	Cvar_Register (&sv_userinfo_keylimit, cvargroup_servercontrol);
+	Cvar_Register (&sv_userinfo_bytelimit, cvargroup_servercontrol);
 
 	Cvar_Register (&sv_pushplayers, cvargroup_servercontrol);
 	Cvar_Register (&sv_protocol_nq, cvargroup_servercontrol);

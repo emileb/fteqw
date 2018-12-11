@@ -8,14 +8,17 @@
 	#define VK_USE_PLATFORM_ANDROID_KHR
 	#define VKInstXLibFuncs VKFunc(CreateAndroidSurfaceKHR)
 #elif defined(__linux__)
-	#define VK_USE_PLATFORM_XLIB_KHR
-	#define VKInstXLibFuncs VKFunc(CreateXlibSurfaceKHR)
+	#ifndef NO_X11
+		#define VK_USE_PLATFORM_XLIB_KHR
+		#define VKInstXLibFuncs VKFunc(CreateXlibSurfaceKHR)
 
-	#define VK_USE_PLATFORM_XCB_KHR
-	#define VKInstXCBFuncs VKFunc(CreateXcbSurfaceKHR)
-	
-	#define VK_USE_PLATFORM_WAYLAND_KHR
-	#define VKInstWaylandFuncs VKFunc(CreateWaylandSurfaceKHR)
+		#define VK_USE_PLATFORM_XCB_KHR
+		#define VKInstXCBFuncs VKFunc(CreateXcbSurfaceKHR)
+	#endif
+	#ifdef WAYLANDQUAKE
+		#define VK_USE_PLATFORM_WAYLAND_KHR
+		#define VKInstWaylandFuncs VKFunc(CreateWaylandSurfaceKHR)
+	#endif
 #elif defined(__FreeBSD__) || defined(__OpenBSD__)
 	#define VK_USE_PLATFORM_XLIB_KHR
 	#define VKInstXLibFuncs VKFunc(CreateXlibSurfaceKHR)
@@ -25,7 +28,7 @@
 #endif
 
 #define VK_NO_PROTOTYPES
-#include "../vulkan/vulkan.h"
+#include <../vulkan/vulkan.h>
 
 #if defined(_MSC_VER) && !defined(UINT64_MAX)
 #define UINT64_MAX _UI64_MAX
@@ -48,6 +51,12 @@
 #endif
 #define VKInstArchFuncs VKInstWin32Funcs VKInstXLibFuncs VKInstXCBFuncs VKInstWaylandFuncs
 
+#ifdef VK_EXT_debug_utils
+#define VKDebugFuncs	\
+	VKFunc(SetDebugUtilsObjectNameEXT)
+#else
+#define VKDebugFuncs
+#endif
 
 //funcs needed for creating an instance
 #define VKInstFuncs \
@@ -71,6 +80,7 @@
 	VKFunc(DestroySurfaceKHR)						\
 	VKFunc(CreateDevice)							\
 	VKFunc(DestroyInstance)							\
+	VKDebugFuncs									\
 	VKInstArchFuncs
 
 //funcs specific to a device
@@ -126,6 +136,7 @@
 	VKFunc(GetDeviceQueue)				\
 	VKFunc(GetBufferMemoryRequirements)	\
 	VKFunc(GetImageMemoryRequirements)	\
+	VKFunc(GetImageMemoryRequirements2KHR)	\
 	VKFunc(GetImageSubresourceLayout)	\
 	VKFunc(CreateFramebuffer)			\
 	VKFunc(DestroyFramebuffer)			\
@@ -164,7 +175,6 @@
 	VKFunc(CreateImageView)				\
 	VKFunc(DestroyImageView)
 
-
 //all vulkan funcs
 #define VKFuncs \
 	VKInstFuncs		\
@@ -193,10 +203,18 @@
 #define VkWarnAssert(f) f
 #endif
 
+typedef struct
+{
+	struct vk_mempool_s *pool;
+	VkDeviceMemory memory;
+	size_t size;
+	size_t offset;
+} vk_poolmem_t;
+
 typedef struct vk_image_s
 {
 	VkImage image;
-	VkDeviceMemory memory;
+	vk_poolmem_t mem;
 	VkImageView view;
 	VkSampler sampler;
 	VkImageLayout layout;
@@ -256,12 +274,12 @@ extern struct vulkaninfo_s
 	qboolean		vsync;
 	qboolean		allowsubmissionthread;
 
-	qboolean		khr_swapchain;				//aka: not headless. we're actually rendering stuff!
-	qboolean		nv_glsl_shader;				//we can load glsl shaders. probably missing lots of reflection info though, so this is probably too limited.
-	qboolean		nv_dedicated_allocation;	//nvidia-specific extension that provides hints that there's no memory aliasing going on.
-	qboolean		khr_dedicated_allocation;	//standardised version of the above where the driver decides whether a resource is worth a dedicated allocation.
-	qboolean		khr_push_descriptor;		//more efficient descriptor streaming
-	qboolean		amd_rasterization_order;	//allows primitives to draw in any order
+	qboolean		khr_swapchain;					//aka: not headless. we're actually rendering stuff!
+	qboolean		nv_glsl_shader;					//we can load glsl shaders. probably missing lots of reflection info though, so this is probably too limited.
+	qboolean		khr_get_memory_requirements2;	//slightly richer info
+	qboolean		khr_dedicated_allocation;		//standardised version of the above where the driver decides whether a resource is worth a dedicated allocation.
+	qboolean		khr_push_descriptor;			//more efficient descriptor streaming
+	qboolean		amd_rasterization_order;		//allows primitives to draw in any order
 
 	VkInstance instance;
 	VkDevice device;
@@ -276,7 +294,7 @@ extern struct vulkaninfo_s
 	VkCommandPool cmdpool;
 	VkPhysicalDeviceLimits limits;
 
-#define ACQUIRELIMIT 8
+#define ACQUIRELIMIT 8	//don't run more than this many frames behind
 	VkSemaphore acquiresemaphores[ACQUIRELIMIT];
 	VkFence acquirefences[ACQUIRELIMIT];
 	uint32_t acquirebufferidx[ACQUIRELIMIT];
@@ -298,6 +316,19 @@ extern struct vulkaninfo_s
 	int mipcap[2];
 	float max_anistophy;
 	float max_anistophy_limit;
+
+	struct vk_mempool_s
+	{
+		struct vk_mempool_s *next;
+
+		uint32_t memtype;
+		VkDeviceMemory memory;
+
+		//FIXME: replace with an ordered list of free blocks.
+		VkDeviceSize gaps;
+		VkDeviceSize memoryoffset;
+		VkDeviceSize memorysize;
+	} *mempools;
 
 	struct descpool
 	{
@@ -403,7 +434,8 @@ void VK_R_BloomShutdown(void);
 qboolean R_CanBloom(void);
 
 struct programshared_s;
-qboolean VK_LoadGLSL(struct programshared_s *prog, const char *name, unsigned int permu, int ver, const char **precompilerconstants, const char *vert, const char *tcs, const char *tes, const char *geom, const char *frag, qboolean noerrors, vfsfile_t *blobfile);
+struct programpermu_s;
+qboolean VK_LoadGLSL(struct programshared_s *prog, struct programpermu_s *permu, int ver, const char **precompilerconstants, const char *vert, const char *tcs, const char *tes, const char *geom, const char *frag, qboolean noerrors, vfsfile_t *blobfile);
 
 VkCommandBuffer VK_AllocFrameCBuf(void);
 void VK_Submit_Work(VkCommandBuffer cmdbuf, VkSemaphore semwait, VkPipelineStageFlags semwaitstagemask, VkSemaphore semsignal, VkFence fencesignal, struct vkframe *presentframe, struct vk_fencework *fencedwork);
@@ -450,19 +482,23 @@ void VKBE_RT_End(struct vk_rendertarg *targ);
 void VKBE_RT_Destroy(struct vk_rendertarg *targ);
 
 
+qboolean VK_AllocatePoolMemory(uint32_t pooltype, VkDeviceSize memsize, VkDeviceSize poolalignment, vk_poolmem_t *mem);
+void VK_ReleasePoolMemory(vk_poolmem_t *mem);
+qboolean VK_AllocateImageMemory(VkImage image, qboolean dedicated, vk_poolmem_t *mem);	//dedicated should normally be TRUE for render targets
+qboolean VK_AllocateBindImageMemory(vk_image_t *image, qboolean dedicated);	//dedicated should normally be TRUE for render targets
 struct stagingbuf
 {
 	VkBuffer buf;
 	VkBuffer retbuf;
-	VkDeviceMemory memory;
+	vk_poolmem_t mem;
 	size_t size;
 	VkBufferUsageFlags usage;
 };
-vk_image_t VK_CreateTexture2DArray(uint32_t width, uint32_t height, uint32_t layers, uint32_t mips, uploadfmt_t encoding, unsigned int type, qboolean rendertarget);
+vk_image_t VK_CreateTexture2DArray(uint32_t width, uint32_t height, uint32_t layers, uint32_t mips, uploadfmt_t encoding, unsigned int type, qboolean rendertarget, const char *debugname);
 void set_image_layout(VkCommandBuffer cmd, VkImage image, VkImageAspectFlags aspectMask, VkImageLayout old_image_layout, VkAccessFlags srcaccess, VkPipelineStageFlagBits srcstagemask, VkImageLayout new_image_layout, VkAccessFlags dstaccess, VkPipelineStageFlagBits dststagemask);
 void VK_CreateSampler(unsigned int flags, vk_image_t *img);
 void *VKBE_CreateStagingBuffer(struct stagingbuf *n, size_t size, VkBufferUsageFlags usage);
-VkBuffer VKBE_FinishStaging(struct stagingbuf *n, VkDeviceMemory *memptr);
+VkBuffer VKBE_FinishStaging(struct stagingbuf *n, vk_poolmem_t *memptr);
 void *VK_FencedBegin(void (*passed)(void *work), size_t worksize);
 void VK_FencedSubmit(void *work);
 void VK_FencedCheck(void);

@@ -455,6 +455,7 @@ typedef struct {
 		SP_LIGHTCOLOUR,
 		SP_LIGHTCOLOURSCALE,
 		SP_LIGHTPOSITION,
+		SP_LIGHTDIRECTION,
 		SP_LIGHTSCREEN,
 		SP_LIGHTCUBEMATRIX,
 		SP_LIGHTSHADOWMAPPROJ,
@@ -478,61 +479,73 @@ typedef struct {
 	unsigned int handle;
 } shaderprogparm_t;
 
+struct programpermu_s
+{
+#if defined(GLQUAKE) || defined(D3DQUAKE)
+	union programhandle_u
+	{
+	#ifdef GLQUAKE
+		struct
+		{
+			int handle;
+			qboolean usetesselation;
+		} glsl;
+	#endif
+	#ifdef D3DQUAKE
+		struct
+		{
+			void *vert;
+			void *frag;
+			#ifdef D3D9QUAKE
+				void *ctabf;
+				void *ctabv;
+			#endif
+			#ifdef D3D11QUAKE
+				int topology;	//D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST
+				void *hull;
+				void *domain;
+				void *geom;
+				void *layouts[2];
+			#endif
+		} hlsl;
+	#endif
+	} h;
+#endif
+	unsigned int permutation;
+	unsigned int attrmask;
+	unsigned int texmask;	//'standard' textures that are in use
+	unsigned int numparms;
+	shaderprogparm_t *parm;
+};
+
 typedef struct programshared_s
 {
+	char *name;
 	int refs;
-	qboolean nofixedcompat;
-	qboolean tess;
+	unsigned nofixedcompat:1;
+	unsigned tess:2;
+	unsigned geom:1;
+	unsigned warned:1;	//one of the permutations of this shader has already been warned about. don't warn about all of them because that's potentially spammy.
 	unsigned short numsamplers;	//shader system can strip any passes above this
 	unsigned int defaulttextures;	//diffuse etc
 
 	unsigned int supportedpermutations;
-#ifdef VKQUAKE
 	unsigned char *cvardata;
 	unsigned int cvardatasize;
-	VkRetardedShaderModule vert;		//for slightly faster regeneration
-	VkRetardedShaderModule frag;
-	VkRetardedPipelineLayout layout;	//all permutations share the same layout. I'm too lazy not to.
-	VkRetardedDescriptorSetLayout desclayout;
+#ifdef VKQUAKE
+	qVkShaderModule vert;		//for slightly faster regeneration
+	qVkShaderModule frag;
+	qVkPipelineLayout layout;	//all permutations share the same layout. I'm too lazy not to.
+	qVkDescriptorSetLayout desclayout;
 	struct pipeline_s *pipelines;
 #endif
-#if defined(GLQUAKE) || defined(D3DQUAKE)
-	struct programpermu_s
-	{
-		union programhandle_u
-		{
-			qintptr_t loaded;	//generic code must be able to test this to see if its valid. if not 0, then its considered loaded
-		#ifdef GLQUAKE
-			struct
-			{
-				int handle;
-				qboolean usetesselation;
-			} glsl;
-		#endif
-		#ifdef D3DQUAKE
-			struct
-			{
-				void *vert;
-				void *frag;
-				#ifdef D3D9QUAKE
-					void *ctabf;
-					void *ctabv;
-				#endif
-				#ifdef D3D11QUAKE
-					int topology;	//D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST
-					void *hull;
-					void *domain;
-					void *geom;
-					void *layouts[2];
-				#endif
-			} hlsl;
-		#endif
-		} h;
-		unsigned int attrmask;
-		unsigned int texmask;	//'standard' textures that are in use
-		unsigned int numparms;
-		shaderprogparm_t *parm;
-	} permu[PERMUTATIONS];
+#define DELAYEDSHADERCOMPILE
+#ifdef DELAYEDSHADERCOMPILE
+	int shaderver;				//glsl version
+	char *preshade;		//general prefixed #defines
+	char *shadertext;		//the glsl text
+	unsigned char failed[(PERMUTATIONS+7)/8];		//so we don't try recompiling endlessly
+	struct programpermu_s *permu[PERMUTATIONS];	//set once compiled.
 #endif
 } program_t;
 
@@ -592,6 +605,7 @@ struct shader_s
 	byte_vec4_t fog_color;
 	float fog_dist;
 	float portaldist;
+	float portalfboscale;	//if we're using texturemaps for portal recursion, this is the scale of the texture relative to the screen.
 
 	int numdeforms;
 	deformv_t	deforms[SHADER_DEFORM_MAX];
@@ -686,7 +700,7 @@ shader_t *R_RegisterShader_Flare (const char *name);
 shader_t *QDECL R_RegisterSkin  (const char *shadername, const char *modname);
 shader_t *R_RegisterCustom (const char *name, unsigned int usageflags, shader_gen_t *defaultgen, const void *args);
 //once loaded, most shaders should have one of the following two calls used upon it
-void QDECL R_BuildDefaultTexnums(texnums_t *tn, shader_t *shader);
+void QDECL R_BuildDefaultTexnums(texnums_t *tn, shader_t *shader, unsigned int imageflags);
 void QDECL R_BuildLegacyTexnums(shader_t *shader, const char *fallbackname, const char *subpath, unsigned int loadflags, unsigned int imageflags, uploadfmt_t basefmt, size_t width, size_t height, qbyte *mipdata[4], qbyte *palette);
 void R_RemapShader(const char *sourcename, const char *destname, float timeoffset);
 
@@ -714,8 +728,10 @@ void Shader_RemapShader_f(void);
 void Shader_ShowShader_f(void);
 
 program_t *Shader_FindGeneric(char *name, int qrtype);
+struct programpermu_s *Shader_LoadPermutation(program_t *prog, unsigned int p);
 void Shader_ReleaseGeneric(program_t *prog);
 
+image_t *Mod_CubemapForOrigin(model_t *wmodel, vec3_t org);
 mfog_t *Mod_FogForOrigin(model_t *wmodel, vec3_t org);
 
 #define BEF_FORCEDEPTHWRITE		1
@@ -776,10 +792,10 @@ typedef struct
 	qboolean havecubemaps;	//since gl1.3, so pretty much everyone will have this... should probably only be set if we also have seamless or clamp-to-edge.
 
 	void	 (*pDeleteProg)		(program_t *prog);
-	qboolean (*pLoadBlob)		(program_t *prog, const char *name, unsigned int permu, vfsfile_t *blobfile);
-	qboolean (*pCreateProgram)	(program_t *prog, const char *name, unsigned int permu, int ver, const char **precompilerconstants, const char *vert, const char *tcs, const char *tes, const char *geom, const char *frag, qboolean noerrors, vfsfile_t *blobfile);
-	qboolean (*pValidateProgram)(program_t *prog, const char *name, unsigned int permu, qboolean noerrors, vfsfile_t *blobfile);
-	void	 (*pProgAutoFields)	(program_t *prog, const char *name, cvar_t **cvars, char **cvarnames, int *cvartypes);
+	qboolean (*pLoadBlob)		(program_t *prog, unsigned int permu, vfsfile_t *blobfile);
+	qboolean (*pCreateProgram)	(program_t *prog, struct programpermu_s *permu, int ver, const char **precompilerconstants, const char *vert, const char *tcs, const char *tes, const char *geom, const char *frag, qboolean noerrors, vfsfile_t *blobfile);
+	qboolean (*pValidateProgram)(program_t *prog, struct programpermu_s *permu, qboolean noerrors, vfsfile_t *blobfile);
+	void	 (*pProgAutoFields)	(program_t *prog, struct programpermu_s *permu, cvar_t **cvars, char **cvarnames, int *cvartypes);
 } sh_config_t;
 extern sh_config_t sh_config;
 #endif
@@ -838,7 +854,11 @@ qboolean GLBE_BeginShadowMap(int id, int w, int h, int *restorefbo);
 void GLBE_EndShadowMap(int restorefbo);
 void GLBE_SetupForShadowMap(dlight_t *dl, int texwidth, int texheight, float shadowscale);
 
-
+qboolean GLVID_ApplyGammaRamps (unsigned int size, unsigned short *ramps);	//called when gamma ramps need to be reapplied
+qboolean GLVID_Init (rendererstate_t *info, unsigned char *palette);		//the platform-specific function to init gl state
+void GLVID_SwapBuffers(void);
+char *GLVID_GetRGBInfo(int *bytestride, int *truewidth, int *trueheight, enum uploadfmt *fmt);
+void GLVID_SetCaption(const char *caption);
 #endif
 #ifdef D3D8QUAKE
 void D3D8BE_Init(void);
@@ -939,6 +959,9 @@ void BE_GenerateProgram(shader_t *shader);
 
 void Sh_RegisterCvars(void);
 #ifdef RTLIGHTS
+void R_EditLights_DrawLights(void);	//3d light previews
+void R_EditLights_DrawInfo(void);	//2d light info display.
+void R_EditLights_RegisterCommands(void);
 //
 #ifdef BEF_PUSHDEPTH
 void GLBE_PolyOffsetStencilShadow(qboolean foobar);
@@ -974,6 +997,7 @@ extern struct shader_field_names_s shader_unif_names[];
 extern struct shader_field_names_s shader_attr_names[];
 
 
+void CLQ1_AddSpriteQuad(shader_t *shader, vec3_t mid, float radius);
 void CLQ1_DrawLine(shader_t *shader, vec3_t v1, vec3_t v2, float r, float g, float b, float a);
 void CLQ1_AddOrientedCube(shader_t *shader, vec3_t mins, vec3_t maxs, float *matrix, float r, float g, float b, float a);
 void CL_DrawDebugPlane(float *normal, float dist, float r, float g, float b, qboolean enqueue);

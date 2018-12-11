@@ -34,7 +34,7 @@ struct wedict_s
 	int solidsize;
 
 #ifdef USERBE
-	entityode_t ode;
+	entityrbe_t rbe;
 #endif
 	/*the above is shared with ssqc*/
 };
@@ -87,6 +87,21 @@ void PR_Route_Shutdown (world_t *world);
 void PR_Route_Visualise (void);
 void PR_Route_Init (void);
 #endif
+
+//known progs versions...
+enum
+{
+	PROGHEADER_CRC_QW		= 54730,
+	PROGHEADER_CRC_NQ		= 5927,
+	PROGHEADER_CRC_PREREL	= 26940,	//prerelease
+	PROGHEADER_CRC_TENEBRAE	= 32401,	//tenebrae
+	PROGHEADER_CRC_H2		= 38488,	//basic hexen2
+	PROGHEADER_CRC_H2MP		= 26905,	//hexen2 mission pack uses slightly different defs... *sigh*...
+	PROGHEADER_CRC_H2DEMO	= 14046,	//I'm guessing this is from the original release or something
+	PROGHEADER_CRC_CSQC		= 22390,
+	PROGHEADER_CRC_CSQC_DP	= 52195,
+	PROGHEADER_CRC_MENUQC	= 10020
+};
 
 //pr_cmds.c builtins that need to be moved to a common.
 void VARGS PR_BIError(pubprogfuncs_t *progfuncs, char *format, ...) LIKEPRINTF(2);
@@ -285,10 +300,11 @@ void QCBUILTIN PF_setattachment(pubprogfuncs_t *prinst, struct globalvars_s *pr_
 #endif
 
 #if defined(SKELETALOBJECTS) || defined(RAGDOLL)
-	void skel_lookup(world_t *prinst, int skelidx, framestate_t *out);
+	void skel_lookup(world_t *prinst, int skelidx, framestate_t *fte_restrict out);
 	void skel_dodelete(world_t *world);
 	void skel_reset(world_t *world);
 	void skel_reload(void);
+	void skel_updateentbounds(world_t *w, wedict_t *ent);
 #endif
 void QCBUILTIN PF_physics_supported(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 void QCBUILTIN PF_physics_enable(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
@@ -312,6 +328,7 @@ void QCBUILTIN PF_touchtriggers(pubprogfuncs_t *prinst, struct globalvars_s *pr_
 
 //pr_cmds.c builtins that need to be moved to a common.
 void VARGS PR_BIError(pubprogfuncs_t *progfuncs, char *format, ...) LIKEPRINTF(2);
+cvar_t *PF_Cvar_FindOrGet(const char *var_name);
 void QCBUILTIN PF_cvar_string (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 void QCBUILTIN PF_cvars_haveunsaved (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 void QCBUILTIN PF_cvar_set (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
@@ -356,6 +373,7 @@ void QCBUILTIN PF_strpad (pubprogfuncs_t *prinst, struct globalvars_s *pr_global
 void QCBUILTIN PF_strtrim (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 
 void QCBUILTIN PF_digest_hex (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+void QCBUILTIN PF_digest_ptr (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 
 void QCBUILTIN PF_findradius (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 void QCBUILTIN PF_edict_for_num (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
@@ -457,6 +475,7 @@ void QCBUILTIN PF_cl_sprint (pubprogfuncs_t *prinst, struct globalvars_s *pr_glo
 void QCBUILTIN PF_cl_bprint (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 void QCBUILTIN PF_cl_clientcount (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 void QCBUILTIN PF_cl_localsound(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+void QCBUILTIN PF_cl_SendPacket(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 
 void search_close_progs(pubprogfuncs_t *prinst, qboolean complain);
 
@@ -500,13 +519,16 @@ void QCBUILTIN PF_whichpack (pubprogfuncs_t *prinst, struct globalvars_s *pr_glo
 int QDECL QCEditor (pubprogfuncs_t *prinst, const char *filename, int *line, int *statement, char *reason, pbool fatal);
 void PR_Common_Shutdown(pubprogfuncs_t *progs, qboolean errored);
 void PR_Common_SaveGame(vfsfile_t *f, pubprogfuncs_t *prinst, qboolean binary);
+qboolean PR_Common_LoadGame(pubprogfuncs_t *prinst, char *command, const char **file);
+
+uploadfmt_t PR_TranslateTextureFormat(int qcformat);
 
 //FIXME
 pbool PR_RunWarning (pubprogfuncs_t *ppf, char *error, ...);
 
 
 /*these are server ones, provided by pr_cmds.c, as required by pr_q1qvm.c*/
-int PF_ForceInfoKey_Internal(unsigned int entnum, const char *key, const char *value);
+int PF_ForceInfoKey_Internal(unsigned int entnum, const char *key, const char *value, size_t valsize);
 #ifdef VM_Q1
 void PR_SV_FillWorldGlobals(world_t *w);
 model_t *QDECL SVPR_GetCModel(world_t *w, int modelindex);
@@ -753,7 +775,9 @@ enum lightfield_e
 	lfield_rotation=13,
 	lfield_dietime=14,
 	lfield_rgbdecay=15,
-	lfield_radiusdecay=16
+	lfield_radiusdecay=16,
+
+	lfield_stylestring=17
 };
 enum csqc_input_event
 {

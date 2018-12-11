@@ -1,3 +1,6 @@
+#ifndef CL_MASTER_H
+#define CL_MASTER_H
+
 enum masterprotocol_e
 {
 	MP_UNSPECIFIED,
@@ -69,6 +72,7 @@ typedef enum hostcachekey_e
 	SLKEY_NUMSPECTATORS,//spectators
 	SLKEY_NUMHUMANS,	//actual players
 	SLKEY_QCSTATUS,
+	SLKEY_CATEGORY,		//urgh, hideous shite.
 //	SLKEY_PLAYERS,	//eep!
 	SLKEY_ISFAVORITE,//eep!
 	SLKEY_ISLOCAL,
@@ -137,8 +141,10 @@ typedef struct serverinfo_s
 	qbyte numbots;
 	qbyte freeslots;
 
+	int qccategory; //urgh
+
+	char qcstatus[128];
 	char modname[8+1];
-	char qcstatus[8+1];
 
 	char gamedir[8+1];
 	char map[16];
@@ -238,9 +244,13 @@ qboolean Master_GetSortDescending(void);
 int Master_NumSorted(void);
 void Master_ClearMasks(void);
 serverinfo_t *Master_SortedServer(int idx);
-void Master_SetMaskString(qboolean or, hostcachekey_t field, const char *param, slist_test_t testop);
-void Master_SetMaskInteger(qboolean or, hostcachekey_t field, int param, slist_test_t testop);
+void Master_SetMaskString(qboolean or_, hostcachekey_t field, const char *param, slist_test_t testop);
+void Master_SetMaskInteger(qboolean or_, hostcachekey_t field, int param, slist_test_t testop);
 serverinfo_t *Master_FindRoute(netadr_t target);
 #else
 #define MasterInfo_WriteServers()
+#endif
+
+
+
 #endif

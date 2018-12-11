@@ -58,9 +58,10 @@ cvar_t	sv_nopvs					= CVARD("sv_nopvs", "0", "Set to 1 to ignore pvs on the serv
 cvar_t	fraglog_public				= CVARD("fraglog_public", "1", "Enables support for connectionless fraglog requests");
 cvar_t	fraglog_details				= CVARD("fraglog_details", "1", "Bitmask\n1: killer+killee names.\n2: killer+killee teams\n4:timestamp.\n8:killer weapon\n16:killer+killee guid.\nFor compatibility, use 1(vanilla) or 7(mvdsv).");
 
-cvar_t	timeout						= CVAR("timeout","65");		// seconds without any message
-cvar_t	zombietime					= CVAR("zombietime", "2");	// seconds to sink messages
-											// after disconnect
+cvar_t	zombietime					= CVARD("zombietime", "2", "Client slots will not be reused for this number of seconds.");	// seconds to sink messages
+
+cvar_t	sv_crypt_rcon				= CVARFD("sv_crypt_rcon", "", CVAR_ARCHIVE, "Controls whether the rcon password must be hashed or not. Hashed passwords also partially prevent replay attacks, but does NOT prevent malicious actors from reading the commands/results.\n0: completely insecure. ONLY allows plain-text passwords. Do not use.\n1: Mandatory hashing (recommended).\nEmpty: Allow either, whether the password is secure or not is purely the client's responsibility/fault. Only use this for comptibility with old clients.");
+cvar_t	sv_crypt_rcon_clockskew		= CVARFD("sv_timestamplen", "60", CVAR_ARCHIVE, "Limits clock skew to reduce (delayed) replay attacks");
 #ifdef SERVERONLY
 cvar_t	developer					= CVAR("developer","0");		// show extra messages
 
@@ -85,7 +86,7 @@ cvar_t	allow_download_anymap		= CVARD("allow_download_pakmaps", "0", "If 1, perm
 cvar_t	allow_download_pakcontents	= CVARD("allow_download_pakcontents", "1", "controls whether clients connected to this server are allowed to download files from within packages.\nDoes NOT implicitly allow downloading bsps, set allow_download_pakmaps to enable that.\nWhile treating each file contained within packages is often undesirable, this is often needed for compatibility with legacy clients (despite it potentially allowing copyright violations).");
 cvar_t	allow_download_root			= CVARD("allow_download_root", "0", "If set, enables downloading from the root of the gamedir (not the basedir). This setting has a lower priority than extension-based checks.");
 cvar_t	allow_download_textures		= CVARD("allow_download_textures", "1", "0 blocks downloading of any file in the textures/ directory");
-cvar_t	allow_download_packages		= CVARD("allow_download_packages", "1", "if 1, permits downloading files (from root directory or elsewhere) with known package extensions (eg: pak+pk3). Packages with a name starting 'pak' are covered by allow_download_copyrighted as well. This does not prevent ");
+cvar_t	allow_download_packages		= CVARD("allow_download_packages", "1", "if 1, permits downloading files (from root directory or elsewhere) with known package extensions (eg: pak+pk3). Packages with a name starting 'pak' are covered by allow_download_copyrighted as well.");
 cvar_t	allow_download_refpackages	= CVARD("allow_download_refpackages", "1", "If set to 1, packages that contain files needed during spawn functions will be become 'referenced' and automatically downloaded to clients.\nThis cvar should probably not be set if you have large packages that provide replacement pickup models on public servers.\nThe path command will show a '(ref)' tag next to packages which clients will automatically attempt to download.");
 cvar_t	allow_download_wads			= CVARD("allow_download_wads", "1", "0 blocks downloading of any file in the wads/ directory, or is in the root directory with the extension .wad");
 cvar_t	allow_download_configs		= CVARD("allow_download_configs", "0", "1 allows downloading of config files, either with the extension .cfg or in the subdir configs/.\n"CON_ERROR"THIS IS DANGEROUS AS IT CAN ALLOW PEOPLE TO READ YOUR RCON PASSWORD ETC.");
@@ -104,13 +105,14 @@ cvar_t sv_listen_dp			= CVARD("sv_listen_dp", "0", "Allows the server to respond
 #ifdef QWOVERQ3
 cvar_t sv_listen_q3			= CVAR("sv_listen_q3", "0");
 #endif
+cvar_t sv_reconnectlimit	= CVARD("sv_reconnectlimit", "0", "Blocks dupe connection within the specified length of time .");
 extern cvar_t net_enable_dtls;
 cvar_t sv_reportheartbeats	= CVARD("sv_reportheartbeats", "2", "Print a notice each time a heartbeat is sent to a master server. When set to 2, the message will be displayed once.");
 cvar_t sv_highchars			= CVAR("sv_highchars", "1");
-cvar_t sv_maxrate			= CVAR("sv_maxrate", "30000");
-cvar_t sv_maxdrate			= CVARAF("sv_maxdrate", "500000",
-									"sv_maxdownloadrate", 0);
-cvar_t sv_minping			= CVARF("sv_minping", "", CVAR_SERVERINFO);
+cvar_t sv_maxrate			= CVARD("sv_maxrate", "50000", "This controls the maximum number of bytes any indivual player may receive (when not downloading). The individual user's rate will also be controlled by the user's rate cvar.");
+cvar_t sv_maxdrate			= CVARAFD("sv_maxdrate", "500000",
+									"sv_maxdownloadrate", 0, "This cvar controls the maximum number of bytes sent to each player per second while that player is downloading.\nIf this cvar is set to 0, there will be NO CAP for download rates (if the user's drate is empty/0 too, then expect really fast+abusive downloads that could potentially be considered denial of service attacks)");
+cvar_t sv_minping			= CVARFD("sv_minping", "", CVAR_SERVERINFO, "Simulate fake lag for any players with a ping under the value specified here. Value is in milliseconds.");
 
 cvar_t sv_bigcoords			= CVARFD("sv_bigcoords", "1", 0, "Uses floats for coordinates instead of 16bit values.\nAlso boosts angle precision, so can be useful even on small maps.\nAffects clients thusly:\nQW: enforces a mandatory protocol extension\nDP: enables DPP7 protocol support\nNQ: uses RMQ protocol (protocol 999).");
 cvar_t sv_calcphs			= CVARFD("sv_calcphs", "2", CVAR_LATCH, "Enables culling of sound effects. 0=always skip phs. Sounds are globally broadcast. 1=always generate phs. Sounds are always culled. On large maps the phs will be dumped to disk. 2=On large single-player maps, generation of phs is skipped. Otherwise like option 1.");
@@ -188,7 +190,7 @@ void SV_AcceptClient (netadr_t *adr, int userid, char *userinfo);
 void PRH2_SetPlayerClass(client_t *cl, int classnum, qboolean fromqc);
 
 #ifdef SQL
-void PR_SQLCycle();
+void PR_SQLCycle(void);
 #endif
 
 int	nextuserid;
@@ -218,8 +220,10 @@ void SV_Shutdown (void)
 
 	SV_UnspawnServer();
 
+#ifdef MVD_RECORDING
 	if (sv.mvdrecording)
 		SV_MVDStop (MVD_CLOSE_STOPPED, false);
+#endif
 
 	if (svs.entstatebuffer.entities)
 	{
@@ -269,6 +273,10 @@ void SV_Shutdown (void)
 	Cvar_Shutdown();
 	Cmd_Shutdown();
 	PM_Shutdown();
+
+	
+	InfoBuf_Clear(&svs.info, true);
+	InfoBuf_Clear(&svs.localinfo, true);
 
 #ifdef WEBSERVER
 	IWebShutdown();
@@ -642,7 +650,8 @@ void SV_DropClient (client_t *drop)
 #endif
 	drop->namebuf[0] = 0;
 	drop->name = drop->namebuf;
-	memset (drop->userinfo, 0, sizeof(drop->userinfo));
+	InfoBuf_Clear(&drop->userinfo, true);
+	InfoSync_Clear(&drop->infosync);
 
 	while ((lp = drop->laggedpacket))
 	{
@@ -714,7 +723,9 @@ void SV_DropClient (client_t *drop)
 	{
 // send notification to all remaining clients
 		SV_FullClientUpdate (drop, NULL);
+#ifdef MVD_RECORDING
 		SV_MVD_FullClientUpdate(NULL, drop);
+#endif
 	}
 
 	if (drop->controlled)
@@ -942,39 +953,6 @@ int SV_CalcPing (client_t *cl, qboolean forcecalc)
 	return 0;
 }
 
-//generate whatever public userinfo is supported by the client.
-//private keys like _ prefixes and the password key are stripped out here.
-//password needs to be stripped in case the password key doesn't actually relate to this server.
-void SV_GeneratePublicUserInfo(int pext, client_t *cl, char *info, int infolength)
-{
-	char *key, *s;
-	int i;
-	
-	//FIXME: we should probably use some sort of priority system instead if I'm honest about it
-	if (pext & PEXT_BIGUSERINFOS)
-		Q_strncpyz (info, cl->userinfo, infolength);
-	else
-	{
-		if (infolength >= BASIC_INFO_STRING)
-			infolength = BASIC_INFO_STRING;
-		*info = 0;
-		for (i = 0; (key = Info_KeyForNumber(cl->userinfo, i)); i++)
-		{
-			if (!*key)
-				break;
-			if (!SV_UserInfoIsBasic(key))
-				continue;
-
-			s = Info_ValueForKey(cl->userinfo, key);
-			Info_SetValueForStarKey (info, key, s, infolength);
-		}
-	}
-
-	Info_RemovePrefixedKeys (info, '_');	// server passwords, etc
-	Info_RemoveKey(info, "password");
-	Info_RemoveKey(info, "*ip");
-}
-
 /*
 ===================
 SV_FullClientUpdate
@@ -993,8 +971,10 @@ void SV_FullClientUpdate (client_t *client, client_t *to)
 		{
 			SV_FullClientUpdate(client, &svs.clients[i]); 
 		}
+#ifdef MVD_RECORDING
 		if (sv.mvdrecording)
 			SV_FullClientUpdate(client, &demo.recorder);
+#endif
 		return;
 	}
 
@@ -1010,6 +990,7 @@ void SV_FullClientUpdate (client_t *client, client_t *to)
 
 	if (ISQWCLIENT(to))
 	{
+		unsigned int pext = to->fteprotocolextensions;
 		int ping = SV_CalcPing (client, false);
 		if (ping > 0xffff)
 			ping = 0xffff;
@@ -1030,8 +1011,7 @@ void SV_FullClientUpdate (client_t *client, client_t *to)
 		ClientReliableWrite_Byte (to, i);
 		ClientReliableWrite_Float (to, realtime - client->connection_started);
 
-		SV_GeneratePublicUserInfo(to->fteprotocolextensions, client, info, sizeof(info));
-
+		InfoBuf_ToString(&client->userinfo, info, (pext&PEXT_BIGUSERINFOS)?BASIC_INFO_STRING:sizeof(info), basicuserinfos, privateuserinfos, (pext&PEXT_BIGUSERINFOS)?NULL:basicuserinfos, NULL, NULL);
 		ClientReliableWrite_Begin(to, svc_updateuserinfo, 7 + strlen(info));
 		ClientReliableWrite_Byte (to, i);
 		ClientReliableWrite_Long (to, client->userid);
@@ -1040,7 +1020,7 @@ void SV_FullClientUpdate (client_t *client, client_t *to)
 	else if (ISNQCLIENT(to))
 	{
 		int top, bottom, playercolor;
-		char *nam = Info_ValueForKey(client->userinfo, "name");
+		char *nam = InfoBuf_ValueForKey(&client->userinfo, "name");
 
 		ClientReliableWrite_Begin(to, svc_updatefrags, 4);
 		ClientReliableWrite_Byte (to, i);
@@ -1050,8 +1030,8 @@ void SV_FullClientUpdate (client_t *client, client_t *to)
 		ClientReliableWrite_Byte (to, i);
 		ClientReliableWrite_String(to, nam);
 
-		top = atoi(Info_ValueForKey(client->userinfo, "topcolor"));
-		bottom = atoi(Info_ValueForKey(client->userinfo, "bottomcolor"));
+		top = atoi(InfoBuf_ValueForKey(&client->userinfo, "topcolor"));
+		bottom = atoi(InfoBuf_ValueForKey(&client->userinfo, "bottomcolor"));
 		top &= 15;
 		if (top > 13)
 			top = 13;
@@ -1066,8 +1046,9 @@ void SV_FullClientUpdate (client_t *client, client_t *to)
 
 		if (to->fteprotocolextensions2 & PEXT2_PREDINFO)
 		{
-			char quotedval[8192];
-			char *s = va("//fui %i %s\n", i, COM_QuotedString(client->userinfo, quotedval, sizeof(quotedval), false));
+			char *s;
+			InfoBuf_ToString(&client->userinfo, info, sizeof(info), basicuserinfos, privateuserinfos, NULL, NULL, NULL);
+			s = va("//fui %i \"%s\"\n", i, info);
 			ClientReliableWrite_Begin(to, svc_stufftext, 2+strlen(s));
 			ClientReliableWrite_String(to, s);
 		}
@@ -1123,21 +1104,27 @@ static void SVC_Status (void)
 	Cmd_TokenizeString ("status", false, false);
 	SV_BeginRedirect (RD_PACKET, TL_FindLanguage(""));
 	if (displayflags&STATUS_SERVERINFO)
-		Con_Printf ("%s\n", svs.info);
+	{
+		char infostr[1024];	//FIXME: vanilla limit is 512. we should probably have a list of known cvars for lower priority sending.
+		const char *ignorekeys[] = {"mapname", "*z_ext", NULL};	//ignore some pointless stuff
+		const char *prioritykeys[] = {"hostname", "admin", "*gamedir", "*version", "deathmatch", "timelimit", "fraglimit", "maxclients", "maxspectators", "status", NULL}; //make sure we include these before we start overflowing
+		InfoBuf_ToString(&svs.info, infostr, sizeof(infostr), prioritykeys, ignorekeys, NULL, NULL, NULL);
+		Con_Printf ("%s\n", infostr);
+	}
 	for (i=0 ; i<svs.allocated_client_slots ; i++)
 	{
 		cl = &svs.clients[i];
 		if ((cl->state == cs_connected || cl->state == cs_spawned || cl->name[0]) && ((cl->spectator && displayflags&STATUS_SPECTATORS) || (!cl->spectator && displayflags&STATUS_PLAYERS)))
 		{
-			top = atoi(Info_ValueForKey (cl->userinfo, "topcolor"));
-			bottom = atoi(Info_ValueForKey (cl->userinfo, "bottomcolor"));
+			top = atoi(InfoBuf_ValueForKey (&cl->userinfo, "topcolor"));
+			bottom = atoi(InfoBuf_ValueForKey (&cl->userinfo, "bottomcolor"));
 			top = (top < 0) ? 0 : ((top > 13) ? 13 : top);
 			bottom = (bottom < 0) ? 0 : ((bottom > 13) ? 13 : bottom);
 			ping = SV_CalcPing (cl, false);
 			name = cl->name;
 
-			skin = Info_ValueForKey (cl->userinfo, "skin");
-			team = Info_ValueForKey (cl->userinfo, "team");
+			skin = InfoBuf_ValueForKey (&cl->userinfo, "skin");
+			team = InfoBuf_ValueForKey (&cl->userinfo, "team");
 
 			if (!cl->state || cl->protocol == SCP_BAD)	//show bots differently. Just to be courteous.
 				botpre = "BOT:";
@@ -1234,26 +1221,31 @@ static void SVC_GetInfo (char *challenge, int fullstatus)
 	resp += strlen(resp);
 	*resp++ = '\n';
 
-	//first line is the serverinfo
-	Q_strncpyz(resp, svs.info, sizeof(response) - (resp-response));
-	//this is a DP protocol query, so some QW fields are not needed
-	Info_RemoveKey(resp, "maxclients");	//replaced with sv_maxclients
-	Info_RemoveKey(resp, "map");		//replaced with mapname
-	Info_RemoveKey(resp, "*gamedir");	//replaced with modname
-	Info_RemoveKey(resp, "*z_ext");		//uninteresting and spammy.
-	Info_SetValueForKey(resp, "gamename", protocolname, sizeof(response) - (resp-response));
-	Info_SetValueForKey(resp, "modname", FS_GetGamedir(true), sizeof(response) - (resp-response));
-//	Info_SetValueForKey(resp, "gamedir", FS_GetGamedir(true), sizeof(response) - (resp-response));
-	Info_SetValueForKey(resp, "protocol", va("%d", com_protocolversion.ival), sizeof(response) - (resp-response));
-	Info_SetValueForKey(resp, "clients", va("%d", numclients), sizeof(response) - (resp-response));
-	Info_SetValueForKey(resp, "sv_maxclients", maxclients.string, sizeof(response) - (resp-response));
-	Info_SetValueForKey(resp, "mapname", Info_ValueForKey(svs.info, "map"), sizeof(response) - (resp-response));
-	if (*gamestatus)
-		Info_SetValueForKey(resp, "qcstatus", gamestatus, sizeof(response) - (resp-response));
-	Info_SetValueForKey(resp, "challenge", challenge, sizeof(response) - (resp-response));
-	resp += strlen(resp);
+	//first line contains the serverinfo, or some form of it
+	{
+		const char *ignorekeys[] = {
+			"maxclients", "map", "*gamedir", "*z_ext",	//this is a DP protocol query, so some QW fields are not needed
+			"gamename", "modname", "protocol", "clients", "sv_maxclients", "mapname", "qcstatus", "challenge", NULL};	//and we need to add some
+		const char *prioritykeys[] = {"hostname", NULL}; //make sure we include these before we start overflowing
 
-	*resp++ = 0;	//there's already a null, but hey
+		*resp = 0;
+		Info_SetValueForKey(resp, "challenge", challenge, sizeof(response) - (resp-response));	//the challenge can be important for the master protocol to prevent poisoning
+		Info_SetValueForKey(resp, "gamename", protocolname, sizeof(response) - (resp-response));//distinguishes it from other types of games
+		Info_SetValueForKey(resp, "protocol", com_protocolversion.string, sizeof(response) - (resp-response));	//should be an int.
+		Info_SetValueForKey(resp, "modname", FS_GetGamedir(true), sizeof(response) - (resp-response));
+		Info_SetValueForKey(resp, "clients", va("%d", numclients), sizeof(response) - (resp-response));
+		Info_SetValueForKey(resp, "sv_maxclients", maxclients.string, sizeof(response) - (resp-response));
+		Info_SetValueForKey(resp, "mapname", InfoBuf_ValueForKey(&svs.info, "map"), sizeof(response) - (resp-response));
+		resp += strlen(resp);
+		//now include the full/regular serverinfo 
+		resp += InfoBuf_ToString(&svs.info, resp, sizeof(response) - (resp-response), prioritykeys, ignorekeys, NULL, NULL, NULL);
+		*resp = 0;
+		//and any possibly-long qc status string
+		if (*gamestatus)
+			Info_SetValueForKey(resp, "qcstatus", gamestatus, sizeof(response) - (resp-response));
+		resp += strlen(resp);
+	}
+	*resp++ = 0;
 
 	if (fullstatus)
 	{
@@ -2224,21 +2216,18 @@ client_t *SV_AddSplit(client_t *controller, char *info, int id)
 	case GT_QUAKE2:
 		cl->q2edict = Q2EDICT_NUM(i+1);
 
-		if (!ge->ClientConnect(cl->q2edict, cl->userinfo))
+		if (!ge->ClientConnect(cl->q2edict, info))
 		{
-			const char *reject = Info_ValueForKey(cl->userinfo, "rejmsg");
+			const char *reject = Info_ValueForKey(info, "rejmsg");
 			if (*reject)
 				SV_ClientPrintf(controller, PRINT_HIGH, "Splitscreen Refused: %s\n", reject);
 			else
 				SV_ClientPrintf(controller, PRINT_HIGH, "Splitscreen Refused\n");
 			Con_DPrintf ("Game rejected a connection.\n");
-
-			*cl->userinfo = 0;
-			cl->namebuf[0] = 0;
 			return NULL;
 		}
 
-		ge->ClientUserinfoChanged(cl->q2edict, cl->userinfo);
+		ge->ClientUserinfoChanged(cl->q2edict, info);
 		break;
 #endif
 	default:
@@ -2251,13 +2240,11 @@ client_t *SV_AddSplit(client_t *controller, char *info, int id)
 	cl->controller = controller;
 	cl->controlled = NULL;
 
-	Q_strncpyS (cl->userinfo, info, sizeof(cl->userinfo)-1);
-	cl->userinfo[sizeof(cl->userinfo)-1] = '\0';
-
-	Info_RemoveKey (cl->userinfo, "spectator");
+	InfoBuf_FromString(&cl->userinfo, info, false);
+	InfoBuf_RemoveKey (&cl->userinfo, "spectator");
 	//this is a hint rather than a game breaker should it fail.
 	if (cl->spectator)
-		Info_SetValueForStarKey (cl->userinfo, "*spectator", va("%i", cl->spectator), sizeof(cl->userinfo));
+		InfoBuf_SetValueForStarKey (&cl->userinfo, "*spectator", va("%i", cl->spectator));
 	cl->state = controller->state;
 
 //	host_client = NULL;
@@ -2567,7 +2554,7 @@ client_t *SVC_DirectConnect(void)
 		}
 	}
 
-	if (sv.msgfromdemo || net_from.type == NA_LOOPBACK)	//normal rules don't apply
+	if (net_from.type == NA_LOOPBACK)	//normal rules don't apply
 		;
 	else
 	{
@@ -2652,6 +2639,9 @@ client_t *SVC_DirectConnect(void)
 		}
 	}
 	msg_badread=false;
+
+	if (!*guid)
+		NET_GetConnectionCertificate(svs.sockets, &net_from, QCERT_PEERFINGERPRINT, guid, sizeof(guid));
 	
 	/*allow_splitscreen applies only to non-local clients, so that clients have only one enabler*/
 	if (!sv_allow_splitscreen.ival && net_from.type != NA_LOOPBACK)
@@ -2755,23 +2745,6 @@ client_t *SVC_DirectConnect(void)
 	newcl->protocol = protocol;
 	Q_strncpyz(newcl->guid, guid, sizeof(newcl->guid));
 
-	if (sv.msgfromdemo)
-		newcl->wasrecorded = true;
-
-	// works properly
-	if (!sv_highchars.value)
-	{
-		qbyte *p, *q;
-
-		for (p = (qbyte *)newcl->userinfo, q = (qbyte *)userinfo;
-			*q && p < (qbyte *)newcl->userinfo + sizeof(newcl->userinfo)-1; q++)
-			if (*q > 31 && *q <= 127)
-				*p++ = *q;
-	}
-	else
-		Q_strncpyS (newcl->userinfo, userinfo[0], sizeof(newcl->userinfo)-1);
-	newcl->userinfo[sizeof(newcl->userinfo)-1] = '\0';
-
 //	Con_TPrintf("%s:%s:connect\n", sv.name, NET_AdrToString (adrbuf, sizeof(adrbuf), &adr));
 
 	// if there is already a slot for this ip, drop it
@@ -2782,6 +2755,12 @@ client_t *SVC_DirectConnect(void)
 		if (NET_CompareBaseAdr (&adr, &cl->netchan.remote_address)
 			&& ((protocol == SCP_QUAKEWORLD && cl->netchan.qport == qport) || adr.port == cl->netchan.remote_address.port ))
 		{
+			if (realtime - cl->connection_started < sv_reconnectlimit.value)
+			{
+				Con_Printf ("%s:reconnect rejected: too soon\n", NET_AdrToString (adrbuf, sizeof(adrbuf), &adr));
+				return NULL;
+			}
+
 			if (cl->state == cs_connected)
 			{
 				if (cl->protocol != protocol)
@@ -2807,13 +2786,13 @@ client_t *SVC_DirectConnect(void)
 		}
 	}
 
-	name = Info_ValueForKey (temp.userinfo, "name");
+	name = Info_ValueForKey (userinfo[0], "name");
 
-	if (sv.world.worldmodel && protocol == SCP_QUAKEWORLD &&!atoi(Info_ValueForKey (temp.userinfo, "iknow")))
+	if (sv.world.worldmodel && protocol == SCP_QUAKEWORLD &&!atoi(Info_ValueForKey (userinfo[0], "iknow")))
 	{
 		if (sv.world.worldmodel->fromgame == fg_halflife && !(newcl->fteprotocolextensions & PEXT_HLBSP))
 		{
-			if (atof(Info_ValueForKey (temp.userinfo, "*FuhQuake")) < 0.3)
+			if (atof(Info_ValueForKey (userinfo[0], "*FuhQuake")) < 0.3)
 			{
 				SV_RejectMessage (protocol, "The server is using a halflife level and we don't think your client supports this\nuse 'setinfo iknow 1' to ignore this check\nYou can go to "ENGINEWEBSITE" to get a compatible client\n\nYou may need to enable an option\n\n");
 //				Con_Printf("player %s was dropped due to incompatible client\n", name);
@@ -3038,9 +3017,9 @@ client_t *SVC_DirectConnect(void)
 		temp.edict = NULL;
 		temp.q2edict = q2ent;
 
-		if (!ge->ClientConnect(q2ent, temp.userinfo))
+		if (!ge->ClientConnect(q2ent, userinfo[0]))
 		{
-			const char *reject = Info_ValueForKey(temp.userinfo, "rejmsg");
+			const char *reject = Info_ValueForKey(userinfo[0], "rejmsg");
 			if (*reject)
 				SV_RejectMessage(protocol, "%s\nConnection Refused.", reject);
 			else
@@ -3049,7 +3028,7 @@ client_t *SVC_DirectConnect(void)
 			return NULL;
 		}
 
-		ge->ClientUserinfoChanged(q2ent, temp.userinfo);
+		ge->ClientUserinfoChanged(q2ent, userinfo[0]);
 
 
 		break;
@@ -3067,13 +3046,18 @@ client_t *SVC_DirectConnect(void)
 
 	temp.name = newcl->name;
 	temp.team = newcl->team;
+	
+	InfoSync_Clear(&newcl->infosync);
 	*newcl = temp;
+	newcl->userinfo.ChangeCB = svs.info.ChangeCB;
+	newcl->userinfo.ChangeCTX = &svs.clients[i].userinfo;
+	InfoBuf_FromString(&newcl->userinfo, userinfo[0], false);
 
 //	NET_AdrToStringResolve(&adr, SV_UserDNSResolved, NULL, newcl-svs.clients, newcl->userid);
 
 	newcl->challenge = challenge;
-	newcl->zquake_extensions = atoi(Info_ValueForKey(newcl->userinfo, "*z_ext"));
-	if (*Info_ValueForKey(newcl->userinfo, "*fuhquake"))	//fuhquake doesn't claim to support z_ext but does look at our z_ext serverinfo key.
+	newcl->zquake_extensions = atoi(InfoBuf_ValueForKey(&newcl->userinfo, "*z_ext"));
+	if (*InfoBuf_ValueForKey(&newcl->userinfo, "*fuhquake"))	//fuhquake doesn't claim to support z_ext but does look at our z_ext serverinfo key.
 	{														//so switch on the bits that it should be sending.
 		newcl->zquake_extensions |= Z_EXT_PM_TYPE|Z_EXT_PM_TYPE_NEW;
 	}
@@ -3082,7 +3066,7 @@ client_t *SVC_DirectConnect(void)
 	//ezquake's download mechanism is so smegging buggy.
 	//its causing far far far too many connectivity issues. seriously. its beyond a joke. I cannot stress that enough.
 	//as the client needs to listen for the serverinfo to know which extensions will actually be used (yay demos), we can just forget that it supports svc-level extensions, at least for anything that isn't spammed via clc_move etc before the serverinfo.
-	s = Info_ValueForKey(newcl->userinfo, "*client");
+	s = InfoBuf_ValueForKey(&newcl->userinfo, "*client");
 	if (!strncmp(s, "ezQuake", 7) && (newcl->fteprotocolextensions & PEXT_CHUNKEDDOWNLOADS))
 	{
 		if (pext_ezquake_nochunks.ival)
@@ -3148,89 +3132,82 @@ client_t *SVC_DirectConnect(void)
 	newcl->lockedtill = 0;
 
 #ifdef SVRANKING
-	if (svs.demorecording || (svs.demoplayback && newcl->wasrecorded))	//disable rankings. Could cock things up.
-	{
-		SV_GetNewSpawnParms(newcl);
-	}
-	else
-	{
 //rankid is figured out in extract from user info
-		if (!newcl->rankid)	//failed to get a userid
+	if (!newcl->rankid)	//failed to get a userid
+	{
+		if (rank_needlogin.value)
 		{
-			if (rank_needlogin.value)
-			{
-				SV_RejectMessage (protocol, "Bad password/username\nThis server requires logins. Please see the serverinfo for website and info on how to register.\n");
-				newcl->state = cs_free;
-				return NULL;
-			}
+			SV_RejectMessage (protocol, "Bad password/username\nThis server requires logins. Please see the serverinfo for website and info on how to register.\n");
+			newcl->state = cs_free;
+			return NULL;
+		}
 
 //			SV_OutOfBandPrintf (isquake2client, adr, "\nWARNING: You have not got a place on the ranking system, probably because a user with the same name has already connected and your pwds differ.\n\n");
 
-			if (!preserveparms)
-				SV_GetNewSpawnParms(newcl);
-		}
-		else
+		if (!preserveparms)
+			SV_GetNewSpawnParms(newcl);
+	}
+	else
+	{
+		rankstats_t rs;
+		if (!Rank_GetPlayerStats(newcl->rankid, &rs))
 		{
-			rankstats_t rs;
-			if (!Rank_GetPlayerStats(newcl->rankid, &rs))
-			{
-				SV_RejectMessage (protocol, "Rankings/Account system failed\n");
-				Con_TPrintf("banned player %s is trying to connect\n", newcl->name);
-				newcl->name[0] = 0;
-				memset (newcl->userinfo, 0, sizeof(newcl->userinfo));
-				newcl->state = cs_free;
-				return NULL;
-			}
+			SV_RejectMessage (protocol, "Rankings/Account system failed\n");
+			Con_TPrintf("banned player %s is trying to connect\n", newcl->name);
+			newcl->name[0] = 0;
+			InfoBuf_Clear(&newcl->userinfo, true);
+			newcl->state = cs_free;
+			return NULL;
+		}
 
-			if (rs.flags1 & RANK_MUTED)
-			{
-				SV_BroadcastTPrintf(PRINT_MEDIUM, "%s is muted (still)\n", newcl->name);
-			}
-			if (rs.flags1 & RANK_CUFFED)
-			{
-				SV_BroadcastTPrintf(PRINT_LOW, "%s is now cuffed permanently\n", newcl->name);
-			}
-			if (rs.flags1 & RANK_CRIPPLED)
-			{
-				SV_BroadcastTPrintf(PRINT_HIGH, "%s is still crippled\n", newcl->name);
-			}
+		if (rs.flags1 & RANK_MUTED)
+		{
+			SV_BroadcastTPrintf(PRINT_MEDIUM, "%s is muted (still)\n", newcl->name);
+		}
+		if (rs.flags1 & RANK_CUFFED)
+		{
+			SV_BroadcastTPrintf(PRINT_LOW, "%s is now cuffed permanently\n", newcl->name);
+		}
+		if (rs.flags1 & RANK_CRIPPLED)
+		{
+			SV_BroadcastTPrintf(PRINT_HIGH, "%s is still crippled\n", newcl->name);
+		}
 
-			if (rs.timeonserver)
-			{
-				if (preserveparms)
-				{	//do nothing.
-				}
-				else if (sv_resetparms.value)
-				{
-					SV_GetNewSpawnParms(newcl);
-				}
-				else
-				{
-					extern cvar_t rank_parms_first, rank_parms_last;
-					for (i=0 ; i<NUM_SPAWN_PARMS ; i++)
-					{
-						if (i < NUM_RANK_SPAWN_PARMS && i >= rank_parms_first.ival && i <= rank_parms_last.ival)
-							newcl->spawn_parms[i] = rs.parm[i];
-						else
-							newcl->spawn_parms[i] = 0;
-					}
-				}
-
-				if (rs.timeonserver > 3*60)	//woo. Ages.
-					s = va(langtext("Welcome back %s. You have previously spent %i:%i hours connected\n", newcl->language), newcl->name, (int)(rs.timeonserver/(60*60)), (int)((int)(rs.timeonserver/60)%(60)));
-				else	//measure this guy in minuites.
-					s = va(langtext("Welcome back %s. You have previously spent %i mins connected\n", newcl->language), newcl->name, (int)(rs.timeonserver/60));
-
-				SV_OutOfBandPrintf (protocol == SCP_QUAKE2, &adr, s);
+		if (rs.timeonserver)
+		{
+			if (preserveparms)
+			{	//do nothing.
 			}
-			else if (!preserveparms)
+			else if (sv_resetparms.value)
 			{
 				SV_GetNewSpawnParms(newcl);
-
-				SV_OutOfBandTPrintf (protocol == SCP_QUAKE2, &adr, newcl->language, "Welcome %s. Your time on this server is being logged and ranked\n", newcl->name, (int)rs.timeonserver);
 			}
-			//else loaded players already have their initial parms set
+			else
+			{
+				extern cvar_t rank_parms_first, rank_parms_last;
+				for (i=0 ; i<NUM_SPAWN_PARMS ; i++)
+				{
+					if (i < NUM_RANK_SPAWN_PARMS && i >= rank_parms_first.ival && i <= rank_parms_last.ival)
+						newcl->spawn_parms[i] = rs.parm[i];
+					else
+						newcl->spawn_parms[i] = 0;
+				}
+			}
+
+			if (rs.timeonserver > 3*60)	//woo. Ages.
+				s = va(langtext("Welcome back %s. You have previously spent %i:%i hours connected\n", newcl->language), newcl->name, (int)(rs.timeonserver/(60*60)), (int)((int)(rs.timeonserver/60)%(60)));
+			else	//measure this guy in minuites.
+				s = va(langtext("Welcome back %s. You have previously spent %i mins connected\n", newcl->language), newcl->name, (int)(rs.timeonserver/60));
+
+			SV_OutOfBandPrintf (protocol == SCP_QUAKE2, &adr, s);
 		}
+		else if (!preserveparms)
+		{
+			SV_GetNewSpawnParms(newcl);
+
+			SV_OutOfBandTPrintf (protocol == SCP_QUAKE2, &adr, newcl->language, "Welcome %s. Your time on this server is being logged and ranked\n", newcl->name, (int)rs.timeonserver);
+		}
+		//else loaded players already have their initial parms set
 	}
 #else
 	// call the progs to get default spawn parms for the new client
@@ -3241,44 +3218,28 @@ client_t *SVC_DirectConnect(void)
 #endif
 
 
-	if (!newcl->wasrecorded)
-	{
-		SV_AcceptMessage (newcl);
+	SV_AcceptMessage (newcl);
 
-		newcl->state = cs_free;
-		if (ISNQCLIENT(newcl))
-		{
-			//FIXME: we should delay this until we actually have a name, because right now they'll be called unnamed or unconnected or something
-			SV_BroadcastPrintf(PRINT_LOW, "New client connected\n");
-		}
-		else if (redirect)
-		{
-		}
-		else if (newcl->spectator)
-		{
-			SV_BroadcastTPrintf(PRINT_LOW, "spectator %s connected\n", newcl->name);
+	newcl->state = cs_free;
+	if (ISNQCLIENT(newcl))
+	{
+		//FIXME: we should delay this until we actually have a name, because right now they'll be called unnamed or unconnected or something
+		SV_BroadcastPrintf(PRINT_LOW, "New client connected\n");
+	}
+	else if (redirect)
+	{
+	}
+	else if (newcl->spectator)
+	{
+		SV_BroadcastTPrintf(PRINT_LOW, "spectator %s connected\n", newcl->name);
 //			Con_Printf ("Spectator %s connected\n", newcl->name);
-		}
-		else
-		{
-			SV_BroadcastTPrintf(PRINT_LOW, "client %s connected\n", newcl->name);
-//			Con_DPrintf ("Client %s connected\n", newcl->name);
-		}
-		newcl->state = cs_connected;
 	}
 	else
 	{
-		if (newcl->spectator)
-		{
-			SV_BroadcastTPrintf(PRINT_LOW, "recorded spectator %s connected\n", newcl->name);
-//			Con_Printf ("Recorded spectator %s connected\n", newcl->name);
-		}
-		else
-		{
-			SV_BroadcastTPrintf(PRINT_LOW, "recorded client %s connected\n", newcl->name);
-//			Con_DPrintf ("Recorded client %s connected\n", newcl->name);
-		}
+		SV_BroadcastTPrintf(PRINT_LOW, "client %s connected\n", newcl->name);
+//			Con_DPrintf ("Client %s connected\n", newcl->name);
 	}
+	newcl->state = cs_connected;
 	newcl->sendinfo = true;
 
 	if (redirect)
@@ -3305,7 +3266,7 @@ client_t *SVC_DirectConnect(void)
 		if (spectators >= maxspectators.ival)
 			newcl->drop = true;	//oops.
 		newcl->spectator = spectator = true;
-		Info_SetValueForStarKey (cl->userinfo, "*spectator", "1", sizeof(cl->userinfo));
+		InfoBuf_SetValueForStarKey (&cl->userinfo, "*spectator", "1");
 	}
 
 	//only advertise PEXT_SPLITSCREEN when splitscreen is allowed, to avoid spam. this might mean people need to reconnect after its enabled. oh well.
@@ -3345,22 +3306,91 @@ client_t *SVC_DirectConnect(void)
 	SSV_SavePlayerStats(newcl, 0);
 #endif
 
+#ifdef IPLOG
 	if (Q_strncasecmp(newcl->name, "unconnected", 11) && Q_strncasecmp(newcl->name, "connecting", 10))
 		IPLog_Add(NET_AdrToString(adrbuf,sizeof(adrbuf), &newcl->netchan.remote_address), newcl->name);
+#endif
 
 	return newcl;
 }
 
-
-int Rcon_Validate (void)
+static int dehex(int i)
 {
-	if (!strlen (rcon_password.string))
-		return 0;
+	if      (i >= '0' && i <= '9')
+		return (i-'0');
+	else if (i >= 'A' && i <= 'F')
+		return (i-'A'+10);
+	else
+		return (i-'a'+10);
+}
+static qboolean Rcon_Validate (void)
+{
+	const char *realpass = rcon_password.string;
+	const char *pass = Cmd_Argv(1);
+	if (!strlen (realpass))
+		return false;
 
-	if (strcmp (Cmd_Argv(1), rcon_password.string) )
-		return 0;
+	if (!sv_crypt_rcon.ival || !*sv_crypt_rcon.string)
+	{	//vanilla-compatible
+		if (!strcmp (pass, realpass) )
+			return true;
+	}
+	if (sv_crypt_rcon.ival || !*sv_crypt_rcon.string)
+	{	//ezquake-compatible
+		//the password arg is "[SHA1Digest][unixtime-in-hex]" where the digest is "[arg0] password[unixtime] arg0 arg1 argn "
+		time_t clienttime = 0;
+		time_t servertime = 0;
+		intptr_t timediff;
+		qbyte b;
 
-	return 1;
+		const size_t digestsize = 20;
+		size_t i, k;
+		unsigned char digest[512];
+		const unsigned char **tokens = alloca(sizeof(*tokens)*(Cmd_Argc()*2+5));	//overallocation in case argc is 0.
+		size_t *toksizes = alloca(sizeof(*toksizes)*(Cmd_Argc()*2+5));	//overallocation in case argc is 0.
+		if (strlen(pass) > digestsize*2)
+		{
+			for (i = 0; pass[digestsize*2+i] && i < sizeof(time_t)*2; i++)
+			{	//mixed endian for compat with ezquake
+				if (!(i & 1))
+					clienttime |= dehex(pass[digestsize*2+i]) << (((i/2)*8)+4);
+				else
+					clienttime |= dehex(pass[digestsize*2+i]) << (((i/2)*8)+0);
+			}
+			time(&servertime);
+			timediff = servertime-clienttime;
+			//make sure the client's time is within our allowed bounds, to prevent (extreme) replay attacks.
+			if (!sv_crypt_rcon_clockskew.value || (timediff >= -sv_crypt_rcon_clockskew.ival && timediff <= sv_crypt_rcon_clockskew.ival))
+			{
+				tokens[0] = Cmd_Argv(0);
+				tokens[1] = " ";
+				tokens[2] = realpass;
+				tokens[3] = pass+digestsize*2;
+				tokens[4] = " ";
+				for (i = 0; i < Cmd_Argc()-2; i++)
+				{
+					tokens[5+i*2+0] = Cmd_Argv(i+2);
+					tokens[5+i*2+1] = " ";	//a trailing space is required.
+				}
+				for (k = 0; k < 5+i*2; k++)
+					toksizes[k] = strlen(tokens[k]);
+				if (digestsize > 0 && digestsize == SHA1_m(digest, sizeof(digest), k, tokens, toksizes))
+				{
+					for (i = 0;;i++)
+					{
+						if (i == digestsize)
+							return true;
+						if (!pass[i*2+0] || !pass[i*2+1])
+							break;	//premature termination
+						b = dehex(pass[i*2+0])*16+dehex(pass[i*2+1]);
+						if (b != digest[i])
+							break;
+					}
+				}
+			}
+		}
+	}
+	return false;
 }
 
 /*
@@ -4069,18 +4099,18 @@ qboolean SVNQ_ConnectionlessPacket(void)
 		SZ_Clear (&sb);
 		MSG_WriteLong (&sb, 0);
 		{
-			char *rname, *rval, *kname;
+			const char *rname, *rval, *kname;
 			rname = MSG_ReadString();
 
 			if (!*rname)
-				rname = Info_KeyForNumber(svs.info, 0);
+				rname = InfoBuf_KeyForNumber(&svs.info, 0);
 			else
 			{
 				int i = 0;
 				for(;;)
 				{
-					kname = Info_KeyForNumber(svs.info, i);
-					if (!*kname)
+					kname = InfoBuf_KeyForNumber(&svs.info, i);
+					if (!kname)
 					{
 						rname = NULL;
 						break;
@@ -4088,12 +4118,15 @@ qboolean SVNQ_ConnectionlessPacket(void)
 					i++;
 					if (!strcmp(kname, rname))
 					{
-						rname = Info_KeyForNumber(svs.info, i);
+						rname = InfoBuf_KeyForNumber(&svs.info, i);
 						break;
 					}
 				}
 			}
-			rval = Info_ValueForKey(svs.info, rname);
+			if (rname)
+				rval = InfoBuf_ValueForKey(&svs.info, rname);
+			else
+				rval = rname = "";
 			MSG_WriteByte (&sb, CCREP_RULE_INFO);
 			MSG_WriteString (&sb, rname);
 			MSG_WriteString (&sb, rval);
@@ -4620,9 +4653,9 @@ void SV_CheckVars (void)
 
 	Con_DPrintf ("Updated needpass.\n");
 	if (!v)
-		Info_SetValueForKey (svs.info, "needpass", "", MAX_SERVERINFO_STRING);
+		InfoBuf_SetValueForKey (&svs.info, "needpass", "");
 	else
-		Info_SetValueForKey (svs.info, "needpass", va("%i",v), MAX_SERVERINFO_STRING);
+		InfoBuf_SetValueForKey (&svs.info, "needpass", va("%i",v));
 }
 
 #ifdef Q2SERVER
@@ -4729,11 +4762,13 @@ static void SV_PauseChanged(void)
 			ClientReliableWrite_Byte (cl, sv.paused!=0);
 		}
 	}
+#ifdef MVD_RECORDING
 	if (sv.mvdrecording)
 	{
 		ClientReliableWrite_Begin (&demo.recorder, svc_setpause, 2);
 		ClientReliableWrite_Byte (&demo.recorder, sv.paused!=0);
 	}
+#endif
 }
 
 /*
@@ -4749,7 +4784,6 @@ float SV_Frame (void)
 	static int oldpackets;
 	float oldtime;
 	qboolean isidle;
-	static int oldpaused;
 	float timedelta;
 	float delay;
 
@@ -4789,10 +4823,10 @@ float SV_Frame (void)
 		sv.paused ^= PAUSE_AUTO;
 #endif
 
-	if (oldpaused != sv.paused)
+	if (sv.oldpaused != sv.paused)
 	{
+		sv.oldpaused = sv.paused;
 		SV_PauseChanged();
-		oldpaused = sv.paused;
 	}
 
 
@@ -4808,8 +4842,7 @@ float SV_Frame (void)
 			newspeed = "";
 		else
 			newspeed = va("%g", sv.gamespeed*100);
-		Info_SetValueForStarKey(svs.info, "*gamespeed", newspeed, MAX_SERVERINFO_STRING);
-		SV_SendServerInfoChange("*gamespeed", newspeed);
+		InfoBuf_SetValueForStarKey(&svs.info, "*gamespeed", newspeed);
 
 		//correct sv.starttime
 		sv.starttime = Sys_DoubleTime() - (sv.time/sv.gamespeed);
@@ -4920,8 +4953,10 @@ float SV_Frame (void)
 		{
 			isidle = false;
 
+#ifdef SAVEDGAMES
 			if (sv.time > sv.autosave_time)
 				SV_AutoSave();
+#endif
 		}
 	}
 	else
@@ -4996,10 +5031,9 @@ float SV_Frame (void)
 // send messages back to the clients that had packets read this frame
 		SV_SendClientMessages ();
 
-//	demo_start = Sys_DoubleTime ();
+#ifdef MVD_RECORDING
 		SV_SendMVDMessage();
-//	demo_end = Sys_DoubleTime ();
-//	svs.stats.demo += demo_end - demo_start;
+#endif
 
 // send a heartbeat to the master if needed
 		SV_Master_Heartbeat ();
@@ -5041,6 +5075,25 @@ float SV_Frame (void)
 	return delay;
 }
 
+static void SV_InfoChanged(void *context, const char *key)
+{
+	size_t i;
+	if (context != &svs.info && *key == '_')
+		return;	//these keys are considered private to originating client/server, and are not broadcast to anyone else
+
+#ifdef MVD_RECORDING
+	if (sv.mvdrecording)
+		InfoSync_Add(&demo.recorder.infosync, context, key);	//make sure it gets written into mvds too.
+#endif
+	for (i = 0; i < svs.allocated_client_slots; i++)
+	{
+		if (svs.clients[i].state >= cs_connected && !svs.clients[i].controller)
+		{
+			InfoSync_Add(&svs.clients[i].infosync, context, key);
+		}
+	}
+}
+
 /*
 ===============
 SV_InitLocal
@@ -5079,6 +5132,7 @@ void SV_InitLocal (void)
 		Log_Init();
 	}
 	rcon_password.restriction = RESTRICT_MAX;	//no cheatie rconers changing rcon passwords...
+	Cvar_Register (&sv_crypt_rcon,	cvargroup_servercontrol);
 	Cvar_Register (&spectator_password,	cvargroup_servercontrol);
 
 	Cvar_Register (&sv_mintic,	cvargroup_servercontrol);
@@ -5104,7 +5158,6 @@ void SV_InitLocal (void)
 	Cvar_Register (&sv_allow_splitscreen,	cvargroup_serverinfo);
 	Cvar_Register (&fbskins,	cvargroup_serverinfo);
 
-	Cvar_Register (&timeout,	cvargroup_servercontrol);
 	Cvar_Register (&zombietime,	cvargroup_servercontrol);
 
 	Cvar_Register (&sv_pupglow,	cvargroup_serverinfo);
@@ -5131,6 +5184,9 @@ void SV_InitLocal (void)
 
 	Cvar_Register (&sv_resetparms,	cvargroup_servercontrol);
 
+	if (isDedicated)
+		sv_public.string = "1";
+
 	Cvar_Register (&sv_guidhash,	cvargroup_servercontrol);
 	Cvar_Register (&sv_serverip,	cvargroup_servercontrol);
 	Cvar_Register (&sv_public,	cvargroup_servercontrol);
@@ -5141,16 +5197,12 @@ void SV_InitLocal (void)
 	Cvar_Register (&sv_listen_q3,	cvargroup_servercontrol);
 #endif
 	sv_listen_qw.restriction = RESTRICT_MAX;	//no disabling this over rcon.
+	Cvar_Register (&sv_reconnectlimit,	cvargroup_servercontrol);
 	Cvar_Register (&fraglog_public,	cvargroup_servercontrol);
 
 	SVNET_RegisterCvars();
 
 	Cvar_Register (&sv_reportheartbeats, cvargroup_servercontrol);
-
-#ifndef SERVERONLY
-	if (isDedicated)
-#endif
-		Cvar_Set(&sv_public, "1");
 
 	Cvar_Register (&sv_showconnectionlessmessages, cvargroup_servercontrol);
 	Cvar_Register (&sv_banproxies, cvargroup_serverpermissions);
@@ -5208,10 +5260,9 @@ void SV_InitLocal (void)
 
 	Cmd_AddCommand ("openroute", SV_OpenRoute_f);
 
-#ifndef NOBUILTINMENUS
-#ifndef SERVERONLY
+#ifdef SAVEDGAMES
+#if !defined(NOBUILTINMENUS) && !defined(SERVERONLY)
 	Cvar_Register(&sv_autosave, cvargroup_servercontrol);
-#endif
 #endif
 	Cvar_Register(&sv_savefmt, cvargroup_servercontrol);
 #ifndef QUAKETC
@@ -5221,12 +5272,16 @@ void SV_InitLocal (void)
 	Cmd_AddCommandAD ("loadgame", SV_Loadgame_f, SV_Savegame_c, "Loads an existing saved game.");
 	Cmd_AddCommandAD ("save", SV_Savegame_f, SV_Savegame_c, "Saves the game to the named location.");
 	Cmd_AddCommandAD ("load", SV_Loadgame_f, SV_Savegame_c, "Loads an existing saved game.");
+#endif
 
+#ifdef MVD_RECORDING
 	SV_MVDInit();
+#endif
 
-	Info_SetValueForStarKey (svs.info, "*version", version_string(), MAX_SERVERINFO_STRING);
-
-	Info_SetValueForStarKey (svs.info, "*z_ext", va("%i", SUPPORTED_Z_EXTENSIONS), MAX_SERVERINFO_STRING);
+	svs.info.ChangeCB = SV_InfoChanged;
+	svs.info.ChangeCTX = &svs.info;
+	InfoBuf_SetValueForStarKey (&svs.info, "*version", version_string());
+	InfoBuf_SetValueForStarKey (&svs.info, "*z_ext", va("%i", SUPPORTED_Z_EXTENSIONS));
 
 	// init fraglog stuff
 	svs.logsequence = 1;
@@ -5243,17 +5298,18 @@ void SV_InitLocal (void)
 }
 
 #define iswhite(c) ((c) == ' ' || (unsigned char)(c) == (unsigned char)INVIS_CHAR1 || (unsigned char)(c) == (unsigned char)INVIS_CHAR2 || (unsigned char)(c) == (unsigned char)INVIS_CHAR3)
-#define isinvalid(c) ((c) == ':' || (c) == '\r' || (c) == '\n' || (unsigned char)(c) == (unsigned char)0xff || (c) == '\"')
+#define isinvalid(c) ((c) == ':' || (c) == '\\' || (c) == '\r' || (c) == '\n' || (unsigned char)(c) == (unsigned char)0xff || (c) == '\"')
 //colon is so clients can't get confused while parsing chats
 //255 is so fuhquake/ezquake don't end up with nameless players
 //" is so mods that use player names in tokenizing/frik_files don't mess up. mods are still expected to be able to cope with space.
+//\ is blocked because it messes up our ^[NAME\player\NUM^] links, and because vanilla would hate it.
 
 //is allowed to shorten, out must be as long as in and min of "unnamed"+1
 void SV_FixupName(const char *in, char *out, unsigned int outlen)
 {
 	char *s, *p;
-	unsigned int len;
-	conchar_t testbuf[1024], *t, *e;
+	unsigned int len, codepoint, codeflags;
+	conchar_t testbuf[1024], *t, *n, *e;
 
 	if (outlen == 0)
 		return;
@@ -5266,7 +5322,7 @@ void SV_FixupName(const char *in, char *out, unsigned int outlen)
 	while(*in && len > 1)
 	{
 		if (isinvalid(*in))
-		{
+		{	//chars that cause a problem.
 			in++;
 			continue;
 		}
@@ -5277,16 +5333,21 @@ void SV_FixupName(const char *in, char *out, unsigned int outlen)
 
 	/*note: clients are not guarenteed to parse things the same as the server. utf-8 surrogates may be awkward here*/
 	e = COM_ParseFunString(CON_WHITEMASK, out, testbuf, sizeof(testbuf), false);
-	for (t = testbuf; t < e; t++)
+	for (t = testbuf; t < e; t = n)
 	{
+		n = Font_Decode(t, &codeflags, &codepoint);
 		/*reject anything hidden in names*/
-		if (*t & CON_HIDDEN)
+		if ((codeflags & CON_HIDDEN) || (codeflags&(CON_LINKSPECIAL|CON_RICHFORECOLOUR))==CON_LINKSPECIAL)
 			break;
 		/*reject pictograms*/
-		if ((*t & CON_CHARMASK) >= 0xe100 && (*t & CON_CHARMASK) < 0xe200)
+		if (codepoint >= 0xe100 && codepoint < 0xe200)
+			break;
+		if (!sv_highchars.ival && (codeflags & CON_2NDCHARSETTEXT))
 			break;
 		/*FIXME: should we try to ensure that the chars are in most fonts? that might annoy speakers of more exotic languages I suppose. cvar it?*/
 	}
+	//and spit it out again, which makes sure there's no weird markup that might screw up other strings.
+	COM_DeFunString(testbuf, t, out, outlen, false, false);
 
 	if (!*out || (t < e) || e == testbuf)
 	{	//reached end and it was all whitespace
@@ -5308,9 +5369,9 @@ qboolean ReloadRanking(client_t *cl, const char *newname)
 	int newid;
 	int j;
 	rankstats_t rs;
-	newid = Rank_GetPlayerID(cl->guid, newname, atoi(Info_ValueForKey (cl->userinfo, "_pwd")), true, false);	//'_' keys are always stripped. On any server. So try and use that so persistant data won't give out the password when connecting to a different server
+	newid = Rank_GetPlayerID(cl->guid, newname, atoi(InfoBuf_ValueForKey (&cl->userinfo, "_pwd")), true, false);	//'_' keys are always stripped. On any server. So try and use that so persistant data won't give out the password when connecting to a different server
 	if (!newid)
-		newid = Rank_GetPlayerID(cl->guid, newname, atoi(Info_ValueForKey (cl->userinfo, "password")), true, false);
+		newid = Rank_GetPlayerID(cl->guid, newname, atoi(InfoBuf_ValueForKey (&cl->userinfo, "password")), true, false);
 	if (newid)
 	{
 		if (cl->rankid && cl->state >= cs_spawned)//apply current stats
@@ -5375,23 +5436,23 @@ void SV_ExtractFromUserinfo (client_t *cl, qboolean verbose)
 	extern cvar_t rank_filename;
 #endif
 
-	int bottom = atoi(Info_ValueForKey(cl->userinfo, "bottomcolor"));
+	int bottom = atoi(InfoBuf_ValueForKey(&cl->userinfo, "bottomcolor"));
 
 	if (progstype == PROG_NQ)
 		p = va("t%u", bottom);
 	else
-		p = Info_ValueForKey(localinfo, va("team%u", bottom));
-	val = Info_ValueForKey (cl->userinfo, "team");
+		p = InfoBuf_ValueForKey(&svs.localinfo, va("team%u", bottom));
+	val = InfoBuf_ValueForKey (&cl->userinfo, "team");
 	if (*p && strcmp(p, val))
 	{
-		Info_SetValueForKey(cl->userinfo, "team", p, sizeof(cl->userinfo));
+		InfoBuf_SetValueForKey(&cl->userinfo, "team", p);
 		if (verbose)
 			SV_BroadcastUserinfoChange(cl, true, "team", p);
 	}
 	Q_strncpyz (cl->team, val, sizeof(cl->teambuf));
 
 	// name for C code
-	val = Info_ValueForKey (cl->userinfo, "name");
+	val = InfoBuf_ValueForKey (&cl->userinfo, "name");
 
 	if (cl->protocol != SCP_BAD || *val)
 	{
@@ -5465,18 +5526,6 @@ void SV_ExtractFromUserinfo (client_t *cl, qboolean verbose)
 			}
 		}
 
-		//try and actually set that new name, if it differs from what they asked for.
-		if (strcmp(val, newname))
-		{
-			Info_SetValueForKey (cl->userinfo, "name", newname, sizeof(cl->userinfo));
-			val = Info_ValueForKey (cl->userinfo, "name");
-			if (!*val)
-			{
-				SV_BroadcastTPrintf (PRINT_HIGH, "corrupt userinfo for player %s\n", cl->name);
-				cl->drop = true;
-			}
-		}
-
 		if (!cl->drop && strncmp(val, cl->name, sizeof(cl->namebuf)-1) && cl->state > cs_zombie)
 		{
 			if (*cl->name && cl->state >= cs_spawned && !cl->spectator && verbose)
@@ -5498,30 +5547,43 @@ void SV_ExtractFromUserinfo (client_t *cl, qboolean verbose)
 		}
 	}
 
-	val = Info_ValueForKey (cl->userinfo, "lang");
+	//make CERTAIN that the name we think they're using is actually the name everyone else sees too.
+	//bots are allowed empty names. this gives the gamecode a chance to actually assign one.
+	if (cl->protocol != SCP_BAD)
+	{
+		InfoBuf_SetValueForKey (&cl->userinfo, "name", newname);
+		val = InfoBuf_ValueForKey (&cl->userinfo, "name");
+		if (!*val)
+		{
+			SV_BroadcastTPrintf (PRINT_HIGH, "corrupt userinfo for player %s\n", cl->name);
+			cl->drop = true;
+		}
+	}
+
+	val = InfoBuf_ValueForKey (&cl->userinfo, "lang");
 	cl->language = *val?TL_FindLanguage(val):svs.language;
 
-	val = Info_ValueForKey (cl->userinfo, "nogib");
+	val = InfoBuf_ValueForKey (&cl->userinfo, "nogib");
 	cl->gibfilter = !!atoi(val);
 
 	// rate command
-	val = Info_ValueForKey (cl->userinfo, "rate");
+	val = InfoBuf_ValueForKey (&cl->userinfo, "rate");
 	if (strlen(val))
 		cl->rate = atoi(val);
 	else
 		cl->rate = 0;//0 means no specific limit, limited only by sv_maxrate.
 
-	val = Info_ValueForKey (cl->userinfo, "dupe");
+	val = InfoBuf_ValueForKey (&cl->userinfo, "dupe");
 	cl->netchan.dupe = bound(0, atoi(val), 5);
 
-	val = Info_ValueForKey (cl->userinfo, "drate");
+	val = InfoBuf_ValueForKey (&cl->userinfo, "drate");
 	if (strlen(val))
 		cl->drate = atoi(val);
 	else
 		cl->drate = 0;	//0 disables rate limiting while downloading
 
 #ifdef HEXEN2
-	val = Info_ValueForKey (cl->userinfo, "cl_playerclass");
+	val = InfoBuf_ValueForKey (&cl->userinfo, "cl_playerclass");
 	if (val)
 	{
 		PRH2_SetPlayerClass(cl, atoi(val), false);
@@ -5529,13 +5591,13 @@ void SV_ExtractFromUserinfo (client_t *cl, qboolean verbose)
 #endif
 
 	// msg command
-	val = Info_ValueForKey (cl->userinfo, "msg");
+	val = InfoBuf_ValueForKey (&cl->userinfo, "msg");
 	if (strlen(val))
 	{
 		cl->messagelevel = atoi(val);
 	}
 
-	val = Info_ValueForKey (cl->userinfo, "sp");	//naming for compat with mvdsv
+	val = InfoBuf_ValueForKey (&cl->userinfo, "sp");	//naming for compat with mvdsv
 	if (*val)
 		cl->spec_print = atoi(val);
 	else
@@ -5543,7 +5605,7 @@ void SV_ExtractFromUserinfo (client_t *cl, qboolean verbose)
 
 #ifdef NQPROT
 	{
-		int top = atoi(Info_ValueForKey(cl->userinfo, "topcolor"));
+		int top = atoi(InfoBuf_ValueForKey(&cl->userinfo, "topcolor"));
 		top &= 15;
 		if (top > 13)
 			top = 13;
@@ -5555,8 +5617,10 @@ void SV_ExtractFromUserinfo (client_t *cl, qboolean verbose)
 			cl->playercolor = top*16 + bottom;
 			if (svs.gametype == GT_PROGS || svs.gametype == GT_Q1QVM)
 			{
+#ifndef NOLEGACY
 				if (cl->edict)
 					cl->edict->xv->clientcolors = cl->playercolor;
+#endif
 				MSG_WriteByte (&sv.nqreliable_datagram, svc_updatecolors);
 				MSG_WriteByte (&sv.nqreliable_datagram, cl-svs.clients);
 				MSG_WriteByte (&sv.nqreliable_datagram, cl->playercolor);
@@ -5612,7 +5676,7 @@ void SV_ExecInitialConfigs(char *defaultexec)
 {
 	Cbuf_AddText("cvar_purgedefaults\n", RESTRICT_LOCAL);	//reset cvar defaults to their engine-specified values. the tail end of 'exec default.cfg' will update non-cheat defaults to mod-specified values.
 	Cbuf_AddText("cvarreset *\n", RESTRICT_LOCAL);			//reset all cvars to their current (engine) defaults
-	Cbuf_AddText("alias restart \"changelevel .\"\n",RESTRICT_LOCAL);
+	Cbuf_AddText("alias restart \"map_restart\"\n",RESTRICT_LOCAL);
 
 	Cbuf_AddText(va("sv_gamedir \"%s\"\n", FS_GetGamedir(true)), RESTRICT_LOCAL);
 
@@ -5740,8 +5804,10 @@ void SV_Init (quakeparms_t *parms)
 		}
 #endif
 
-		IPLog_Merge_File("iplog.txt");
+#ifdef IPLOG
+		IPLog_Merge_File("iplog.txt");	//should be compatible with DP's take on the feature.
 		IPLog_Merge_File("iplog.dat");	//legacy crap, for compat with proquake
+#endif
 
 		// if a map wasn't specified on the command line, spawn start.map
 		//aliases require that we flush the cbuf in order to actually see the results.

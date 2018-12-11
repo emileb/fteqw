@@ -62,10 +62,6 @@ cvar_t r_shadow_realtime_dlight_shadows		= CVARFD ("r_shadow_realtime_dlight_sha
 cvar_t r_shadow_realtime_dlight_ambient		= CVAR ("r_shadow_realtime_dlight_ambient", "0");
 cvar_t r_shadow_realtime_dlight_diffuse		= CVAR ("r_shadow_realtime_dlight_diffuse", "1");
 cvar_t r_shadow_realtime_dlight_specular	= CVAR ("r_shadow_realtime_dlight_specular", "4");	//excessive, but noticable. its called stylized, okay? shiesh, some people
-cvar_t r_editlights_import_radius			= CVAR ("r_editlights_import_radius", "1");
-cvar_t r_editlights_import_ambient			= CVAR ("r_editlights_import_ambient", "0");
-cvar_t r_editlights_import_diffuse			= CVAR ("r_editlights_import_diffuse", "1");
-cvar_t r_editlights_import_specular			= CVAR ("r_editlights_import_specular", "1");	//excessive, but noticable. its called stylized, okay? shiesh, some people
 cvar_t r_shadow_playershadows				= CVARD ("r_shadow_playershadows", "1", "Controls the presence of shadows on the local player.");
 cvar_t r_shadow_shadowmapping				= CVARD ("r_shadow_shadowmapping", "1", "Enables soft shadows instead of stencil shadows.");
 cvar_t r_shadow_shadowmapping_precision		= CVARD ("r_shadow_shadowmapping_precision", "1", "Scales the shadowmap detail level up or down.");
@@ -114,6 +110,7 @@ typedef struct shadowmesh_s
 	{
 		SMT_STENCILVOLUME,	//build edges mesh (and surface list)
 		SMT_SHADOWMAP,		//build front faces mesh (and surface list)
+		SMT_ORTHO,			//bounded by a box and with a single direction rather than an origin.
 		SMT_SHADOWLESS,		//build vis+surface list only
 		SMT_DEFERRED		//build vis without caring about any surfaces at all.
 	} type;
@@ -220,6 +217,47 @@ static void SHM_MeshFrontOnly(int numverts, vecV_t *verts, int numidx, index_t *
 	v = (sh_shmesh->numverts+numverts + inc)&~(inc-1);	//and a bit of padding
 	if (sh_shmesh->maxverts < v)
 	{
+		v *= 2;
+		v += 1024;
+		sh_shmesh->maxverts = v;
+		sh_shmesh->verts = BZ_Realloc(sh_shmesh->verts, v * sizeof(*sh_shmesh->verts));
+	}
+
+	outv = sh_shmesh->verts + sh_shmesh->numverts;
+	for (v = 0; v < numverts; v++)
+	{
+		VectorCopy(verts[v], outv[v]);
+	}
+
+	v = (sh_shmesh->numindicies+numidx + inc)&~(inc-1);	//and a bit of padding
+	if (sh_shmesh->maxindicies < v)
+	{
+		v *= 2;
+		v += 1024;
+		sh_shmesh->maxindicies = v;
+		sh_shmesh->indicies = BZ_Realloc(sh_shmesh->indicies, v * sizeof(*sh_shmesh->indicies));
+	}
+	outi = sh_shmesh->indicies + sh_shmesh->numindicies;
+	for (i = 0; i < numidx; i++)
+	{
+		outi[i] = first + idx[i];
+	}
+
+	sh_shmesh->numverts += numverts;
+	sh_shmesh->numindicies += numidx;
+}
+#if 0
+static void SHM_MeshBackOnly(int numverts, vecV_t *verts, int numidx, index_t *idx)
+{
+	int first = sh_shmesh->numverts;
+	int v, i;
+	vecV_t *outv;
+	index_t *outi;
+
+	/*make sure there's space*/
+	v = (sh_shmesh->numverts+numverts + inc)&~(inc-1);	//and a bit of padding
+	if (sh_shmesh->maxverts < v)
+	{
 		v += 1024;
 		sh_shmesh->maxverts = v;
 		sh_shmesh->verts = BZ_Realloc(sh_shmesh->verts, v * sizeof(*sh_shmesh->verts));
@@ -239,14 +277,17 @@ static void SHM_MeshFrontOnly(int numverts, vecV_t *verts, int numidx, index_t *
 		sh_shmesh->indicies = BZ_Realloc(sh_shmesh->indicies, v * sizeof(*sh_shmesh->indicies));
 	}
 	outi = sh_shmesh->indicies + sh_shmesh->numindicies;
-	for (i = 0; i < numidx; i++)
+	for (i = 0; i < numidx; i+=3)
 	{
-		outi[i] = first + idx[i];
+		outi[i+0] = first + idx[i+2];
+		outi[i+1] = first + idx[i+1];
+		outi[i+2] = first + idx[i+0];
 	}
 
 	sh_shmesh->numverts += numverts;
 	sh_shmesh->numindicies += numidx;
 }
+#endif
 static void SHM_TriangleFan(int numverts, vecV_t *verts, vec3_t lightorg, float pd)
 {
 	int v, i, idxs;
@@ -774,6 +815,129 @@ static void SHM_RecursiveWorldNodeQ1_r (dlight_t *dl, mnode_t *node)
 
 // recurse down the back side
 	SHM_RecursiveWorldNodeQ1_r (dl, node->children[!side]);
+}
+
+void CategorizePlane ( mplane_t *plane );
+static void SHM_OrthoWorldLeafsQ1 (dlight_t *dl)
+{
+	int			c, i;
+	msurface_t	*surf, **mark;
+	mleaf_t		*pleaf, *plastleaf;
+	float dot;
+
+	mplane_t orthoplanes[5];
+
+	sh_shadowframe++;
+
+	VectorCopy(dl->axis[0], orthoplanes[0].normal);
+	VectorNegate(dl->axis[0], orthoplanes[1].normal);
+	VectorCopy(dl->axis[1], orthoplanes[2].normal);
+	VectorNegate(dl->axis[1], orthoplanes[3].normal);
+	VectorNegate(dl->axis[0], orthoplanes[4].normal);
+
+	for (i = 0; i < countof(orthoplanes); i++)
+	{
+		orthoplanes[i].dist = DotProduct(dl->origin, orthoplanes[i].normal) - dl->radius;
+		CategorizePlane(&orthoplanes[i]);
+	}
+
+	for (pleaf = cl.worldmodel->leafs+1, plastleaf = cl.worldmodel->leafs+cl.worldmodel->submodels[0].visleafs; pleaf <= plastleaf; pleaf++)
+	{
+		for (i = 0; i < countof(orthoplanes); i++)
+			if (BOX_ON_PLANE_SIDE (pleaf->minmaxs, pleaf->minmaxs+3, &orthoplanes[i]) == 2)
+				goto next;
+
+		SHM_Shadow_Cache_Leaf(pleaf);
+
+		mark = pleaf->firstmarksurface;
+		c = pleaf->nummarksurfaces;
+
+		while (c --> 0)
+		{
+			surf = *mark++;
+
+			if (surf->flags & (SURF_DRAWALPHA | SURF_DRAWTILED | SURF_DRAWSKY))
+				continue;
+
+			if (surf->shadowframe != sh_shadowframe)
+			{
+				surf->shadowframe = sh_shadowframe;
+
+				dot = DotProduct(surf->plane->normal, dl->axis[0]);
+				if (surf->flags & SURF_PLANEBACK)
+					dot = -dot;
+			
+				if (dot < 0)
+				{
+					SHM_Shadow_Cache_Surface(surf);
+
+				}
+//				else
+//				SHM_MeshBackOnly(surf->mesh->numvertexes, surf->mesh->xyz_array, surf->mesh->numindexes, surf->mesh->indexes);
+					SHM_MeshFrontOnly(surf->mesh->numvertexes, surf->mesh->xyz_array, surf->mesh->numindexes, surf->mesh->indexes);
+			}
+		}
+
+next:;
+	}
+}
+
+static void SHM_OrthoWorldLeafsQ3 (dlight_t *dl)
+{
+	int			c, i;
+	msurface_t	*surf, **mark;
+	mleaf_t		*pleaf, *plastleaf;
+
+	mplane_t orthoplanes[5];
+
+	sh_shadowframe++;
+
+	VectorCopy(dl->axis[0], orthoplanes[0].normal);
+	VectorNegate(dl->axis[0], orthoplanes[1].normal);
+	VectorCopy(dl->axis[1], orthoplanes[2].normal);
+	VectorNegate(dl->axis[1], orthoplanes[3].normal);
+	VectorNegate(dl->axis[0], orthoplanes[4].normal);
+
+	for (i = 0; i < countof(orthoplanes); i++)
+	{
+		orthoplanes[i].dist = DotProduct(dl->origin, orthoplanes[i].normal) - dl->radius;
+		CategorizePlane(&orthoplanes[i]);
+	}
+
+	for (pleaf = cl.worldmodel->leafs+1, plastleaf = cl.worldmodel->leafs+cl.worldmodel->numleafs; pleaf <= plastleaf; pleaf++)
+	{
+		for (i = 0; i < countof(orthoplanes); i++)
+			if (BOX_ON_PLANE_SIDE (pleaf->minmaxs, pleaf->minmaxs+3, &orthoplanes[i]) == 2)
+				goto next;
+
+		SHM_Shadow_Cache_Leaf(pleaf);
+
+		mark = pleaf->firstmarksurface;
+		c = pleaf->nummarksurfaces;
+
+		while (c --> 0)
+		{
+			surf = *mark++;
+
+			if (surf->flags & (SURF_DRAWALPHA | SURF_DRAWTILED | SURF_DRAWSKY))
+				continue;
+
+			if (surf->shadowframe != sh_shadowframe)
+			{
+				surf->shadowframe = sh_shadowframe;
+			
+//				if (dot < 0)
+				{
+					SHM_Shadow_Cache_Surface(surf);
+				}
+//				else
+//				SHM_MeshBackOnly(surf->mesh->numvertexes, surf->mesh->xyz_array, surf->mesh->numindexes, surf->mesh->indexes);
+					SHM_MeshFrontOnly(surf->mesh->numvertexes, surf->mesh->xyz_array, surf->mesh->numindexes, surf->mesh->indexes);
+			}
+		}
+
+next:;
+	}
 }
 
 #ifdef Q2BSPS
@@ -1407,7 +1571,9 @@ static struct shadowmesh_s *SHM_BuildShadowMesh(dlight_t *dl, unsigned char *lvi
 	if (!lvis)
 	{
 		int clus;
-		if ((type == SMT_SHADOWLESS || dl->lightcolourscales[0]) && cl.worldmodel->funcs.ClustersInSphere)
+		if (type == SMT_ORTHO)
+			;
+		else if ((type == SMT_SHADOWLESS || dl->lightcolourscales[0]) && cl.worldmodel->funcs.ClustersInSphere)
 			//shadowless lights don't cast shadows, so they're seen through everything - their vis must reflect that.
 			lvis = cl.worldmodel->funcs.ClustersInSphere(cl.worldmodel, dl->origin, dl->radius, &lvisb, NULL);
 		else
@@ -1446,8 +1612,13 @@ static struct shadowmesh_s *SHM_BuildShadowMesh(dlight_t *dl, unsigned char *lvi
 			{
 				SHM_BeginShadowMesh(dl, type);
 
-				SHM_MarkLeavesQ1(dl, lvis);
-				SHM_RecursiveWorldNodeQ1_r(dl, cl.worldmodel->nodes);
+				if (type == SMT_ORTHO)
+					SHM_OrthoWorldLeafsQ1(dl);
+				else
+				{
+					SHM_MarkLeavesQ1(dl, lvis);
+					SHM_RecursiveWorldNodeQ1_r(dl, cl.worldmodel->nodes);
+				}
 			}
 			break;
 #ifdef Q2BSPS
@@ -1462,8 +1633,13 @@ static struct shadowmesh_s *SHM_BuildShadowMesh(dlight_t *dl, unsigned char *lvi
 			/*q3 doesn't have edge info*/
 			SHM_BeginShadowMesh(dl, type);
 
-			sh_shadowframe++;
-			SHM_RecursiveWorldNodeQ3_r(dl, cl.worldmodel->nodes);
+			if (type == SMT_ORTHO)
+				SHM_OrthoWorldLeafsQ3(dl);
+			else
+			{
+				sh_shadowframe++;
+				SHM_RecursiveWorldNodeQ3_r(dl, cl.worldmodel->nodes);
+			}
 			if (type == SMT_STENCILVOLUME)
 				SHM_ComposeVolume_BruteForce(dl);
 			break;
@@ -2146,6 +2322,9 @@ static void Sh_GenShadowFace(dlight_t *l, vec3_t axis[3], int lighttype, shadowm
 
 	R_SetFrustum(proj, r_refdef.m_view);
 
+	if (lighttype & LSHADER_ORTHO)
+		r_refdef.frustum_numplanes = 4;	//kill the near clip plane - we allow ANYTHING nearer through.
+
 #ifdef SHADOWDBG_COLOURNOTDEPTH
 	BE_SelectMode(BEM_STANDARD);
 #else
@@ -2158,6 +2337,8 @@ static void Sh_GenShadowFace(dlight_t *l, vec3_t axis[3], int lighttype, shadowm
 #ifdef GLQUAKE
 	case QR_OPENGL:
 		GL_ViewportUpdate();
+		if (lighttype & LSHADER_ORTHO)
+			qglEnable(GL_DEPTH_CLAMP_ARB);
 		GL_CullFace(SHADER_CULL_FRONT);
 		GLBE_RenderShadowBuffer(smesh->numverts, smesh->vebo[0], smesh->verts, smesh->numindicies, smesh->vebo[1], smesh->indicies);
 		break;
@@ -2199,6 +2380,9 @@ static void Sh_GenShadowFace(dlight_t *l, vec3_t axis[3], int lighttype, shadowm
 #ifdef GLQUAKE
 	case QR_OPENGL:
 		GLBE_BaseEntTextures();
+
+		if (lighttype & LSHADER_ORTHO)
+			qglDisable(GL_DEPTH_CLAMP_ARB);
 		break;
 #endif
 #ifdef D3D9QUAKE
@@ -2310,7 +2494,7 @@ qboolean Sh_GenShadowMap (dlight_t *l, int lighttype, vec3_t axis[3], qbyte *lvi
 	memcpy(oprojv, r_refdef.m_projection_view, sizeof(oprojv));
 	memcpy(oview, r_refdef.m_view, sizeof(oview));
 	oprect = r_refdef.pxrect;
-	smesh = SHM_BuildShadowMesh(l, lvis, SMT_SHADOWMAP);
+	smesh = SHM_BuildShadowMesh(l, lvis, (lighttype & LSHADER_ORTHO)?SMT_ORTHO:SMT_SHADOWMAP);
 
 	if (lighttype & LSHADER_SPOT)
 		Matrix4x4_CM_Projection_Far(r_refdef.m_projection_std, l->fov, l->fov, r_shadow_shadowmapping_nearclip.value, l->radius, false);
@@ -2915,10 +3099,14 @@ static void Sh_DrawStencilLightShadows(dlight_t *dl, qbyte *lvis, qbyte *vvis, q
 		switch (emodel->type)
 		{
 		case mod_alias:
+			if (r_drawentities.ival == 3)
+				continue;
 			R_DrawGAliasShadowVolume (ent, dl->origin, dl->radius);
 			break;
 
 		case mod_brush:
+			if (r_drawentities.ival == 2)
+				continue;
 			Sh_DrawBrushModelShadow (dl, ent);
 			break;
 
@@ -3379,7 +3567,7 @@ void Sh_DrawCrepuscularLight(dlight_t *dl, float *colours)
 void Sh_PurgeShadowMeshes(void)
 {
 	dlight_t *dl;
-	int i;
+	size_t i;
 	for (dl = cl_dlights, i=0; i<cl_maxdlights; i++, dl++)
 	{
 		if (dl->worldshadowmesh)
@@ -3405,11 +3593,19 @@ void Sh_PreGenerateLights(void)
 	int i;
 
 	r_shadow_realtime_world_lightmaps.value = atof(r_shadow_realtime_world_lightmaps.string);
+	if (!cl.worldmodel)
+		return;
 	if ((r_shadow_realtime_dlight.ival || r_shadow_realtime_world.ival) && rtlights_max == RTL_FIRST)
 	{
 		qboolean okay = false;
 		if (!okay)
 			okay |= R_LoadRTLights();
+		if (!okay)
+		{
+			for (i = 0; i < cl.num_statics; i++)
+				R_StaticEntityToRTLight(i);
+			okay |= rtlights_max != RTL_FIRST;
+		}
 		if (!okay)
 			okay |= R_ImportRTLights(Mod_GetEntitiesString(cl.worldmodel));
 		if (!okay && r_shadow_realtime_world.ival && r_shadow_realtime_world_lightmaps.value != 1)
@@ -3517,7 +3713,7 @@ void Sh_CheckSettings(void)
 #endif
 #ifdef D3D9QUAKE
 	case QR_DIRECT3D9:
-		canshadowless = true;
+//		canshadowless = true;
 		//the code still has a lot of ifdefs, so will crash if you try it in a merged build.
 		//its not really usable in d3d-only builds either, so no great loss.
 //		canstencil = true;
@@ -3543,7 +3739,7 @@ void Sh_CheckSettings(void)
 	{
 		//can't even do lighting
 		if (r_shadow_realtime_world.ival || r_shadow_realtime_dlight.ival)
-			Con_Printf("Missing rendering features: realtime lighting is not possible.\n");
+			Con_Printf("Missing rendering features: realtime %s lighting is not possible.\n", r_shadow_realtime_world.ival?"world":"dynamic");
 		r_shadow_realtime_world.ival = 0;
 		r_shadow_realtime_dlight.ival = 0;
 	}
@@ -3673,6 +3869,54 @@ void Sh_DrawLights(qbyte *vis)
 		colour[0] = dl->color[0];
 		colour[1] = dl->color[1];
 		colour[2] = dl->color[2];
+		if (dl->customstyle)
+		{
+			const char *map = dl->customstyle;
+			int maplen = strlen(map);
+
+			int idx, v1, v2, vd;
+			float frac, strength;
+
+			if (!maplen)
+			{
+				strength = ('m'-'a')*22 * r_lightstylescale.value/255.0;
+			}
+			else if (map[0] == '=')
+			{
+				strength = atof(map+1)*r_lightstylescale.value;
+			}
+			else
+			{
+				frac = (cl.time*r_lightstylespeed.value);
+				if (*map == '?' && maplen>1)
+				{
+					map++;
+					maplen--;
+					frac += i*M_PI;
+				}
+				frac += i*M_PI;
+				if (frac < 0)
+					frac = 0;
+				idx = (int)frac;
+				frac -= idx;	//this can require updates at 1000 times a second.. Depends on your framerate of course
+
+				v1 = idx % maplen;
+				v1 = map[v1] - 'a';
+
+				v2 = (idx+1) % maplen;
+				v2 = map[v2] - 'a';
+
+				vd = v1 - v2;
+				if (/*!r_lightstylesmooth.ival ||*/ vd < -r_lightstylesmooth_limit.ival || vd > r_lightstylesmooth_limit.ival)
+					strength = v1*(22/255.0)*r_lightstylescale.value;
+				else
+					strength = (v1*(1-frac) + v2*(frac))*(22/255.0)*r_lightstylescale.value;
+			}
+			strength *= d_lightstylevalue[0]/256.0f;	//a lot of QW mods use lightstyle 0 for a global darkening fade-in thing, so be sure to respect that.
+			colour[0] *= strength;
+			colour[1] *= strength;
+			colour[2] *= strength;
+		}
 		if (dl->style)
 		{
 			colour[0] *= cl_lightstyle[dl->style-1].colours[0] * d_lightstylevalue[dl->style-1]/255.0f;
@@ -3708,7 +3952,20 @@ void Sh_DrawLights(qbyte *vis)
 			axis = dl->axis;
 
 		drawdlightnum++;
-		if (dl->flags & LFLAG_CREPUSCULAR)
+		if (dl->flags & LFLAG_ORTHO)
+		{
+			vec3_t saveorg = {dl->origin[0], dl->origin[1], dl->origin[2]}, neworg;
+			vec3_t saveaxis[3];
+			memcpy(saveaxis, dl->axis, sizeof(saveaxis));
+			memcpy(dl->axis, axis, sizeof(saveaxis));
+			VectorMA(r_origin, dl->radius/3, vpn, neworg);
+			VectorCopy(neworg, dl->origin);
+			dl->rebuildcache = true;
+			Sh_DrawShadowMapLight(dl, colour, axis, NULL);
+			VectorCopy(saveorg, dl->origin);
+			memcpy(dl->axis, saveaxis, sizeof(saveaxis));
+		}
+		else if (dl->flags & LFLAG_CREPUSCULAR)
 			Sh_DrawCrepuscularLight(dl, colour);
 		else if (((i >= RTL_FIRST)?!r_shadow_realtime_world_shadows.ival:!r_shadow_realtime_dlight_shadows.ival) || dl->flags & LFLAG_NOSHADOWS)
 		{

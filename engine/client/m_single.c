@@ -4,11 +4,9 @@
 #include "winquake.h"
 #include "shader.h"
 #ifndef NOBUILTINMENUS
-#ifndef CLIENTONLY
+#if !defined(CLIENTONLY) && defined(SAVEDGAMES)
 //=============================================================================
 /* LOAD/SAVE MENU */
-
-#define FTESAVEGAME_VERSION 25000
 
 typedef struct {
 	int issave;
@@ -40,6 +38,8 @@ static void M_ScanSave(unsigned int slot, const char *name, qboolean savable)
 	char	*in, *out, *end;
 	int		j;
 	char	line[MAX_OSPATH];
+	flocation_t loc;
+	time_t	mtime;
 	vfsfile_t	*f;
 	int		version;
 
@@ -51,17 +51,18 @@ static void M_ScanSave(unsigned int slot, const char *name, qboolean savable)
 	Q_strncpyz (m_saves[slot].time, "", sizeof(m_saves[slot].time));
 
 	snprintf (line, sizeof(line), "saves/%s/info.fsv", m_saves[slot].sname);
-	f = FS_OpenVFS (line, "rb", FS_GAME);
-	if (!f)
+	if (!FS_FLocateFile(line, FSLF_DONTREFERENCE|FSLF_IGNOREPURE, &loc))
 	{	//legacy saved games from some other engine
 		snprintf (line, sizeof(line), "%s.sav", m_saves[slot].sname);
-		f = FS_OpenVFS (line, "rb", FS_GAME);
+		if (!FS_FLocateFile(line, FSLF_DONTREFERENCE|FSLF_IGNOREPURE, &loc))
+			return;	//not found
 	}
+	f = FS_OpenReadLocation(&loc);
 	if (f)
 	{
 		VFS_GETS(f, line, sizeof(line));
 		version = atoi(line);
-		if (version != 5 && version != 6 && (version < FTESAVEGAME_VERSION || version >= FTESAVEGAME_VERSION+GT_MAX))
+		if (version != SAVEGAME_VERSION_NQ && version != SAVEGAME_VERSION_QW && version != SAVEGAME_VERSION_FTE_LEG && (version < SAVEGAME_VERSION_FTE_HUB || version >= SAVEGAME_VERSION_FTE_HUB+GT_MAX))
 		{
 			Q_strncpyz (m_saves[slot].desc, "Incompatible version", sizeof(m_saves[slot].desc));
 			VFS_CLOSE (f);
@@ -86,8 +87,11 @@ static void M_ScanSave(unsigned int slot, const char *name, qboolean savable)
 			out--;
 		*out = 0;
 
-		Q_strncpyz(m_saves[slot].time, line+39, sizeof(m_saves[slot].time));
-
+		if (strlen(line) > 39)
+			Q_strncpyz(m_saves[slot].time, line+39, sizeof(m_saves[slot].time));
+		else if (FS_GetLocMTime(&loc, &mtime))
+			strftime(m_saves[slot].time, sizeof(m_saves[slot].time), "%Y-%m-%d %H:%M:%S", localtime( &mtime ));
+		// else time unknown, just leave it blank
 
 		if (version == 5 || version == 6)
 		{
@@ -329,10 +333,10 @@ void M_Menu_SinglePlayer_f (void)
 		MC_AddConsoleCommand	(menu, 64, 170, 40,	"Easy",		va("closemenu; skill 0;deathmatch 0; coop %i;newgame\n", cl_splitscreen.ival>0));
 		MC_AddConsoleCommand	(menu, 64, 170, 48,	"Medium",	va("closemenu; skill 1;deathmatch 0; coop %i;newgame\n", cl_splitscreen.ival>0));
 		MC_AddConsoleCommand	(menu, 64, 170, 56,	"Hard",		va("closemenu; skill 2;deathmatch 0; coop %i;newgame\n", cl_splitscreen.ival>0));
-
+#ifdef SAVEDGAMES
 		MC_AddConsoleCommand	(menu, 64, 170, 72,	"Load Game", "menu_load\n");
 		MC_AddConsoleCommand	(menu, 64, 170, 80,	"Save Game", "menu_save\n");
-
+#endif
 		menu->cursoritem = (menuoption_t*)MC_AddWhiteText(menu, 48, 0, 40, NULL, false);
 		return;
 #endif
@@ -387,7 +391,7 @@ void M_Menu_SinglePlayer_f (void)
 			}
 			else if (!strncmp(Cmd_Argv(1), "skill", 5))
 			{
-				//yes, hexen2 has per-class names for the skill levels. because being weird and obtuse is kinda its forté
+				//yes, hexen2 has per-class names for the skill levels. because being weird and obtuse is kinda its forte
 				static char *skillnames[6][4] =
 				{
 					{
@@ -455,8 +459,10 @@ void M_Menu_SinglePlayer_f (void)
 					menu->selecteditem = (menuoption_t*)
 					MC_AddConsoleCommandHexen2BigFont(menu, 80, y+=20,	"New Game",		"menu_single class demo1\n");
 				}
+#ifdef SAVEDGAMES
 				MC_AddConsoleCommandHexen2BigFont(menu, 80, y+=20,		"Save Game",	"menu_save\n");
 				MC_AddConsoleCommandHexen2BigFont(menu, 80, y+=20,		"Load Game",	"menu_load\n");
+#endif
 			}
 
 			menu->cursoritem = (menuoption_t *)MC_AddCursor(menu, &resel, 56, menu->selecteditem?menu->selecteditem->common.posy:0);
@@ -474,8 +480,10 @@ void M_Menu_SinglePlayer_f (void)
 
 			menu->selecteditem = (menuoption_t*)
 			MC_AddConsoleCommandQBigFont	(menu, 72, 32,	"New Game",  "closemenu;disconnect;maxclients 1;samelevel \"\";deathmatch \"\";set_calc coop ($cl_splitscreen>0);startmap_sp\n");
+#ifdef SAVEDGAMES
 			MC_AddConsoleCommandQBigFont	(menu, 72, 52,	"Load Game", "menu_load\n");
 			MC_AddConsoleCommandQBigFont	(menu, 72, 72,	"Save Game", "menu_save\n");
+#endif
 
 			menu->cursoritem = (menuoption_t*)MC_AddCursor(menu, &resel, 54, 32);
 			return;
@@ -525,12 +533,14 @@ void M_Menu_SinglePlayer_f (void)
 		menu->selecteditem = (menuoption_t *)b;
 		b->common.width = width;
 		b->common.height = 20;
+#ifdef SAVEDGAMES
 		b = MC_AddConsoleCommand	(menu, 72, 304, 52,	"", "menu_load\n");
 		b->common.width = width;
 		b->common.height = 20;
 		b = MC_AddConsoleCommand	(menu, 72, 304, 72,	"", "menu_save\n");
 		b->common.width = width;
 		b->common.height = 20;
+#endif
 
 #if MAX_SPLITS > 1
 		b = (menubutton_t*)MC_AddCvarCombo(menu, 72, 72+width/2, 92, "", &cl_splitscreen, opts, vals);
@@ -1005,6 +1015,31 @@ void M_Demo_Reselect(demomenu_t *info, const char *name)
 
 void M_Menu_Demos_f (void)
 {
+	char *demoexts[] = {
+		".mvd", ".mvd.gz",
+		".qwz", ".qwz.gz",
+#ifdef NQPROT
+		".dem", ".dem.gz",
+#endif
+#ifdef Q2CLIENT
+		".dm2", ".dm2.gz"
+#endif
+		//there are also qizmo demos (.qwz) out there...
+		//we don't support them, but if we were to ask quizmo to decode them for us, we could do.
+	};
+	char *archiveexts[] = {
+#ifdef PACKAGE_PK3
+		".zip", ".pk3", ".pk4",
+#endif
+#ifdef PACKAGE_Q1PAK
+		".pak",
+#endif
+#ifdef PACKAGE_DZIP
+		".dz",
+#endif
+		NULL	//in case none of the above are defined. compilers don't much like 0-length arrays.
+	};
+	size_t u;
 	demomenu_t *info;
 	menu_t *menu;
 	static demoloc_t mediareenterloc = {FS_GAME, "demos/"};
@@ -1034,36 +1069,20 @@ void M_Menu_Demos_f (void)
 	}
 
 	info->numext = 0;
-	info->command[info->numext] = "closemenu;playdemo";
-	info->ext[info->numext++] = ".qwd";
-	info->command[info->numext] = "closemenu;playdemo";
-	info->ext[info->numext++] = ".dem";
-	info->command[info->numext] = "closemenu;playdemo";
-	info->ext[info->numext++] = ".dm2";
-	info->command[info->numext] = "closemenu;playdemo";
-	info->ext[info->numext++] = ".mvd";
-	info->command[info->numext] = "closemenu;playdemo";
-	info->ext[info->numext++] = ".mvd.gz";
-	//there are also qizmo demos (.qwz) out there...
-	//we don't support them, but if we were to ask quizmo to decode them for us, we could do.
+	for (u = 0; u < countof(demoexts); u++)
+	{
+		info->command[info->numext] = "closemenu;playdemo";
+		info->ext[info->numext++] = demoexts[u];
+	}
 
 	//and some archive formats... for the luls
-#ifdef PACKAGE_PK3
-	info->command[info->numext] = NULL;
-	info->ext[info->numext++] = ".zip";
-	info->command[info->numext] = NULL;
-	info->ext[info->numext++] = ".pk3";
-	info->command[info->numext] = NULL;
-	info->ext[info->numext++] = ".pk4";
-#endif
-#ifdef PACKAGE_Q1PAK
-	info->command[info->numext] = NULL;
-	info->ext[info->numext++] = ".pak";
-#endif
-#ifdef PACKAGE_DZIP
-	info->command[info->numext] = NULL;
-	info->ext[info->numext++] = ".dz";
-#endif
+	for (u = 0; u < countof(archiveexts); u++)
+	{
+		if (!archiveexts[u])
+			continue;
+		info->command[info->numext] = NULL;
+		info->ext[info->numext++] = archiveexts[u];
+	}
 
 	MC_AddWhiteText(menu, 24, 170, 8, "Choose a Demo", false);
 	MC_AddWhiteText(menu, 16, 170, 24, "^Ue01d^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01f", false);

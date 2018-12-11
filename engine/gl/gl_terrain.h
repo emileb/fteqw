@@ -30,7 +30,7 @@ cluster:
 	internal concept to avoid a single pointer array of 16 million entries per terrain.
 */
 
-int Surf_NewLightmaps(int count, int width, int height, qboolean deluxe);
+int Surf_NewLightmaps(int count, int width, int height, uploadfmt_t fmt, qboolean deluxe);
 
 #define MAXCLUSTERS 64
 #define MAXSECTIONS 64	//this many sections within each cluster in each direction
@@ -281,7 +281,7 @@ typedef struct
 			vec3_t sdir;
 			vec3_t tdir;
 		} verts[1]; //x+(y*xpoints)
-	} *patch;
+	} *patch;	//if this is NULL, then its a regular brush. otherwise its a patch.
 	struct brushface_s
 	{
 		brushtex_t *tex;
@@ -295,6 +295,8 @@ typedef struct
 		unsigned short relit:1;
 		int lmbias[2];
 		unsigned short lmextents[2];
+		unsigned int surfaceflags;	//used by q2
+		unsigned int surfacevalue;	//used by q2 (generally light levels)
 		qbyte *lightdata;
 	} *faces;
 } brushes_t;

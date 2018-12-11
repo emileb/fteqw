@@ -27,7 +27,7 @@
 #define PASSFLOAT(f) *(int*)&(f)
 
 #define ARGNAMES ,sourceid, data, speed, samples, channels, width, PASSFLOAT(volume)
-BUILTIN(void, S_RawAudio, (int sourceid, void *data, int speed, int samples, int channels, int width, float volume));
+BUILTIN(void, S_RawAudio, (int sourceid, void *data, int speed, int samples, int channels, int width, float volume))
 #undef ARGNAMES
 
 /*should probably try threading this, though I suppose it should be the engine doing that.*/
@@ -342,7 +342,7 @@ static qboolean VARGS AVDec_DisplayFrame(void *vctx, qboolean nosound, qboolean 
 				ctx->pScaleCtx = sws_getCachedContext(ctx->pScaleCtx, ctx->pVCodecCtx->width, ctx->pVCodecCtx->height, ctx->pVCodecCtx->pix_fmt, ctx->width, ctx->height, AV_PIX_FMT_BGRA, SWS_POINT, 0, 0, 0);
 				sws_scale(ctx->pScaleCtx, (void*)ctx->pVFrame->data, ctx->pVFrame->linesize, 0, ctx->pVCodecCtx->height, &ctx->rgb_data, &ctx->rgb_linesize);
 
-				ctx->lasttime = av_frame_get_best_effort_timestamp(ctx->pVFrame);
+				ctx->lasttime = ctx->pVFrame->best_effort_timestamp;
 				repainted = true;
 			}
 		}

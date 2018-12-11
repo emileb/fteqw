@@ -43,8 +43,6 @@ static int	gl_filter_mip[3];	//everything else
 int		gl_mipcap_min = 0;
 int		gl_mipcap_max = 1000;
 
-void Image_WriteKTXFile(const char *filename, struct pendingtextureinfo *mips);
-
 void GL_DestroyTexture(texid_t tex)
 {
 	if (!tex)
@@ -403,7 +401,7 @@ void GLDraw_Init (void)
 
 
 	//figure out which extra features we can support on these drivers.
-	r_deluxmapping = r_deluxmapping_cvar.ival;
+	r_deluxemapping = r_deluxemapping_cvar.ival;
 	r_lightprepass = r_lightprepass_cvar.ival && sh_config.progs_supported;
 	r_softwarebanding = r_softwarebanding_cvar.ival && sh_config.progs_supported;
 	if (gl_config.gles && gl_config.glversion < 3.0)
@@ -951,7 +949,9 @@ qboolean GL_LoadTextureMips(texid_t tex, const struct pendingtextureinfo *mips)
 						j = i;
 					}
 
-					qglGetTexLevelParameteriv(targ, j, GL_TEXTURE_COMPRESSED_IMAGE_SIZE_ARB, &csize);
+					qglGetTexLevelParameteriv(targface, j, GL_TEXTURE_COMPRESSED_IMAGE_SIZE_ARB, &csize);
+					if (!csize)
+						break;	//some kind of error. the gpu didn't store it?
 					out.mip[i].datasize = csize;
 					out.mip[i].data = BZ_Malloc(csize);
 					out.mip[i].needfree = true;
@@ -961,7 +961,14 @@ qboolean GL_LoadTextureMips(texid_t tex, const struct pendingtextureinfo *mips)
 					qglGetCompressedTexImage(targ, j, out.mip[i].data);
 				}
 
-				Image_WriteKTXFile(va("textures/%s.ktx", tex->ident), &out);
+				if (i)
+				{
+					out.mipcount = i;
+					Image_WriteKTXFile(va("textures/%s.ktx", tex->ident), FS_GAMEONLY, &out);
+				}
+				while (i-- > 0)
+					if (out.mip[i].needfree)
+						BZ_Free(out.mip[i].data);
 			}
 		}
 #endif

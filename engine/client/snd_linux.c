@@ -14,6 +14,8 @@
 #include <stdio.h>
 #include "quakedef.h"
 
+#ifdef HAVE_MIXER
+
 #ifdef __linux__
 #include <sys/stat.h>
 #endif
@@ -139,6 +141,9 @@ static qboolean OSS_InitCard(soundcardinfo_t *sc, const char *snddev)
 	if (stat("/proc/asound", &sb) != -1)
 		alsadetected = true;
 #endif
+
+	if (COM_CheckParm("-nooss"))
+		return false;
 
 	if (!snddev || !*snddev)
 		snddev = "/dev/dsp";
@@ -453,20 +458,32 @@ static qboolean QDECL OSS_Enumerate(void (QDECL *cb) (const char *drivername, co
 {
 #if defined(SNDCTL_SYSINFO) && defined(SNDCTL_AUDIOINFO)
 	int i;
-	int fd = open("/dev/mixer", O_RDWR, 0);
+	int fd;
 	oss_sysinfo si;
+	const char *devmixer;
+
+	if (COM_CheckParm("-nooss"))
+		return true;
+
+	devmixer = getenv("OSS_MIXERDEV");
+	if (!devmixer)
+		devmixer = "/dev/mixer";
+	fd = open(devmixer, O_RDWR|O_NONBLOCK, 0);
+
 	if (fd == -1)
 		return true;	//oss not supported. don't list any devices.
 
-	if (ioctl(fd, SNDCTL_SYSINFO, &si) != -1)
+	memset(&si, 0, sizeof(si));	//just in case the driver is really dodgy...
+	if (ioctl(fd, SNDCTL_SYSINFO, &si) >= 0)
 	{
-		if ((si.versionnum>>16) >= 4)
-		{	//only trust all the fields if its recent enough
+		if ((si.versionnum>>16) >= 4 || si.numaudios > 128)
+		{	//only trust all the fields if its recent enough and doesn't look dodgy.
 			for(i = 0; i < si.numaudios; i++)
 			{
 				oss_audioinfo ai;
+				memset(&ai, 0, sizeof(ai));	//just in case the driver is really dodgy...
 				ai.dev = i;
-				if (ioctl(fd, SNDCTL_AUDIOINFO, &ai) != -1)
+				if (ioctl(fd, SNDCTL_AUDIOINFO, &ai) >= 0)
 					cb(SDRVNAME, ai.devnode, ai.name);
 			}
 			close(fd);
@@ -479,7 +496,7 @@ static qboolean QDECL OSS_Enumerate(void (QDECL *cb) (const char *drivername, co
 		printf("OSS driver is too old to support device enumeration.\n");
 	close(fd);
 #endif
-	return false;	//enumeration failed.
+	return false;	//enumeration failed, will show only a default device.
 }
 
 sounddriver_t OSS_Output =
@@ -489,26 +506,29 @@ sounddriver_t OSS_Output =
 	OSS_Enumerate
 };
 
-
-
-
+#endif
 #ifdef VOICECHAT	//this does apparently work after all.
 #include <stdint.h>
 
 static qboolean QDECL OSS_Capture_Enumerate (void (QDECL *callback) (const char *drivername, const char *devicecode, const char *readablename))
 {
+	if (COM_CheckParm("-nooss"))
+		return true;	//no default devices or anything
+
 	//open /dev/dsp or /dev/mixer or env("OSS_MIXERDEV") or something
 	//SNDCTL_SYSINFO to get sysinfo.numcards
 	//for i=0; i<sysinfo.numcards
 	//SNDCTL_CARDINFO
 	return false;
 }
-void *OSS_Capture_Init(int rate, const char *snddev)
+static void *OSS_Capture_Init(int rate, const char *snddev)
 {
 	int tmp;
 	intptr_t fd;
 	if (!snddev || !*snddev)
 		snddev = "/dev/dsp";
+	if (COM_CheckParm("-nooss"))
+		return NULL;
 	fd = open(snddev, O_RDONLY | O_NONBLOCK);       //try the primary device
 	if (fd == -1)
 		return NULL;
@@ -542,26 +562,26 @@ void *OSS_Capture_Init(int rate, const char *snddev)
 	fd++;
 	return (void*)fd;
 }
-void OSS_Capture_Start(void *ctx)
+static void OSS_Capture_Start(void *ctx)
 {
 	/*oss will automagically restart it when we next read*/
 }
 
-void OSS_Capture_Stop(void *ctx)
+static void OSS_Capture_Stop(void *ctx)
 {
 	intptr_t fd = ((intptr_t)ctx)-1;
 
 	ioctl(fd, SNDCTL_DSP_RESET, NULL);
 }
 
-void OSS_Capture_Shutdown(void *ctx)
+static void OSS_Capture_Shutdown(void *ctx)
 {
 	intptr_t fd = ((intptr_t)ctx)-1;
 
 	close(fd);
 }
 
-unsigned int OSS_Capture_Update(void *ctx, unsigned char *buffer, unsigned int minbytes, unsigned int maxbytes)
+static unsigned int OSS_Capture_Update(void *ctx, unsigned char *buffer, unsigned int minbytes, unsigned int maxbytes)
 {
 	intptr_t fd = ((intptr_t)ctx)-1;
 	ssize_t res;
@@ -584,4 +604,3 @@ snd_capture_driver_t OSS_Capture =
 	OSS_Capture_Shutdown
 };
 #endif
-

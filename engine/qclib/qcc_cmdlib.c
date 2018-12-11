@@ -47,7 +47,8 @@ char *basictypenames[] = {
 	"variant",
 	"struct",
 	"union",
-	"accessor"
+	"accessor",
+	"enum"
 };
 
 /*
@@ -65,7 +66,7 @@ float   (*PRBigFloat) (float l);
 float   (*PRLittleFloat) (float l);
 
 
-short   QCC_SwapShort (short l)
+static short   QCC_SwapShort (short l)
 {
 	qbyte    b1,b2;
 
@@ -75,13 +76,13 @@ short   QCC_SwapShort (short l)
 	return (b1<<8) + b2;
 }
 
-short   QCC_Short (short l)
+static short   QCC_Short (short l)
 {
 	return l;
 }
 
 
-int    QCC_SwapLong (int l)
+static int    QCC_SwapLong (int l)
 {
 	qbyte    b1,b2,b3,b4;
 
@@ -93,13 +94,13 @@ int    QCC_SwapLong (int l)
 	return ((int)b1<<24) + ((int)b2<<16) + ((int)b3<<8) + b4;
 }
 
-int    QCC_Long (int l)
+static int    QCC_Long (int l)
 {
 	return l;
 }
 
 
-float	QCC_SwapFloat (float l)
+static float	QCC_SwapFloat (float l)
 {
 	union {qbyte b[4]; float f;} in, out;
 
@@ -112,7 +113,7 @@ float	QCC_SwapFloat (float l)
 	return out.f;
 }
 
-float	QCC_Float (float l)
+static float	QCC_Float (float l)
 {
 	return l;
 }
@@ -142,39 +143,36 @@ void SetEndian(void)
 }
 
 
-void QC_strlcat(char *dest, const char *src, size_t destsize)
+pbool QC_strlcat(char *dest, const char *src, size_t destsize)
 {
 	size_t curlen = strlen(dest);
 	if (!destsize)
-		return;	//err
+		return false;	//err
 	dest += curlen;
 	while(*src && ++curlen < destsize)
 		*dest++ = *src++;
-//	if (*src)
-//		printf("QC_strlcpy: truncation\n");
 	*dest = 0;
+	return !*src;
 }
-void QC_strlcpy(char *dest, const char *src, size_t destsize)
+pbool QC_strlcpy(char *dest, const char *src, size_t destsize)
 {
 	size_t curlen = 0;
 	if (!destsize)
-		return;	//err
+		return false;	//err
 	while(*src && ++curlen < destsize)
 		*dest++ = *src++;
-//	if (*src)
-//		printf("QC_strlcpy: truncation\n");
 	*dest = 0;
+	return !*src;
 }
-void QC_strnlcpy(char *dest, const char *src, size_t srclen, size_t destsize)
+pbool QC_strnlcpy(char *dest, const char *src, size_t srclen, size_t destsize)
 {
 	size_t curlen = 0;
 	if (!destsize)
-		return;	//err
+		return false;	//err
 	for(; *src && srclen > 0 && ++curlen < destsize; srclen--)
 		*dest++ = *src++;
-//	if (srclen)
-//		printf("QC_strlcpy: truncation\n");
 	*dest = 0;
+	return !srclen;
 }
 
 char *QC_strcasestr(const char *haystack, const char *needle)
@@ -565,7 +563,7 @@ void VARGS QCC_Error (int errortype, const char *error, ...)
 	QC_vsnprintf (msg,sizeof(msg)-1, error,argptr);
 	va_end (argptr);
 
-	printf ("\n************ ERROR ************\n%s\n", msg);
+	externs->Printf ("\n************ ERROR ************\n%s\n", msg);
 
 
 	editbadfile(s_filen, pr_source_line);
@@ -590,7 +588,7 @@ Checks for the given parameter in the program's command line arguments
 Returns the argument number (1 to argc-1) or 0 if not present
 =================
 */
-int QCC_CheckParm (char *check)
+int QCC_CheckParm (const char *check)
 {
 	int i;
 
@@ -603,7 +601,7 @@ int QCC_CheckParm (char *check)
 	return 0;
 }
 
-const char *QCC_ReadParm (char *check)
+const char *QCC_ReadParm (const char *check)
 {
 	int i;
 
@@ -792,7 +790,7 @@ void ExtractFileExtension (char *path, char *dest)
 ParseNum / ParseHex
 ==============
 */
-long ParseHex (char *hex)
+static long ParseHex (char *hex)
 {
 	char    *str;
 	long    num;
@@ -874,7 +872,7 @@ int SafeOpenWrite (char *filename, int maxsize)
 	return -1;
 }
 
-void ResizeBuf(int hand, int newsize)
+static void ResizeBuf(int hand, int newsize)
 {
 	char *nb;
 
@@ -889,10 +887,17 @@ void ResizeBuf(int hand, int newsize)
 }
 void SafeWrite(int hand, const void *buf, long count)
 {
-	if (qccfile[hand].ofs +count >= qccfile[hand].buffsize)
-		ResizeBuf(hand, qccfile[hand].ofs + count+(64*1024));
+	if (qccfile[hand].stdio)
+	{
+		fwrite(buf, 1, count, qccfile[hand].stdio);
+	}
+	else
+	{
+		if (qccfile[hand].ofs +count >= qccfile[hand].buffsize)
+			ResizeBuf(hand, qccfile[hand].ofs + count+(64*1024));
 
-	memcpy(&qccfile[hand].buff[qccfile[hand].ofs], buf, count);
+		memcpy(&qccfile[hand].buff[qccfile[hand].ofs], buf, count);
+	}
 	qccfile[hand].ofs+=count;
 	if (qccfile[hand].ofs > qccfile[hand].maxofs)
 		qccfile[hand].maxofs = qccfile[hand].ofs;
@@ -903,7 +908,10 @@ int SafeSeek(int hand, int ofs, int mode)
 		return qccfile[hand].ofs;
 	else
 	{
-		ResizeBuf(hand, ofs+1024);
+		if (qccfile[hand].stdio)
+			fseek(qccfile[hand].stdio, ofs, SEEK_SET);
+		else
+			ResizeBuf(hand, ofs+1024);
 		qccfile[hand].ofs = ofs;
 		if (qccfile[hand].ofs > qccfile[hand].maxofs)
 			qccfile[hand].maxofs = qccfile[hand].ofs;
@@ -947,7 +955,7 @@ unsigned int utf8_check(const void *in, unsigned int *value)
 		if ((str[1] & 0xc0) == 0x80)
 		{
 			*value = uc = ((str[0] & 0x1f)<<6) | (str[1] & 0x3f);
-			if (!uc || uc >= (1u<<7))	//allow modified utf-8
+			if (!uc || uc >= (1u<<7))	//allow modified utf-8 (only for nulls)
 				return 2;
 		}
 	}
@@ -1220,7 +1228,7 @@ char *QCC_SanitizeCharSet(char *mem, size_t *len, pbool *freeresult, int *origfm
 
 static unsigned char *PDECL QCC_LoadFileHunk(void *ctx, size_t size)
 {	//2 ensures we can always put a \n in there.
-	return (unsigned char*)qccHunkAlloc(sizeof(qcc_cachedsourcefile_t)+size+2) + sizeof(qcc_cachedsourcefile_t);
+	return (unsigned char*)qccHunkAlloc(sizeof(qcc_cachedsourcefile_t)+strlen(ctx)+size+2) + sizeof(qcc_cachedsourcefile_t) + strlen(ctx);
 }
 
 long	QCC_LoadFile (char *filename, void **bufferptr)
@@ -1234,13 +1242,13 @@ long	QCC_LoadFile (char *filename, void **bufferptr)
 	int orig;
 	pbool warned = false;
 
-	mem = externs->ReadFile(filename, QCC_LoadFileHunk, NULL, &len, true);
+	mem = externs->ReadFile(filename, QCC_LoadFileHunk, filename, &len, true);
 	if (!mem)
 	{
 		QCC_Error(ERR_COULDNTOPENFILE, "Couldn't open file %s", filename);
 		return -1;
 	}
-	sfile = (qcc_cachedsourcefile_t*)(mem-sizeof(qcc_cachedsourcefile_t));
+	sfile = (qcc_cachedsourcefile_t*)(mem-sizeof(qcc_cachedsourcefile_t)-strlen(filename));
 	mem[len] = 0;
 
 	mem = QCC_SanitizeCharSet(mem, &len, NULL, &orig);
@@ -1284,10 +1292,10 @@ void	QCC_AddFile (char *filename)
 	char *mem;
 	size_t len;
 
-	mem = externs->ReadFile(filename, QCC_LoadFileHunk, NULL, &len, false);
+	mem = externs->ReadFile(filename, QCC_LoadFileHunk, filename, &len, false);
 	if (!mem)
 		externs->Abort("failed to find file %s", filename);
-	sfile = (qcc_cachedsourcefile_t*)(mem-sizeof(qcc_cachedsourcefile_t));
+	sfile = (qcc_cachedsourcefile_t*)(mem-sizeof(qcc_cachedsourcefile_t)-strlen(filename));
 	mem[len] = '\0';
 
 	sfile->size = len;

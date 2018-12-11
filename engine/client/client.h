@@ -114,7 +114,7 @@ typedef struct
 	short		gravity;
 	short		delta_angles[3];	// add to command angles to get view direction
 									// changed by spawns, rotating objects, and teleporters
-	short		pad;
+//	short		pad;
 } q2pmove_state_t;
 
 typedef struct
@@ -156,11 +156,11 @@ typedef struct colourised_s {
 #define MAX_DISPLAYEDNAME	16
 typedef struct player_info_s
 {
-	int		userid;
-	char	userinfo[EXTENDED_INFO_STRING];
-	qboolean userinfovalid;	//set if we actually know the userinfo (ie: false on vanilla nq servers)
-	char	teamstatus[128];
-	float	teamstatustime;
+	int			userid;
+	infobuf_t	userinfo;
+	qboolean	userinfovalid;	//set if we actually know the userinfo (ie: false on vanilla nq servers)
+	char		teamstatus[128];
+	float		teamstatustime;
 
 	// scoreboard information
 	int		spectator;
@@ -305,7 +305,7 @@ typedef struct
 #define LFLAG_NOSHADOWS		(1<<8)
 #define LFLAG_SHADOWMAP		(1<<9)
 #define LFLAG_CREPUSCULAR	(1<<10)	//weird type of sun light that gives god rays
-//#define LFLAG_ORTHO			(1<<11)	//sun-style -light
+#define LFLAG_ORTHO			(1<<11)	//sun-style -light
 
 #define LFLAG_INTERNAL		(LFLAG_LIGHTMAP|LFLAG_FLASHBLEND)	//these are internal to FTE, and never written to disk (ie: .rtlights files shouldn't contain these)
 #define LFLAG_DYNAMIC (LFLAG_LIGHTMAP | LFLAG_FLASHBLEND | LFLAG_NORMALMODE | LFLAG_REALTIMEMODE)
@@ -315,6 +315,7 @@ typedef struct dlight_s
 	int		key;				// so entities can reuse same entry
 	vec3_t	origin;
 	vec3_t	axis[3];
+	vec3_t	angles;				//used only for reflection, to avoid things getting rounded/cycled.
 	vec3_t	rotation;			//cubemap/spotlight rotation
 	float	radius;
 	float	die;				// stop lighting after this time
@@ -330,6 +331,7 @@ typedef struct dlight_s
 
 	unsigned int flags;
 	char	cubemapname[64];
+	char	*customstyle;
 
 	int coronaocclusionquery;
 	unsigned int coronaocclusionresult;
@@ -396,9 +398,9 @@ typedef struct qdownload_s
 	unsigned int	filesequence;			//unique file id.
 	enum fs_relative fsroot;				//where the local+temp file is meant to be relative to.
 
-	double			ratetime;
-	int				rate;
-	int				ratebytes;
+	double			ratetime;				//periodically updated
+	int				rate;					//ratebytes/ratetimedelta
+	int				ratebytes;				//updated by download reception code, and cleared when ratetime is bumped
 	unsigned int	flags;
 
 	//chunked downloads uses this
@@ -425,7 +427,7 @@ enum qdlabort
 };
 qboolean DL_Begun(qdownload_t *dl);
 void DL_Abort(qdownload_t *dl, enum qdlabort aborttype);		//just frees the download's resources. does not delete the temp file.
-qboolean CL_AllowArbitaryDownload(char *oldname, char *localfile);
+qboolean CL_AllowArbitaryDownload(const char *oldname, const char *localfile);
 
 
 //
@@ -474,8 +476,6 @@ typedef struct
 
 	int protocol_q2;
 
-
-	qboolean resendinfo;
 	qboolean findtrack;
 
 	int framecount;
@@ -487,8 +487,8 @@ typedef struct
 	netchan_t	netchan;
 	float lastarbiatarypackettime;	//used to mark when packets were sent to prevent mvdsv servers from causing us to disconnect.
 
-// private userinfo for sending to masterless servers
-	char		userinfo[MAX_SPLITS][EXTENDED_INFO_STRING];
+	infobuf_t	userinfo[MAX_SPLITS];
+	infosync_t	userinfosync;
 
 	char		servername[MAX_OSPATH];	// name of server from original connect
 
@@ -712,6 +712,7 @@ struct playerview_s
 
 	cshift_t	cshifts[NUM_CSHIFTS];	// color shifts for damage, powerups and content types
 	vec4_t		screentint;
+	vec4_t		bordertint;	//won't contain v_cshift values, only powerup+contents+damage+bf flashes
 
 	vec3_t		vw_axis[3];	//weapons should be positioned relative to this
 	vec3_t		vw_origin;	//weapons should be positioned relative to this
@@ -757,7 +758,7 @@ typedef struct
 	qboolean	stillloading;	// set when doing something slow, and the game is still loading.
 
 	qboolean	haveserverinfo;	//nq servers will usually be false. don't override stuff if we already know better.
-	char		serverinfo[MAX_SERVERINFO_STRING];
+	infobuf_t	serverinfo;
 	char		serverpaknames[1024];
 	char		serverpakcrcs[1024];
 	qboolean	serverpakschanged;
@@ -781,7 +782,7 @@ typedef struct
 	double		last_servermessage;
 
 	//list of ent frames that still need to be acked.
-	int numackframes;
+	unsigned int numackframes;
 	int ackframes[64];
 
 #ifdef Q2CLIENT
@@ -846,21 +847,23 @@ typedef struct
 //
 // information that is static for the entire time connected to a server
 //
-	char		model_name_vwep[MAX_VWEP_MODELS][MAX_QPATH];
-	char		model_name[MAX_PRECACHE_MODELS][MAX_QPATH];
-	char		sound_name[MAX_PRECACHE_SOUNDS][MAX_QPATH];
-	char		*particle_ssname[MAX_SSPARTICLESPRE];
+#ifndef NOLEGACY
+	char				model_name_vwep[MAX_VWEP_MODELS][MAX_QPATH];
+	struct model_s		*model_precache_vwep[MAX_VWEP_MODELS];
+#endif
+	char				model_name[MAX_PRECACHE_MODELS][MAX_QPATH];
+	struct model_s		*model_precache[MAX_PRECACHE_MODELS];
+	char				sound_name[MAX_PRECACHE_SOUNDS][MAX_QPATH];
+	struct sfx_s		*sound_precache[MAX_PRECACHE_SOUNDS];
+	char				*particle_ssname[MAX_SSPARTICLESPRE];
+	int					particle_ssprecache[MAX_SSPARTICLESPRE];	//these are actually 1-based, so 0 can be used to lazy-init them. I cheat.
+
 #ifdef Q2CLIENT
 	char		*configstring_general[Q2MAX_CLIENTS|Q2MAX_GENERAL];
 	char		*image_name[Q2MAX_IMAGES];
 	char		*item_name[Q2MAX_ITEMS];
 	short		inventory[MAX_SPLITS][Q2MAX_ITEMS];
 #endif
-
-	struct model_s		*model_precache_vwep[MAX_VWEP_MODELS];
-	struct model_s		*model_precache[MAX_PRECACHE_MODELS];
-	struct sfx_s		*sound_precache[MAX_PRECACHE_SOUNDS];
-	int					particle_ssprecache[MAX_SSPARTICLESPRE];	//these are actually 1-based, so 0 can be used to lazy-init them. I cheat.
 
 	char				model_csqcname[MAX_CSMODELS][MAX_QPATH];
 	struct model_s		*model_csqcprecache[MAX_CSMODELS];
@@ -899,6 +902,7 @@ typedef struct
 	qboolean gamedirchanged;
 
 #ifdef Q2CLIENT
+	char		q2airaccel[16];
 	char		q2statusbar[1024];
 	char		q2layout[MAX_SPLITS][1024];
 	int parse_entities;
@@ -1047,9 +1051,9 @@ extern	static_entity_t		*cl_static_entities;
 extern	unsigned int	cl_max_static_entities;
 extern	lightstyle_t	cl_lightstyle[MAX_LIGHTSTYLES];
 extern	dlight_t		*cl_dlights;
-extern	unsigned int	cl_maxdlights;
+extern	size_t cl_maxdlights;
 
-extern int rtlights_first, rtlights_max;
+extern size_t rtlights_first, rtlights_max;
 extern int cl_baselines_count;
 
 extern	qboolean	nomaster;
@@ -1066,6 +1070,7 @@ dlight_t *CL_AllocDlight (int key);
 dlight_t *CL_AllocSlight (void);	//allocates a static light
 dlight_t *CL_NewDlight (int key, const vec3_t origin, float radius, float time, float r, float g, float b);
 dlight_t *CL_NewDlightCube (int key, const vec3_t origin, vec3_t angles, float radius, float time, vec3_t colours);
+void CL_CloneDlight(dlight_t *dl, dlight_t *src);	//copies one light to another safely
 void	CL_DecayLights (void);
 
 void CLQW_ParseDelta (struct entity_state_s *from, struct entity_state_s *to, int bits);
@@ -1077,7 +1082,7 @@ void CL_CheckServerPacks(void);
 
 void CL_EstablishConnection (char *host);
 
-void CL_Disconnect (void);
+void CL_Disconnect (const char *reason);
 void CL_Disconnect_f (void);
 void CL_Reconnect_f (void);
 void CL_NextDemo (void);
@@ -1089,7 +1094,7 @@ void CL_Reconnect_f (void);
 void CL_ConnectionlessPacket (void);
 qboolean CL_DemoBehind(void);
 void CL_SaveInfo(vfsfile_t *f);
-void CL_SetInfo (int pnum, char *key, char *value);
+void CL_SetInfo (int pnum, const char *key, const char *value);
 
 void CL_BeginServerConnect(const char *host, int port, qboolean noproxy);
 char *CL_TryingToConnect(void);
@@ -1148,6 +1153,9 @@ extern	float in_sensitivityscale;
 void CL_MakeActive(char *gamename);
 void CL_UpdateWindowTitle(void);
 
+#ifdef QUAKESTATS
+const char *IN_GetPreselectedViewmodelName(unsigned int pnum);
+#endif
 void CL_InitInput (void);
 void CL_SendCmd (double frametime, qboolean mainloop);
 void CL_SendMove (usercmd_t *cmd);
@@ -1184,11 +1192,10 @@ enum beamtype_e
 typedef struct beam_s beam_t;
 beam_t *CL_AddBeam (enum beamtype_e tent, int ent, vec3_t start, vec3_t end);
 
-void CL_ClearState (void);
+void CL_ClearState (qboolean gamestart);
 void CLQ2_ClearState(void);
 
 void CL_ReadPackets (void);
-void CL_ClampPitch (int pnum);
 
 int  CL_ReadFromServer (void);
 void CL_WriteToServer (usercmd_t *cmd);
@@ -1197,7 +1204,7 @@ void CL_BaseMove (usercmd_t *cmd, int pnum, float priortime, float extratime);
 int Master_FindBestRoute(char *server, char *out, size_t outsize, int *directcost, int *chainedcost);
 
 float CL_KeyState (kbutton_t *key, int pnum, qboolean noslowstart);
-char *Key_KeynumToString (int keynum, int modifier);
+const char *Key_KeynumToString (int keynum, int modifier);
 int Key_StringToKeynum (const char *str, int *modifier);
 char *Key_GetBinding(int keynum, int bindmap, int modifier);
 void Key_GetBindMap(int *bindmaps);
@@ -1279,6 +1286,7 @@ void CLQ2_ParseServerMessage (void);
 void CL_NewTranslation (int slot);
 
 int CL_IsDownloading(const char *localname);
+qboolean CL_CheckDLFile(const char *filename);
 qboolean CL_CheckOrEnqueDownloadFile (const char *filename, const char *localname, unsigned int flags);
 qboolean CL_EnqueDownload(const char *filename, const char *localname, unsigned int flags);
 downloadlist_t *CL_DownloadFailed(const char *name, qdownload_t *qdl);
@@ -1303,7 +1311,7 @@ qboolean CL_CheckBaselines (int size);
 void V_StartPitchDrift (playerview_t *pv);
 void V_StopPitchDrift (playerview_t *pv);
 
-void V_RenderView (void);
+void V_RenderView (qboolean no2d);
 void V_Register (void);
 void V_ParseDamage (playerview_t *pv);
 void V_SetContentsColor (int contents);
@@ -1396,7 +1404,8 @@ qboolean CSQC_Inited(void);
 void	 CSQC_RendererRestarted(void);
 qboolean CSQC_UnconnectedOkay(qboolean inprinciple);
 qboolean CSQC_UnconnectedInit(void);
-qboolean CSQC_Init (qboolean anycsqc, qboolean csdatenabled, unsigned int checksum);
+qboolean CSQC_CheckDownload(const char *name, unsigned int checksum, size_t checksize);	//reports whether we already have a usable csprogs.dat
+qboolean CSQC_Init (qboolean anycsqc, const char *csprogsname, unsigned int checksum, size_t progssize);
 qboolean CSQC_ConsoleLink(char *text, char *info);
 void	 CSQC_RegisterCvarsAndThings(void);
 qboolean CSQC_SetupToRenderPortal(int entnum);
@@ -1688,7 +1697,7 @@ void Stats_NewMap(void);
 void Stats_Clear(void);
 void Stats_Init(void);
 
-enum uploadfmt;
+//enum uploadfmt;
 /*struct mediacallbacks_s
 {	//functions provided by the engine/renderer, for faster/off-thread updates
 	qboolean pbocanoffthread;

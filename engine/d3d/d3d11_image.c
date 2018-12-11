@@ -295,6 +295,8 @@ qboolean D3D11_LoadTextureMips(image_t *tex, const struct pendingtextureinfo *mi
 		tdesc.Format = DXGI_FORMAT_R8G8_SNORM;
 		break;
 
+	case PTI_L8_SRGB:			//no swizzles / single-channel srgb
+	case PTI_L8A8_SRGB:			//no swizzles / single-channel srgb
 	case PTI_ETC1_RGB8:			//not invented here...
 	case PTI_ETC2_RGB8:
 	case PTI_ETC2_RGB8A1:
@@ -391,14 +393,14 @@ void D3D11_UploadLightmap(lightmapinfo_t *lm)
 	mips.mip[0].width = lm->width;
 	mips.mip[0].height = lm->height;
 	mips.mip[0].datasize = lm->width*lm->height*4;
-	switch (lightmap_fmt)
+	switch (lm->fmt)
 	{
 	default:
 	case PTI_A2BGR10:
 	case PTI_E5BGR9:
 	case PTI_RGBA16F:
 	case PTI_RGBA32F:
-		mips.encoding = lightmap_fmt;
+		mips.encoding = lm->fmt;
 		break;
 	case PTI_BGRA8:
 		mips.encoding = PTI_BGRX8;

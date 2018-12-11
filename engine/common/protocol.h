@@ -38,12 +38,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define PEXT_ENTITYDBL2			0x00004000	//max of 1024 ents instead of 512
 #define PEXT_FLOATCOORDS		0x00008000	//supports floating point origins.
 //#define PEXT_VWEAP				0x00010000	//cause an extra qbyte to be sent, and an extra list of models for vweaps.
-#ifdef Q2BSPS
-#define PEXT_Q2BSP				0x00020000
-#endif
-#ifdef Q3BSPS
-#define PEXT_Q3BSP				0x00040000
-#endif
+#define PEXT_Q2BSP_				0x00020000
+#define PEXT_Q3BSP_				0x00040000
 
 #define PEXT_COLOURMOD			0x00080000	//this replaces an older value which would rarly have caried any actual data.
 
@@ -64,7 +60,15 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define PEXT_BIGUSERINFOS	PEXT_CSQC	//FIXME: while useful for csqc, we should include something else that isn't so often stripped, or is available in ezquake, or something.
 #else
 #define PEXT_BIGUSERINFOS	0xffffffff
-#endif		
+#endif
+
+#ifdef Q2BSPS
+#define PEXT_Q2BSP				PEXT_Q2BSP_
+#endif
+#ifdef Q3BSPS
+#define PEXT_Q3BSP				PEXT_Q3BSP_
+#endif
+#define PEXT1_HIDEPROTOCOLS		(PEXT_Q3BSP_|PEXT_Q2BSP_|PEXT_HLBSP)	//These are hints for the server, and not useful to the client (they can figure stuff out themselves)
 
 #define PEXT2_PRYDONCURSOR			0x00000001
 #define PEXT2_VOICECHAT				0x00000002
@@ -73,6 +77,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define PEXT2_MAXPLAYERS			0x00000010	//Client is able to cope with more players than 32. abs max becomes 255, due to colormap issues.
 #define PEXT2_PREDINFO				0x00000020	//movevar stats, NQ input sequences+acks.
 #define PEXT2_NEWSIZEENCODING		0x00000040	//richer size encoding.
+#define PEXT2_INFOBLOBS				0x00000080	//serverinfo+userinfo lengths can be MUCH higher (protocol is unbounded, but expect low sanity limits on userinfo), and contain nulls etc.
 
 //EzQuake/Mvdsv extensions
 #define EZPEXT1_FLOATENTCOORDS		0x00000001	//quirky - doesn't apply to broadcasts, just players+ents. this gives more precision, but will bug out if you try using it to increase map bounds in ways that may not be immediately apparent. iiuc this was added instead of fixing some inconsistent rounding...
@@ -882,14 +887,19 @@ enum {
 #define	NQSND_VOLUME		(1<<0)		// a qbyte
 #define	NQSND_ATTENUATION	(1<<1)		// a qbyte
 //#define DPSND_LOOPING		(1<<2)		// a long, supposedly
-#define FTESND_MOREFLAGS	(1<<2)		// actually, chan flags
+#define FTESND_MOREFLAGS	(1<<2)		// actually, chan flags, mostly.
 #define NQSND_LARGEENTITY	(1<<3)		//both dp+fitz
 #define NQSND_LARGESOUND	(1<<4)		//both dp+fitz
 #define	DPSND_SPEEDUSHORT4000	(1<<5)		// ushort speed*4000 (speed is usually 1.0, a value of 0.0 is the same as 1.0)
 #define FTESND_TIMEOFS		(1<<6)		//signed short, in milliseconds.
 #define FTESND_PITCHADJ		(1<<7)			//a byte (speed percent (0=100%))
 //more flags are weird.
-#define FTESND_VELOCITY		(CF_RELIABLE<<8)	//borrowed.
+#define FTESND_VELOCITY		(CF_NET_SENTVELOCITY<<8)	//borrowed.
+//FTESND_NOSPACIALISE		(CF_NOSPACIALISE<<8)
+//FTESND_NOREVERB			(CF_NOREVERB<<8)
+//FTESND_FORCELOOP			(CF_FORCELOOP<<8)
+//FTESND_FOLLOW				(CF_FOLLOW<<8)
+//FTESND_RESERVED			(CF_RESERVEDN<<8)
 
 #define DEFAULT_SOUND_PACKET_VOLUME 255
 #define DEFAULT_SOUND_PACKET_ATTENUATION 1.0
@@ -915,8 +925,10 @@ enum {
 enum {
 	TE_SPIKE				= 0,
 	TE_SUPERSPIKE			= 1,
-	TE_GUNSHOT				= 2,	//qw has count byte, nq does not
-	TE_EXPLOSION			= 3,	//remapped to TEQW_EXPLOSIONNOSPRITE for nq.
+	TEQW_QWGUNSHOT			= 2,	//qw has count byte, nq does not
+	TENQ_NQGUNSHOT			= 2,	//nq has no count byte
+	TEQW_QWEXPLOSION		= 3,	//remapped to TEQW_EXPLOSIONNOSPRITE for nq.
+	TENQ_NQEXPLOSION		= 3,	//remapped to TEQW_EXPLOSIONNOSPRITE for nq.
 	TE_TAREXPLOSION			= 4,
 	TE_LIGHTNING1			= 5,
 	TE_LIGHTNING2			= 6,
@@ -926,25 +938,27 @@ enum {
 	TE_LAVASPLASH			= 10,
 	TE_TELEPORT				= 11,
 
-	TEQW_BLOOD				= 12,	//implemented as a particle() in nq
+	TEQW_QWBLOOD			= 12,	//implemented as a particle() in nq
 	TENQ_EXPLOSION2			= 12,	//remapped to TEQW_EXPLOSION2 for qw
 	TEQW_LIGHTNINGBLOOD		= 13,	//implemented as a particle() in nq
 	TENQ_BEAM				= 13,	//remapped to TEQW_BEAM for qw
 
 #ifdef PEXT_TE_BULLET
 	TE_BULLET				= 14,
-	TE_SUPERBULLET			= 15,
+	TEQW_SUPERBULLET		= 15,
 #endif
-	TENEH_RAILTRAIL			= 15,	//gah	[vector] origin [coord] red [coord] green [coord] blue
-	TENEH_EXPLOSION3		= 16,	//gah	[vector] origin [coord] red [coord] green [coord] blue
-	TE_RAILTRAIL			= 17,	//use the builtin, luke.
-	TENEH_LIGHTNING4		= 17,	//gah	[string] model [entity] entity [vector] start [vector] end
+	TENQ_RAILTRAIL			= 15,	//gah	[vector] origin [coord] red [coord] green [coord] blue
+	TE_EXPLOSION3_NEH		= 16,	//gah	[vector] origin [coord] red [coord] green [coord] blue
+	TEQW_RAILTRAIL			= 17,	//use the builtin, luke.
+	TENQ_NEHLIGHTNING4		= 17,	//gah	[string] model [entity] entity [vector] start [vector] end
+	TEQW_NEHLIGHTNING4		= 1000,	//give a real value if its ever properly implemented
 	TEQW_BEAM				= 18,	//use the builtin, luke.
-	TENEH_SMOKE				= 18,	//gah	[vector] origin [byte] palette
+	TENQ_NEHSMOKE			= 18,	//gah	[vector] origin [byte] palette
 	TEQW_EXPLOSION2			= 19,	//use the builtin, luke.
-	TEQW_EXPLOSION_NOSPRITE	= 20,	//nq-style explosion over qw
-	TENQ_EXPLOSION_SPRITE	= 20,	//qw-style explosion over nq
-	TE_GUNSHOT_NQCOMPAT		= 21,	//nq has count byte, qw does not
+	TEQW_NQEXPLOSION		= 20,	//nq-style explosion over qw
+	TENQ_QWEXPLOSION		= 20,	//qw-style explosion over nq
+	TEQW_NQGUNSHOT			= 21,	//nq has count byte, qw does not
+	TENQ_QWGUNSHOT			= 21,	//nq has count byte, qw does not
 
 	// hexen 2
 	TEH2_STREAM_LIGHTNING_SMALL	= 24,
@@ -958,7 +972,7 @@ enum {
 	TEH2_STREAM_FAMINE		= 32,
 	TEH2_PARTICLEEXPLOSION = 33,
 
-	TEDP_BLOOD			= 50,
+	TEDP_BLOOD			= 50, // [coord*3] origin [byte*3] vel [byte] count
 	TEDP_SPARK			= 51,
 	TEDP_BLOODSHOWER	= 52,
 	TEDP_EXPLOSIONRGB	= 53,
@@ -1297,7 +1311,7 @@ typedef struct q1usercmd_s
 #define	Q2RF_MINLIGHT			(1u<<0)		//ni	always have some light (viewmodel)
 #define	RF_EXTERNALMODEL		(1u<<1)		//i 	don't draw through eyes, only mirrors
 #define	RF_WEAPONMODEL			(1u<<2)		//i 	only draw through eyes
-#define	Q2RF_FULLBRIGHT			(1u<<3)		//i 	always draw full intensity
+#define	RF_FULLBRIGHT			(1u<<3)		//i 	always draw full intensity
 #define	RF_DEPTHHACK			(1u<<4)		//i 	for view weapon Z crunching
 #define	RF_TRANSLUCENT			(1u<<5)		//forces shader sort order and BEF_FORCETRANSPARENT
 #define	Q2RF_FRAMELERP			(1u<<6)		//q2only

@@ -89,13 +89,15 @@
 //#define IMAGEFMT_PKM			//file format generally written by etcpack or android's etc1tool. doesn't support mips.
 //#define IMAGEFMT_DDS			//.dds files embed mipmaps and texture compression. faster to load.
 //#define IMAGEFMT_BLP			//legacy crap
-#define PACKAGE_TEXWAD			//quake's image wad support
+//#define IMAGEFMT_BMP			//windows bmp. yuck.
+//#define IMAGEFMT_PCX			//paletted junk. required for qw player skins, q2 and a few old skyboxes.
 #define AVAIL_PNGLIB			//.png image format support (read+screenshots)
 //#define AVAIL_JPEGLIB			//.jpeg image format support (read+screenshots)
-//#define AVAIL_FREETYPE		//for truetype font rendering
-//#define DECOMPRESS_ETC2		//decompress etc2(core in gles3/gl4.3) if the graphics driver doesn't support it (eg d3d or crappy gpus with vulkan).
-////#define DECOMPRESS_S3TC		//allows bc1-3 to work even when drivers don't support it. This is probably only an issue on mobile chips. WARNING: not entirely sure if all patents expired yet...
-//#define DECOMPRESS_RGTC		//bc4+bc5
+#define PACKAGE_TEXWAD			//quake's image wad support
+//#define AVAIL_FREETYPE			//for truetype font rendering
+//#define DECOMPRESS_ETC2			//decompress etc2(core in gles3/gl4.3) if the graphics driver doesn't support it (eg d3d or crappy gpus with vulkan).
+////#define DECOMPRESS_S3TC			//allows bc1-3 to work even when drivers don't support it. This is probably only an issue on mobile chips. WARNING: not entirely sure if all patents expired yet...
+//#define DECOMPRESS_RGTC			//bc4+bc5
 
 // Game/Gamecode Support
 //#define CSQC_DAT
@@ -113,6 +115,8 @@
 //#define SUBSERVERS			//Allows the server to fork itself, each acting as an MMO-style server instance of a single 'realm'.
 ////#define HLCLIENT 7			//we can run HL gamecode (not protocol compatible, set to 6 or 7)
 ////#define HLSERVER 140		//we can run HL gamecode (not protocol compatible, set to 138 or 140)
+//#define SAVEDGAMES			//Can save the game.
+//#define MVD_RECORDING			//server can record MVDs.
 
 // Networking options
 //#define NQPROT				//act as an nq client/server, with nq gamecode.
@@ -126,6 +130,7 @@
 //#define IRCCONNECT			//lame support for routing game packets via irc server. not a good idea.
 //#define SUPPORT_ICE			//Internet Connectivity Establishment, for use by plugins to establish voice or game connections.
 //#define CL_MASTER				//Clientside Server Browser functionality.
+//#define PACKAGEMANAGER			//Allows the user to enable/disable/download packages and plugins.
 
 // Audio Drivers
 //#define AVAIL_OPENAL

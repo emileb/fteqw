@@ -35,12 +35,18 @@ extern char **myargv;
 int QCC_filelength (int handle);
 int QCC_tell (int handle);
 
+#if 0//def __GNUC__
+	#define WARN_UNUSED_RESULT __attribute__((warn_unused_result))
+#else
+	#define WARN_UNUSED_RESULT
+#endif
+
 int QC_strcasecmp (const char *s1, const char *s2);
 int QC_strncasecmp(const char *s1, const char *s2, int n);
 
-void QC_strlcat(char *dest, const char *src, size_t destsize);
-void QC_strlcpy(char *dest, const char *src, size_t destsize);
-void QC_strnlcpy(char *dest, const char *src, size_t srclen, size_t destsize);
+pbool QC_strlcat(char *dest, const char *src, size_t destsize) WARN_UNUSED_RESULT;
+pbool QC_strlcpy(char *dest, const char *src, size_t destsize) WARN_UNUSED_RESULT;
+pbool QC_strnlcpy(char *dest, const char *src, size_t srclen, size_t destsize) WARN_UNUSED_RESULT;
 char *QC_strcasestr(const char *haystack, const char *needle);
 
 #ifdef _MSC_VER
@@ -71,7 +77,8 @@ static void VARGS QC_snprintfz (char *dest, size_t size, const char *fmt, ...)
 double I_FloatTime (void);
 
 void	VARGS QCC_Error (int errortype, const char *error, ...) LIKEPRINTF(2);
-int		CheckParm (char *check);
+int QCC_CheckParm (const char *check);
+const char *QCC_ReadParm (const char *check);
 
 
 int 	SafeOpenWrite (char *filename, int maxsize);

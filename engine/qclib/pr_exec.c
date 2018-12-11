@@ -10,6 +10,12 @@
 	#define fte_restrict
 #endif
 
+#if defined(_WIN32) || defined(__DJGPP__)
+	#include <malloc.h>
+#elif !defined(alloca)	//alloca.h isn't present on bsd (stdlib.h should define it to __builtin_alloca, and we can check for that here).
+	#include <alloca.h>
+#endif
+
 #define HunkAlloc BADGDFG sdfhhsf FHS
 
 
@@ -120,36 +126,36 @@ static void PR_PrintStatement (progfuncs_t *progfuncs, int statementnum)
 	if ( (unsigned)op < OP_NUMOPS)
 	{
 		int i;
-		printf ("%s ",  pr_opcodes[op].name);
+		externs->Printf ("%s ",  pr_opcodes[op].name);
 		i = strlen(pr_opcodes[op].name);
 		for ( ; i<10 ; i++)
-			printf (" ");
+			externs->Printf (" ");
 	}
 	else
 #endif
-		printf ("op%3i ", op);
+		externs->Printf ("op%3i ", op);
 
 	if (op == OP_IF_F || op == OP_IFNOT_F)
-		printf ("%sbranch %i",PR_GlobalString(progfuncs, arg[0]),arg[1]);
+		externs->Printf ("%sbranch %i",PR_GlobalString(progfuncs, arg[0]),arg[1]);
 	else if (op == OP_GOTO)
 	{
-		printf ("branch %i",arg[0]);
+		externs->Printf ("branch %i",arg[0]);
 	}
 	else if ( (unsigned)(op - OP_STORE_F) < 6)
 	{
-		printf ("%s",PR_GlobalString(progfuncs, arg[0]));
-		printf ("%s", PR_GlobalStringNoContents(progfuncs, arg[1]));
+		externs->Printf ("%s",PR_GlobalString(progfuncs, arg[0]));
+		externs->Printf ("%s", PR_GlobalStringNoContents(progfuncs, arg[1]));
 	}
 	else
 	{
 		if (arg[0])
-			printf ("%s",PR_GlobalString(progfuncs, arg[0]));
+			externs->Printf ("%s",PR_GlobalString(progfuncs, arg[0]));
 		if (arg[1])
-			printf ("%s",PR_GlobalString(progfuncs, arg[1]));
+			externs->Printf ("%s",PR_GlobalString(progfuncs, arg[1]));
 		if (arg[2])
-			printf ("%s", PR_GlobalStringNoContents(progfuncs, arg[2]));
+			externs->Printf ("%s", PR_GlobalStringNoContents(progfuncs, arg[2]));
 	}
-	printf ("\n");
+	externs->Printf ("\n");
 }
 
 #ifdef _WIN32
@@ -349,9 +355,9 @@ static void PDECL PR_PrintRelevantLocals(progfuncs_t *progfuncs)
 			else
 				fdef = ED_FieldAtOfs(progfuncs, ((eval_t *)&pr_globals[st16[st].b])->_int);
 			if (fdef)
-				printf("    %s.%s: %s\n", PR_StringToNative(&progfuncs->funcs, ent->s_name), PR_StringToNative(&progfuncs->funcs, fld->s_name), PR_ValueString(progfuncs, fdef->type, ptr, false));
+				externs->Printf("    %s.%s: %s\n", PR_StringToNative(&progfuncs->funcs, ent->s_name), PR_StringToNative(&progfuncs->funcs, fld->s_name), PR_ValueString(progfuncs, fdef->type, ptr, false));
 			else
-				printf("    %s.%s: BAD FIELD DEF - %#x\n", PR_StringToNative(&progfuncs->funcs, ent->s_name), PR_StringToNative(&progfuncs->funcs, fld->s_name), ptr->_int);
+				externs->Printf("    %s.%s: BAD FIELD DEF - %#x\n", PR_StringToNative(&progfuncs->funcs, ent->s_name), PR_StringToNative(&progfuncs->funcs, fld->s_name), ptr->_int);
 		}
 	}
 }
@@ -360,7 +366,8 @@ void PDECL PR_StackTrace (pubprogfuncs_t *ppf, int showlocals)
 {
 	progfuncs_t *progfuncs = (progfuncs_t *)ppf;
 	const mfunction_t	*f;
-	int			i;
+	int prnum;
+	int			i, st;
 	int progs;
 	int ofs;
 	int *globalbase;
@@ -369,7 +376,7 @@ void PDECL PR_StackTrace (pubprogfuncs_t *ppf, int showlocals)
 
 	if (pr_depth == 0)
 	{
-		printf ("<NO STACK>\n");
+		externs->Printf ("<NO STACK>\n");
 		return;
 	}
 
@@ -378,35 +385,43 @@ void PDECL PR_StackTrace (pubprogfuncs_t *ppf, int showlocals)
 	//point this to the function's locals
 	globalbase = (int *)pr_globals + pr_xfunction->parm_start + pr_xfunction->locals;
 
-	pr_stack[pr_depth].f = pr_xfunction;
-	pr_stack[pr_depth].s = pr_xstatement;
 	for (i=pr_depth ; i>0 ; i--)
 	{
-		f = pr_stack[i].f;
+		if (i == pr_depth)
+		{
+			f = pr_xfunction;
+			st = pr_xstatement;
+			prnum = prinst.pr_typecurrent;
+		}
+		else
+		{
+			f = pr_stack[i].f;
+			st = pr_stack[i].s;
+			prnum = pr_stack[i].progsnum;
+		}
 
 		if (!f)
 		{
-			printf ("<NO FUNCTION>\n");
+			externs->Printf ("<NO FUNCTION>\n");
 		}
 		else
 		{
 			globalbase -= f->locals;
 
-			if (pr_stack[i].progsnum != progs)
+			if (prnum != progs)
 			{
-				progs = pr_stack[i].progsnum;
+				progs = prnum;
 
-				printf ("<%s>\n", pr_progstate[progs].filename);
+				externs->Printf ("<%s>\n", pr_progstate[progs].filename);
 			}
 			if (!f->s_file)
-				printf ("stripped     : %s\n", PR_StringToNative(ppf, f->s_name));
+				externs->Printf ("stripped     : %s\n", PR_StringToNative(ppf, f->s_name));
 			else
 			{
-				int st = pr_stack[i].s;
 				if (pr_progstate[progs].linenums)
-					printf ("%12s:%i: %s\n", PR_StringToNative(ppf, f->s_file), pr_progstate[progs].linenums[st], PR_StringToNative(ppf, f->s_name));
+					externs->Printf ("%12s:%i: %s\n", PR_StringToNative(ppf, f->s_file), pr_progstate[progs].linenums[st], PR_StringToNative(ppf, f->s_name));
 				else
-					printf ("%12s : %s\n", PR_StringToNative(ppf, f->s_file), PR_StringToNative(ppf, f->s_name));
+					externs->Printf ("%12s : %s\n", PR_StringToNative(ppf, f->s_file), PR_StringToNative(ppf, f->s_name));
 			}
 
 			//locals:0 = no locals
@@ -431,20 +446,20 @@ void PDECL PR_StackTrace (pubprogfuncs_t *ppf, int showlocals)
 						{
 							if (f->parm_size[arg] == 3)
 							{	//looks like a vector. print it as such
-								printf("    arg%i(%i): [%g, %g, %g]\n", arg, f->parm_start+ofs, *(float *)(globalbase+ofs), *(float *)(globalbase+ofs+1), *(float *)(globalbase+ofs+2));
+								externs->Printf("    arg%i(%i): [%g, %g, %g]\n", arg, f->parm_start+ofs, *(float *)(globalbase+ofs), *(float *)(globalbase+ofs+1), *(float *)(globalbase+ofs+2));
 								ofs += 2;
 							}
 							else
-								printf("    arg%i(%i): %g===%i\n", arg, f->parm_start+ofs, *(float *)(globalbase+ofs), *(int *)(globalbase+ofs) );
+								externs->Printf("    arg%i(%i): %g===%i\n", arg, f->parm_start+ofs, *(float *)(globalbase+ofs), *(int *)(globalbase+ofs) );
 						}
 						else
 						{
-							printf("     unk(%i): %g===%i\n", f->parm_start+ofs, *(float *)(globalbase+ofs), *(int *)(globalbase+ofs) );
+							externs->Printf("     unk(%i): %g===%i\n", f->parm_start+ofs, *(float *)(globalbase+ofs), *(int *)(globalbase+ofs) );
 						}
 					}
 					else
 					{
-						printf("    %s: %s\n", local->s_name+progfuncs->funcs.stringtable, PR_ValueString(progfuncs, local->type, (eval_t*)(globalbase+ofs), false));
+						externs->Printf("    %s: %s\n", local->s_name+progfuncs->funcs.stringtable, PR_ValueString(progfuncs, local->type, (eval_t*)(globalbase+ofs), false));
 						if (local->type == ev_vector)
 							ofs+=2;
 					}
@@ -486,7 +501,7 @@ int ASMCALL PR_EnterFunction (progfuncs_t *progfuncs, mfunction_t *f, int progsn
 	{
 		PR_StackTrace (&progfuncs->funcs, false);
 
-		printf ("stack overflow on call to %s (depth %i)\n", progfuncs->funcs.stringtable+f->s_name, pr_depth);
+		externs->Printf ("stack overflow on call to %s (depth %i)\n", progfuncs->funcs.stringtable+f->s_name, pr_depth);
 
 		//comment this out if you want the progs to try to continue anyway (could cause infinate loops)
 		PR_AbortStack(&progfuncs->funcs);
@@ -572,7 +587,7 @@ int ASMCALL PR_LeaveFunction (progfuncs_t *progfuncs)
 		prclocks_t cycles;
 		cycles = Sys_GetClock() - st->timestamp;
 		if (cycles > prinst.profilingalert)
-			printf("QC call to %s took over a second\n", PR_StringToNative(&progfuncs->funcs,pr_xfunction->s_name));
+			externs->Printf("QC call to %s took over a second\n", PR_StringToNative(&progfuncs->funcs,pr_xfunction->s_name));
 		pr_xfunction->profiletime += cycles;
 		pr_xfunction = st->f;
 		if (pr_depth)
@@ -585,17 +600,18 @@ int ASMCALL PR_LeaveFunction (progfuncs_t *progfuncs)
 	return st->s;
 }
 
-ddef32_t *ED_FindLocalOrGlobal(progfuncs_t *progfuncs, char *name, eval_t **val)
+ddef32_t *ED_FindLocalOrGlobal(progfuncs_t *progfuncs, const char *name, eval_t **val)
 {
 	static ddef32_t def;
 	ddef32_t *def32;
 	ddef16_t *def16;
 	int i;
+	progstate_t *cp = current_progstate;
 
-	if (prinst.pr_typecurrent < 0)
+	if (!cp)
 		return NULL;
 
-	switch (pr_progstate[prinst.pr_typecurrent].structtype)
+	switch (cp->structtype)
 	{
 	case PST_DEFAULT:
 	case PST_KKQWSV:
@@ -608,7 +624,7 @@ ddef32_t *ED_FindLocalOrGlobal(progfuncs_t *progfuncs, char *name, eval_t **val)
 				continue;
 			if (!strcmp(def16->s_name+progfuncs->funcs.stringtable, name))
 			{
-				*val = (eval_t *)&pr_progstate[prinst.pr_typecurrent].globals[pr_xfunction->parm_start+i];
+				*val = (eval_t *)&cp->globals[pr_xfunction->parm_start+i];
 
 				//we need something like this for functions that are not the top layer
 	//			*val = (eval_t *)&localstack[localstack_used-pr_xfunction->numparms*4];
@@ -637,7 +653,7 @@ ddef32_t *ED_FindLocalOrGlobal(progfuncs_t *progfuncs, char *name, eval_t **val)
 				continue;
 			if (!strcmp(def32->s_name+progfuncs->funcs.stringtable, name))
 			{
-				*val = (eval_t *)&pr_progstate[prinst.pr_typecurrent].globals[pr_xfunction->parm_start+i];
+				*val = (eval_t *)&cp->globals[pr_xfunction->parm_start+i];
 
 				//we need something like this for functions that are not the top layer
 	//			*val = (eval_t *)&localstack[localstack_used-pr_xfunction->numparms*4];
@@ -653,11 +669,11 @@ ddef32_t *ED_FindLocalOrGlobal(progfuncs_t *progfuncs, char *name, eval_t **val)
 		def32 = NULL;
 	}
 
-	*val = (eval_t *)&pr_progstate[prinst.pr_typecurrent].globals[def32->ofs];
+	*val = (eval_t *)&cp->globals[def32->ofs];
 	return &def;
 }
 
-static char *COM_TrimString(char *str, char *buffer, int buffersize)
+static char *COM_TrimString(const char *str, char *buffer, int buffersize)
 {
 	int i;
 	while (*str <= ' ' && *str>'\0')
@@ -673,7 +689,7 @@ static char *COM_TrimString(char *str, char *buffer, int buffersize)
 	return buffer;
 }
 
-pbool LocateDebugTerm(progfuncs_t *progfuncs, char *key, eval_t **result, etype_t *rettype, eval_t *store)
+pbool LocateDebugTerm(progfuncs_t *progfuncs, const char *key, eval_t **result, etype_t *rettype, eval_t *store)
 {
 	ddef32_t *def;
 	fdef_t *fdef;
@@ -766,7 +782,7 @@ pbool LocateDebugTerm(progfuncs_t *progfuncs, char *key, eval_t **result, etype_
 	return true;
 }
 
-pbool PDECL PR_SetWatchPoint(pubprogfuncs_t *ppf, char *key)
+pbool PDECL PR_SetWatchPoint(pubprogfuncs_t *ppf, const char *key)
 {
 	progfuncs_t *progfuncs = (progfuncs_t *)ppf;
 	eval_t *val;
@@ -783,17 +799,17 @@ pbool PDECL PR_SetWatchPoint(pubprogfuncs_t *ppf, char *key)
 	}
 	if (!LocateDebugTerm(progfuncs, key, &val, &type, &fakeval))
 	{
-		printf("Unable to evaluate watch term \"%s\"\n", key);
+		externs->Printf("Unable to evaluate watch term \"%s\"\n", key);
 		return false;
 	}
 	if (val == &fakeval)
 	{
-		printf("Do you like watching paint dry?\n");
+		externs->Printf("Do you like watching paint dry?\n");
 		return false;
 	}
 	if (type == ev_vector)
 	{
-		printf("Unable to watch vectors. Watching the x field instead.\n");
+		externs->Printf("Unable to watch vectors. Watching the x field instead.\n");
 		type = ev_float;
 	}
 
@@ -805,7 +821,7 @@ pbool PDECL PR_SetWatchPoint(pubprogfuncs_t *ppf, char *key)
 	return true;
 }
 
-static char *PR_ParseCast(char *key, etype_t *t, pbool *isptr)
+static const char *PR_ParseCast(const char *key, etype_t *t, pbool *isptr)
 {
 	extern char *basictypenames[];
 	int type;
@@ -842,7 +858,7 @@ static char *PR_ParseCast(char *key, etype_t *t, pbool *isptr)
 	}
 	return key;
 }
-char *PDECL PR_EvaluateDebugString(pubprogfuncs_t *ppf, char *key)
+char *PDECL PR_EvaluateDebugString(pubprogfuncs_t *ppf, const char *key)
 {
 	progfuncs_t *progfuncs = (progfuncs_t*)ppf;
 	static char buf[8192];
@@ -1092,126 +1108,164 @@ void SetExecutionToLine(progfuncs_t *progfuncs, int linenum)
 //	EditorHighlightLine(editwnd, pr_progstate[pn].linenums[snum]);
 }
 
+struct sortedfunc_s
+{
+	int firststatement;
+	int firstline;
+};
+int PDECL PR_SortBreakFunctions(const void *va, const void *vb)
+{
+	const struct sortedfunc_s *a = va;
+	const struct sortedfunc_s *b = vb;
+	if (a->firstline == b->firstline)
+		return 0;
+	return a->firstline > b->firstline;
+}
+
 //0 clear. 1 set, 2 toggle, 3 check
-int PDECL PR_ToggleBreakpoint(pubprogfuncs_t *ppf, char *filename, int linenum, int flag)	//write alternate route to work by function name.
+int PDECL PR_ToggleBreakpoint(pubprogfuncs_t *ppf, const char *filename, int linenum, int flag)	//write alternate route to work by function name.
 {
 	progfuncs_t *progfuncs = (progfuncs_t*)ppf;
 	int ret=0;
-	unsigned int fl;
-	unsigned int i;
-	int pn = prinst.pr_typecurrent;
+	unsigned int fl, stline;
+	unsigned int i, j;
+
+	progstate_t *cp;
 	mfunction_t *f;
 	int op = 0; //warning about not being initialized before use
 
-	for (pn = 0; (unsigned)pn < prinst.maxprogs; pn++)
+	if (!pr_progstate)
+		return ret;
+
+	for (j = 0; j < prinst.maxprogs; j++)
 	{
-		if (!pr_progstate || !pr_progstate[pn].progs)
+		cp = &pr_progstate[j];
+		if (!cp->progs)
 			continue;
 
 		if (linenum)	//linenum is set means to set the breakpoint on a file and line
 		{
-			if (!pr_progstate[pn].linenums)
+			struct sortedfunc_s *sortedstatements;
+			int numfilefunctions = 0;
+			if (!cp->linenums)
 				continue;
+			sortedstatements = alloca(cp->progs->numfunctions * sizeof(*sortedstatements));
 
 			//we need to use the function table in order to set breakpoints in the right file.
-			for (f = pr_progstate[pn].functions, fl = 0; fl < pr_progstate[pn].progs->numfunctions; f++, fl++)
+			for (f = cp->functions, fl = 0; fl < cp->progs->numfunctions; f++, fl++)
 			{
 				const char *fncfile = f->s_file+progfuncs->funcs.stringtable;
 				if (fncfile[0] == '.' && fncfile[1] == '/')
 					fncfile+=2;
 				if (!stricmp(fncfile, filename))
 				{
-					for (i = f->first_statement; i < pr_progstate[pn].progs->numstatements; i++)
-					{
-						if (pr_progstate[pn].linenums[i] >= linenum)
-						{
-							fl = pr_progstate[pn].linenums[i];
-							for (; ; i++)
-							{
-								if ((unsigned int)pr_progstate[pn].linenums[i] > fl)
-									break;
+					sortedstatements[numfilefunctions].firststatement = f->first_statement;
+					if (f->first_statement < 0 || f->first_statement >= (int)cp->progs->numstatements)
+						sortedstatements[numfilefunctions].firstline = 0;
+					else
+						sortedstatements[numfilefunctions].firstline = cp->linenums[f->first_statement];
+					numfilefunctions++;
+				}
+			}
+			f = NULL;
+			qsort(sortedstatements, numfilefunctions, sizeof(*sortedstatements), PR_SortBreakFunctions);
 
-								switch(pr_progstate[pn].structtype)
+			//our functions are now in terms of ascending line numbers.
+			for (fl = 0; fl < numfilefunctions; fl++)
+			{
+				for (i = sortedstatements[fl].firststatement; i < cp->progs->numstatements; i++)
+				{
+					if (cp->linenums[i] >= linenum)
+					{
+						stline = cp->linenums[i];
+						for (; ; i++)
+						{
+							if ((unsigned int)cp->linenums[i] != stline)
+								break;
+
+							switch(cp->structtype)
+							{
+							case PST_DEFAULT:
+							case PST_QTEST:
+								op = ((dstatement16_t*)cp->statements + i)->op;
+								break;
+							case PST_KKQWSV:
+							case PST_FTE32:
+								op = ((dstatement32_t*)cp->statements + i)->op;
+								break;
+							default:
+								Sys_Error("Bad structtype");
+								op = 0;
+							}
+							switch (flag)
+							{
+							default:
+								if (op & OP_BIT_BREAKPOINT)
 								{
-								case PST_DEFAULT:
-								case PST_QTEST:
-									op = ((dstatement16_t*)pr_progstate[pn].statements + i)->op;
-									break;
-								case PST_KKQWSV:
-								case PST_FTE32:
-									op = ((dstatement32_t*)pr_progstate[pn].statements + i)->op;
-									break;
-								default:
-									Sys_Error("Bad structtype");
-									op = 0;
-								}
-								switch (flag)
-								{
-								default:
-									if (op & 0x8000)
-									{
-										op &= ~0x8000;
-										ret = false;
-										flag = 0;
-									}
-									else
-									{
-										op |= 0x8000;
-										ret = true;
-										flag = 1;
-									}
-									break;
-								case 0:
-									op &= ~0x8000;
+									op &= ~OP_BIT_BREAKPOINT;
 									ret = false;
-									break;
-								case 1:
-									op |= 0x8000;
-									ret = true;
-									break;
-								case 3:
-									if (op & 0x8000)
-										return true;
+									flag = 0;
 								}
-								switch(pr_progstate[pn].structtype)
+								else
 								{
-								case PST_DEFAULT:
-								case PST_QTEST:
-									((dstatement16_t*)pr_progstate[pn].statements + i)->op = op;
-									break;
-								case PST_KKQWSV:
-								case PST_FTE32:
-									((dstatement32_t*)pr_progstate[pn].statements + i)->op = op;
-									break;
-								default:
-									Sys_Error("Bad structtype");
-									op = 0;
+									op |= OP_BIT_BREAKPOINT;
+									ret = true;
+									flag = 1;
 								}
-								if (ret)	//if its set, only set one breakpoint statement, not all of them.
+								break;
+							case 0:
+								op &= ~OP_BIT_BREAKPOINT;
+								ret = false;
+								break;
+							case 1:
+								op |= OP_BIT_BREAKPOINT;
+								ret = true;
+								break;
+							case 3:
+								if (op & OP_BIT_BREAKPOINT)
 									return true;
 							}
-							goto cont;
+							switch(cp->structtype)
+							{
+							case PST_DEFAULT:
+							case PST_QTEST:
+								((dstatement16_t*)cp->statements + i)->op = op;
+								break;
+							case PST_KKQWSV:
+							case PST_FTE32:
+								((dstatement32_t*)cp->statements + i)->op = op;
+								break;
+							default:
+								Sys_Error("Bad structtype");
+								op = 0;
+							}
+							if (ret)	//if its set, only set one breakpoint statement, not all of them.
+								break;
+
+							if ((op & ~OP_BIT_BREAKPOINT) == OP_DONE)
+								break;	//give up when we see the function's done.
 						}
+						goto cont;	//next progs
 					}
 				}
 			}
 		}
 		else	//set the breakpoint on the first statement of the function specified.
 		{
-			for (f = pr_progstate[pn].functions, fl = 0; fl < pr_progstate[pn].progs->numfunctions; f++, fl++)
+			for (f = cp->functions, fl = 0; fl < cp->progs->numfunctions; f++, fl++)
 			{
 				if (!strcmp(f->s_name+progfuncs->funcs.stringtable, filename))
 				{
 					i = f->first_statement;
-					switch(pr_progstate[pn].structtype)
+					switch(cp->structtype)
 					{
 					case PST_DEFAULT:
 					case PST_QTEST:
-						op = ((dstatement16_t*)pr_progstate[pn].statements + i)->op;
+						op = ((dstatement16_t*)cp->statements + i)->op;
 						break;
 					case PST_KKQWSV:
 					case PST_FTE32:
-						op = ((dstatement32_t*)pr_progstate[pn].statements + i)->op;
+						op = ((dstatement32_t*)cp->statements + i)->op;
 						break;
 					default:
 						Sys_Error("Bad structtype");
@@ -1244,15 +1298,15 @@ int PDECL PR_ToggleBreakpoint(pubprogfuncs_t *ppf, char *filename, int linenum, 
 						if (op & 0x8000)
 							return true;
 					}
-					switch(pr_progstate[pn].structtype)
+					switch(cp->structtype)
 					{
 					case PST_DEFAULT:
 					case PST_QTEST:
-						((dstatement16_t*)pr_progstate[pn].statements + i)->op = op;
+						((dstatement16_t*)cp->statements + i)->op = op;
 						break;
 					case PST_KKQWSV:
 					case PST_FTE32:
-						((dstatement32_t*)pr_progstate[pn].statements + i)->op = op;
+						((dstatement32_t*)cp->statements + i)->op = op;
 						break;
 					default:
 						Sys_Error("Bad structtype");
@@ -1270,11 +1324,11 @@ cont:
 
 int ShowStep(progfuncs_t *progfuncs, int statement, char *fault, pbool fatal)
 {
-//	return statement;
-//	texture realcursortex;
+//FIXME: statics are evil, but at least the lastfile pointer check _should_ isolate different vms.
 static unsigned int lastline = 0;
-static unsigned int ignorestatement = 0;	//
-static const char *lastfile = 0;
+static unsigned int ignorestatement = 0;
+static const char *lastfile = NULL;
+	const char *file = NULL;
 
 	int pn = prinst.pr_typecurrent;
 	int i;
@@ -1291,13 +1345,14 @@ static const char *lastfile = 0;
 		return statement;
 	}
 
-	if (f && externs->useeditor)
+	if (f)
 	{
 		for(;;)	//for DEBUG_TRACE_NORESUME handling
 		{
+			file = PR_StringToNative(&progfuncs->funcs, f->s_file);
 			if (pr_progstate[pn].linenums)
 			{
-				if (lastline == pr_progstate[pn].linenums[statement] && lastfile == f->s_file+progfuncs->funcs.stringtable && statement == ignorestatement && !fault)
+				if (lastline == pr_progstate[pn].linenums[statement] && lastfile == file && statement == ignorestatement && !fault)
 				{
 					ignorestatement++;
 					return statement;	//no info/same line as last time
@@ -1307,13 +1362,16 @@ static const char *lastfile = 0;
 			}
 			else
 				lastline = -1;
-			lastfile = PR_StringToNative(&progfuncs->funcs, f->s_file);
+			lastfile = file;
 
 			faultline = lastline;
 			debugaction = externs->useeditor(&progfuncs->funcs, lastfile, ((lastline!=-1)?&lastline:NULL), &statement, fault, fatal);
 
+//			if (pn != prinst.pr_typecurrent)
+
 			//if they changed the line to execute, we need to find a statement that is on that line
 			if (lastline && faultline != lastline)
+			if (pr_progstate[pn].linenums)
 			{
 				switch(pr_progstate[pn].structtype)
 				{
@@ -1380,13 +1438,6 @@ static const char *lastfile = 0;
 			break;
 		}
 	}
-	else if (f)	//annoying.
-	{
-		if (*(f->s_file+progfuncs->funcs.stringtable))	//if we can't get the filename, then it was stripped, and debugging it like this is useless
-			if (externs->useeditor)
-				externs->useeditor(&progfuncs->funcs, f->s_file+progfuncs->funcs.stringtable, NULL, NULL, fault, fatal);
-		return statement;
-	}
 
 	ignorestatement = statement+1;
 	return statement;
@@ -1425,7 +1476,7 @@ PR_RunError
 Aborts the currently executing function
 ============
 */
-void VARGS PR_RunError (pubprogfuncs_t *progfuncs, char *error, ...)
+void VARGS PR_RunError (pubprogfuncs_t *progfuncs, const char *error, ...)
 {
 	va_list		argptr;
 	char		string[1024];
@@ -1542,7 +1593,7 @@ static casecmprange_t casecmprange[] =
 		pr_xstatement = st-pr_statements;		\
 		PR_RunError (&progfuncs->funcs, "runaway loop error\n");\
 		PR_StackTrace(&progfuncs->funcs,false);	\
-		printf ("runaway loop error\n");		\
+		externs->Printf ("runaway loop error\n");		\
 		while(pr_depth > prinst.exitdepth)		\
 			PR_LeaveFunction(progfuncs);		\
 		prinst.spushed = 0;							\
@@ -1678,20 +1729,20 @@ static void PR_ExecuteCode (progfuncs_t *progfuncs, int s)
 		switch(prinst.watch_type)
 		{
 		case ev_float:
-			printf("Watch point \"%s\" changed by engine from %g to %g.\n", prinst.watch_name, prinst.watch_old._float, prinst.watch_ptr->_float);
+			externs->Printf("Watch point \"%s\" changed by engine from %g to %g.\n", prinst.watch_name, prinst.watch_old._float, prinst.watch_ptr->_float);
 			break;
 		case ev_vector:
-			printf("Watch point \"%s\" changed by engine from '%g %g %g' to '%g %g %g'.\n", prinst.watch_name, prinst.watch_old._vector[0], prinst.watch_old._vector[1], prinst.watch_old._vector[2], prinst.watch_ptr->_vector[0], prinst.watch_ptr->_vector[1], prinst.watch_ptr->_vector[2]);
+			externs->Printf("Watch point \"%s\" changed by engine from '%g %g %g' to '%g %g %g'.\n", prinst.watch_name, prinst.watch_old._vector[0], prinst.watch_old._vector[1], prinst.watch_old._vector[2], prinst.watch_ptr->_vector[0], prinst.watch_ptr->_vector[1], prinst.watch_ptr->_vector[2]);
 			break;
 		default:
-			printf("Watch point \"%s\" changed by engine from %i to %i.\n", prinst.watch_name, prinst.watch_old._int, prinst.watch_ptr->_int);
+			externs->Printf("Watch point \"%s\" changed by engine from %i to %i.\n", prinst.watch_name, prinst.watch_old._int, prinst.watch_ptr->_int);
 			break;
 		case ev_entity:
-			printf("Watch point \"%s\" changed by engine from %i(%s) to %i(%s).\n", prinst.watch_name, prinst.watch_old._int, PR_GetEdictClassname(progfuncs, prinst.watch_old._int), prinst.watch_ptr->_int, PR_GetEdictClassname(progfuncs, prinst.watch_ptr->_int));
+			externs->Printf("Watch point \"%s\" changed by engine from %i(%s) to %i(%s).\n", prinst.watch_name, prinst.watch_old._int, PR_GetEdictClassname(progfuncs, prinst.watch_old._int), prinst.watch_ptr->_int, PR_GetEdictClassname(progfuncs, prinst.watch_ptr->_int));
 			break;
 		case ev_function:
 		case ev_string:
-			printf("Watch point \"%s\" set by engine to %s.\n", prinst.watch_name, PR_ValueString(progfuncs, prinst.watch_type, prinst.watch_ptr, false));
+			externs->Printf("Watch point \"%s\" set by engine to %s.\n", prinst.watch_name, PR_ValueString(progfuncs, prinst.watch_type, prinst.watch_ptr, false));
 			break;
 		}
 		prinst.watch_old = *prinst.watch_ptr;
@@ -1757,7 +1808,7 @@ void PDECL PR_ExecuteProgram (pubprogfuncs_t *ppf, func_t fnum)
 	{
 		if (newprogs >= prinst.maxprogs || !pr_progstate[newprogs].globals)	//can happen with hexen2...
 		{
-			printf("PR_ExecuteProgram: tried branching into invalid progs (%#x)\n", fnum);
+			externs->Printf("PR_ExecuteProgram: tried branching into invalid progs (%#x)\n", fnum);
 			return;
 		}
 		PR_SwitchProgsParms(progfuncs, newprogs);
@@ -1768,9 +1819,9 @@ void PDECL PR_ExecuteProgram (pubprogfuncs_t *ppf, func_t fnum)
 //		if (pr_global_struct->self)
 //			ED_Print (PROG_TO_EDICT(pr_global_struct->self));
 #if defined(__GNUC__) && !defined(FTE_TARGET_WEB) && !defined(NACL)
-		printf("PR_ExecuteProgram: NULL function from exe (address %p)\n", __builtin_return_address(0));
+		externs->Printf("PR_ExecuteProgram: NULL function from exe (address %p)\n", __builtin_return_address(0));
 #else
-		printf("PR_ExecuteProgram: NULL function from exe\n");
+		externs->Printf("PR_ExecuteProgram: NULL function from exe\n");
 #endif
 //		Host_Error ("PR_ExecuteProgram: NULL function from exe");
 
@@ -1791,7 +1842,7 @@ void PDECL PR_ExecuteProgram (pubprogfuncs_t *ppf, func_t fnum)
 			(*externs->globalbuiltins[i]) (&progfuncs->funcs, (struct globalvars_s *)current_progstate->globals);
 		else
 		{
-			printf ("Bad builtin call number %i (from exe)\n", -f->first_statement);
+			externs->Printf ("Bad builtin call number %i (from exe)\n", -f->first_statement);
 		//	PR_MoveParms(p, pr_typecurrent);
 			PR_SwitchProgs(progfuncs, initial_progs);
 		}
@@ -1911,7 +1962,7 @@ struct qcthread_s *PDECL PR_ForkStack(pubprogfuncs_t *ppf)
 	thread->lstackused = localsoffset - baselocalsoffset;
 
 	thread->xstatement = pr_xstatement;
-	thread->xfunction = pr_xfunction - pr_progstate[prinst.pr_typecurrent].functions;
+	thread->xfunction = pr_xfunction - current_progstate->functions;
 	thread->xprogs = prinst.pr_typecurrent;
 
 	return thread;

@@ -517,7 +517,9 @@ static edict_t *QDECL Q1QVMPF_EntAlloc(pubprogfuncs_t *pf, pbool object, size_t 
 	return (struct edict_s *)e;
 }
 
-static int QDECL Q1QVMPF_LoadEnts(pubprogfuncs_t *pf, const char *mapstring, void *ctx, void (PDECL *callback) (pubprogfuncs_t *progfuncs, struct edict_s *ed, void *ctx, const char *entstart, const char *entend))
+static int QDECL Q1QVMPF_LoadEnts(pubprogfuncs_t *pf, const char *mapstring, void *ctx,
+								  void (PDECL *ent_callback) (pubprogfuncs_t *progfuncs, struct edict_s *ed, void *ctx, const char *entstart, const char *entend),
+								  pbool (PDECL *ext_callback)(pubprogfuncs_t *pf, void *ctx, const char **str))
 {
 	//the qvm calls the spawn functions itself.
 	//no saved-games.
@@ -527,7 +529,7 @@ static int QDECL Q1QVMPF_LoadEnts(pubprogfuncs_t *pf, const char *mapstring, voi
 	return sv.world.edict_size;
 }
 
-static int QDECL Q1QVMPF_QueryField(pubprogfuncs_t *prinst, unsigned int fieldoffset, etype_t *type, char **name, evalc_t *fieldcache)
+static int QDECL Q1QVMPF_QueryField(pubprogfuncs_t *prinst, unsigned int fieldoffset, etype_t *type, char const**name, evalc_t *fieldcache)
 {
 	*type = ev_void;
 	*name = "?";
@@ -537,7 +539,7 @@ static int QDECL Q1QVMPF_QueryField(pubprogfuncs_t *prinst, unsigned int fieldof
 	return true;
 }
 
-static eval_t *QDECL Q1QVMPF_GetEdictFieldValue(pubprogfuncs_t *pf, edict_t *e, char *fieldname, etype_t type, evalc_t *cache)
+static eval_t *QDECL Q1QVMPF_GetEdictFieldValue(pubprogfuncs_t *pf, edict_t *e, const char *fieldname, etype_t type, evalc_t *cache)
 {
 	if (cache && !cache->varname)
 	{
@@ -895,7 +897,7 @@ static qintptr_t QVM_Sound (void *offset, quintptr_t mask, const qintptr_t *arg)
 	if (channel & 8)
 	{	//based on quakeworld, remember
 		channel = (channel & 7) | ((channel&~15)>>1);
-		flags |= CF_RELIABLE;
+		flags |= CF_SV_RELIABLE;
 	}
 	SVQ1_StartSound (NULL, (wedict_t*)Q1QVMPF_EdictNum(svprogfuncs, VM_LONG(arg[0])), channel, VM_POINTER(arg[2]), VM_FLOAT(arg[3])*255, VM_FLOAT(arg[4]), 0, 0, flags);
 	return 0;
@@ -975,7 +977,7 @@ static qintptr_t QVM_WalkMove (void *offset, quintptr_t mask, const qintptr_t *a
 	move[1] = sin(yaw)*dist;
 	move[2] = 0;
 
-	return World_movestep(&sv.world, (wedict_t*)ed, move, axis, true, false, NULL, NULL);
+	return World_movestep(&sv.world, (wedict_t*)ed, move, axis, true, false, NULL);
 }
 static qintptr_t QVM_DropToFloor (void *offset, quintptr_t mask, const qintptr_t *arg)
 {
@@ -1532,11 +1534,11 @@ static qintptr_t QVM_Add_Bot (void *offset, quintptr_t mask, const qintptr_t *ar
 
 			cl->edict = EDICT_NUM_PB(sv.world.progs, i+1);
 
-			Info_SetValueForKey(cl->userinfo, "name", name, sizeof(cl->userinfo));
-			Info_SetValueForKey(cl->userinfo, "topcolor", va("%i", top), sizeof(cl->userinfo));
-			Info_SetValueForKey(cl->userinfo, "bottomcolor", va("%i", bottom), sizeof(cl->userinfo));
-			Info_SetValueForKey(cl->userinfo, "skin", skin, sizeof(cl->userinfo));
-			Info_SetValueForStarKey(cl->userinfo, "*bot", "1", sizeof(cl->userinfo));
+			InfoBuf_SetKey(&cl->userinfo, "name", name);
+			InfoBuf_SetKey(&cl->userinfo, "topcolor", va("%i", top));
+			InfoBuf_SetKey(&cl->userinfo, "bottomcolor", va("%i", bottom));
+			InfoBuf_SetKey(&cl->userinfo, "skin", skin);
+			InfoBuf_SetStarKey(&cl->userinfo, "*bot", "1");
 			SV_ExtractFromUserinfo(cl, true);
 			SV_SetUpClientEdict (cl, cl->edict);
 
@@ -1598,14 +1600,20 @@ static qintptr_t QVM_SetBotCMD (void *offset, quintptr_t mask, const qintptr_t *
 }
 static qintptr_t QVM_SetUserInfo (void *offset, quintptr_t mask, const qintptr_t *arg)
 {
-	char *key = VM_POINTER(arg[1]);
+	int ent = VM_LONG(arg[0]);
+	const char *key = VM_POINTER(arg[1]);
+	const char *val = VM_POINTER(arg[2]);
 	if (*key == '*' && (VM_LONG(arg[3])&1))
 		return -1;	//denied!
-	return PF_ForceInfoKey_Internal(VM_LONG(arg[0]), VM_POINTER(arg[1]), VM_POINTER(arg[2]));
+	return PF_ForceInfoKey_Internal(ent, key, val, strlen(val));
 }
 static qintptr_t QVM_SetBotUserInfo (void *offset, quintptr_t mask, const qintptr_t *arg)
 {
-	return PF_ForceInfoKey_Internal(VM_LONG(arg[0]), VM_POINTER(arg[1]), VM_POINTER(arg[2]));
+	int ent = VM_LONG(arg[0]);
+	const char *key = VM_POINTER(arg[1]);
+	const char *val = VM_POINTER(arg[2]);
+
+	return PF_ForceInfoKey_Internal(ent, key, val,  strlen(val));
 }
 static qintptr_t QVM_MoveToGoal (void *offset, quintptr_t mask, const qintptr_t *arg)
 {
@@ -2098,7 +2106,7 @@ static void QDECL Q1QVM_Get_FrameState(world_t *w, wedict_t *ent, framestate_t *
 #endif
 }
 
-static void QDECL Q1QVM_Event_Touch(world_t *w, wedict_t *s, wedict_t *o)
+static void QDECL Q1QVM_Event_Touch(world_t *w, wedict_t *s, wedict_t *o, trace_t *trace)
 {
 	int oself = pr_global_struct->self;
 	int oother = pr_global_struct->other;
@@ -2265,7 +2273,7 @@ qboolean PR_LoadQ1QVM(void)
 	q1qvmprogfuncs.edicttable_length = sv.world.max_edicts;
 
 	limit = VM_MemoryMask(q1qvm);
-	if (gd.sizeofent < 0 || gd.sizeofent > 0xffffffff / gd.maxedicts)
+	if (gd.sizeofent > 0xffffffff / gd.maxedicts)
 		gd.sizeofent = 0xffffffff / gd.maxedicts;
 	if ((quintptr_t)gd.ents+(gd.sizeofent*gd.maxedicts) < (quintptr_t)gd.ents || (quintptr_t)gd.ents > (quintptr_t)limit)
 		gd.ents = 0;
@@ -2509,7 +2517,7 @@ qboolean Q1QVM_ClientSay(edict_t *player, qboolean team)
 }
 
 qboolean Q1QVM_UserInfoChanged(edict_t *player)
-{
+{	//mod will use G_CMD_ARGV to get argv1+argv2 to read the info that is changing.
 	if (!q1qvm)
 		return false;
 

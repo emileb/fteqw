@@ -600,7 +600,7 @@ extern qboolean ssqc_deprecated_warned;
 #define	svcdp_showlmp			35		// [string] slotname [string] lmpfilename [short] x [short] y
 #define	svcdp_hidelmp			36		// [string] slotname
 
-#define	TE_RAILTRAIL_NEH		15 // [vector] origin [coord] red [coord] green [coord] blue	(fixme: ignored)
+//#define	TE_RAILTRAIL_NEH		15 // [vector] origin [coord] red [coord] green [coord] blue	(fixme: ignored)
 #define	TE_EXPLOSION3_NEH		16 // [vector] origin [coord] red [coord] green [coord] blue	(fixme: ignored)
 #define TE_LIGHTNING4_NEH		17 // [string] model [entity] entity [vector] start [vector] end
 #define TE_SMOKE_NEH			18
@@ -647,11 +647,11 @@ void NPP_SetInfo(client_t *cl, char *key, char *value)
 	if (!strcmp(key, "colours"))
 	{
 		i = atoi(value);
-		Info_SetValueForKey (cl->userinfo, "bottomcolor", va("%i", i&15), sizeof(cl->userinfo));
-		Info_SetValueForKey (cl->userinfo, "topcolor", va("%i", i>>4), sizeof(cl->userinfo));
+		InfoBuf_SetKey (&cl->userinfo, "bottomcolor", va("%i", i&15));
+		InfoBuf_SetKey (&cl->userinfo, "topcolor", va("%i", i>>4));
 	}
-	Info_SetValueForKey (cl->userinfo, key, value, sizeof(cl->userinfo));
-	if (!*Info_ValueForKey (cl->userinfo, "name"))
+	InfoBuf_SetKey (&cl->userinfo, key, value);
+	if (!*InfoBuf_ValueForKey (&cl->userinfo, "name"))
 		cl->name[0] = '\0';
 	else // process any changed values
 		SV_ExtractFromUserinfo (cl, false);
@@ -662,19 +662,19 @@ void NPP_SetInfo(client_t *cl, char *key, char *value)
 		MSG_WriteByte (&sv.reliable_datagram, svc_setinfo);
 		MSG_WriteByte (&sv.reliable_datagram, i);
 		MSG_WriteString (&sv.reliable_datagram, "bottomcolor");
-		MSG_WriteString (&sv.reliable_datagram, Info_ValueForKey(cl->userinfo, "bottomcolor"));
+		MSG_WriteString (&sv.reliable_datagram, InfoBuf_ValueForKey(&cl->userinfo, "bottomcolor"));
 
 		MSG_WriteByte (&sv.reliable_datagram, svc_setinfo);
 		MSG_WriteByte (&sv.reliable_datagram, i);
 		MSG_WriteString (&sv.reliable_datagram, "topcolor");
-		MSG_WriteString (&sv.reliable_datagram, Info_ValueForKey(cl->userinfo, "topcolor"));
+		MSG_WriteString (&sv.reliable_datagram, InfoBuf_ValueForKey(&cl->userinfo, "topcolor"));
 	}
 	else
 	{
 		MSG_WriteByte (&sv.reliable_datagram, svc_setinfo);
 		MSG_WriteByte (&sv.reliable_datagram, i);
 		MSG_WriteString (&sv.reliable_datagram, key);
-		MSG_WriteString (&sv.reliable_datagram, Info_ValueForKey(cl->userinfo, key));
+		MSG_WriteString (&sv.reliable_datagram, InfoBuf_ValueForKey(&cl->userinfo, key));
 	}
 }
 
@@ -828,16 +828,20 @@ void NPP_NQFlush(void)
 		break;
 
 	case svcfte_cgamepacket:
-		if (sv.csqcdebug)
+		if (writedest != &sv.multicast)
 		{
-			/*shift the data up by two bytes*/
-			memmove(buffer+3, buffer+1, bufferlen-1);
+			Con_Printf(CON_WARNING"Warning: svc_cgamepacket used outside of a multicast\n");
+			if (sv.csqcdebug)
+			{
+				/*shift the data up by two bytes*/
+				memmove(buffer+3, buffer+1, bufferlen-1);
 
-			/*add a length in the 2nd/3rd bytes*/
-			buffer[1] = (bufferlen-1);
-			buffer[2] = (bufferlen-1) >> 8;
+				/*add a length in the 2nd/3rd bytes*/
+				buffer[1] = (bufferlen-1);
+				buffer[2] = (bufferlen-1) >> 8;
 
-			bufferlen += 2;
+				bufferlen += 2;
+			}
 		}
 		break;
 	case svc_temp_entity:
@@ -846,22 +850,26 @@ void NPP_NQFlush(void)
 		default:
 			if (te_515sevilhackworkaround)
 			{
-				if (sv.csqcdebug)
+				if (writedest != &sv.multicast)
 				{
-					/*shift the data up by two bytes, but don't care about the first byte*/
-					memmove(buffer+3, buffer+1, bufferlen-1);
+					Con_Printf(CON_WARNING"Warning: unknown svc_temp_entity used outside of a multicast\n");
+					if (sv.csqcdebug)
+					{
+						/*shift the data up by two bytes, but don't care about the first byte*/
+						memmove(buffer+3, buffer+1, bufferlen-1);
 
-					/*add a length in the 2nd/3rd bytes, if needed*/
-					buffer[1] = (bufferlen-1) & 0xff;
-					buffer[2] = (bufferlen-1) >> 8;
+						/*add a length in the 2nd/3rd bytes, if needed*/
+						buffer[1] = (bufferlen-1) & 0xff;
+						buffer[2] = (bufferlen-1) >> 8;
 
-					bufferlen += 2;
+						bufferlen += 2;
+					}
 				}
 				/*replace the svc itself*/
 				buffer[0] = svcfte_cgamepacket;
 			}
 			break;
-		case TE_EXPLOSION:
+		case TENQ_NQEXPLOSION:
 			if (writedest == &sv.datagram)
 			{	//for old clients, use a te_explosion.
 				//for clients that support it, use a TEQW_EXPLOSIONNOSPRITE
@@ -880,7 +888,7 @@ void NPP_NQFlush(void)
 
 				requireextension = PEXT_TE_BULLET;
 				SV_MulticastProtExt(org, multicasttype, pr_global_struct->dimension_send, 0, requireextension);
-				buffer[1] = TEQW_EXPLOSION_NOSPRITE;
+				buffer[1] = TEQW_NQEXPLOSION;
 			}
 			break;
 		case TENQ_BEAM:
@@ -901,7 +909,7 @@ void NPP_NQFlush(void)
 				memcpy(&cd, &buffer[2+destprim->coordsize*2], destprim->coordsize);
 				org[2] = MSG_FromCoord(cd, destprim->coordsize);
 
-				buffer[1] = TE_EXPLOSION;					//use a generic crappy explosion
+				buffer[1] = TEQW_QWEXPLOSION;					//use a generic crappy explosion
 				SZ_Write(&sv.multicast, buffer, bufferlen-2);	//trim the two trailing colour bytes
 				SV_MulticastProtExt(org, multicasttype, pr_global_struct->dimension_send, 0, requireextension);
 			}
@@ -1240,7 +1248,7 @@ void NPP_NQWriteByte(int dest, qbyte data)	//replacement write func (nq to qw)
 				multicasttype=MULTICAST_PHS;
 				protocollen = destprim->coordsize*6+sizeof(short)+sizeof(qbyte)*2;
 				break;
-			case TE_GUNSHOT:
+			case TENQ_NQGUNSHOT:
 				multicastpos=3;
 				multicasttype=MULTICAST_PVS;
 				//we need to emit annother qbyte here. QuakeWorld has a number of particles.
@@ -1249,7 +1257,7 @@ void NPP_NQWriteByte(int dest, qbyte data)	//replacement write func (nq to qw)
 				data = 1;
 				protocollen = destprim->coordsize*3+sizeof(qbyte)*3;
 				break;
-			case TE_EXPLOSION:
+			case TENQ_NQEXPLOSION:
 			case TE_SPIKE:
 			case TE_SUPERSPIKE:
 				multicastpos=2;
@@ -1279,12 +1287,12 @@ void NPP_NQWriteByte(int dest, qbyte data)	//replacement write func (nq to qw)
 				multicasttype=MULTICAST_PHS;
 				break;
 			case TE_EXPLOSIONSMALL2:
-				data = TE_EXPLOSION;
+				data = TEQW_QWEXPLOSION;
 				protocollen = sizeof(qbyte)*2 + destprim->coordsize*3;
 				multicastpos=2;
 				multicasttype=MULTICAST_PHS;
 				break;
-			case TE_RAILTRAIL:
+			case TEQW_RAILTRAIL:
 				protocollen = destprim->coordsize*6+sizeof(qbyte)*1;
 				multicastpos=2;
 				multicasttype=MULTICAST_PHS;
@@ -1851,8 +1859,8 @@ void NPP_QWFlush(void)
 			unsigned int j = buffer[1];
 			if (j < sv.allocated_client_slots)
 			{
-				Q_strncpyz(svs.clients[j].userinfo, (buffer+6), sizeof(svs.clients[j].userinfo));
-				if (*Info_ValueForKey(svs.clients[j].userinfo, "name"))
+				InfoBuf_FromString(&svs.clients[j].userinfo, buffer+6, false);
+				if (*InfoBuf_ValueForKey(&svs.clients[j].userinfo, "name"))
 					SV_ExtractFromUserinfo(&svs.clients[j], false);
 				else
 					*svs.clients[j].name = '\0';
@@ -1864,22 +1872,26 @@ void NPP_QWFlush(void)
 			if (j < sv.allocated_client_slots)
 			{
 				*svs.clients[j].name = '\0';
-				*svs.clients[j].userinfo = '\0';
+				InfoBuf_Clear(&svs.clients[j].userinfo, true);
 			}
 		}
 
 		break;
 	case svcfte_cgamepacket:
-		if (sv.csqcdebug)
+		if (writedest != &sv.nqmulticast)
 		{
-			/*shift the data up by two bytes*/
-			memmove(buffer+3, buffer+1, bufferlen-1);
+			Con_Printf(CON_WARNING"Warning: svc_cgamepacket used outside of a multicast\n");
+			if (sv.csqcdebug)
+			{
+				/*shift the data up by two bytes*/
+				memmove(buffer+3, buffer+1, bufferlen-1);
 
-			/*add a length in the 2nd/3rd bytes*/
-			buffer[1] = (bufferlen-1);
-			buffer[2] = (bufferlen-1) >> 8;
+				/*add a length in the 2nd/3rd bytes*/
+				buffer[1] = (bufferlen-1);
+				buffer[2] = (bufferlen-1) >> 8;
 
-			bufferlen += 2;
+				bufferlen += 2;
+			}
 		}
 		break;
 	case svc_temp_entity:
@@ -1888,23 +1900,27 @@ void NPP_QWFlush(void)
 		default:
 			if (te_515sevilhackworkaround)
 			{
-				if (sv.csqcdebug)
+				if (writedest != &sv.nqmulticast)
 				{
-					/*shift the data up by two bytes*/
-					memmove(buffer+3, buffer+1, bufferlen-1);
+					Con_Printf(CON_WARNING"Warning: unknown svc_temp_entity used outside of a multicast\n");
+					if (sv.csqcdebug)
+					{
+						/*shift the data up by two bytes*/
+						memmove(buffer+3, buffer+1, bufferlen-1);
 
-					/*add a length in the 2nd/3rd bytes*/
-					buffer[1] = (bufferlen-1);
-					buffer[2] = (bufferlen-1) >> 8;
+						/*add a length in the 2nd/3rd bytes*/
+						buffer[1] = (bufferlen-1);
+						buffer[2] = (bufferlen-1) >> 8;
 
-					bufferlen += 2;
+						bufferlen += 2;
+					}
 				}
 				/*replace the svc itself*/
 				buffer[0] = svcfte_cgamepacket;
 			}
 			break;
 		case TEQW_LIGHTNINGBLOOD:
-		case TEQW_BLOOD:		//needs to be converted to a particle
+		case TEQW_QWBLOOD:		//needs to be converted to an svc_particle
 			{
 				vec3_t org;
 				qbyte count;
@@ -1957,7 +1973,7 @@ void NPP_QWFlush(void)
 				NPP_AddData(&colour, sizeof(qbyte));
 			}
 			break;
-		case TE_GUNSHOT:	//needs byte 3 removed
+		case TEQW_QWGUNSHOT:	//needs byte 3 removed
 			if (bufferlen >= 3)
 			{
 				memmove(buffer+2, buffer+3, bufferlen-3);
@@ -2184,14 +2200,14 @@ void NPP_QWWriteByte(int dest, qbyte data)	//replacement write func (nq to qw)
 				multicasttype=MULTICAST_PHS;
 				protocollen = destprim->coordsize*6+sizeof(short)+sizeof(qbyte)*2;
 				break;
-			case TEQW_BLOOD:		//needs to be converted to a particle
-			case TE_GUNSHOT:	//needs qbyte 2 removed
+			case TEQW_QWBLOOD:		//needs to be converted to a particle
+			case TEQW_QWGUNSHOT:	//needs qbyte 2 removed
 				multicastpos=3;
 				multicasttype=MULTICAST_PVS;
 				protocollen = destprim->coordsize*3+sizeof(qbyte)*3;
 				break;
 			case TEQW_LIGHTNINGBLOOD:
-			case TE_EXPLOSION:
+			case TEQW_QWEXPLOSION:
 			case TE_SPIKE:
 			case TE_SUPERSPIKE:
 				multicastpos=2;
@@ -2207,7 +2223,7 @@ void NPP_QWWriteByte(int dest, qbyte data)	//replacement write func (nq to qw)
 				multicasttype=MULTICAST_PVS;
 				protocollen = destprim->coordsize*3+sizeof(qbyte)*2;
 				break;
-			case TE_RAILTRAIL:
+			case TEQW_RAILTRAIL:
 				multicastpos=1;
 				multicasttype=MULTICAST_PVS;
 				protocollen = destprim->coordsize*3+sizeof(qbyte)*1;

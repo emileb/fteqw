@@ -76,24 +76,6 @@ struct termios orig, changes;
 
 /*
 ============
-Sys_FileTime
-
-returns -1 if not present
-============
-*/
-int	Sys_FileTime (char *path)
-{
-	struct	stat	buf;
-
-	if (stat (path,&buf) == -1)
-		return -1;
-
-	return buf.st_mtime;
-}
-
-
-/*
-============
 Sys_mkdir
 
 ============
@@ -219,8 +201,9 @@ void Sys_Error (const char *error, ...)
 	exit (1);
 }
 
-int ansiremap[8] = {0, 4, 2, 6, 1, 5, 3, 7};
-void ApplyColour(unsigned int chr)
+static qboolean useansicolours;
+static int ansiremap[8] = {0, 4, 2, 6, 1, 5, 3, 7};
+static void ApplyColour(unsigned int chr)
 {
 	static int oldchar = CON_WHITEMASK;
 	int bg, fg;
@@ -229,6 +212,8 @@ void ApplyColour(unsigned int chr)
 	if (oldchar == chr)
 		return;
 	oldchar = chr;
+	if (!useansicolours)	//don't spew weird chars when redirected to a file.
+		return;
 
 	printf("\e[0;"); // reset
 
@@ -281,7 +266,7 @@ void ApplyColour(unsigned int chr)
 }
 
 #define putch(c) putc(c, stdout);
-void Sys_PrintColouredChar(unsigned int chr)
+/*static void Sys_PrintColouredChar(unsigned int chr)
 {
 	ApplyColour(chr);
 
@@ -293,7 +278,7 @@ void Sys_PrintColouredChar(unsigned int chr)
 		chr &= ~0x80;
 
 	putch(chr);
-}
+}*/
 
 /*
 ================
@@ -490,7 +475,7 @@ void Sys_Quit (void)
 static int do_stdin = 1;
 
 #if 1
-char *Sys_LineInputChar(char *line)
+static char *Sys_LineInputChar(char *line)
 {
 	char c;
 	while(*line)
@@ -713,6 +698,9 @@ static void Friendly_Crash_Handler(int sig, siginfo_t *info, void *vcontext)
 #ifdef HAVE_GNUTLS
 qboolean SSL_InitGlobal(qboolean isserver);
 #endif
+#ifdef SQL
+#include "sv_sql.h"
+#endif
 static int Sys_CheckChRoot(void)
 {	//also warns if run as root.
 	int ret = false;
@@ -720,7 +708,7 @@ static int Sys_CheckChRoot(void)
 	//three ways to use this:
 	//nonroot-with-SUID-root -- chroots+drops to a fixed path when run as a regular user. the homedir mechanism can be used for writing files.
 	//root -chroot foo -uid bar -- requires root, changes the filesystem and then switches user rights before starting the game itself.
-	//root -chroot foo -- requires root,changes the filesystem and 
+	//root -chroot foo -- requires root, changes the filesystem and leaves the process with far far too many rights
 
 	uid_t ruid, euid, suid;
 	int arg = COM_CheckParm("-chroot");
@@ -735,18 +723,18 @@ static int Sys_CheckChRoot(void)
 		//this means we can't allow
 		//FIXME other games. should use the list in fs.c
 		if (COM_CheckParm("-quake"))
-			newroot = "/usr/share/quake";
+			newroot = "/usr/share/games/quake";
 		else if (COM_CheckParm("-quake2"))
-			newroot = "/usr/share/quake2";
+			newroot = "/usr/share/games/quake2";
 		else if (COM_CheckParm("-quake3"))
-			newroot = "/usr/share/quake3";
+			newroot = "/usr/share/games/quake3";
 		else if (COM_CheckParm("-hexen2") || COM_CheckParm("-portals"))
-			newroot = "/usr/share/hexen2";
+			newroot = "/usr/share/games/hexen2";
 		else
 #ifdef GAME_SHORTNAME
-			newroot = "/usr/share/" GAME_SHORTNAME;
+			newroot = "/usr/share/games/" GAME_SHORTNAME;
 #else
-			newroot = "/usr/share/quake";
+			newroot = "/usr/share/games/quake";
 #endif
 
 		//just read the environment name
@@ -765,15 +753,41 @@ static int Sys_CheckChRoot(void)
 		//make sure there's no suid programs in the new root dir that might get confused by /etc/ being something else.
 		//this binary MUST NOT be inside the new root.
 
-		//FIXME: should we temporarily try swapping uid+euid so we don't have any more access than a non-suid binary for this initial init stuff?
-		struct addrinfo *info;
-		if (getaddrinfo("localhost", NULL, NULL, &info) == 0)	//make sure we've loaded /etc/resolv.conf etc, otherwise any dns requests are going to fail.
-			freeaddrinfo(info);
+		//make sure we don't crash on any con_printfs.
+#ifdef MULTITHREAD
+		Sys_ThreadsInit();
+#endif
 
+		//FIXME: should we temporarily try swapping uid+euid so we don't have any more access than a non-suid binary for this initial init stuff?
+		{
+			struct addrinfo *info;
+			if (getaddrinfo("master.quakeservers.net", NULL, NULL, &info) == 0)	//make sure we've loaded /etc/resolv.conf etc, otherwise any dns requests are going to fail, which would mean no masters.
+				freeaddrinfo(info);
+		}
+
+#ifdef SQL
+		SQL_Available();
+#endif
 #ifdef HAVE_GNUTLS
 		SSL_InitGlobal(false);	//we need to load the known CA certs while we still can, as well as any shared objects
 		//SSL_InitGlobal(true);	//make sure we load our public cert from outside the sandbox. an exploit might still be able to find it in memory though. FIXME: disabled in case this reads from somewhere bad - we're still root.
 #endif
+
+		{	//this protects against stray setuid programs like su reading passwords from /etc/passwd et al
+			//there shouldn't be anyway so really this is pure paranoia.
+			//(the length thing is to avoid overflows inside va giving false negatives.)
+			struct stat s;
+			if (strlen(newroot) > 4096 || lstat(va("%s/etc/", newroot), &s) != -1)
+			{
+				printf("refusing to chroot to %s - contains an /etc directory\n", newroot);
+				return -1;
+			}
+			if (strlen(newroot) > 4096 || lstat(va("%s/proc/", newroot), &s) != -1)
+			{
+				printf("refusing to chroot to %s - contains a /proc directory\n", newroot);
+				return -1;
+			}
+		}
 
 		printf("Changing root dir to \"%s\"\n", newroot);
 		if (chroot(newroot))
@@ -783,10 +797,16 @@ static int Sys_CheckChRoot(void)
 		}
 		chdir("/");	//chroot does NOT change the working directory, so we need to make sure that happens otherwise still a way out.
 
+		//signal to the fs.c code to use an explicit base home dir.
 		if (newhome)
-			setenv("HOME", va("/user/%s", newhome), true);
+			setenv("FTEHOME", va("/user/%s", newhome), true);
 		else
-			setenv("HOME", va("/user/%i", ruid), true);
+			setenv("FTEHOME", va("/user/%i", ruid), true);
+
+		//these paths are no longer valid.
+		setenv("HOME", "", true);
+		setenv("XDG_DATA_HOME", "", true);
+
 		setenv("PWD", "/", true);
 	
 		ret = true;
@@ -842,6 +862,12 @@ int main(int argc, char *argv[])
 	parms.manifest = CONFIG_MANIFEST_TEXT;
 #endif
 
+	//decide if we should be printing colours to the stdout or not.
+	if (COM_CheckParm("-nocolour")||COM_CheckParm("-nocolor"))
+		useansicolours = false;
+	else
+		useansicolours = (isatty(STDOUT_FILENO) || COM_CheckParm("-colour") || COM_CheckParm("-color"));
+
 	switch(Sys_CheckChRoot())
 	{
 	case true:
@@ -850,24 +876,26 @@ int main(int argc, char *argv[])
 	case false:
 		parms.basedir = "./";
 #ifdef __linux__
-		//attempt to figure out where the exe is located
-		int l = readlink("/proc/self/exe", bindir, sizeof(bindir)-1);
-		if (l > 0)
-		{
-			bindir[l] = 0;
-			*COM_SkipPath(bindir) = 0;
-			printf("Binary is located at \"%s\"\n", bindir);
-			parms.binarydir = bindir;
+		{	//attempt to figure out where the exe is located
+			int l = readlink("/proc/self/exe", bindir, sizeof(bindir)-1);
+			if (l > 0)
+			{
+				bindir[l] = 0;
+				*COM_SkipPath(bindir) = 0;
+				printf("Binary is located at \"%s\"\n", bindir);
+				parms.binarydir = bindir;
+			}
 		}
 /*#elif defined(__bsd__)
-		//attempt to figure out where the exe is located
-		int l = readlink("/proc/self/exe", bindir, sizeof(bindir)-1);
-		if (l > 0)
-		{
-			bindir[l] = 0;
-			*COM_SkipPath(bindir) = 0;
-			printf("Binary is located at "%s"\n", bindir);
-			parms.binarydir = bindir;
+		{	//attempt to figure out where the exe is located
+			int l = readlink("/proc/self/exe", bindir, sizeof(bindir)-1);
+			if (l > 0)
+			{
+				bindir[l] = 0;
+				*COM_SkipPath(bindir) = 0;
+				printf("Binary is located at "%s"\n", bindir);
+				parms.binarydir = bindir;
+			}
 		}
 */
 #endif
@@ -928,7 +956,7 @@ int main(int argc, char *argv[])
 	return 0;
 }
 
-int Sys_EnumerateFiles2 (const char *truepath, int apathofs, const char *match, int (*func)(const char *, qofs_t, time_t modtime, void *, searchpathfuncs_t *), void *parm, searchpathfuncs_t *spath)
+static int Sys_EnumerateFiles2 (const char *truepath, int apathofs, const char *match, int (*func)(const char *, qofs_t, time_t modtime, void *, searchpathfuncs_t *), void *parm, searchpathfuncs_t *spath)
 {
 	DIR *dir;
 	char file[MAX_OSPATH];
@@ -990,7 +1018,7 @@ int Sys_EnumerateFiles2 (const char *truepath, int apathofs, const char *match, 
 	dir = opendir(truepath);
 	if (!dir)
 	{
-		Con_DPrintf("Failed to open dir %s\n", truepath);
+		Con_DLPrintf((errno==ENOENT)?2:1, "Failed to open dir %s\n", truepath);
 		return true;
 	}
 	do

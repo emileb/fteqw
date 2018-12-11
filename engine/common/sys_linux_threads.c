@@ -58,10 +58,10 @@ typedef struct {
 	int (*func)(void *);
 	void *args;
 } qthread_t;
-static int Sys_CreatedThread(void *v)
+static void *Sys_CreatedThread(void *v)
 {
 	qthread_t *qthread = v;
-	int r;
+	qintptr_t r;
 
 #ifdef ANDROID
 	JNIEnv* env;
@@ -74,7 +74,7 @@ static int Sys_CreatedThread(void *v)
 	(*sys_jvm)->DetachCurrentThread(sys_jvm);
 #endif
 
-	return r;
+	return (void*)r;
 }
 
 void *Sys_CreateThread(char *name, int (*func)(void *), void *args, int priority, int stacksize)
@@ -104,9 +104,10 @@ void *Sys_CreateThread(char *name, int (*func)(void *), void *args, int priority
 		thread = NULL;
 	}
 	pthread_attr_destroy(&attr);
-
-#ifdef __USE_GNU
+#if defined(DEBUG) && defined(__USE_GNU) && defined(__GLIBC_PREREQ)
+#if __GLIBC_PREREQ(2,12)
 	pthread_setname_np(*thread, name);
+#endif
 #endif
 
 	return (void *)thread;
@@ -133,8 +134,10 @@ void *Sys_CreateThread(char *name, int (*func)(void *), void *args, int priority
 	}
 	pthread_attr_destroy(&attr);
 
-#ifdef __USE_GNU
+#if defined(DEBUG) && defined(__USE_GNU) && defined(__GLIBC_PREREQ)
+#if __GLIBC_PREREQ(2,12)
 	pthread_setname_np(*thread, name);
+#endif
 #endif
 
 	return (void *)thread;

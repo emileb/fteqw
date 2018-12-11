@@ -102,10 +102,8 @@ void CalcSurfaceExtents (model_t *mod, msurface_t *s)
 
 		for (j=0 ; j<2 ; j++)
 		{
-			val = v->position[0] * tex->vecs[j][0] +
-				v->position[1] * tex->vecs[j][1] +
-				v->position[2] * tex->vecs[j][2] +
-				tex->vecs[j][3];
+			//doubles should replicate win32/x87 compiler 80-bit precision better. We have to hope that win64 compilers use the same precision.
+			val = DotProduct_Double(v->position, tex->vecs[j]) + tex->vecs[j][3];
 			if (val < mins[j])
 				mins[j] = val;
 			if (val > maxs[j])
@@ -254,18 +252,24 @@ typedef struct
 	q2cbrushside_t *brushside;
 } q2cbrush_t;
 
+#ifdef Q2BSPS
 typedef struct
 {
 	int		numareaportals;
 	int		firstareaportal;
-	int		floodnum;			// if two areas have equal floodnums, they are connected
-	int		floodvalid;
 } q2carea_t;
-
+#endif
+#ifdef Q3BSPS
 typedef struct
 {
 	int			numareaportals[MAX_CM_AREAS];
 } q3carea_t;
+#endif
+typedef struct
+{
+	int		floodnum;			// if two areas have equal floodnums, they are connected
+	int		floodvalid;			// flags the area as having been visited (sequence numbers matching prv->floodvalid)
+} careaflood_t;
 
 typedef struct
 {
@@ -339,7 +343,7 @@ typedef struct cminfo_s
 	q2mapsurface_t	*surfaces;
 
 	int				numleafbrushes;
-	q2cbrush_t		*leafbrushes[MAX_Q2MAP_LEAFBRUSHES];
+	q2cbrush_t		**leafbrushes;
 
 	int				numcmodels;
 	cmodel_t		*cmodels;
@@ -353,10 +357,22 @@ typedef struct cminfo_s
 	q3dvis_t		*q3phs;
 
 	int				numareas;
-	q2carea_t		q2areas[MAX_Q2MAP_AREAS];
+	int				floodvalid;
+	careaflood_t	areaflood[MAX_CM_AREAS];
+#ifdef Q3BSPS
+	//q3's areas are simple bidirectional area1/area2 pairs. refcounted (so two areas can have two doors/openings)
 	q3carea_t		q3areas[MAX_CM_AREAS];
-	int				numareaportals;
-	q2dareaportal_t	areaportals[MAX_Q2MAP_AREAPORTALS];
+#endif
+#ifdef Q2BSPS
+	//q2's areas have a list of portals that open into other areas.
+	q2carea_t	*q2areas;	//indexes into q2areaportals for flooding
+	size_t			numq2areaportals;
+	q2dareaportal_t	*q2areaportals;
+
+	//and this is the state that is actually changed. booleans.
+	qbyte			q2portalopen[MAX_Q2MAP_AREAPORTALS];	//memset will work if it's a qbyte, really it should be a qboolean
+#endif
+
 
 	//list of mesh surfaces within the leaf
 	q3cmesh_t	cmeshes[MAX_CM_PATCHES];
@@ -374,10 +390,7 @@ typedef struct cminfo_s
 	int			maxleafpatches;
 	//FIXME: remove the above
 
-	int			floodvalid;
-	qbyte		portalopen[MAX_Q2MAP_AREAPORTALS];	//memset will work if it's a qbyte, really it should be a qboolean
-
-	int			mapisq3;
+	qboolean			mapisq3;
 
 
 
@@ -421,7 +434,7 @@ qboolean BoundsIntersect (vec3_t mins1, vec3_t maxs1, vec3_t mins2, vec3_t maxs2
 
 #ifdef Q3BSPS
 
-int	PlaneTypeForNormal ( vec3_t normal )
+static int	PlaneTypeForNormal ( vec3_t normal )
 {
 	vec_t	ax, ay, az;
 
@@ -460,7 +473,7 @@ void CategorizePlane ( mplane_t *plane )
 	plane->type = PlaneTypeForNormal(plane->normal);
 }
 
-void PlaneFromPoints ( vec3_t verts[3], mplane_t *plane )
+static void PlaneFromPoints ( vec3_t verts[3], mplane_t *plane )
 {
 	vec3_t	v1, v2;
 
@@ -948,6 +961,163 @@ static void CM_CreatePatch(model_t *loadmodel, q3cpatch_t *patch, q2mapsurface_t
 
 //======================================================
 
+static qboolean CM_CreatePatchForFace (model_t *loadmodel, cminfo_t *prv, mleaf_t *leaf, int facenum, int *checkout)
+{
+	size_t u;
+	q3cface_t *face;
+	q2mapsurface_t *surf;
+	q3cpatch_t *patch;
+	q3cmesh_t *cmesh;
+
+	face = &prv->faces[facenum];
+
+	if (face->numverts <= 0)
+		return true;
+	if (face->shadernum < 0 || face->shadernum >= loadmodel->numtextures)
+		return true;
+	surf = &prv->surfaces[face->shadernum];
+	if (!surf->c.value)	//surface has no contents value, so can't ever block anything.
+		return true;
+
+	switch(face->facetype)
+	{
+	case MST_TRIANGLE_SOUP:
+		if (!face->soup.numindicies)
+			return true;
+		//only enable mesh collisions if its meant to be enabled.
+		//we haven't parsed any shaders, so we depend upon the stuff that the bsp compiler left lying around.
+		if (!(surf->c.flags & q3bsp_surf_meshcollision_flag.ival) && !q3bsp_surf_meshcollision_force.ival)
+			return true;
+
+		if (prv->numleafcmeshes >= prv->maxleafcmeshes)
+		{
+			prv->maxleafcmeshes *= 2;
+			prv->maxleafcmeshes += 16;
+			if (prv->numleafcmeshes > prv->maxleafcmeshes)
+			{	//detect overflow
+				Con_Printf (CON_ERROR "CM_CreateCMeshesForLeafs: map is insanely huge!\n");
+				return false;
+			}
+			prv->leafcmeshes = realloc(prv->leafcmeshes, sizeof(*prv->leafcmeshes) * prv->maxleafcmeshes);
+		}
+
+		// the patch was already built
+		if (checkout[facenum] != -1)
+		{
+			prv->leafcmeshes[prv->numleafcmeshes] = checkout[facenum];
+			cmesh = &prv->cmeshes[checkout[facenum]];
+		}
+		else
+		{
+			if (prv->numcmeshes >= MAX_CM_PATCHES)
+			{
+				Con_Printf (CON_ERROR "CM_CreatePatchesForLeafs: map has too many patches\n");
+				return false;
+			}
+
+			cmesh = &prv->cmeshes[prv->numcmeshes];
+			prv->leafcmeshes[prv->numleafcmeshes] = prv->numcmeshes;
+			checkout[facenum] = prv->numcmeshes++;
+
+//gcc warns without this cast
+
+			cmesh->surface = surf;
+			cmesh->numverts = face->numverts;
+			cmesh->numincidies = face->soup.numindicies;
+			cmesh->xyz_array = ZG_Malloc(&loadmodel->memgroup, cmesh->numverts * sizeof(*cmesh->xyz_array) + cmesh->numincidies * sizeof(*cmesh->indicies));
+			cmesh->indicies = (index_t*)(cmesh->xyz_array + cmesh->numverts);
+
+			VectorCopy(prv->verts[face->firstvert+0], cmesh->xyz_array[0]);
+			VectorCopy(cmesh->xyz_array[0], cmesh->absmaxs);
+			VectorCopy(cmesh->xyz_array[0], cmesh->absmins);
+			for (u = 1; u < cmesh->numverts; u++)
+			{
+				VectorCopy(prv->verts[face->firstvert+u], cmesh->xyz_array[u]);
+				AddPointToBounds(cmesh->xyz_array[u], cmesh->absmins, cmesh->absmaxs);
+			}
+			for (u = 0; u < cmesh->numincidies; u++)
+				cmesh->indicies[u] = prv->surfindexes[face->soup.firstindex+u];
+		}
+		leaf->contents |= surf->c.value;
+		leaf->numleafcmeshes++;
+
+		prv->numleafcmeshes++;
+
+		break;
+	case MST_PATCH:
+		if (face->patch.cp[0] <= 0 || face->patch.cp[1] <= 0)
+			return true;
+
+		if ( !surf->c.value || (surf->c.flags & Q3SURF_NONSOLID) )
+			return true;
+
+		if (prv->numleafpatches >= prv->maxleafpatches)
+		{
+			prv->maxleafpatches *= 2;
+			prv->maxleafpatches += 16;
+			if (prv->numleafpatches > prv->maxleafpatches)
+			{	//detect overflow
+				Con_Printf (CON_ERROR "CM_CreatePatchesForLeafs: map is insanely huge!\n");
+				return false;
+			}
+			prv->leafpatches = realloc(prv->leafpatches, sizeof(*prv->leafpatches) * prv->maxleafpatches);
+		}
+
+		// the patch was already built
+		if (checkout[facenum] != -1)
+		{
+			prv->leafpatches[prv->numleafpatches] = checkout[facenum];
+			patch = &prv->patches[checkout[facenum]];
+		}
+		else
+		{
+			if (prv->numpatches >= MAX_CM_PATCHES)
+			{
+				Con_Printf (CON_ERROR "CM_CreatePatchesForLeafs: map has too many patches\n");
+				return false;
+			}
+
+			patch = &prv->patches[prv->numpatches];
+			prv->leafpatches[prv->numleafpatches] = prv->numpatches;
+			checkout[facenum] = prv->numpatches++;
+
+//gcc warns without this cast
+			CM_CreatePatch (loadmodel, patch, surf, (const vec_t *)(prv->verts + face->firstvert), face->patch.cp );
+		}
+		leaf->contents |= patch->surface->c.value;
+		leaf->numleafpatches++;
+
+		prv->numleafpatches++;
+		break;
+	}
+	return true;
+}
+static qboolean CM_CreatePatchesForLeaf (model_t *loadmodel, cminfo_t *prv, mleaf_t *leaf, int *checkout)
+{
+	int j, k;
+
+	leaf->numleafpatches = 0;
+	leaf->firstleafpatch = prv->numleafpatches;
+	leaf->numleafcmeshes = 0;
+	leaf->firstleafcmesh = prv->numleafcmeshes;
+
+	if (leaf->cluster == -1)
+		return true;
+
+	for (j=0 ; j<leaf->nummarksurfaces ; j++)
+	{
+		k = leaf->firstmarksurface[j] - loadmodel->surfaces;
+		if (k >= prv->numfaces)
+		{
+			Con_Printf (CON_ERROR "CM_CreatePatchesForLeafs: corrupt map\n");
+			break;
+		}
+		if (!CM_CreatePatchForFace (loadmodel, prv, leaf, k, checkout))
+			return false;
+	}
+	return true;
+}
+
 /*
 =================
 CM_CreatePatchesForLeafs
@@ -955,12 +1125,8 @@ CM_CreatePatchesForLeafs
 */
 static qboolean CM_CreatePatchesForLeafs (model_t *loadmodel, cminfo_t *prv)
 {
-	int i, j, k;
+	int i, k;
 	mleaf_t *leaf;
-	q3cface_t *face;
-	q2mapsurface_t *surf;
-	q3cpatch_t *patch;
-	q3cmesh_t *cmesh;
 	int *checkout = alloca(sizeof(int)*prv->numfaces);
 
 	if (map_noCurves.ival)
@@ -968,148 +1134,23 @@ static qboolean CM_CreatePatchesForLeafs (model_t *loadmodel, cminfo_t *prv)
 
 	memset (checkout, -1, sizeof(int)*prv->numfaces);
 
+	//worldmodel's leafs
 	for (i = 0, leaf = loadmodel->leafs; i < loadmodel->numleafs; i++, leaf++)
+		if (!CM_CreatePatchesForLeaf(loadmodel, prv, leaf, checkout))
+			return false;
+
+	//and the per-submodel uni-leaf.
+	for (i = 0; i < prv->numcmodels; i++)
 	{
-		leaf->numleafpatches = 0;
-		leaf->firstleafpatch = prv->numleafpatches;
-		leaf->numleafcmeshes = 0;
-		leaf->firstleafcmesh = prv->numleafcmeshes;
-
-		if (leaf->cluster == -1)
-			continue;
-
-		for (j=0 ; j<leaf->nummarksurfaces ; j++)
+		leaf = prv->cmodels[i].headleaf;
+		if (leaf)
 		{
-			k = leaf->firstmarksurface[j] - loadmodel->surfaces;
-			if (k >= prv->numfaces)
-			{
-				Con_Printf (CON_ERROR "CM_CreatePatchesForLeafs: corrupt map\n");
-				break;
-			}
-			face = &prv->faces[k];
-
-			if (face->numverts <= 0)
-				continue;
-			if (face->shadernum < 0 || face->shadernum >= loadmodel->numtextures)
-				continue;
-			surf = &prv->surfaces[face->shadernum];
-			if (!surf->c.value)	//surface has no contents value, so can't ever block anything.
-				continue;
-
-			switch(face->facetype)
-			{
-			case MST_TRIANGLE_SOUP:
-				if (!face->soup.numindicies)
-					continue;
-				//only enable mesh collisions if its meant to be enabled.
-				//we haven't parsed any shaders, so we depend upon the stuff that the bsp compiler left lying around.
-				if (!(surf->c.flags & q3bsp_surf_meshcollision_flag.ival) && !q3bsp_surf_meshcollision_force.ival)
-					continue;
-
-				if (prv->numleafcmeshes >= prv->maxleafcmeshes)
-				{
-					prv->maxleafcmeshes *= 2;
-					prv->maxleafcmeshes += 16;
-					if (prv->numleafcmeshes > prv->maxleafcmeshes)
-					{	//detect overflow
-						Con_Printf (CON_ERROR "CM_CreateCMeshesForLeafs: map is insanely huge!\n");
-						return false;
-					}
-					prv->leafcmeshes = realloc(prv->leafcmeshes, sizeof(*prv->leafcmeshes) * prv->maxleafcmeshes);
-				}
-
-				// the patch was already built
-				if (checkout[k] != -1)
-				{
-					prv->leafcmeshes[prv->numleafcmeshes] = checkout[k];
-					cmesh = &prv->cmeshes[checkout[k]];
-				}
-				else
-				{
-					if (prv->numcmeshes >= MAX_CM_PATCHES)
-					{
-						Con_Printf (CON_ERROR "CM_CreatePatchesForLeafs: map has too many patches\n");
-						return false;
-					}
-
-					cmesh = &prv->cmeshes[prv->numcmeshes];
-					prv->leafcmeshes[prv->numleafcmeshes] = prv->numcmeshes;
-					checkout[k] = prv->numcmeshes++;
-
-	//gcc warns without this cast
-
-					cmesh->surface = surf;
-					cmesh->numverts = face->numverts;
-					cmesh->numincidies = face->soup.numindicies;
-					cmesh->xyz_array = ZG_Malloc(&loadmodel->memgroup, cmesh->numverts * sizeof(*cmesh->xyz_array) + cmesh->numincidies * sizeof(*cmesh->indicies));
-					cmesh->indicies = (index_t*)(cmesh->xyz_array + cmesh->numverts);
-
-					VectorCopy(prv->verts[face->firstvert+0], cmesh->xyz_array[0]);
-					VectorCopy(cmesh->xyz_array[0], cmesh->absmaxs);
-					VectorCopy(cmesh->xyz_array[0], cmesh->absmins);
-					for (k = 1; k < cmesh->numverts; k++)
-					{
-						VectorCopy(prv->verts[face->firstvert+k], cmesh->xyz_array[k]);
-						AddPointToBounds(cmesh->xyz_array[k], cmesh->absmins, cmesh->absmaxs);
-					}
-					for (k = 0; k < cmesh->numincidies; k++)
-						cmesh->indicies[k] = prv->surfindexes[face->soup.firstindex+k];
-				}
-				leaf->contents |= surf->c.value;
-				leaf->numleafcmeshes++;
-
-				prv->numleafcmeshes++;
-
-				break;
-			case MST_PATCH:
-				if (face->patch.cp[0] <= 0 || face->patch.cp[1] <= 0)
-					continue;
-
-				if ( !surf->c.value || (surf->c.flags & Q3SURF_NONSOLID) )
-					continue;
-
-				if (prv->numleafpatches >= prv->maxleafpatches)
-				{
-					prv->maxleafpatches *= 2;
-					prv->maxleafpatches += 16;
-					if (prv->numleafpatches > prv->maxleafpatches)
-					{	//detect overflow
-						Con_Printf (CON_ERROR "CM_CreatePatchesForLeafs: map is insanely huge!\n");
-						return false;
-					}
-					prv->leafpatches = realloc(prv->leafpatches, sizeof(*prv->leafpatches) * prv->maxleafpatches);
-				}
-
-				// the patch was already built
-				if (checkout[k] != -1)
-				{
-					prv->leafpatches[prv->numleafpatches] = checkout[k];
-					patch = &prv->patches[checkout[k]];
-				}
-				else
-				{
-					if (prv->numpatches >= MAX_CM_PATCHES)
-					{
-						Con_Printf (CON_ERROR "CM_CreatePatchesForLeafs: map has too many patches\n");
-						return false;
-					}
-
-					patch = &prv->patches[prv->numpatches];
-					prv->leafpatches[prv->numleafpatches] = prv->numpatches;
-					checkout[k] = prv->numpatches++;
-
-	//gcc warns without this cast
-					CM_CreatePatch (loadmodel, patch, surf, (const vec_t *)(prv->verts + face->firstvert), face->patch.cp );
-				}
-				leaf->contents |= patch->surface->c.value;
-				leaf->numleafpatches++;
-
-				prv->numleafpatches++;
-				break;
-			}
+			if (!CM_CreatePatchesForLeaf(loadmodel, prv, leaf, checkout))
+				return false;
+			for (k = 0; k < prv->cmodels[i].numsurfaces; k++)
+				CM_CreatePatchForFace(loadmodel, prv, leaf, prv->cmodels[i].firstsurface+k, checkout);
 		}
 	}
-
 	return true;
 }
 #endif
@@ -1865,13 +1906,14 @@ static qboolean CModQ2_LoadLeafBrushes (model_t *mod, qbyte *mod_base, lump_t *l
 		return false;
 	}
 	// need to save space for box planes
-	if (count > MAX_Q2MAP_LEAFBRUSHES)
+	if (count > SANITY_MAX_MAP_LEAFBRUSHES)
 	{
 		Con_Printf (CON_ERROR "Map has too many leafbrushes\n");
 		return false;
 	}
 
-	out = prv->leafbrushes;
+	//prv->numbrushes is because of submodels being weird.
+	out = prv->leafbrushes = ZG_Malloc(&mod->memgroup, sizeof(*out) * (count+prv->numbrushes));
 	prv->numleafbrushes = count;
 
 	for ( i=0 ; i<count ; i++, in++, out++)
@@ -1935,7 +1977,7 @@ static qboolean CModQ2_LoadAreas (model_t *mod, qbyte *mod_base, lump_t *l)
 {
 	cminfo_t	*prv = (cminfo_t*)mod->meshinfo;
 	int			i;
-	q2carea_t		*out;
+	q2carea_t	*out;
 	q2darea_t 	*in;
 	int			count;
 
@@ -1953,15 +1995,13 @@ static qboolean CModQ2_LoadAreas (model_t *mod, qbyte *mod_base, lump_t *l)
 		return false;
 	}
 
-	out = prv->q2areas;
+	out = prv->q2areas = ZG_Malloc(&mod->memgroup, sizeof(*out) * count);;
 	prv->numareas = count;
 
 	for ( i=0 ; i<count ; i++, in++, out++)
 	{
 		out->numareaportals = LittleLong (in->numareaportals);
 		out->firstareaportal = LittleLong (in->firstareaportal);
-		out->floodvalid = 0;
-		out->floodnum = 0;
 	}
 
 	return true;
@@ -1994,8 +2034,8 @@ static qboolean CModQ2_LoadAreaPortals (model_t *mod, qbyte *mod_base, lump_t *l
 		return false;
 	}
 
-	out = prv->areaportals;
-	prv->numareaportals = count;
+	out = prv->q2areaportals = ZG_Malloc(&mod->memgroup, sizeof(*out) * count);
+	prv->numq2areaportals = count;
 
 	for ( i=0 ; i<count ; i++, in++, out++)
 	{
@@ -2952,7 +2992,6 @@ static qboolean CModQ3_LoadRFaces (model_t *mod, qbyte *mod_base, lump_t *l)
 			out->fog = NULL;
 		else
 			out->fog = mod->fogs + LittleLong(in->fognum);
-
 		if (prv->surfaces[LittleLong(in->shadernum)].c.flags & (Q3SURF_NODRAW | Q3SURF_SKIP))
 		{
 			out->mesh = &mesh[surfnum];
@@ -3207,7 +3246,7 @@ static qboolean CModQ3_LoadLeafs (model_t *mod, qbyte *mod_base, lump_t *l)
 	mleaf_t		*out;
 	q3dleaf_t 	*in;
 	int			count;
-	q2cbrush_t	*brush;
+	q2cbrush_t	**brush;
 
 	in = (void *)(mod_base + l->fileofs);
 	if (l->filelen % sizeof(*in))
@@ -3259,10 +3298,10 @@ static qboolean CModQ3_LoadLeafs (model_t *mod, qbyte *mod_base, lump_t *l)
 			out->nummarksurfaces = 0;
 		}
 
+		brush = &prv->leafbrushes[out->firstleafbrush];
 		for (j=0 ; j<out->numleafbrushes ; j++)
 		{
-			brush = prv->leafbrushes[out->firstleafbrush + j];
-			out->contents |= brush->contents;
+			out->contents |= brush[j]->contents;
 		}
 
 		if (out->area >= prv->numareas)
@@ -3334,17 +3373,18 @@ static qboolean CModQ3_LoadLeafBrushes (model_t *mod, qbyte *mod_base, lump_t *l
 		return false;
 	}
 	// need to save space for box planes
-	if (count > MAX_Q2MAP_LEAFBRUSHES)
+	if (count > SANITY_MAX_MAP_LEAFBRUSHES)
 	{
 		Con_Printf (CON_ERROR "Map has too many leafbrushes\n");
 		return false;
 	}
 
-	out = prv->leafbrushes;
+	//prv->numbrushes is because of submodels being weird.
+	out = prv->leafbrushes = ZG_Malloc(&mod->memgroup, sizeof(*out) * (count+prv->numbrushes));
 	prv->numleafbrushes = count;
 
 	for ( i=0 ; i<count ; i++, in++, out++)
-		*out = prv->brushes + LittleLong (*in);
+		*out = prv->brushes + (unsigned int)LittleLong (*in);
 
 	return true;
 }
@@ -3504,10 +3544,11 @@ static void CModQ3_LoadLighting (model_t *loadmodel, qbyte *mod_base, lump_t *l)
 	BuildLightMapGammaTable(1, (1<<(2-gl_overbright.ival)));
 
 	loadmodel->lightmaps.merge = 0;
-	if (!samples)
-		return;
 
 	loadmodel->engineflags |= MDLF_NEEDOVERBRIGHT;
+
+	if (!samples)
+		return;
 
 	loadmodel->lightmaps.fmt = LM_RGB8;
 
@@ -3558,18 +3599,20 @@ static void CModQ3_LoadLighting (model_t *loadmodel, qbyte *mod_base, lump_t *l)
 		out += (m%loadmodel->lightmaps.merge)*mapsize;
 
 #if 1
+		//q3bsp has 4-fold overbrights, so if we're not using overbrights then we basically need to scale the values up by 4
+		//this will require clamping, which can result in oversaturation of channels, meaning discolouration
 		for(s = 0; s < mapsize; )
 		{
+			float scale = (1<<(2-gl_overbright.ival));
 			float i;
 			vec3_t l;
 			l[0] = *in++;
 			l[1] = *in++;
 			l[2] = *in++;
-			i = VectorNormalize(l);
-			i *= (1<<(2-gl_overbright.ival));
+			VectorScale(l, scale, l);		//it should be noted that this maths is wrong if you're trying to use srgb lightmaps.
+			i = max(l[0], max(l[1], l[2]));
 			if (i > 255)
-				i = 255;	//don't oversaturate (clamping results in discolouration, which looks weird)
-			VectorScale(l, i, l);
+				VectorScale(l, 255/i, l);	//clamp the brightest channel, scaling the others down to retain chromiance.
 			out[s++] = l[0];
 			out[s++] = l[1];
 			out[s++] = l[2];
@@ -3993,6 +4036,7 @@ static cmodel_t *CM_LoadMap (model_t *mod, qbyte *filein, size_t filelen, qboole
 	model_t			*wmod = mod;
 	char			loadname[32];
 	qbyte			*mod_base = (qbyte *)filein;
+	bspx_header_t	*bspx = NULL;
 #ifdef Q3BSPS
 	extern cvar_t	gl_overbright;
 #endif
@@ -4123,7 +4167,7 @@ static cmodel_t *CM_LoadMap (model_t *mod, qbyte *filein, size_t filelen, qboole
 
 		prv->faces = NULL;
 
-		Q1BSPX_Setup(mod, mod_base, filelen, header.lumps, Q3LUMPS_TOTAL);
+		bspx = BSPX_Setup(mod, mod_base, filelen, header.lumps, Q3LUMPS_TOTAL);
 
 		//q3 maps have built in 4-fold overbright.
 		//if we're not rendering with that, we need to brighten the lightmaps in order to keep the darker parts the same brightness. we loose the 2 upper bits. those bright areas become uniform and indistinct.
@@ -4327,7 +4371,7 @@ static cmodel_t *CM_LoadMap (model_t *mod, qbyte *filein, size_t filelen, qboole
 			header.lumps[i].fileofs = LittleLong (header.lumps[i].fileofs);
 			i++;
 		}
-		Q1BSPX_Setup(mod, mod_base, filelen, header.lumps, i);
+		BSPX_Setup(mod, mod_base, filelen, header.lumps, i);
 
 #ifndef SERVERONLY
 		if (CM_GetQ2Palette())
@@ -4375,7 +4419,7 @@ static cmodel_t *CM_LoadMap (model_t *mod, qbyte *filein, size_t filelen, qboole
 			noerrors = noerrors && Mod_LoadEdges			(mod, mod_base, &header.lumps[Q2LUMP_EDGES], false);
 			noerrors = noerrors && Mod_LoadSurfedges		(mod, mod_base, &header.lumps[Q2LUMP_SURFEDGES]);
 			if (noerrors)
-				Mod_LoadLighting							(mod, mod_base, &header.lumps[Q2LUMP_LIGHTING], header.version == BSPVERSION_Q2W, NULL);
+				Mod_LoadLighting							(mod, bspx, mod_base, &header.lumps[Q2LUMP_LIGHTING], header.version == BSPVERSION_Q2W, NULL);
 			noerrors = noerrors && CModQ2_LoadSurfaces		(mod, mod_base, &header.lumps[Q2LUMP_TEXINFO]);
 			noerrors = noerrors && CModQ2_LoadPlanes		(mod, mod_base, &header.lumps[Q2LUMP_PLANES]);
 			noerrors = noerrors && CModQ2_LoadTexInfo		(mod, mod_base, &header.lumps[Q2LUMP_TEXINFO], loadname);
@@ -4416,10 +4460,22 @@ static cmodel_t *CM_LoadMap (model_t *mod, qbyte *filein, size_t filelen, qboole
 #endif
 	}
 
+	BSPX_LoadEnvmaps(mod, bspx, mod_base);
+
+#ifdef Q3BSPS
+	{
+		int x, y;
+		for (x = 0; x < prv->numareas; x++)
+			for (y = 0; y < prv->numareas; y++)
+				prv->q3areas[x].numareaportals[y] = map_autoopenportals.ival;
+	}
+#endif
+#ifdef Q2BSPS
 	if (map_autoopenportals.value)
-		memset (prv->portalopen, 1, sizeof(prv->portalopen));	//open them all. Used for progs that havn't got a clue.
+		memset (prv->q2portalopen, 1, sizeof(prv->q2portalopen));	//open them all. Used for progs that havn't got a clue.
 	else
-		memset (prv->portalopen, 0, sizeof(prv->portalopen));	//make them start closed.
+		memset (prv->q2portalopen, 0, sizeof(prv->q2portalopen));	//make them start closed.
+#endif
 	FloodAreaConnections (prv);
 
 	mod->checksum = mod->checksum2 = *checksum;
@@ -4663,7 +4719,7 @@ To keep everything totally uniform, bounding boxes are turned into small
 BSP trees instead of being compared directly.
 ===================
 */
-void CM_SetTempboxSize (vec3_t mins, vec3_t maxs)
+static void CM_SetTempboxSize (vec3_t mins, vec3_t maxs)
 {
 	box_planes[0].dist = maxs[0];
 	box_planes[1].dist = maxs[1];
@@ -4735,7 +4791,7 @@ int		*leaf_list;
 float	*leaf_mins, *leaf_maxs;
 int		leaf_topnode;
 
-void CM_BoxLeafnums_r (model_t *mod, int nodenum)
+static void CM_BoxLeafnums_r (model_t *mod, int nodenum)
 {
 	mplane_t	*plane;
 	mnode_t		*node;
@@ -4773,7 +4829,7 @@ void CM_BoxLeafnums_r (model_t *mod, int nodenum)
 	}
 }
 
-int	CM_BoxLeafnums_headnode (model_t *mod, vec3_t mins, vec3_t maxs, int *list, int listsize, int headnode, int *topnode)
+static int	CM_BoxLeafnums_headnode (model_t *mod, vec3_t mins, vec3_t maxs, int *list, int listsize, int headnode, int *topnode)
 {
 	leaf_list = list;
 	leaf_count = 0;
@@ -5972,6 +6028,13 @@ static trace_t		CM_BoxTrace (model_t *mod, vec3_t start, vec3_t end,
 		trace_extents[2] = ((-trace_mins[2] > trace_maxs[2]) ? -trace_mins[2] : trace_maxs[2])+1;
 	}
 
+	trace_absmins[0] -= 1.0;
+	trace_absmins[1] -= 1.0;
+	trace_absmins[2] -= 1.0;
+	trace_absmaxs[0] += 1.0;
+	trace_absmaxs[1] += 1.0;
+	trace_absmaxs[2] += 1.0;
+
 #if 0
 	if (0)
 	{	//treat *ALL* tests against the actual geometry instead of using any brushes.
@@ -6003,18 +6066,9 @@ static trace_t		CM_BoxTrace (model_t *mod, vec3_t start, vec3_t end,
 	{
 		int		leafs[1024];
 		int		i, numleafs;
-		vec3_t	c1, c2;
 		int		topnode;
 
-		VectorAdd (trace_start, mins, c1);
-		VectorAdd (trace_start, maxs, c2);
-		for (i=0 ; i<3 ; i++)
-		{
-			c1[i] -= 1;
-			c2[i] += 1;
-		}
-
-		numleafs = CM_BoxLeafnums_headnode (mod, c1, c2, leafs, sizeof(leafs)/sizeof(leafs[0]), mod->hulls[0].firstclipnode, &topnode);
+		numleafs = CM_BoxLeafnums_headnode (mod, trace_absmins, trace_absmaxs, leafs, sizeof(leafs)/sizeof(leafs[0]), mod->hulls[0].firstclipnode, &topnode);
 		for (i=0 ; i<numleafs ; i++)
 		{
 			CM_TestInLeaf (mod->meshinfo, &mod->leafs[leafs[i]]);
@@ -6351,7 +6405,7 @@ qbyte	*CM_ClusterPHS (model_t *mod, int cluster, pvsbuffer_t *buffer)
 	return buffer->buffer;
 }
 
-unsigned int  SV_Q2BSP_FatPVS (model_t *mod, vec3_t org, pvsbuffer_t *result, qboolean merge)
+static unsigned int  SV_Q2BSP_FatPVS (model_t *mod, vec3_t org, pvsbuffer_t *result, qboolean merge)
 {
 	int	leafs[64];
 	int		i, j, count;
@@ -6453,36 +6507,45 @@ AREAPORTALS
 ===============================================================================
 */
 
-static void FloodArea_r (cminfo_t	*prv, q2carea_t *area, int floodnum)
+static void FloodArea_r (cminfo_t	*prv, size_t areaidx, int floodnum)
 {
-	int		i;
+	size_t		i;
 
-	if (area->floodvalid == prv->floodvalid)
+	careaflood_t *flood = &prv->areaflood[areaidx];
+	if (flood->floodvalid == prv->floodvalid)
 	{
-		if (area->floodnum == floodnum)
+		if (flood->floodnum == floodnum)
 			return;
 		Con_Printf ("FloodArea_r: reflooded\n");
 		return;
 	}
 
-	area->floodnum = floodnum;
-	area->floodvalid = prv->floodvalid;
-	if (prv->mapisq3)
+	flood->floodnum = floodnum;
+	flood->floodvalid = prv->floodvalid;
+	switch(prv->mapisq3)
 	{
+	case true:
+#ifdef Q3BSPS
 		for (i=0 ; i<prv->numareas ; i++)
 		{
-			if (prv->q3areas[area - prv->q2areas].numareaportals[i]>0)
-				FloodArea_r (prv, &prv->q2areas[i], floodnum);
+			if (prv->q3areas[areaidx].numareaportals[i]>0)
+				FloodArea_r (prv, i, floodnum);
 		}
-	}
-	else
-	{
-		q2dareaportal_t	*p = &prv->areaportals[area->firstareaportal];
-		for (i=0 ; i<area->numareaportals ; i++, p++)
+#endif
+		break;
+	case false:
+#ifdef Q2BSPS
 		{
-			if (prv->portalopen[p->portalnum])
-				FloodArea_r (prv, &prv->q2areas[p->otherarea], floodnum);
+			q2carea_t *area = &prv->q2areas[areaidx];
+			q2dareaportal_t	*p = &prv->q2areaportals[area->firstareaportal];
+			for (i=0 ; i<area->numareaportals ; i++, p++)
+			{
+				if (prv->q2portalopen[p->portalnum])
+					FloodArea_r (prv, p->otherarea, floodnum);
+			}
 		}
+#endif
+		break;
 	}
 }
 
@@ -6495,8 +6558,7 @@ FloodAreaConnections
 */
 static void	FloodAreaConnections (cminfo_t	*prv)
 {
-	int		i;
-	q2carea_t	*area;
+	size_t		i;
 	int		floodnum;
 
 	// all current floods are now invalid
@@ -6506,15 +6568,14 @@ static void	FloodAreaConnections (cminfo_t	*prv)
 	// area 0 is not used
 	for (i=0 ; i<prv->numareas ; i++)
 	{
-		area = &prv->q2areas[i];
-		if (area->floodvalid == prv->floodvalid)
+		if (prv->areaflood[i].floodvalid == prv->floodvalid)
 			continue;		// already flooded into
 		floodnum++;
-		FloodArea_r (prv, area, floodnum);
+		FloodArea_r (prv, i, floodnum);
 	}
-
 }
 
+#ifdef Q2BSPS
 void	CMQ2_SetAreaPortalState (model_t *mod, unsigned int portalnum, qboolean open)
 {
 	cminfo_t	*prv;
@@ -6523,17 +6584,19 @@ void	CMQ2_SetAreaPortalState (model_t *mod, unsigned int portalnum, qboolean ope
 	prv = (cminfo_t*)mod->meshinfo;
 	if (prv->mapisq3)
 		return;
-	if (portalnum > prv->numareaportals)
+	if (portalnum > prv->numq2areaportals)
 		Host_Error ("areaportal > numareaportals");
 
-	if (prv->portalopen[portalnum] == open)
+	if (prv->q2portalopen[portalnum] == open)
 		return;
-	prv->portalopen[portalnum] = open;
+	prv->q2portalopen[portalnum] = open;
 	FloodAreaConnections (prv);
 
 	return;
 }
+#endif
 
+#ifdef Q3BSPS
 void	CMQ3_SetAreaPortalState (model_t *mod, unsigned int area1, unsigned int area2, qboolean open)
 {
 	cminfo_t	*prv = (cminfo_t*)mod->meshinfo;
@@ -6557,6 +6620,7 @@ void	CMQ3_SetAreaPortalState (model_t *mod, unsigned int area1, unsigned int are
 
 	FloodAreaConnections(prv);
 }
+#endif
 
 qboolean	VARGS CM_AreasConnected (model_t *mod, unsigned int area1, unsigned int area2)
 {
@@ -6570,7 +6634,7 @@ qboolean	VARGS CM_AreasConnected (model_t *mod, unsigned int area1, unsigned int
 	if (area1 > prv->numareas || area2 > prv->numareas)
 		Host_Error ("area > numareas");
 
-	if (prv->q2areas[area1].floodnum == prv->q2areas[area2].floodnum)
+	if (prv->areaflood[area1].floodnum == prv->areaflood[area2].floodnum)
 		return true;
 	return false;
 }
@@ -6605,10 +6669,10 @@ int CM_WriteAreaBits (model_t *mod, qbyte *buffer, int area, qboolean merge)
 		if (!merge)
 			memset (buffer, 0, bytes);
 
-		floodnum = prv->q2areas[area].floodnum;
+		floodnum = prv->areaflood[area].floodnum;
 		for (i=0 ; i<prv->numareas ; i++)
 		{
-			if (prv->q2areas[i].floodnum == floodnum || !area)
+			if (prv->areaflood[i].floodnum == floodnum || !area)
 				buffer[i>>3] |= 1<<(i&7);
 		}
 	}
@@ -6620,13 +6684,33 @@ int CM_WriteAreaBits (model_t *mod, qbyte *buffer, int area, qboolean merge)
 ===================
 CM_WritePortalState
 
-Writes the portal state to a savegame file
+Returns a size+pointer to the data that needs to be written into a saved game. 
 ===================
 */
-void	CM_WritePortalState (model_t *mod, vfsfile_t *f)
+size_t CM_WritePortalState (model_t *mod, void **data)
 {
 	cminfo_t	*prv = (cminfo_t*)mod->meshinfo;
-	VFS_WRITE(f, prv->portalopen, sizeof(prv->portalopen));
+
+	if (mod->type == mod_brush && (mod->fromgame == fg_quake2 || mod->fromgame == fg_quake3))
+	{
+		switch(prv->mapisq3)
+		{
+#ifdef Q3BSPS
+		case true:
+			//endian issues. oh well.
+			*data = prv->q3areas;
+			return sizeof(prv->q3areas);
+#endif
+#ifdef Q2BSPS
+		case false:
+			*data = prv->q2portalopen;
+			return sizeof(prv->q2portalopen);
+#endif
+		default: break;
+		}
+	}
+	*data = NULL;
+	return 0;
 }
 
 /*
@@ -6641,14 +6725,38 @@ qofs_t	CM_ReadPortalState (model_t *mod, qbyte *ptr, qofs_t ptrsize)
 {
 	cminfo_t	*prv = (cminfo_t*)mod->meshinfo;
 
-	if (ptrsize < sizeof(prv->portalopen))
-		Con_Printf("CM_ReadPortalState() expected %u, but only %u available\n",(unsigned int)sizeof(prv->portalopen),(unsigned int)ptrsize);
-	else
+	if (mod->type == mod_brush && (mod->fromgame == fg_quake2 || mod->fromgame == fg_quake3))
 	{
-		memcpy(prv->portalopen, ptr, sizeof(prv->portalopen));
+		switch(prv->mapisq3)
+		{
+#ifdef Q3BSPS
+		case 1:
+			if (ptrsize < sizeof(prv->q3areas))
+				Con_Printf("CM_ReadPortalState() expected %u, but only %u available\n",(unsigned int)sizeof(prv->q3areas),(unsigned int)ptrsize);
+			else
+			{
+				memcpy(prv->q3areas, ptr, sizeof(prv->q3areas));
 
-		FloodAreaConnections (prv);
-		return sizeof(prv->portalopen);
+				FloodAreaConnections (prv);
+				return sizeof(prv->q3areas);
+			}
+			break;
+#endif
+#ifdef Q2BSPS
+		case 0:
+			if (ptrsize < sizeof(prv->q2portalopen))
+				Con_Printf("CM_ReadPortalState() expected %u, but only %u available\n",(unsigned int)sizeof(prv->q2portalopen),(unsigned int)ptrsize);
+			else
+			{
+				memcpy(prv->q2portalopen, ptr, sizeof(prv->q2portalopen));
+
+				FloodAreaConnections (prv);
+				return sizeof(prv->q2portalopen);
+			}
+			break;
+#endif
+		default: break;
+		}
 	}
 	return 0;
 }

@@ -27,7 +27,7 @@ float recdemostart;	//keyed to Sys_DoubleTime
 int demoframe;
 
 int cls_lastto;
-int cls_lasttype;
+static int cls_lasttype;
 
 void CL_PlayDemo(char *demoname, qboolean usesystempath);
 void CL_PlayDemoFile(vfsfile_t *f, char *demoname, qboolean issyspath);
@@ -1007,7 +1007,7 @@ void CL_Stop_f (void)
 {
 	if (!cls.demorecording)
 	{
-#ifndef CLIENTONLY
+#if !defined(CLIENTONLY) && defined(MVD_RECORDING)
 		SV_MVDStop_f();
 #else
 		Con_Printf ("Not recording a demo.\n");
@@ -1135,8 +1135,10 @@ void CL_WriteSetDemoMessage (void)
 record a single player game.
 */
 #ifndef CLIENTONLY
+#ifdef MVD_RECORDING
 mvddest_t *SV_MVD_InitRecordFile (char *name);
 qboolean SV_MVD_Record (mvddest_t *dest);
+#endif
 void CL_RecordMap_f (void)
 {
 	char demoname[MAX_QPATH];
@@ -1154,9 +1156,22 @@ void CL_RecordMap_f (void)
 
 	SV_SpawnServer (mapname, NULL, false, false);
 
+#ifdef MVD_RECORDING
 	COM_DefaultExtension(demoname, ".mvd", sizeof(demoname));
+#else
+	COM_DefaultExtension(demoname, ".dem", sizeof(demoname));
+#endif
 	COM_FileExtension(demoname, demoext, sizeof(demoext));
 
+#if defined(AVAIL_GZDEC) && !defined(CLIENTONLY)
+	{
+		extern cvar_t sv_demoAutoCompress;
+		if (sv_demoAutoCompress.ival)
+			Q_strncatz(demoname, ".gz", sizeof(demoname));
+	}
+#endif
+
+#ifdef MVD_RECORDING
 	if (!strcmp(demoext, "mvd"))
 	{
 		if (!SV_MVD_Record (SV_MVD_InitRecordFile(demoname)))
@@ -1165,6 +1180,7 @@ void CL_RecordMap_f (void)
 //		Cbuf_AddText(va("mvdrecord %s\n", COM_QuotedString(demoname, buf, sizeof(buf))), RESTRICT_LOCAL);
 	}
 	else
+#endif
 	{
 		cls.demooutfile = FS_OpenVFS (demoname, "wb", FS_GAME);
 		if (!cls.demooutfile)
@@ -1172,6 +1188,11 @@ void CL_RecordMap_f (void)
 			CL_Disconnect_f();
 			return;
 		}
+#ifdef AVAIL_GZDEC
+		if (!Q_strcasecmp(".gz", COM_GetFileExtension(demoname, NULL)))
+			cls.demooutfile = FS_GZ_WriteFilter(cls.demooutfile, true, true);
+#endif
+
 #ifdef NQPROT
 		if (!strcmp(demoext, "dem"))
 		{
@@ -1187,18 +1208,20 @@ void CL_RecordMap_f (void)
 #endif
 
 //qw-specific serverdata
-static void CLQW_RecordServerData(sizebuf_t *buf)
+static void CLQW_RecordServerData(sizebuf_t *buf, int *seq)
 {
 	extern	char gamedirfile[];
 	unsigned int i;
+	infosync_t sync;
+	char serverinfostring[1024];
 
 // send the serverdata
 	MSG_WriteByte (buf, svc_serverdata);
 #ifdef PROTOCOL_VERSION_FTE
-	if (cls.fteprotocolextensions)	//maintain demo compatability
+	if (cls.fteprotocolextensions&~PEXT1_HIDEPROTOCOLS)	//maintain demo compatability
 	{
 		MSG_WriteLong (buf, PROTOCOL_VERSION_FTE);
-		MSG_WriteLong (buf, cls.fteprotocolextensions);
+		MSG_WriteLong (buf, cls.fteprotocolextensions&~PEXT1_HIDEPROTOCOLS);
 	}
 	if (cls.fteprotocolextensions2)	//maintain demo compatability
 	{
@@ -1246,31 +1269,80 @@ static void CLQW_RecordServerData(sizebuf_t *buf)
 	MSG_WriteFloat(buf, movevars.entgravity);
 
 	// send server info string
+	memset(&sync, 0, sizeof(sync));
+	InfoBuf_ToString(&cl.serverinfo, serverinfostring, sizeof(serverinfostring), NULL, NULL, NULL, &sync, NULL);
 	MSG_WriteByte (buf, svc_stufftext);
-	MSG_WriteString (buf, va("fullserverinfo \"%s\"\n", cl.serverinfo) );
+	MSG_WriteString (buf, va("fullserverinfo \"%s\"\n", serverinfostring));
+	while(sync.numkeys)
+	{
+		char *keyname = sync.keys[0].name;
+		char enckey[2048], encdata[2048];
+		if (InfoBuf_EncodeString(keyname,strlen(keyname), enckey, sizeof(enckey)))
+		{
+			size_t k;
+			if (InfoBuf_FindKey(&cl.serverinfo, keyname, &k))
+			{
+				size_t offset, chunk;
+				qboolean final;
+				for (offset = 0 ; offset < cl.serverinfo.keys[k].size; offset += chunk)
+				{
+					chunk = cl.serverinfo.keys[k].size - offset;
+					if (chunk > 1024)
+						chunk = 1024;
+
+					if (!InfoBuf_EncodeString(cl.serverinfo.keys[k].value, chunk, encdata, sizeof(encdata)))
+						break;	//shouldn't happen.
+				
+					if (buf->cursize > 512)
+						CL_WriteRecordDemoMessage (buf, (*seq)++);
+
+					final = (offset+chunk == cl.serverinfo.keys[k].size) && !cl.serverinfo.keys[k].partial;
+					if (!offset && final)
+					{	//vanilla compat. we must just have a lot of data.
+						MSG_WriteByte(buf, svc_serverinfo);
+						MSG_WriteString(buf, enckey);
+						MSG_WriteString(buf, encdata);
+					}
+					else
+					{	//awkward stuff.
+						MSG_WriteByte(buf, svc_setinfo);
+						MSG_WriteByte(buf, 255); //special meaning to say that this is a partial update
+						MSG_WriteByte(buf, 255);	//the serverinfo
+						MSG_WriteLong(buf, (final?0x80000000:0)|offset);
+						MSG_WriteString(buf, enckey);
+						MSG_WriteString(buf, encdata);
+					}
+					offset += chunk;
+				}
+			}
+		}
+		InfoSync_Remove(&sync, 0);
+	}
+	InfoSync_Clear(&sync);
 }
 
 #ifdef NQPROT
-void CLNQ_WriteServerData(sizebuf_t *buf)
+void CLNQ_WriteServerData(sizebuf_t *buf)	//for demo recording
 {
 	unsigned int protmain;
 	unsigned int protfl = 0;
 	unsigned int i;
 	const char *val;
 
-	val = Info_ValueForKey(cl.serverinfo, "*csprogs");
+	//This is for compat with DP.
+	val = InfoBuf_ValueForKey(&cl.serverinfo, "*csprogs");
 	if (*val)
 	{
 		MSG_WriteByte(buf, svc_stufftext);
 		MSG_WriteString(buf, va("csqc_progcrc \"%s\"\n", val));
 	}
-	val = Info_ValueForKey(cl.serverinfo, "*csprogssize");
+	val = InfoBuf_ValueForKey(&cl.serverinfo, "*csprogssize");
 	if (*val)
 	{
 		MSG_WriteByte(buf, svc_stufftext);
 		MSG_WriteString(buf, va("csqc_progsize \"%s\"\n", val));
 	}
-	val = Info_ValueForKey(cl.serverinfo, "*csprogsname");
+	val = InfoBuf_ValueForKey(&cl.serverinfo, "*csprogsname");
 	if (*val)
 	{
 		MSG_WriteByte(buf, svc_stufftext);
@@ -1278,10 +1350,10 @@ void CLNQ_WriteServerData(sizebuf_t *buf)
 	}
 
 	MSG_WriteByte(buf, svc_serverdata);
-	if (cls.fteprotocolextensions)
+	if (cls.fteprotocolextensions&~PEXT1_HIDEPROTOCOLS)
 	{
 		MSG_WriteLong (buf, PROTOCOL_VERSION_FTE);
-		MSG_WriteLong (buf, cls.fteprotocolextensions);
+		MSG_WriteLong (buf, cls.fteprotocolextensions&~PEXT1_HIDEPROTOCOLS);
 	}
 	if (cls.fteprotocolextensions2)
 	{
@@ -1315,6 +1387,8 @@ void CLNQ_WriteServerData(sizebuf_t *buf)
 	if (protmain == PROTOCOL_VERSION_RMQ)
 		MSG_WriteLong (buf, protfl);
 
+	if (cls.fteprotocolextensions2 & PEXT2_PREDINFO)
+		MSG_WriteString(buf, FS_GetGamedir(true));
 	MSG_WriteByte (buf, cl.allocated_client_slots);
 	MSG_WriteByte (buf, cl.deathmatch?GAME_DEATHMATCH:GAME_COOP);
 	MSG_WriteString (buf, cl.levelname);
@@ -1536,6 +1610,123 @@ static int CL_Record_Lightstyles(sizebuf_t *buf, int seq)
 	return seq;
 }
 
+// send current status of all other players
+static int CL_RecordInitialPlayers(sizebuf_t *buf, int seq, qboolean isnq)
+{
+	char info[MAX_LOCALINFO_STRING];
+	player_info_t *player;
+	int i;
+	for (i = 0; i < cl.allocated_client_slots; i++)
+	{
+		player = cl.players + i;
+
+		if (buf->cursize > buf->maxsize/2)
+			CL_WriteRecordDemoMessage (buf, seq++);
+
+		if (player->frags != 0)
+		{
+			MSG_WriteByte (buf, svc_updatefrags);
+			MSG_WriteByte (buf, i);
+			MSG_WriteShort(buf, player->frags);
+		}
+		if (isnq)
+		{
+			if (!*player->name)
+				continue;
+			MSG_WriteByte (buf, svc_updatename);
+			MSG_WriteByte (buf, i);
+			MSG_WriteString (buf, player->name);
+
+			MSG_WriteByte (buf, svc_updatecolors);
+			MSG_WriteByte (buf, i);
+			MSG_WriteByte (buf, player->rtopcolor*16+player->rbottomcolor);
+		}
+		else
+		{
+			if (player->ping != 0)
+			{
+				MSG_WriteByte (buf, svc_updateping);
+				MSG_WriteByte (buf, i);
+				MSG_WriteShort (buf, player->ping);
+			}
+
+			if (player->pl != 0)
+			{
+				MSG_WriteByte (buf, svc_updatepl);
+				MSG_WriteByte (buf, i);
+				MSG_WriteByte (buf, player->pl);
+			}
+
+			if (player->userinfo.numkeys)
+			{
+				MSG_WriteByte (buf, svc_updateentertime);
+				MSG_WriteByte (buf, i);
+				MSG_WriteFloat (buf, realtime - player->realentertime);	//seconds since
+			}
+
+			if (player->userinfo.numkeys)
+			{
+				InfoBuf_ToString(&player->userinfo, info, min(buf->maxsize-buf->cursize-6, sizeof(info)), basicuserinfos, NULL, NULL, NULL, NULL);
+				MSG_WriteByte (buf, svc_updateuserinfo);
+				MSG_WriteByte (buf, i);
+				MSG_WriteLong (buf, player->userid);
+				MSG_WriteString (buf, info);
+
+				//spam svc_setinfo for all the infos that didn't fit.
+			}
+		}
+	}
+	return seq;
+}
+static int CL_RecordInitialStats(sizebuf_t *buf, int seq, qboolean isnq)
+{
+	size_t seat, i;
+	for (seat = 0; seat < cl.splitclients; seat++)
+	{
+		//higher stats should be 0 and thus not be sent, if not valid.
+		for (i = 0; i < MAX_CL_STATS; i++)
+		{
+			if (cl.playerview[seat].stats[i] || cl.playerview[seat].statsf[i])
+			{
+				double fs = cl.playerview[seat].statsf[i];
+				double is = cl.playerview[seat].stats[i];
+				if (seat)
+				{
+					MSG_WriteByte (buf, svcfte_choosesplitclient);
+					MSG_WriteByte (buf, seat);
+				}
+				if ((int)fs == is)
+				{
+					MSG_WriteByte (buf, isnq?svcnq_updatestatlong:svcqw_updatestatlong);
+					MSG_WriteByte (buf, i);
+					MSG_WriteLong (buf, is);
+				}
+				else
+				{
+					MSG_WriteByte (buf, svcfte_updatestatfloat);
+					MSG_WriteByte (buf, i);
+					MSG_WriteLong (buf, fs);
+				}
+			}
+			if (cl.playerview[seat].statsstr[i])
+			{
+				if (seat)
+				{
+					MSG_WriteByte (buf, svcfte_choosesplitclient);
+					MSG_WriteByte (buf, seat);
+				}
+				MSG_WriteByte (buf, svcfte_updatestatstring);
+				MSG_WriteByte (buf, i);
+				MSG_WriteString (buf, cl.playerview[seat].statsstr[i]);
+			}
+
+			if (buf->cursize > buf->maxsize/2)
+				CL_WriteRecordDemoMessage (buf, seq++);
+		}
+	}
+	return seq;
+}
+
 const char *Get_Q2ConfigString(int i);
 
 /*
@@ -1550,10 +1741,9 @@ void CL_Record_f (void)
 	int		c;
 	char	name[MAX_OSPATH];
 	sizebuf_t	buf;
-	char	buf_data[MAX_OVERALLMSGLEN];
-	int n, i, seat;
+	qbyte	buf_data[MAX_OVERALLMSGLEN];
+	int n, i;
 	char *s, *p, *fname;
-	player_info_t *player;
 	extern	char gamedirfile[];
 	int seq = 1;
 	const char *defaultext;
@@ -1575,7 +1765,7 @@ void CL_Record_f (void)
 		return;
 	}
 
-#ifdef Q2SERVER
+#ifdef Q2CLIENT
 	if (cls.protocol == CP_QUAKE2)
 		defaultext = ".dm2";
 	else
@@ -1603,7 +1793,7 @@ void CL_Record_f (void)
 		// They did.
 		if ( s != NULL ) {
 			if (!Q_strcasecmp(s, defaultext))
-				*s = 0;	//hack away that extension that they added.
+				*s = 0;	//hack away that extension that they added, so that we don't get dupes.
 		}
 	}
 	else
@@ -1657,7 +1847,12 @@ void CL_Record_f (void)
 	}
 
 	// Make sure the filename doesn't contain illegal characters
-	for (p=fname ; *p ; p++)
+	p=fname;
+#ifdef MVD_RECORDING
+	if (*sv_demoDir.string && !strncmp(p, sv_demoDir.string, strlen(sv_demoDir.string)) && p[strlen(sv_demoDir.string)] == '/')
+		p += strlen(sv_demoDir.string)+1;	//allow a demos/ prefix (primarily because of autodemos)
+#endif
+	for ( ; *p ; p++)
 	{
 		char c;
 		*p &= 0x7F;		// strip high bit
@@ -1666,10 +1861,18 @@ void CL_Record_f (void)
 			|| c=='<' || c=='>' || c=='"' || c=='.')
 			*p = '_';
 	}
-	Q_strncpyz(name, fname, sizeof(name)-8);
+	Q_strncpyz(name, fname, sizeof(name)-4-strlen(defaultext));
+
+#if defined(AVAIL_GZDEC) && !defined(CLIENTONLY) && defined(MVD_RECORDING)
+	{
+		extern cvar_t sv_demoAutoCompress;
+		if (sv_demoAutoCompress.ival == 1 || !*sv_demoAutoCompress.string)
+			defaultext = va("%s.gz", defaultext);
+	}
+#endif
 
 //make a unique name (unless the user specified it).
-	strcat (name, defaultext);	//we have the space
+	Q_strncatz(name, defaultext, sizeof(name));
 	if (c != 2)
 	{
 		vfsfile_t *f;
@@ -1678,7 +1881,7 @@ void CL_Record_f (void)
 		if (f)
 		{
 			//remove the extension again
-			Q_strncpyz(name, fname, sizeof(name)-8);
+			Q_strncpyz(name, fname, sizeof(name)-4-strlen(defaultext));
 			p = name + strlen(name);
 			strcat(p, "_XX");
 			strcat(p, defaultext);
@@ -1687,8 +1890,8 @@ void CL_Record_f (void)
 			do
 			{
 				VFS_CLOSE (f);
-				p[0] = i%100 + '0';
-				p[1] = i%10 + '0';
+				p[0] = ((i/10)%10) + '0';
+				p[1] = (i%10) + '0';
 				f = FS_OpenVFS (name, "rb", FS_GAME);
 				i++;
 			} while (f && i < 100);
@@ -1698,12 +1901,18 @@ void CL_Record_f (void)
 //
 // open the demo file
 //
-	cls.demooutfile = FS_OpenVFS (name, "wb", FS_GAME);
+	cls.demooutfile = FS_OpenVFS (name, "wb", FS_GAMEONLY);
 	if (!cls.demooutfile)
 	{
 		Con_Printf ("ERROR: couldn't open.\n");
 		return;
 	}
+
+#ifdef AVAIL_GZDEC
+	if (!Q_strcasecmp(".gz", COM_GetFileExtension(name, NULL)))
+		cls.demooutfile = FS_GZ_WriteFilter(cls.demooutfile, true, true);
+#endif
+
 	cls.demohadkeyframe = false;
 
 	Con_Printf ("recording to %s.\n", name);
@@ -1724,7 +1933,7 @@ void CL_Record_f (void)
 
 		cls.demorecording = DPB_QUAKEWORLD;
 
-		CLQW_RecordServerData(&buf);
+		CLQW_RecordServerData(&buf, &seq);
 
 		// send music
 		Media_WriteCurrentTrack(&buf);
@@ -1853,98 +2062,9 @@ void CL_Record_f (void)
 
 		if (buf.cursize)
 			CL_WriteRecordDemoMessage (&buf, seq++);
-
-	// send current status of all other players
-
-		for (i = 0; i < cl.allocated_client_slots; i++)
-		{
-			player = cl.players + i;
-
-			if (player->frags != 0)
-			{
-				MSG_WriteByte (&buf, svc_updatefrags);
-				MSG_WriteByte (&buf, i);
-				MSG_WriteShort (&buf, player->frags);
-			}
-
-			if (player->ping != 0)
-			{
-				MSG_WriteByte (&buf, svc_updateping);
-				MSG_WriteByte (&buf, i);
-				MSG_WriteShort (&buf, player->ping);
-			}
-
-			if (player->pl != 0)
-			{
-				MSG_WriteByte (&buf, svc_updatepl);
-				MSG_WriteByte (&buf, i);
-				MSG_WriteByte (&buf, player->pl);
-			}
-
-			if (*player->userinfo)
-			{
-				MSG_WriteByte (&buf, svc_updateentertime);
-				MSG_WriteByte (&buf, i);
-				MSG_WriteFloat (&buf, realtime - player->realentertime);	//seconds since
-			}
-
-			if (*player->userinfo)
-			{
-				MSG_WriteByte (&buf, svc_updateuserinfo);
-				MSG_WriteByte (&buf, i);
-				MSG_WriteLong (&buf, player->userid);
-				MSG_WriteString (&buf, player->userinfo);
-			}
-
-			if (buf.cursize > buf.maxsize/2)
-				CL_WriteRecordDemoMessage (&buf, seq++);
-		}
-
+		seq = CL_RecordInitialPlayers(&buf, seq, false);
 		seq = CL_Record_Lightstyles(&buf, seq);
-
-		for (seat = 0; seat < cl.splitclients; seat++)
-		{
-			//higher stats should be 0 and thus not be sent, if not valid.
-			for (i = 0; i < MAX_CL_STATS; i++)
-			{
-				if (cl.playerview[seat].stats[i] || cl.playerview[seat].statsf[i])
-				{
-					double fs = cl.playerview[seat].statsf[i];
-					double is = cl.playerview[seat].stats[i];
-					if (seat)
-					{
-						MSG_WriteByte (&buf, svcfte_choosesplitclient);
-						MSG_WriteByte (&buf, seat);
-					}
-					if ((int)fs == is)
-					{
-						MSG_WriteByte (&buf, svcqw_updatestatlong);
-						MSG_WriteByte (&buf, i);
-						MSG_WriteLong (&buf, is);
-					}
-					else
-					{
-						MSG_WriteByte (&buf, svcfte_updatestatfloat);
-						MSG_WriteByte (&buf, i);
-						MSG_WriteLong (&buf, fs);
-					}
-				}
-				if (cl.playerview[seat].statsstr[i])
-				{
-					if (seat)
-					{
-						MSG_WriteByte (&buf, svcfte_choosesplitclient);
-						MSG_WriteByte (&buf, seat);
-					}
-					MSG_WriteByte (&buf, svcfte_updatestatstring);
-					MSG_WriteByte (&buf, i);
-					MSG_WriteString (&buf, cl.playerview[seat].statsstr[i]);
-				}
-
-				if (buf.cursize > buf.maxsize/2)
-					CL_WriteRecordDemoMessage (&buf, seq++);
-			}
-		}
+		seq = CL_RecordInitialStats(&buf, seq, false);
 
 		// get the client to check and download skins
 		// when that is completed, a begin command will be issued
@@ -2023,9 +2143,9 @@ void CL_Record_f (void)
 		MSG_WriteByte (&buf, svcnq_signonnum);
 		MSG_WriteByte (&buf, 2);
 		CL_WriteRecordDemoMessage (&buf, seq++);
-		//fixme: clients
+		seq = CL_RecordInitialPlayers(&buf, seq, true);
 		seq = CL_Record_Lightstyles(&buf, seq);
-		//fixme: stats
+		seq = CL_RecordInitialStats(&buf, seq, true);
 		MSG_WriteByte (&buf, svcnq_signonnum);
 		MSG_WriteByte (&buf, 3);
 		CL_WriteRecordDemoMessage (&buf, seq++);
@@ -2037,6 +2157,10 @@ void CL_Record_f (void)
 		CL_Stop_f();
 		break;
 	}
+
+	if (cls.fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS)
+		if (cl.numackframes < sizeof(cl.ackframes)/sizeof(cl.ackframes[0]))
+			cl.ackframes[cl.numackframes++] = -1;
 }
 
 static int QDECL CompleteDemoList (const char *name, qofs_t flags, time_t mtime, void *parm, searchpathfuncs_t *spath)
@@ -2050,7 +2174,11 @@ void CL_DemoList_c(int argn, const char *partial, struct xcommandargcompletioncb
 	if (argn == 1)
 	{
 		COM_EnumerateFiles(va("%s*.qwd", partial), CompleteDemoList, ctx);
+		COM_EnumerateFiles(va("%s*.qwd.gz", partial), CompleteDemoList, ctx);
+#ifdef NQPROT
 		COM_EnumerateFiles(va("%s*.dem", partial), CompleteDemoList, ctx);
+		COM_EnumerateFiles(va("%s*.dem.gz", partial), CompleteDemoList, ctx);
+#endif
 		COM_EnumerateFiles(va("%s*.mvd", partial), CompleteDemoList, ctx);
 		COM_EnumerateFiles(va("%s*.mvd.gz", partial), CompleteDemoList, ctx);
 
@@ -2095,7 +2223,7 @@ void CL_ReRecord_f (void)
 
 	Q_snprintfz (name, sizeof(name), "%s", s);
 
-	CL_Disconnect();
+	CL_Disconnect(NULL);
 
 //
 // open the demo file
@@ -2128,6 +2256,11 @@ void CL_ReRecord_f (void)
 		cls.demorecording = DPB_NONE;
 		return;
 	}
+
+#ifdef AVAIL_GZDEC
+	if (!Q_strcasecmp(".gz", COM_GetFileExtension(name, NULL)))
+		cls.demooutfile = FS_GZ_WriteFilter(cls.demooutfile, true, true);
+#endif
 
 	Con_Printf ("recording to %s.\n", name);
 
@@ -2445,7 +2578,7 @@ void CL_PlayDemo(char *demoname, qboolean usesystempath)
 	Q_strncpyz (cls.lastdemoname, demoname, sizeof(cls.lastdemoname));
 
 #ifdef AVAIL_GZDEC
-	if (strlen(name) >= 3 && !Q_strcasecmp(name + strlen(name) - 3, ".gz"))
+	if (!strcmp(COM_GetFileExtension(name,NULL), ".gz"))
 		f = FS_DecompressGZip(f, NULL);
 #endif
 
@@ -2468,12 +2601,12 @@ void CL_Demo_ClientCommand(char *commandtext)
 	}
 }
 
-char qtvhostname[1024];
-char qtvrequestbuffer[4096];
-int qtvrequestsize;
-char qtvrequestcmdbuffer[4096];
-int qtvrequestcmdsize;
-vfsfile_t *qtvrequest;
+static char qtvhostname[1024];
+static char qtvrequestbuffer[4096];
+static size_t qtvrequestsize;
+static char qtvrequestcmdbuffer[4096];
+static int qtvrequestcmdsize;
+static vfsfile_t *qtvrequest;
 
 void CL_QTVPoll (void)
 {
@@ -2954,7 +3087,11 @@ void CL_QTVPlay_f (void)
 		{
 			Q_snprintfz(msg+msglen, sizeof(msg)-msglen,
 					"QTV_EZQUAKE_EXT: 3\n"
-					"USERINFO: %s\n", cls.userinfo[0]);
+					"USERINFO: ");
+			msglen += strlen(msg+msglen);
+			InfoBuf_ToString(&cls.userinfo[0], msg+msglen, sizeof(msg)-msglen-1, basicuserinfos, NULL, NULL, NULL, NULL);
+			msglen += strlen(msg+msglen);
+			Q_strncatz(msg+msglen, "\n", sizeof(msg)-msglen);
 			msglen += strlen(msg+msglen);
 		}
 

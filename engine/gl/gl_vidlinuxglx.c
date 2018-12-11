@@ -50,10 +50,14 @@ none of these issues will be fixed by a compositing window manager, because ther
 #include <stdarg.h>
 #include <stdio.h>
 #include <signal.h>
+#include <unistd.h>
 
 #include <dlfcn.h>
 
 #include "quakedef.h"
+
+#ifndef NO_X11
+
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
 #include <X11/Xutil.h>
@@ -80,6 +84,7 @@ static qboolean XVK_SetupSurface_XCB(void);
 
 #include <X11/keysym.h>
 #include <X11/cursorfont.h>
+#include <wchar.h>
 
 static Display *vid_dpy = NULL;
 static Cursor vid_nullcursor;	//'cursor' to use when none should be shown
@@ -115,7 +120,7 @@ extern int sys_parentwidth;
 extern int sys_parentheight;
 extern long    sys_parentwindow;
 
-qboolean X11_CheckFeature(const char *featurename, qboolean defaultval)
+static qboolean X11_CheckFeature(const char *featurename, qboolean defaultval)
 {
 	cvar_t *var;
 	if (COM_CheckParm(va("-no%s", featurename)))
@@ -127,6 +132,7 @@ qboolean X11_CheckFeature(const char *featurename, qboolean defaultval)
 		return !!var->ival;
 	return defaultval;
 }
+static qboolean X11_Clipboard_Notify(XSelectionEvent *xselection);
 
 #define KEY_MASK (KeyPressMask | KeyReleaseMask)
 #define MOUSE_MASK (ButtonPressMask | ButtonReleaseMask | \
@@ -150,6 +156,7 @@ static struct
 	Cursor	 (*pXCreatePixmapCursor)(Display *display, Pixmap source, Pixmap mask, XColor *foreground_color, XColor *background_color, unsigned int x, unsigned int y);
 	Window	 (*pXCreateWindow)(Display *display, Window parent, int x, int y, unsigned int width, unsigned int height, unsigned int border_width, int depth, unsigned int class, Visual *visual, unsigned long valuemask, XSetWindowAttributes *attributes);
 	int	 (*pXDefineCursor)(Display *display, Window w, Cursor cursor);
+	int	 (*pXDeleteProperty)(Display *display, Window w, Atom property);
 	int	 (*pXDestroyWindow)(Display *display, Window w);
 	int	 (*pXFillRectangle)(Display *display, Drawable d, GC gc, int x, int y, unsigned int width, unsigned int height);
 	int 	 (*pXFlush)(Display *display);
@@ -204,15 +211,25 @@ static struct
 	XIC		(*pXCreateIC)(XIM im, ...);
 	void	(*pXSetICFocus)(XIC ic); 
 	void	(*pXUnsetICFocus)(XIC ic); 
-	char *  (*pXGetICValues)(XIC ic, ...); 
+	char *  (*pXGetICValues)(XIC ic, ...);
+	char *  (*pXSetICValues)(XIC ic, ...);
 	Bool	(*pXFilterEvent)(XEvent *event, Window w);
 	int		(*pXutf8LookupString)(XIC ic, XKeyPressedEvent *event, char *buffer_return, int bytes_buffer, KeySym *keysym_return, Status *status_return);
 	int		(*pXwcLookupString)(XIC ic, XKeyPressedEvent *event, wchar_t *buffer_return, int bytes_buffer, KeySym *keysym_return, Status *status_return);
 	void	(*pXDestroyIC)(XIC ic);
 	Status	(*pXCloseIM)(XIM im);
 	qboolean	dounicode;
+	int			ime_shown;
 	XIC			unicodecontext;
 	XIM			inputmethod;
+	XPoint		ime_pos;
+
+	struct
+	{
+		Window	source;	//the source window to send dndFinished to.
+		Atom	type;	//the type of the data. usually text/uri-list.
+		Atom	myprop;	//the property on our window that we're copying the data to.
+	} dnd;
 } x11;
 
 static int X11_ErrorHandler(Display *dpy, XErrorEvent *e)
@@ -237,6 +254,7 @@ static qboolean x11_initlib(void)
 		{(void**)&x11.pXCreatePixmapCursor,	"XCreatePixmapCursor"},
 		{(void**)&x11.pXCreateWindow,		"XCreateWindow"},
 		{(void**)&x11.pXDefineCursor,		"XDefineCursor"},
+		{(void**)&x11.pXDeleteProperty,		"XDeleteProperty"},
 		{(void**)&x11.pXDestroyWindow,		"XDestroyWindow"},
 		{(void**)&x11.pXFillRectangle,		"XFillRectangle"},
 		{(void**)&x11.pXFlush,			"XFlush"},
@@ -311,6 +329,7 @@ static qboolean x11_initlib(void)
 			x11.pXSetICFocus		= Sys_GetAddressForName(x11.lib, "XSetICFocus");
 			x11.pXUnsetICFocus		= Sys_GetAddressForName(x11.lib, "XUnsetICFocus");
 			x11.pXGetICValues		= Sys_GetAddressForName(x11.lib, "XGetICValues");
+			x11.pXSetICValues		= Sys_GetAddressForName(x11.lib, "XSetICValues");
 			x11.pXFilterEvent		= Sys_GetAddressForName(x11.lib, "XFilterEvent");
 			x11.pXutf8LookupString	= Sys_GetAddressForName(x11.lib, "Xutf8LookupString");
 			x11.pXwcLookupString	= Sys_GetAddressForName(x11.lib, "XwcLookupString");
@@ -722,6 +741,8 @@ static qboolean XRandR_Init(void)
 				    	)
 					xrandr.canmodechange12 = true;
 			}
+
+			//FIXME: query monitor sizes and calculate dpi for vid.dpy_[x|y]
 			return true;
 		}
 	}
@@ -1268,8 +1289,7 @@ static qboolean XI2_Init(void)
 //qboolean isPermedia = false;
 extern qboolean sys_gracefulexit;
 
-#define SYS_CLIPBOARD_SIZE 512
-char clipboard_buffer[SYS_CLIPBOARD_SIZE];
+char *clipboard_buffer[2];
 
 
 /*-----------------------------------------------------------------------*/
@@ -1299,13 +1319,15 @@ static struct
 	int swapint;
 } glx;
 
-void GLX_CloseLibrary(void)
+/*Note: closing the GLX library is unsafe as nvidia's drivers like to crash once its reloaded.
+static void GLX_CloseLibrary(void)
 {
 	Sys_CloseLibrary(glx.gllibrary);
 	glx.gllibrary = NULL;
 }
+*/
 
-void *GLX_GetSymbol(char *name)
+static void *GLX_GetSymbol(char *name)
 {
 	void *symb;
 
@@ -1319,7 +1341,7 @@ void *GLX_GetSymbol(char *name)
 	return symb;
 }
 
-qboolean GLX_InitLibrary(char *driver)
+static qboolean GLX_InitLibrary(char *driver)
 {
 	dllfunction_t funcs[] =
 	{
@@ -1368,7 +1390,7 @@ qboolean GLX_InitLibrary(char *driver)
 #define GLX_CONTEXT_OPENGL_NO_ERROR_ARB	0x31B3
 #endif
 
-qboolean GLX_CheckExtension(const char *ext)
+static qboolean GLX_CheckExtension(const char *ext)
 {
 	const char *e = glx.glxextensions, *n;
 	size_t el = strlen(ext);
@@ -1392,14 +1414,14 @@ qboolean GLX_CheckExtension(const char *ext)
 }
 
 //Since GLX1.3 (equivelent to gl1.2)
-GLXFBConfig GLX_GetFBConfig(rendererstate_t *info)
+static GLXFBConfig GLX_GetFBConfig(rendererstate_t *info)
 {
 	int attrib[32];
 	int n, i;
 	int numconfigs;
 	GLXFBConfig *fbconfigs;
 
-	qboolean hassrgb, hasmultisample, hasfloats;
+	qboolean hassrgb, hasmultisample;//, hasfloats;
 
 	if (glx.QueryExtensionsString)
 		glx.glxextensions = glx.QueryExtensionsString(vid_dpy, scrnum);
@@ -1415,9 +1437,9 @@ GLXFBConfig GLX_GetFBConfig(rendererstate_t *info)
 		return NULL;	//don't worry about it
 	}
 
-	hassrgb = GLX_CheckExtension("GLX_ARB_framebuffer_sRGB");
+	hassrgb = GLX_CheckExtension("GLX_ARB_framebuffer_sRGB") || GLX_CheckExtension("GLX_EXT_framebuffer_sRGB");
 	hasmultisample = GLX_CheckExtension("GLX_ARB_multisample");
-	hasfloats = GLX_CheckExtension("GLX_ARB_fbconfig_float");
+//	hasfloats = GLX_CheckExtension("GLX_ARB_fbconfig_float");
 
 	//do it in a loop, mostly to disable extensions that are unlikely to be supported on various glx implementations.
 	for (i = 0; i < (16<<1); i++)
@@ -1440,28 +1462,31 @@ GLXFBConfig GLX_GetFBConfig(rendererstate_t *info)
 		//attrib[n++] = GLX_AUX_BUFFERS;	attrib[n++] = 0;
 
 		
+#if 0
 		if (!(i&4))
-		{
-			if (info->srgb <= 2 || !hasfloats)
+		{	//unlike on windows, this is explicitly blocked except for pbuffers. ffs.
+			if (info->srgb < 2 || !hasfloats)
 				continue;	//skip fp16 framebuffers
+			//unlike on windows, this is explicitly blocked except for pbuffers. ffs.
 			attrib[n++] = GLX_RENDER_TYPE;		attrib[n++] = GLX_RGBA_FLOAT_BIT;
 			attrib[n++] = GLX_RED_SIZE;			attrib[n++] = info->bpp?info->bpp/3:4;
 			attrib[n++] = GLX_GREEN_SIZE;		attrib[n++] = info->bpp?info->bpp/3:4;
 			attrib[n++] = GLX_BLUE_SIZE;		attrib[n++] = info->bpp?info->bpp/3:4;
 		}
 		else
+#endif
 		{
-			if (info->bpp > 24)
-			{
+			if (info->bpp == 32)
+			{	//bpp32 is an alias for 24 (we ignore the alpha channel)
 				attrib[n++] = GLX_RED_SIZE;			attrib[n++] = 8;
 				attrib[n++] = GLX_GREEN_SIZE;		attrib[n++] = 8;
 				attrib[n++] = GLX_BLUE_SIZE;		attrib[n++] = 8;
 			}
 			else
-			{
-				attrib[n++] = GLX_RED_SIZE;			attrib[n++] = info->bpp?info->bpp/3:4;
-				attrib[n++] = GLX_GREEN_SIZE;		attrib[n++] = info->bpp?info->bpp/3:4;
-				attrib[n++] = GLX_BLUE_SIZE;		attrib[n++] = info->bpp?info->bpp/3:4;
+			{	//clamp requested bitdepth to 8bits on the second pass, so that bpp30 doesn't fail
+				attrib[n++] = GLX_RED_SIZE;			attrib[n++] = bound(1,info->bpp?info->bpp/3:4, (i&4)?8:16);
+				attrib[n++] = GLX_GREEN_SIZE;		attrib[n++] = bound(1,info->bpp?info->bpp/3:4, (i&4)?8:16);
+				attrib[n++] = GLX_BLUE_SIZE;		attrib[n++] = bound(1,info->bpp?info->bpp/3:4, (i&4)?8:16);
 			}
 		}
 		//attrib[n++] = GLX_ALPHA_SIZE;		attrib[n++] = GLX_DONT_CARE;
@@ -1505,7 +1530,7 @@ GLXFBConfig GLX_GetFBConfig(rendererstate_t *info)
 	return NULL;
 }
 //for GLX<1.3
-XVisualInfo *GLX_GetVisual(rendererstate_t *info)
+static XVisualInfo *GLX_GetVisual(rendererstate_t *info)
 {
 	XVisualInfo *visinfo;
 	int attrib[32];
@@ -1552,7 +1577,7 @@ XVisualInfo *GLX_GetVisual(rendererstate_t *info)
 	return NULL;
 }
 
-qboolean GLX_Init(rendererstate_t *info, GLXFBConfig fbconfig, XVisualInfo *visinfo)
+static qboolean GLX_Init(rendererstate_t *info, GLXFBConfig fbconfig, XVisualInfo *visinfo)
 {
 	extern cvar_t	vid_gl_context_version;
 	extern cvar_t	vid_gl_context_forwardcompatible;
@@ -1630,9 +1655,9 @@ qboolean GLX_Init(rendererstate_t *info, GLXFBConfig fbconfig, XVisualInfo *visi
 
 		if (glx.GetFBConfigAttrib)
 		{
-			if (glx.GetFBConfigAttrib(vid_dpy, fbconfig, GLX_RENDER_TYPE, &val) && val == GLX_RGBA_FLOAT_BIT)
+			if (!glx.GetFBConfigAttrib(vid_dpy, fbconfig, GLX_RENDER_TYPE, &val) && val == GLX_RGBA_FLOAT_BIT)
 				vid.flags |= VID_FP16;			//other things need to be 16bit too, to avoid loss of precision.
-			if (glx.GetFBConfigAttrib(vid_dpy, fbconfig, GLX_FRAMEBUFFER_SRGB_CAPABLE_ARB, &val) && val)
+			if (!glx.GetFBConfigAttrib(vid_dpy, fbconfig, GLX_FRAMEBUFFER_SRGB_CAPABLE_ARB, &val) && val)
 				vid.flags |= VID_SRGB_CAPABLE;	//can use srgb properly, without faking it etc.
 		}
 
@@ -1667,6 +1692,171 @@ static void X_ShutdownUnicode(void)
 	x11.inputmethod = NULL;
 	x11.dounicode = false;
 }
+static int XIMPreEditStartCallback(XIC ic, XPointer client_data, XPointer call_data)
+{
+	Z_Free(vid.ime_preview);	//just in case
+	vid.ime_preview = NULL;
+	vid.ime_previewlen = 0;
+//	Con_Printf("XIMPreEditStartCallback\n");
+	return -1;	//length of string we can handle (negative for unlimited)
+}
+static void XIMPreEditDoneCallback(XIC ic, XPointer client_data, XPointer call_data)
+{
+//	Con_Printf("XIMPreEditDoneCallback\n");
+
+	Z_Free(vid.ime_preview);
+	vid.ime_preview = NULL;
+	vid.ime_previewlen = 0;
+}
+static void XIMPreEditDrawCallback(XIM ic, XPointer client_data, XIMPreeditDrawCallbackStruct *d)
+{
+	//if chg_length, wipe chg_length chars @chg_first.
+	//if text, insert at chg_first (with per-char feedback properties)
+	//if feedback (without text) then change text char flags
+	//caret should then be moved accordingly.
+//	Con_Printf("XIMPreEditDrawCallback %i %i %i %i %s\n", d->caret, d->chg_first, d->chg_length, d->text?d->text->encoding_is_wchar:0, d->text?d->text->string.multi_byte:"???");
+	conchar_t *part[3];
+	size_t clen[3], c;
+	conchar_t *n;
+	unsigned int wc;
+	unsigned int defaultfl = CON_WHITEMASK, fl;
+
+	if (d->chg_length || (d->text && d->text->length))
+	{
+		//so inputs are in terms of chars.
+		//our conchar_t struct is variable-sized (*sigh*), so we always use our longchar encoding.
+		//so we end up with two conchars per wchar.
+		part[0] = vid.ime_preview;
+		clen[0] = bound(0, d->chg_first, vid.ime_previewlen/2)*2;
+		part[1] = NULL;
+		clen[1] = 0;
+		part[2] = part[0]+clen[0] + bound(0, d->chg_length, vid.ime_previewlen/2)*2;
+		clen[2] = 0;
+		if (part[2])
+			while (part[2][clen[2]])
+				clen[2]+=1;
+		if (d->text && d->text->encoding_is_wchar && d->text->string.wide_char)
+		{
+			part[1] = alloca(d->text->length * 2*sizeof(wchar_t));
+			for (c = 0; c < d->text->length; c++)
+			{
+				wc = d->text->string.wide_char[c];
+				if (!wc)
+					break; //erk? nulls confuse things
+				part[1][c*2+0] = CON_LONGCHAR|(wc>>16);
+				part[1][c*2+1] = defaultfl|(wc&CON_CHARMASK);
+			}
+			clen[1] = c*2;
+		}
+		else if (d->text && !d->text->encoding_is_wchar && d->text->string.multi_byte)
+		{
+			const char *in = d->text->string.multi_byte;
+			int error;
+			part[1] = alloca(d->text->length * 2*sizeof(wchar_t));
+			//FIXME: d->text->length is meant to be chars, but fcitx always reports 1.
+			for (c = 0; c < d->text->length; c++)
+			{
+				//FIXME: This should use mbcstowcs, but that would require switching locales all the frikkin time, which isn't thread-safe.
+				wc = utf8_decode(&error, in, &in);
+				if (!wc)
+					break;	//abort if there's a null...
+				part[1][c*2+0] = CON_LONGCHAR|(wc>>16);
+				part[1][c*2+1] = defaultfl|(wc&CON_CHARMASK);
+			}
+			clen[1] = c*2;
+		}
+
+		n = Z_Malloc((clen[0]+clen[1]+clen[2]+1)*sizeof(*n));
+		memcpy(n,					part[0],	clen[0]*sizeof(*n));
+		memcpy(n+clen[0],			part[1],	clen[1]*sizeof(*n));
+		memcpy(n+clen[0]+clen[1],	part[2],	clen[2]*sizeof(*n));
+		n[clen[0]+clen[1]+clen[2]] = 0;
+		Z_Free(vid.ime_preview);
+		vid.ime_preview = n;
+		vid.ime_previewlen = clen[0]+clen[1]+clen[2];
+	}
+
+	if (d->text && d->text->feedback && d->chg_first >= 0 && d->chg_first+d->text->length <= vid.ime_previewlen/2)
+	{
+		for (c = 0; c < d->text->length; c++)
+		{
+			fl = defaultfl;
+			if (d->text->feedback[c] & XIMPrimary)
+				fl = COLOR_RED<<CON_FGSHIFT;
+			if (d->text->feedback[c] & XIMSecondary)
+				fl = COLOR_GREEN<<CON_FGSHIFT;
+			if (d->text->feedback[c] & XIMTertiary)
+				fl = COLOR_BLUE<<CON_FGSHIFT;
+			if (d->text->feedback[c] & XIMUnderline)
+				fl = COLOR_MAGENTA<<CON_FGSHIFT;
+			if (d->text->feedback[c] & XIMReverse)
+				fl = ((fl&CON_FGMASK) << (CON_BGSHIFT-CON_FGSHIFT)) | ((fl&CON_BGMASK) >> (CON_BGSHIFT-CON_FGSHIFT));
+			if (d->text->feedback[c] & XIMHighlight)
+				fl |= CON_2NDCHARSETTEXT;
+			vid.ime_preview[(d->chg_first+c)*2+1] = ((vid.ime_preview[(d->chg_first+c)*2+1])&~CON_FLAGSMASK)|fl;
+		}
+	}
+
+	vid.ime_caret = bound(0, d->caret, vid.ime_previewlen/2)*2;
+}
+static void XIMPreEditCaretCallback(XIC ic, XPointer client_data, XIMPreeditCaretCallbackStruct *d)
+{
+//	Con_Printf("XIMPreEditCaretCallback %i %i %i\n", d->direction, d->position, d->style);
+}
+static qboolean XIMSupportedStyle(XIMStyle preedit, XIMStyle status)
+{
+	if (!(	//preedit==XIMPreeditCallbacks||	//FIXME: this should actually work, but we still need an ime that actually supports it properly to be sure.
+			//preedit==XIMPreeditPosition||
+			//preedit==XIMPreeditArea||			//FIXME: assume the bottom half of the screen
+			preedit==XIMPreeditNothing||
+			preedit==XIMPreeditNone))
+		return false;
+	if (!(	//status==XIMStatusCallbacks||
+			//status==XIMStatusArea||
+			status==XIMStatusNothing||
+			status==XIMStatusNone))
+		return false;
+
+	return true;
+}
+static XIMStyle XIMPreferredStyle(XIMStyle old, XIMStyle new)
+{	//favour the more complicated (supported) preedit styles, *THEN* choose the preferred status style.
+	XIMStyle p1 = old&0x00ff;
+	XIMStyle p2 = new&0x00ff;
+	XIMStyle s1 = old&0xff00;
+	XIMStyle s2 = new&0xff00;
+	if (!XIMSupportedStyle(p2, s2))
+		return old;
+	if (!XIMSupportedStyle(p1, s1))
+		return new;
+	if (p1 != p2)
+	{	//choose based upon the preedit flags
+		if ((p1^p2)&XIMPreeditCallbacks)			//FIXME: support this one properly some time.
+			return (p1&XIMPreeditCallbacks)?old:new;
+		if ((p1^p2)&XIMPreeditPosition)
+			return (p1&XIMPreeditPosition)?old:new;
+		if ((p1^p2)&XIMPreeditArea)
+			return (p1&XIMPreeditArea)?old:s2;
+		if ((p1^p2)&XIMPreeditNothing)
+			return (p1&XIMPreeditNothing)?old:new;
+		if ((p1^p2)&XIMPreeditNone)
+			return (p1&XIMPreeditNone)?old:new;
+	}
+	else
+	{	//preedit flags are equal, now pick the better
+		if ((s1^s2)&XIMStatusCallbacks)
+			return (s1&XIMStatusCallbacks)?old:new;
+		if ((s1^s2)&XIMStatusArea)
+			return (s1&XIMStatusArea)?old:new;
+		if ((s1^s2)&XIMStatusNothing)
+			return (s1&XIMStatusNothing)?old:new;
+		if ((s1^s2)&XIMStatusNone)
+			return (s1&XIMStatusNone)?old:new;
+	}
+
+	//difference not known. stick with the first
+	return old;
+}
 #include <locale.h>
 static long X_InitUnicode(void)
 {
@@ -1674,12 +1864,13 @@ static long X_InitUnicode(void)
 	X_ShutdownUnicode();
 
 	//FIXME: enable by default if ubuntu's issue can ever be resolved.
-	if (X11_CheckFeature("xim", false))
+	if (X11_CheckFeature("xim", true))
 	{
-		if (x11.pXSetLocaleModifiers && x11.pXSupportsLocale && x11.pXOpenIM && x11.pXGetIMValues && x11.pXCreateIC && x11.pXSetICFocus && x11.pXUnsetICFocus && x11.pXGetICValues && x11.pXFilterEvent && (x11.pXutf8LookupString || x11.pXwcLookupString) && x11.pXDestroyIC && x11.pXCloseIM)
+		if (x11.pXSetLocaleModifiers && x11.pXSupportsLocale && x11.pXOpenIM && x11.pXGetIMValues && x11.pXCreateIC && x11.pXSetICFocus && x11.pXUnsetICFocus && x11.pXGetICValues && x11.pXSetICValues && x11.pXFilterEvent && (x11.pXutf8LookupString || x11.pXwcLookupString) && x11.pXDestroyIC && x11.pXCloseIM)
 		{
-			setlocale(LC_CTYPE, "");	//just in case.
+			setlocale(LC_ALL, "");	//just in case.
 			x11.pXSetLocaleModifiers("");
+
 			if (x11.pXSupportsLocale())
 			{
 				x11.inputmethod = x11.pXOpenIM(vid_dpy, NULL, XI_RESOURCENAME, XI_RESOURCECLASS);
@@ -1690,48 +1881,49 @@ static long X_InitUnicode(void)
 					int i;
 					x11.pXGetIMValues(x11.inputmethod, XNQueryInputStyle, &sup, NULL);
 					for (i = 0; sup && i < sup->count_styles; i++)
-					{	//each style will have one of each bis set.
-#define prestyles (XIMPreeditNothing|XIMPreeditNone)
-#define statusstyles (XIMStatusNothing|XIMStatusNone)
-#define supstyles (prestyles|statusstyles)
-						if ((sup->supported_styles[i] & supstyles) != sup->supported_styles[i])
-							continue;
-						if ((st & prestyles) != (sup->supported_styles[i] & prestyles))
-						{
-							if ((sup->supported_styles[i] & XIMPreeditNothing) && !(st & XIMPreeditNothing))
-								st = sup->supported_styles[i];
-							else if ((sup->supported_styles[i] & XIMPreeditNone) && !(st & (XIMPreeditNone|XIMPreeditNothing)))
-								st = sup->supported_styles[i];
-						}
-						else
-						{
-							if ((sup->supported_styles[i] & XIMStatusNothing) && !(st & XIMStatusNothing))
-								st = sup->supported_styles[i];
-							else if ((sup->supported_styles[i] & XIMStatusNone) && !(st & (XIMStatusNone|XIMStatusNothing)))
-								st = sup->supported_styles[i];
-						}
-					}
+						st = XIMPreferredStyle(st, sup->supported_styles[i]);
 					x11.pXFree(sup);
+					Con_DPrintf("Chosen XIM Input Style: %x\n", (unsigned)st);
+//					st=XIMPreeditCallbacks|XIMStatusArea;
+//					st=XIMPreeditCallbacks|XIMStatusNothing;
 					if (st != 0)
 					{
+						XIMCallback pe_cb_start={NULL,(XIMProc)XIMPreEditStartCallback};
+						XIMCallback pe_cb_done={NULL,(XIMProc)XIMPreEditDoneCallback};
+						XIMCallback pe_cb_draw={NULL,(XIMProc)XIMPreEditDrawCallback};
+						XIMCallback pe_cb_caret={NULL,(XIMProc)XIMPreEditCaretCallback};
+						void *preedit[] = {
+								//should probably add in fonts, but that's kinda messy if we don't know the language/charset very well
+								XNPreeditStartCallback,	&pe_cb_start,
+								XNPreeditDoneCallback,	&pe_cb_done,
+								XNPreeditDrawCallback,	&pe_cb_draw,
+								XNPreeditCaretCallback,	&pe_cb_caret,
+								XNSpotLocation,			&x11.ime_pos,
+								NULL};
+						void *status[] = {
+								NULL};
+
 						x11.unicodecontext = x11.pXCreateIC(x11.inputmethod,
 							XNInputStyle, st,
 							XNClientWindow, vid_window,
-							XNFocusWindow, vid_window,
+//							XNFocusWindow, vid_window,
 							XNResourceName, XI_RESOURCENAME,
 							XNResourceClass, XI_RESOURCECLASS,
+							XNPreeditAttributes, preedit,
+							XNStatusAttributes, status,
 							NULL);
 						if (x11.unicodecontext)
 						{
-//							x11.pXSetICFocus(x11.unicodecontext);
+							x11.ime_shown = -1;
 							x11.dounicode = true;
 
 							x11.pXGetICValues(x11.unicodecontext, XNFilterEvents, &requiredevents, NULL);
+							requiredevents |= KeyPressMask;
 						}
 					}
 				}
 			}
-			setlocale(LC_CTYPE, "C");
+			setlocale(LC_ALL, "C");
 		}
 	}
 
@@ -1752,13 +1944,14 @@ static void X_KeyEvent(XKeyEvent *ev, qboolean pressed, qboolean filtered)
 	keysym = x11.pXLookupKeysym(ev, 0);
 	if (pressed && !filtered)
 	{
-		if (x11.dounicode)
+		if (x11.dounicode && vid.ime_allow)
 		{
 			Status status = XLookupNone;
 			if (x11.pXutf8LookupString)
 			{
-				char buf1[4] = {0};
-				char *buf = buf1, *c;
+				char buf1[512] = {0};
+				char *buf = buf1;
+				const char *c;
 				int count = x11.pXutf8LookupString(x11.unicodecontext, (XKeyPressedEvent*)ev, buf1, sizeof(buf1), NULL, &status);
 				if (status == XBufferOverflow)
 				{
@@ -1776,7 +1969,7 @@ static void X_KeyEvent(XKeyEvent *ev, qboolean pressed, qboolean filtered)
 			else
 			{
 				//is allowed some weird encodings...
-				wchar_t buf1[4] = {0};
+				wchar_t buf1[512] = {0};
 				wchar_t *buf = buf1;
 				int count = x11.pXwcLookupString(x11.unicodecontext, (XKeyPressedEvent*)ev, buf, sizeof(buf1), &shifted, &status);
 				if (status == XBufferOverflow)
@@ -1946,7 +2139,7 @@ static void install_grabs(void)
 {
 	if (!mouse_grabbed)
 	{
-		Con_DPrintf("Grabbing mouse\n");
+		Con_DLPrintf(2, "Grabbing mouse\n");
 		mouse_grabbed = true;
 		//XGrabPointer can cause alt+tab type shortcuts to be skipped by the window manager. This means we don't want to use it unless we have no choice.
 		//the grab is purely to constrain the pointer to the window
@@ -1978,7 +2171,7 @@ static void uninstall_grabs(void)
 {
 	if (mouse_grabbed && vid_dpy)
 	{
-		Con_DPrintf("Releasing mouse grab\n");
+		Con_DLPrintf(2, "Releasing mouse grab\n");
 		mouse_grabbed = false;
 		if (x11_input_method == XIM_DGA)
 		{
@@ -2033,7 +2226,7 @@ static void ClearAllStates (void)
 	int		i;
 
 // send an up event for each key, to make sure the server clears them all
-	for (i=0 ; i<256 ; i++)
+	for (i=0 ; i<K_MAX ; i++)
 	{
 		Key_Event (0, i, 0, false);
 	}
@@ -2053,8 +2246,14 @@ static void GetEvent(void)
 	x11.pXNextEvent(vid_dpy, &event);
 
 	if (x11.dounicode)
-		if (x11.pXFilterEvent(&event, vid_window))
+	{
+		if (x11.pXFilterEvent(&event, None))//vid_window))
+		{
+			if (vid.ime_allow)
+				return;
 			filtered = true;
+		}
+	}
 
 	switch (event.type)
 	{
@@ -2295,6 +2494,7 @@ static void GetEvent(void)
 	case FocusIn:
 		//activeapp is if the game window is focused
 		vid.activeapp = true;
+		ClearAllStates();	//just in case.
 
 		//but change modes to track the desktop window
 //		if (!(fullscreenflags & FULLSCREEN_ACTIVE) || event.xfocus.window != vid_decoywindow)
@@ -2303,8 +2503,8 @@ static void GetEvent(void)
 			modeswitchtime = Sys_Milliseconds() + 1500;	/*fairly slow, to make sure*/
 		}
 
-		if (event.xfocus.window == vid_window && x11.unicodecontext)
-			x11.pXSetICFocus(x11.unicodecontext);
+		if (event.xfocus.window == vid_window)
+			x11.ime_shown = -1;
 
 		//we we're focusing onto the game window and we're currently fullscreen, hide the other one so alt-tab won't select that instead of a real alternate app.
 //		if ((fullscreenflags & FULLSCREEN_ACTIVE) && (fullscreenflags & FULLSCREEN_LEGACY) && event.xfocus.window == vid_window)
@@ -2312,8 +2512,8 @@ static void GetEvent(void)
 		break;
 	case FocusOut:
 		//if we're already active, the decoy window shouldn't be focused anyway.
-		if (event.xfocus.window == vid_window && x11.unicodecontext)
-			x11.pXSetICFocus(x11.unicodecontext);
+		if (event.xfocus.window == vid_window)
+			x11.ime_shown = -1;
 
 		if ((fullscreenflags & FULLSCREEN_ACTIVE) && event.xfocus.window == vid_decoywindow)
 		{
@@ -2346,33 +2546,227 @@ static void GetEvent(void)
 				char *protname = x11.pXGetAtomName(vid_dpy, event.xclient.data.l[0]);
 				if (!strcmp(protname, "WM_DELETE_WINDOW"))
 				{
-					Cmd_ExecuteString("menu_quit prompt", RESTRICT_LOCAL);
+					if (Cmd_Exists("menu_quit") || Cmd_AliasExist("menu_quit", RESTRICT_LOCAL))
+						Cmd_ExecuteString("menu_quit prompt", RESTRICT_LOCAL);
+					else if (Cmd_Exists("m_quit") || Cmd_AliasExist("m_quit", RESTRICT_LOCAL))
+						Cmd_ExecuteString("m_quit", RESTRICT_LOCAL);
+					else
+						Cmd_ExecuteString("quit", RESTRICT_LOCAL);
 					x11.pXSetInputFocus(vid_dpy, vid_window, RevertToParent, CurrentTime);
 				}
 				else
 					Con_DPrintf("Got unknown x11wm message %s\n", protname);
 				x11.pXFree(protname);
 			}
+#if 1
+			else if (!strcmp(name, "XdndEnter") && event.xclient.format == 32)
+			{
+				//check for text/uri-list
+				int i;
+				x11.dnd.type = None;
+				for (i = 2; i < 2+3; i++)
+				{
+					if (event.xclient.data.l[i])
+					{
+						char *t = x11.pXGetAtomName(vid_dpy, event.xclient.data.l[i]);
+#ifdef XDS
+						//direct-save has no way to deal with multiple files, other than lying about it.
+						//which is unfortunately what other programs do. we have no real way to tell which file(s) actually got dragged/written.
+						//we would need to report an empty directory, then scan for new files, then wipe the lot recursively.
+						if (!strcmp(t, "XdndDirectSave0") && !x11.dnd.type)	//single file
+							x11.dnd.type = event.xclient.data.l[i];
+#endif
+						if (!strcmp(t, "text/uri-list"))	//file list
+							x11.dnd.type = event.xclient.data.l[i];
+//						else if (!strcmp(t, "application/octet-stream"))	//raw file data without a name.
+//							x11.dnd.type = event.xclient.data.l[i];
+						x11.pXFree(t);
+					}
+				}
+			}
+			else if (!strcmp(name, "XdndPosition") && event.xclient.format == 32)
+			{
+				//Send XdndStatus
+				XEvent xev;
+				memset(&xev, 0, sizeof(xev));
+				xev.type = ClientMessage;
+				xev.xclient.window = event.xclient.data.l[0];
+				xev.xclient.message_type = x11.pXInternAtom(vid_dpy, "XdndStatus", False);
+				xev.xclient.format = 32;
+				xev.xclient.data.l[0] = vid_window;	//so source can ignore it if stale
+				xev.xclient.data.l[1] = x11.dnd.type?1:0;
+				xev.xclient.data.l[2] = 0;	//(x<<16)|y (should be in root coords)
+				xev.xclient.data.l[3] = 0;	//(w<<16)|h
+				xev.xclient.data.l[4] = x11.pXInternAtom (vid_dpy, "XdndActionCopy", False);
+				x11.pXSendEvent(vid_dpy, xev.xclient.window, False, 0, &xev);
+			}
+			else if (!strcmp(name, "XdndLeave") && event.xclient.format == 32)
+			{
+				if (x11.dnd.source == event.xclient.data.l[0])
+				{
+					x11.dnd.source = None;
+					x11.dnd.type = None;
+				}
+			}
+			else if (!strcmp(name, "XdndDrop") && event.xclient.format == 32)
+			{
+				Atom xa_XdndSelection = x11.pXInternAtom(vid_dpy, "XdndSelection", False);
+				Window source = event.xclient.data.l[0];
+				Time t = CurrentTime;//event.xclient.data.l[2];
+
+#ifdef XDS
+				char *droptype = x11.dnd.type?x11.pXGetAtomName(vid_dpy, x11.dnd.type):NULL;
+				if (droptype && !strcmp(droptype, "XdndDirectSave0"))	//single file
+				{
+					unsigned char *data = NULL;
+					Atom type;
+					int fmt;
+					unsigned long nitems;
+					unsigned long bytesleft;
+					if (x11.pXGetWindowProperty(vid_dpy, source, x11.dnd.type, 0, 65536, False, AnyPropertyType, &type, &fmt, &nitems, &bytesleft, &data) == Success && data)
+					{
+						char hostname[1024];
+						if (gethostname(hostname, sizeof(hostname)) < 0)
+							*hostname = 0;	//failed? o.O
+						hostname[sizeof(hostname)-1] = 0;
+						char *path = va("file://%s/tmp/%s", hostname, data);
+						Atom proptype = x11.pXInternAtom(vid_dpy, "text/plain", false);
+						x11.pXChangeProperty(vid_dpy, source, x11.dnd.type, proptype, 8, PropModeReplace, (void*)path, strlen(path));
+						Con_Printf("Dropping file %s\n", data);
+						x11.pXFree(data);
+					}
+				}
+				x11.pXFree(droptype);
+#endif
+
+				x11.dnd.myprop = x11.pXInternAtom(vid_dpy, "_FTE_dnd", False);
+				if (x11.pXGetSelectionOwner(vid_dpy, xa_XdndSelection) == source)
+				{
+					x11.pXDeleteProperty(vid_dpy, vid_window, x11.dnd.myprop);
+					x11.pXConvertSelection(vid_dpy, xa_XdndSelection, x11.dnd.type, x11.dnd.myprop, vid_window, t);
+				}
+			}
+#endif
 			else
 				Con_DPrintf("Got unknown x11 message %s\n", name);
 			x11.pXFree(name);
 		}
 		break;
-
 #if 1
-	case SelectionRequest:	//needed for copy-to-clipboard
+	case SelectionNotify:
+		//for paste
+		if (X11_Clipboard_Notify(&event.xselection))
+			;
+		//for drag-n-drop
+		else if (event.xselection.selection == x11.pXInternAtom(vid_dpy, "XdndSelection", False) && x11.dnd.myprop != None)
 		{
-			Atom xa_string = x11.pXInternAtom(vid_dpy, "UTF8_STRING", false);
+			qboolean okay = false;
+			unsigned char *data;
+			Atom type;
+			int fmt;
+			unsigned long nitems;
+			unsigned long bytesleft;
+			if (x11.pXGetWindowProperty(vid_dpy, vid_window, x11.dnd.myprop, 0, 65536, False, AnyPropertyType, &type, &fmt, &nitems, &bytesleft, &data) == Success && data)
+			{
+				char *tname = x11.pXGetAtomName(vid_dpy, x11.dnd.type);
+				if (type == x11.dnd.type && !strcmp(tname, "text/uri-list"))
+				{
+					char *start, *end;
+					for (start = data; *start; )
+					{
+						for (end = start; *end && *end != '\r'; end++)
+							;
+						if (end != start)
+							Host_RunFile(start, end-start, NULL);
+						start = end;
+						while (*start == '\r' || *start == '\n')
+							start++;
+					}
+					okay = true;
+				}
+#ifdef XDS
+				else if (type == x11.dnd.type && !strcmp(tname, "XdndDirectSave0") && nitems == 1)
+				{
+					switch(data[0])
+					{
+					case 'S':	//sender wrote the file
+					case 'E':	//sender failed to generate the data or something
+					case 'F':	//sender failed to write the file. we should use application/octet-stream and write it ourself.
+					}
+				}
+#endif
+				x11.pXFree(tname);
+				x11.pXFree(data);
+			}
+			x11.pXDeleteProperty(vid_dpy, vid_window, x11.dnd.myprop);	//might be large, so don't force it to hang around.
+
+			//Send XdndFinished now
+			{
+				XEvent xev;
+				memset(&xev, 0, sizeof(xev));
+				xev.type = ClientMessage;
+				xev.xclient.window = x11.dnd.source;
+				xev.xclient.message_type = x11.pXInternAtom(vid_dpy, "XdndFinished", False);
+				xev.xclient.format = 32;
+				xev.xclient.data.l[0] = vid_window;	//so source can ignore it if stale
+				xev.xclient.data.l[1] = (okay?1:0);
+				xev.xclient.data.l[2] = x11.pXInternAtom (vid_dpy, "XdndActionCopy", False);
+				x11.pXSendEvent(vid_dpy, xev.xclient.window, False, 0, &xev);
+			}
+		}
+		break;
+
+	case SelectionRequest:	//needed for when another program tries pasting.
+		{
+			Atom xa_u8string = x11.pXInternAtom(vid_dpy, "UTF8_STRING", false);	//explicitly UTF-8
+			Atom xa_l1string = x11.pXInternAtom(vid_dpy, "STRING", false);	//explicitly 8859-1
+			Atom xa_text = x11.pXInternAtom(vid_dpy, "TEXT", false);	//selection owner decides encoding (and we pick UTF-8)
+			Atom xa_targets = x11.pXInternAtom(vid_dpy, "TARGETS", false);
+			Atom xa_supportedtargets[] = {xa_u8string, xa_l1string, xa_text, xa_targets/*, xa_multiple, xa_timestamp*/};
+			char *cliptext = NULL;
 			memset(&rep, 0, sizeof(rep));
+
+			if (event.xselectionrequest.selection == x11.pXInternAtom(vid_dpy, "PRIMARY", false))
+				cliptext = clipboard_buffer[CBT_SELECTION];
+			else if (event.xselectionrequest.selection == x11.pXInternAtom(vid_dpy, "CLIPBOARD", false))
+				cliptext = clipboard_buffer[CBT_CLIPBOARD];
+			if (!cliptext)	//err, nothing in the clipboard buffer... that's not meant to happen.
+				cliptext = "";
+
+			if (event.xselectionrequest.property == None)	//no property sets a property matching the target atom, as a fallback.
+				event.xselectionrequest.property = event.xselectionrequest.target;
 			if (event.xselectionrequest.property == None)
 				event.xselectionrequest.property = x11.pXInternAtom(vid_dpy, "foobar2000", false);
-			if (event.xselectionrequest.property != None && event.xselectionrequest.target == xa_string)
-			{
-				x11.pXChangeProperty(vid_dpy, event.xselectionrequest.requestor, event.xselectionrequest.property, event.xselectionrequest.target, 8, PropModeReplace, (void*)clipboard_buffer, strlen(clipboard_buffer));
+			if (event.xselectionrequest.property != None && event.xselectionrequest.target == xa_targets)
+			{	//TARGETS results in a list of accepted target types (atoms)
+				x11.pXChangeProperty(vid_dpy, event.xselectionrequest.requestor, event.xselectionrequest.property, event.xselectionrequest.target, 32, PropModeReplace, (void*)xa_supportedtargets, countof(xa_supportedtargets));
+				rep.xselection.property = event.xselectionrequest.property;
+			}
+			else if (event.xselectionrequest.property != None && (event.xselectionrequest.target == xa_u8string || event.xselectionrequest.target == xa_text))
+			{	//UTF8_STRING or TEXT (which we choose to use utf-8 as our charset)
+				x11.pXChangeProperty(vid_dpy, event.xselectionrequest.requestor, event.xselectionrequest.property, event.xselectionrequest.target, 8, PropModeReplace, (void*)cliptext, strlen(cliptext));
+				rep.xselection.property = event.xselectionrequest.property;
+			}
+			else if (event.xselectionrequest.property != None && event.xselectionrequest.target == xa_l1string)
+			{	//STRING == latin1. convert as needed.
+				char *latin1 = alloca(strlen(cliptext)+1);	//may shorten
+				const char *in = cliptext;
+				int c = 0;
+				int err;
+				while (*in && c < sizeof(latin1))
+				{
+					int uc = utf8_decode(&err, in, &in);
+					if ((uc >= 0xe000 && uc <= 0xe100) && (uc&0x7f) >= 32)
+						uc = uc&0x7f;	//don't do c0/c1 glyphs. otherwise treat as ascii.
+					else if (uc > 255 || err)
+						uc = '?';	//unsupported char
+					latin1[c++] = uc;
+				}
+				x11.pXChangeProperty(vid_dpy, event.xselectionrequest.requestor, event.xselectionrequest.property, event.xselectionrequest.target, 8, PropModeReplace, (void*)latin1, c);
 				rep.xselection.property = event.xselectionrequest.property;
 			}
 			else
-			{
+			{	//unsupported target. we need to let them know that we don't know what they're asking for.
 				rep.xselection.property = None;
 			}
 			rep.xselection.type = SelectionNotify;
@@ -2395,7 +2789,7 @@ static void GetEvent(void)
 }
 
 
-void GLVID_Shutdown(void)
+static void GLVID_Shutdown(void)
 {
 	if (!vid_dpy)
 		return;
@@ -2494,6 +2888,7 @@ static Cursor CreateNullCursor(Display *display, Window root)
 	return cursor;
 }
 
+#ifndef NO_X11_CURSOR
 #include <X11/Xcursor/Xcursor.h>
 static struct
 {
@@ -2518,7 +2913,7 @@ static void *X11VID_CreateCursorRGBA(const qbyte *rgbacursor, size_t w, size_t h
 
 	for (y = 0; y < h; y++)
 		for (x = 0; x < w; x++, rgbacursor+=4)
-			*dest++ = (rgbacursor[3]<<24)|(rgbacursor[0]<<16)|(rgbacursor[1]<<8)|(rgbacursor[0]<<0);	//0xARGB
+			*dest++ = (rgbacursor[3]<<24)|(rgbacursor[0]<<16)|(rgbacursor[1]<<8)|(rgbacursor[2]<<0);	//0xARGB
 
 	cursor = Z_Malloc(sizeof(*cursor));
 	*cursor = xcursor.ImageLoadCursor(vid_dpy, img);
@@ -2528,51 +2923,11 @@ static void *X11VID_CreateCursorRGBA(const qbyte *rgbacursor, size_t w, size_t h
 	Z_Free(cursor);
 	return NULL;
 }
-static void *X11VID_CreateCursor(const char *filename, float hotx, float hoty, float scale)
+static void *X11VID_CreateCursor(const qbyte *imagedata, int width, int height, uploadfmt_t format, float hotx, float hoty, float scale)
 {
 	void *r;
-	qbyte *rgbadata;
-	qboolean hasalpha;
-	void *filedata;
-	int filelen, width, height;
-	if (!filename || !*filename)
+	if (!imagedata)
 		return NULL;
-	filelen = FS_LoadFile(filename, &filedata);
-	if (!filedata)
-		return NULL;
-
-	hasalpha = false;
-	rgbadata = Read32BitImageFile(filedata, filelen, &width, &height, &hasalpha, filename);
-	FS_FreeFile(filedata);
-	if (!rgbadata)
-		return NULL;
-
-	if (!hasalpha && !strchr(filename, ':'))
-	{	//people seem to insist on using jpgs, which don't have alpha.
-		//so screw over the alpha channel if needed.
-		unsigned int alpha_width, alpha_height, p;
-		char aname[MAX_QPATH];
-		unsigned char *alphadata;
-		char *alph;
-		size_t alphsize;
-		char ext[8];
-		COM_StripExtension(filename, aname, sizeof(aname));
-		COM_FileExtension(filename, ext, sizeof(ext));
-		Q_strncatz(aname, "_alpha.", sizeof(aname));
-		Q_strncatz(aname, ext, sizeof(aname));
-		alphsize = FS_LoadFile(filename, (void**)&alph);
-		if (alph)
-		{
-			if ((alphadata = Read32BitImageFile(alph, alphsize, &alpha_width, &alpha_height, &hasalpha, aname)))
-			{
-				if (alpha_width == width && alpha_height == height)
-					for (p = 0; p < alpha_width*alpha_height; p++)
-						rgbadata[(p<<2) + 3] = (alphadata[(p<<2) + 0] + alphadata[(p<<2) + 1] + alphadata[(p<<2) + 2])/3;
-				BZ_Free(alphadata);
-			}
-			FS_FreeFile(alph);
-		}
-	}
 
 	if (scale != 1)
 	{
@@ -2583,15 +2938,14 @@ static void *X11VID_CreateCursor(const char *filename, float hotx, float hoty, f
 		if (nw <= 0 || nh <= 0 || nw > 128 || nh > 128) //don't go crazy.
 			return NULL;
 		nd = BZ_Malloc(nw*nh*4);
-		Image_ResampleTexture((unsigned int*)rgbadata, width, height, (unsigned int*)nd, nw, nh);
+		Image_ResampleTexture((unsigned int*)imagedata, width, height, (unsigned int*)nd, nw, nh);
 		width = nw;
 		height = nh;
-		BZ_Free(rgbadata);
-		rgbadata = nd;
+		r = X11VID_CreateCursorRGBA(nd, width, height, hotx, hoty);
+		BZ_Free(nd);
 	}
-
-	r = X11VID_CreateCursorRGBA(rgbadata, width, height, hotx, hoty);
-	BZ_Free(rgbadata);
+	else
+		r = X11VID_CreateCursorRGBA(imagedata, width, height, hotx, hoty);
 
 	return r;
 }
@@ -2606,7 +2960,10 @@ static void X11VID_DestroyCursor(void *qcursor)
 }
 static qboolean X11VID_SetCursor(void *qcursor)
 {
-	vid_newcursor = *(Cursor*)qcursor;
+	if (qcursor)
+		vid_newcursor = *(Cursor*)qcursor;
+	else
+		vid_newcursor = None;
 
 	if (vid_dpy)
 		UpdateGrabs();
@@ -2672,7 +3029,11 @@ static qboolean XCursor_Init(void)
 	Con_Printf("Hardware cursors unsupported.\n");
 	return false;
 }
-
+#else
+static qboolean XCursor_Init(void)
+{
+}
+#endif
 
 qboolean GLVID_ApplyGammaRamps(unsigned int rampcount, unsigned short *ramps)
 {
@@ -2765,7 +3126,7 @@ void GLVID_SwapBuffers (void)
 
 #include "fte_eukara64.h"
 //#include "bymorphed.h"
-void X_StoreIcon(Window wnd)
+static void X_StoreIcon(Window wnd)
 {
 	int i;
 	Atom propname = x11.pXInternAtom(vid_dpy, "_NET_WM_ICON", false);
@@ -2789,8 +3150,8 @@ void X_StoreIcon(Window wnd)
 	{
 		int imagewidth, imageheight;
 		int *iconblob;
-		qboolean hasalpha;
-		qbyte *imagedata = Read32BitImageFile(filedata, filesize, &imagewidth, &imageheight, &hasalpha, "icon.png");
+		uploadfmt_t format;
+		qbyte *imagedata = ReadRawImageFile(filedata, filesize, &imagewidth, &imageheight, &format, true, "icon.png");
 		Z_Free(filedata);
 
 		iconblob = BZ_Malloc(sizeof(int)*(2+imagewidth*imageheight));
@@ -2811,7 +3172,7 @@ void X_StoreIcon(Window wnd)
 		data[0] = icon.width;
 		data[1] = icon.height;
 		for (i = 0; i < data[0]*data[1]; i++)
-			data[i+2] = ((unsigned int*)icon.pixel_data)[i];
+			data[i+2] = ((const unsigned int*)icon.pixel_data)[i];
 
 		x11.pXChangeProperty(vid_dpy, wnd, propname, proptype, 32, PropModeReplace, (void*)data, data[0]*data[1]+2);
 	}
@@ -2863,7 +3224,7 @@ void X_GoWindowed(void)
 	x11.pXMoveResizeWindow(vid_dpy, vid_window, 0, 0, 640, 480);
 //Con_Printf("Gone windowed\n");
 }
-qboolean X_CheckWMFullscreenAvailable(void)
+static qboolean X_CheckWMFullscreenAvailable(void)
 {
 	//root window must have _NET_SUPPORTING_WM_CHECK which is a Window created by the WM
 	//the WM's window must have _NET_WM_NAME set, which is the name of the window manager
@@ -2937,7 +3298,7 @@ qboolean X_CheckWMFullscreenAvailable(void)
 	return success;
 }
 
-Window X_CreateWindow(qboolean override, XVisualInfo *visinfo, int x, int y, unsigned int width, unsigned int height, qboolean fullscreen)
+static Window X_CreateWindow(qboolean override, XVisualInfo *visinfo, int x, int y, unsigned int width, unsigned int height, qboolean fullscreen)
 {
 	Window wnd, parent;
 	XSetWindowAttributes attr;
@@ -2994,10 +3355,14 @@ Window X_CreateWindow(qboolean override, XVisualInfo *visinfo, int x, int y, uns
 	/*make it visible*/
 	x11.pXMapWindow(vid_dpy, wnd);
 
+	//advertise support as a drag+drop target
+	prots[0] = 5;	//version 5 is the most recent.
+	x11.pXChangeProperty(vid_dpy, wnd, x11.pXInternAtom(vid_dpy, "XdndAware", False), XA_ATOM, 32, PropModeReplace, (void*)prots, 1);
+
 	return wnd;
 }
 
-qboolean X11VID_Init (rendererstate_t *info, unsigned char *palette, int psl)
+static qboolean X11VID_Init (rendererstate_t *info, unsigned char *palette, int psl)
 {
 	int x = 0;
 	int y = 0;
@@ -3054,7 +3419,7 @@ qboolean X11VID_Init (rendererstate_t *info, unsigned char *palette, int psl)
 			{
 				if (!Sys_LoadLibrary("libvulkan.so", func))
 				{
-					Con_Printf("Couldn't intialise libvulkan.so\nvulkan loader is not installed\n");
+					Con_Printf(CON_ERROR"Couldn't load libvulkan.so\nvulkan loader is not installed\n");
 					return false;
 				}
 			}
@@ -3153,7 +3518,7 @@ qboolean X11VID_Init (rendererstate_t *info, unsigned char *palette, int psl)
 #ifdef VKQUAKE
 	case PSL_VULKAN:
 		visinfo = &vinfodef;
-		if (!x11.pXMatchVisualInfo(vid_dpy, scrnum, info->bpp?info->bpp:DefaultDepth(vid_dpy, scrnum), TrueColor, visinfo))
+		if (!x11.pXMatchVisualInfo(vid_dpy, scrnum, min(24,info->bpp?info->bpp:DefaultDepth(vid_dpy, scrnum)), TrueColor, visinfo))
 		{
 			Sys_Error("Couldn't choose visual for vulkan\n");
 		}
@@ -3264,7 +3629,7 @@ qboolean X11VID_Init (rendererstate_t *info, unsigned char *palette, int psl)
 				break;
 		}
 #endif
-		Con_Printf("Failed to create a vulkan context.\n");
+		Con_Printf(CON_ERROR "Failed to create a vulkan context.\n");
 		GLVID_Shutdown();
 		return false;
 #endif
@@ -3324,7 +3689,7 @@ qboolean GLVID_Init (rendererstate_t *info, unsigned char *palette)
 	return X11VID_Init(info, palette, PSL_GLX);
 }
 #ifdef USE_EGL
-qboolean EGLVID_Init (rendererstate_t *info, unsigned char *palette)
+static qboolean EGLVID_Init (rendererstate_t *info, unsigned char *palette)
 {
 	return X11VID_Init(info, palette, PSL_EGL);
 }
@@ -3337,164 +3702,6 @@ static qboolean VKVID_Init (rendererstate_t *info, unsigned char *palette)
 }
 #endif
 
-void Sys_SendKeyEvents(void)
-{
-#ifndef CLIENTONLY
-	//this is stupid
-	SV_GetConsoleCommands();
-#endif
-	if (sys_gracefulexit)
-	{
-		Cbuf_AddText("\nquit\n", RESTRICT_LOCAL);
-		sys_gracefulexit = false;
-	}
-	if (vid_dpy && vid_window)
-	{
-		while (x11.pXPending(vid_dpy))
-			GetEvent();
-
-		if (modeswitchpending && modeswitchtime < Sys_Milliseconds())
-		{
-			UpdateGrabs();
-			if (modeswitchpending > 0 && !(fullscreenflags & FULLSCREEN_ACTIVE))
-			{
-				//entering fullscreen mode
-#ifdef USE_VMODE
-				if (fullscreenflags & FULLSCREEN_VMODE)
-				{
-					if (!(fullscreenflags & FULLSCREEN_VMODEACTIVE))
-					{
-						// change to the mode
-						vm.pXF86VidModeSwitchToMode(vid_dpy, scrnum, vm.modes[vm.usemode]);
-						fullscreenflags |= FULLSCREEN_VMODEACTIVE;
-						// Move the viewport to top left
-					}
-					vm.pXF86VidModeSetViewPort(vid_dpy, scrnum, 0, 0);
-				}
-#endif
-#ifdef USE_XRANDR
-				if (fullscreenflags & FULLSCREEN_XRANDR)
-					XRandR_ApplyMode();
-#endif
-				Cvar_ForceCallback(&v_gamma);
-
-				/*release the mouse now, because we're paranoid about clip regions*/
-				if (fullscreenflags & FULLSCREEN_WM)
-					X_GoFullscreen();
-				if (fullscreenflags & FULLSCREEN_LEGACY)
-				{
-					x11.pXReparentWindow(vid_dpy, vid_window, vid_root, fullscreenx, fullscreeny);
-				//	if (vid_decoywindow)
-				//		x11.pXMoveWindow(vid_dpy, vid_decoywindow, fullscreenx, fullscreeny);
-					//x11.pXUnmapWindow(vid_dpy, vid_decoywindow);
-					//make sure we have it
-					x11.pXSetInputFocus(vid_dpy, vid_window, RevertToParent, CurrentTime);
-					x11.pXRaiseWindow(vid_dpy, vid_window);
-					x11.pXMoveResizeWindow(vid_dpy, vid_window, fullscreenx, fullscreeny, fullscreenwidth, fullscreenheight);
-				}
-				if (fullscreenflags)
-					fullscreenflags |= FULLSCREEN_ACTIVE;
-			}
-			if (modeswitchpending < 0)
-			{
-				//leave fullscreen mode
-		 		if (!COM_CheckParm("-stayactive"))
- 				{	//a parameter that leaves the program fullscreen if you taskswitch.
- 					//sounds pointless, works great with two moniters. :D
-#ifdef USE_VMODE
-					if (fullscreenflags & FULLSCREEN_VMODE)
-					{
-	 					if (vm.originalapplied)
-							vm.pXF86VidModeSetGammaRamp(vid_dpy, scrnum, vm.originalrampsize, vm.originalramps[0], vm.originalramps[1], vm.originalramps[2]);
-						if (fullscreenflags & FULLSCREEN_VMODEACTIVE)
-						{
-							vm.pXF86VidModeSwitchToMode(vid_dpy, scrnum, vm.modes[0]);
-							fullscreenflags &= ~FULLSCREEN_VMODEACTIVE;
-						}
-					}
-#endif
-#ifdef USE_XRANDR
-					if (fullscreenflags & FULLSCREEN_XRANDR)
-						XRandR_RevertMode();
-#endif
-					if (fullscreenflags & FULLSCREEN_WM)
-						X_GoWindowed();
-					if (fullscreenflags & FULLSCREEN_LEGACY)
-					{
-						x11.pXReparentWindow(vid_dpy, vid_window, vid_decoywindow, 0, 0);
-//						x11.pXMoveResizeWindow(vid_dpy, vid_decoywindow, fullscreenx + (fullscreenwidth-640)/2, fullscreeny + (fullscreenheight-480)/2, 640, 480);
-						x11.pXMapWindow(vid_dpy, vid_decoywindow);
-					}
-					fullscreenflags &= ~FULLSCREEN_ACTIVE;
-				}
-			}
-			modeswitchpending = 0;
-		}
-
-		if (modeswitchpending)
-			return;
-
-		UpdateGrabs();
-	}
-}
-
-void Force_CenterView_f (void)
-{
-	cl.playerview[0].viewangles[PITCH] = 0;
-}
-
-
-//these are done from the x11 event handler. we don't support evdev.
-void INS_Move(void)
-{
-}
-void INS_Commands(void)
-{
-}
-void INS_Init(void)
-{
-}
-void INS_ReInit(void)
-{
-}
-void INS_Shutdown(void)
-{
-}
-void INS_EnumerateDevices(void *ctx, void(*callback)(void *ctx, const char *type, const char *devicename, unsigned int *qdevid))
-{
-	callback(ctx, "keyboard", "x11", NULL);
-	switch(x11_input_method)
-	{
-	case XIM_ORIG:
-		callback(ctx, "mouse", "x11", &x11_mouseqdev);
-		break;
-	case XIM_DGA:
-		callback(ctx, "mouse", "dga", &x11_mouseqdev);
-		break;
-	case XIM_XI2:
-		{
-			int i, devs;
-			XIDeviceInfo *dev = xi2.pXIQueryDevice(vid_dpy, xi2.devicegroup, &devs);
-			for (i = 0; i < devs; i++)
-			{
-				if (!dev[i].enabled)
-					continue;
-				if (/*dev[i].use == XIMasterPointer ||*/ dev[i].use == XISlavePointer)
-				{
-					struct xidevinfo *devi = XI2_GetDeviceInfo(dev[i].deviceid);
-					callback(ctx, devi->abs?"tablet":"mouse", dev[i].name, &devi->qdev);
-				}
-//				else if (dev[i].use == XIMasterKeyboard || dev[i].use == XISlaveKeyboard)
-//				{
-//					int qdev = dev[i].deviceid;
-//					callback(ctx, "xi2kb", dev[i].name, &qdev);
-//				}
-			}
-			xi2.pXIFreeDeviceInfo(dev);
-		}
-		break;
-	}
-}
 
 void GLVID_SetCaption(const char *text)
 {
@@ -3652,10 +3859,72 @@ rendererinfo_t vkrendererinfo =
 #endif
 
 #if 1
-char *Sys_GetClipboard(void)
+static void (*paste_callback)(void *cb, char *utf8);
+static void *pastectx;
+static struct {
+	Atom clipboard;
+	Atom prop;
+	Atom owner;
+} x11paste;
+void Sys_Clipboard_PasteText(clipboardtype_t clipboardtype, void (*callback)(void *cb, char *utf8), void *ctx)
+{
+	//if there's a paste already pending, cancel the callback to ensure it always gets called.
+	if (paste_callback)
+		paste_callback(pastectx, NULL);
+
+	paste_callback = NULL;
+	pastectx = NULL;
+
+	if(vid_dpy)
+	{
+		Window clipboardowner;
+		Atom xa_string = x11.pXInternAtom(vid_dpy, "UTF8_STRING", false);
+		//FIXME: we should query it using TARGETS first to see if UTF8_STRING etc is actually valid.
+		if (clipboardtype == CBT_SELECTION)
+			x11paste.clipboard = x11.pXInternAtom(vid_dpy, "PRIMARY", false);
+		else
+			x11paste.clipboard = x11.pXInternAtom(vid_dpy, "CLIPBOARD", false);
+		x11paste.prop = x11.pXInternAtom(vid_dpy, "_FTE_PASTE", false);
+		clipboardowner = x11.pXGetSelectionOwner(vid_dpy, x11paste.clipboard);
+		if (clipboardowner == vid_window)
+			callback(ctx, clipboard_buffer[clipboardtype]);	//we own it? no point doing round-robin stuff.
+		else if (clipboardowner != None && clipboardowner != vid_window)
+		{
+			x11.pXConvertSelection(vid_dpy, x11paste.clipboard, xa_string, x11paste.prop, vid_window, CurrentTime);
+
+			paste_callback = callback;
+			pastectx = ctx;
+		}
+		else
+			callback(ctx, NULL);	//nothing to paste (the window that owned it sucks
+	}
+	else
+		callback(ctx, clipboard_buffer[clipboardtype]);	//if we're not using x11 then just instantly call the callback
+}
+static qboolean X11_Clipboard_Notify(XSelectionEvent *xselection)
+{	//called once XConvertSelection completes
+	if (xselection->display == vid_dpy && xselection->selection == x11paste.clipboard && xselection->requestor == vid_window && xselection->property == x11paste.prop)
+	{
+		int fmt;
+		Atom type;
+		unsigned long nitems, bytesleft;
+		unsigned char *data = NULL;
+		x11.pXGetWindowProperty(vid_dpy, vid_window, x11paste.prop, 0, 65536, False, AnyPropertyType, &type, &fmt, &nitems, &bytesleft, &data);
+		if (paste_callback)
+			paste_callback(pastectx, data);
+		x11.pXFree(data);
+		paste_callback = NULL;
+		pastectx = NULL;
+		return true;
+	}
+	return false;
+}
+
+/*char *Sys_GetClipboard(void)
 {
 	if(vid_dpy)
 	{
+		//FIXME: we should query it using TARGETS first to see if UTF8_STRING etc is actually valid.
 		Atom xa_clipboard = x11.pXInternAtom(vid_dpy, "PRIMARY", false);
 		Atom xa_string = x11.pXInternAtom(vid_dpy, "UTF8_STRING", false);
 		Window clipboardowner = x11.pXGetSelectionOwner(vid_dpy, xa_clipboard);
@@ -3666,30 +3935,41 @@ char *Sys_GetClipboard(void)
 			unsigned long nitems, bytesleft;
 			unsigned char *data;
 			x11.pXConvertSelection(vid_dpy, xa_clipboard, xa_string, None, vid_window, CurrentTime);
+
+			//FIXME: we should rewrite the clipboard pasting to invoke a callback once its available.
 			x11.pXFlush(vid_dpy);
-			x11.pXGetWindowProperty(vid_dpy, vid_window, xa_string, 0, 0, False, AnyPropertyType, &type, &fmt, &nitems, &bytesleft, &data);
+			x11.pXSync(vid_dpy, False);
+			Sys_Sleep(0.3);
+			x11.pXSync(vid_dpy, False);
+
+			//and now we can actually read the data.
+			x11.pXGetWindowProperty(vid_dpy, vid_window, xa_string, 0, 65536, False, AnyPropertyType, &type, &fmt, &nitems, &bytesleft, &data);
 			
 			return data;
 		}
 	}
 	return clipboard_buffer;
 }
+*/
 
-void Sys_CloseClipboard(char *bf)
+void Sys_SaveClipboard(clipboardtype_t clipboardtype, const char *text)
 {
-	if (bf == clipboard_buffer)
-		return;
-
-	if(vid_dpy)
-		x11.pXFree(bf);
-}
-
-void Sys_SaveClipboard(char *text)
-{
-	Q_strncpyz(clipboard_buffer, text, SYS_CLIPBOARD_SIZE);
+	free(clipboard_buffer[clipboardtype]);
+	clipboard_buffer[clipboardtype] = strdup(text);
 	if(vid_dpy)
 	{
-		Atom xa_clipboard = x11.pXInternAtom(vid_dpy, "PRIMARY", false);
+		Atom xa_clipboard;
+		switch(clipboardtype)
+		{
+		case CBT_SELECTION:
+			xa_clipboard = x11.pXInternAtom(vid_dpy, "PRIMARY", false);
+			break;
+		case CBT_CLIPBOARD:
+			xa_clipboard = x11.pXInternAtom(vid_dpy, "CLIPBOARD", false);
+			break;
+		default:
+			return;
+		}
 		x11.pXSetSelectionOwner(vid_dpy, xa_clipboard, vid_window, CurrentTime);
 	}
 }
@@ -3718,5 +3998,195 @@ qboolean X11_GetDesktopParameters(int *width, int *height, int *bpp, int *refres
 	x11.pXCloseDisplay(xtemp);
 
 	return true;
+}
+#endif
+
+
+
+
+void Sys_SendKeyEvents(void)
+{
+#ifndef CLIENTONLY
+	//this is stupid
+	SV_GetConsoleCommands();
+#endif
+
+#ifndef NO_X11
+	if (sys_gracefulexit)
+	{
+		Cbuf_AddText("\nquit\n", RESTRICT_LOCAL);
+		sys_gracefulexit = false;
+	}
+	if (vid_dpy && vid_window)
+	{
+		if (x11.unicodecontext)
+		{
+			qboolean want = vid.ime_allow && vid.activeapp;
+			XPoint pos;
+			if (want != x11.ime_shown)
+			{
+				x11.ime_shown = want;
+				if (x11.ime_shown)
+					x11.pXSetICFocus(x11.unicodecontext);
+				else
+					x11.pXUnsetICFocus(x11.unicodecontext);
+			}
+			pos.x = (vid.ime_position[0] * vid.pixelwidth)/vid.width;
+			pos.y = (vid.ime_position[1] * vid.pixelheight)/vid.height;
+			if (/*x11.ime_shown &&*/ (x11.ime_pos.x != pos.x || x11.ime_pos.y != pos.y))
+			{
+				void *attr[] = {XNSpotLocation, &x11.ime_pos, NULL};
+				x11.ime_pos = pos;
+				x11.pXSetICValues(x11.unicodecontext, XNPreeditAttributes, attr, NULL);
+			}
+		}
+
+		while (x11.pXPending(vid_dpy))
+			GetEvent();
+
+		if (modeswitchpending && modeswitchtime < Sys_Milliseconds())
+		{
+			UpdateGrabs();
+			if (modeswitchpending > 0 && !(fullscreenflags & FULLSCREEN_ACTIVE))
+			{
+				//entering fullscreen mode
+#ifdef USE_VMODE
+				if (fullscreenflags & FULLSCREEN_VMODE)
+				{
+					if (!(fullscreenflags & FULLSCREEN_VMODEACTIVE))
+					{
+						// change to the mode
+						vm.pXF86VidModeSwitchToMode(vid_dpy, scrnum, vm.modes[vm.usemode]);
+						fullscreenflags |= FULLSCREEN_VMODEACTIVE;
+						// Move the viewport to top left
+					}
+					vm.pXF86VidModeSetViewPort(vid_dpy, scrnum, 0, 0);
+				}
+#endif
+#ifdef USE_XRANDR
+				if (fullscreenflags & FULLSCREEN_XRANDR)
+					XRandR_ApplyMode();
+#endif
+				Cvar_ForceCallback(&v_gamma);
+
+				/*release the mouse now, because we're paranoid about clip regions*/
+				if (fullscreenflags & FULLSCREEN_WM)
+					X_GoFullscreen();
+				if (fullscreenflags & FULLSCREEN_LEGACY)
+				{
+					x11.pXReparentWindow(vid_dpy, vid_window, vid_root, fullscreenx, fullscreeny);
+				//	if (vid_decoywindow)
+				//		x11.pXMoveWindow(vid_dpy, vid_decoywindow, fullscreenx, fullscreeny);
+					//x11.pXUnmapWindow(vid_dpy, vid_decoywindow);
+					//make sure we have it
+					x11.pXSetInputFocus(vid_dpy, vid_window, RevertToParent, CurrentTime);
+					x11.pXRaiseWindow(vid_dpy, vid_window);
+					x11.pXMoveResizeWindow(vid_dpy, vid_window, fullscreenx, fullscreeny, fullscreenwidth, fullscreenheight);
+				}
+				if (fullscreenflags)
+					fullscreenflags |= FULLSCREEN_ACTIVE;
+			}
+			if (modeswitchpending < 0)
+			{
+				//leave fullscreen mode
+		 		if (!COM_CheckParm("-stayactive"))
+ 				{	//a parameter that leaves the program fullscreen if you taskswitch.
+ 					//sounds pointless, works great with two moniters. :D
+#ifdef USE_VMODE
+					if (fullscreenflags & FULLSCREEN_VMODE)
+					{
+	 					if (vm.originalapplied)
+							vm.pXF86VidModeSetGammaRamp(vid_dpy, scrnum, vm.originalrampsize, vm.originalramps[0], vm.originalramps[1], vm.originalramps[2]);
+						if (fullscreenflags & FULLSCREEN_VMODEACTIVE)
+						{
+							vm.pXF86VidModeSwitchToMode(vid_dpy, scrnum, vm.modes[0]);
+							fullscreenflags &= ~FULLSCREEN_VMODEACTIVE;
+						}
+					}
+#endif
+#ifdef USE_XRANDR
+					if (fullscreenflags & FULLSCREEN_XRANDR)
+						XRandR_RevertMode();
+#endif
+					if (fullscreenflags & FULLSCREEN_WM)
+						X_GoWindowed();
+					if (fullscreenflags & FULLSCREEN_LEGACY)
+					{
+						x11.pXReparentWindow(vid_dpy, vid_window, vid_decoywindow, 0, 0);
+//						x11.pXMoveResizeWindow(vid_dpy, vid_decoywindow, fullscreenx + (fullscreenwidth-640)/2, fullscreeny + (fullscreenheight-480)/2, 640, 480);
+						x11.pXMapWindow(vid_dpy, vid_decoywindow);
+					}
+					fullscreenflags &= ~FULLSCREEN_ACTIVE;
+				}
+			}
+			modeswitchpending = 0;
+		}
+
+		if (modeswitchpending)
+			return;
+
+		UpdateGrabs();
+	}
+#endif
+}
+
+/*static void Force_CenterView_f (void)
+{
+	cl.playerview[0].viewangles[PITCH] = 0;
+}*/
+
+
+//these are done from the x11 event handler. we don't support evdev.
+void INS_Move(void)
+{
+}
+void INS_Commands(void)
+{
+}
+void INS_Init(void)
+{
+}
+void INS_ReInit(void)
+{
+}
+void INS_Shutdown(void)
+{
+}
+void INS_EnumerateDevices(void *ctx, void(*callback)(void *ctx, const char *type, const char *devicename, unsigned int *qdevid))
+{
+#ifndef NO_X11
+	callback(ctx, "keyboard", "x11", NULL);
+	switch(x11_input_method)
+	{
+	case XIM_ORIG:
+		callback(ctx, "mouse", "x11", &x11_mouseqdev);
+		break;
+	case XIM_DGA:
+		callback(ctx, "mouse", "dga", &x11_mouseqdev);
+		break;
+	case XIM_XI2:
+		{
+			int i, devs;
+			XIDeviceInfo *dev = xi2.pXIQueryDevice(vid_dpy, xi2.devicegroup, &devs);
+			for (i = 0; i < devs; i++)
+			{
+				if (!dev[i].enabled)
+					continue;
+				if (/*dev[i].use == XIMasterPointer ||*/ dev[i].use == XISlavePointer)
+				{
+					struct xidevinfo *devi = XI2_GetDeviceInfo(dev[i].deviceid);
+					callback(ctx, devi->abs?"tablet":"mouse", dev[i].name, &devi->qdev);
+				}
+//				else if (dev[i].use == XIMasterKeyboard || dev[i].use == XISlaveKeyboard)
+//				{
+//					int qdev = dev[i].deviceid;
+//					callback(ctx, "xi2kb", dev[i].name, &qdev);
+//				}
+			}
+			xi2.pXIFreeDeviceInfo(dev);
+		}
+		break;
+	}
+#endif
 }
 

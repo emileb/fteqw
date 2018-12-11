@@ -22,6 +22,35 @@ struct sockaddr;
 
 #include "quakedef.h"
 #include "netinc.h"
+#include <stddef.h>
+
+#ifdef UNIXSOCKETS
+#include <sys/stat.h>	//to delete the file/socket.
+#endif
+
+//try to be slightly cleaner about the protocols that'll get killed.
+#ifdef TCPCONNECT
+	#define NP_STREAM_OR_INVALID NP_STREAM
+	#define NP_TLS_OR_INVALID NP_TLS
+	#define NP_WS_OR_INVALID NP_WS
+	#define NP_WSS_OR_INVALID NP_WSS
+#else
+	#define NP_STREAM_OR_INVALID NP_INVALID
+	#define NP_TLS_OR_INVALID NP_INVALID
+	#define NP_WS_OR_INVALID NP_INVALID
+	#define NP_WSS_OR_INVALID NP_INVALID
+#endif
+#define NP_DTLS_OR_INVALID NP_DTLS
+#ifndef HAVE_SSL
+	#undef NP_WSS_OR_INVALID
+	#define NP_WSS_OR_INVALID NP_INVALID
+	#undef NP_TLS_OR_INVALID
+	#define NP_TLS_OR_INVALID NP_INVALID
+	#undef NP_DTLS_OR_INVALID
+	#define NP_DTLS_OR_INVALID NP_INVALID
+#endif
+
+
 
 extern ftemanifest_t	*fs_manifest;
 
@@ -55,7 +84,7 @@ FTE_ALIGN(4) qbyte		net_message_buffer[MAX_OVERALLMSGLEN];
 WSADATA		winsockdata;
 #endif
 
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 #ifdef _WIN32
 int (WINAPI *pgetaddrinfo) (
   const char* nodename,
@@ -85,19 +114,22 @@ void (*pfreeaddrinfo) (struct addrinfo*);
 
 void NET_GetLocalAddress (int socket, netadr_t *out);
 //int TCP_OpenListenSocket (const char *localip, int port);
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 int UDP6_OpenSocket (int port);
 #endif
-#ifdef USEIPX
+#ifdef HAVE_IPX
 void IPX_CloseSocket (int socket);
 #endif
+cvar_t	timeout					= CVARD("timeout","65", "Connections will time out if no packets are received for this duration of time.");		// seconds without any message
 cvar_t	net_hybriddualstack		= CVARD("net_hybriddualstack",		"1", "Uses hybrid ipv4+ipv6 sockets where possible. Not supported on xp or below.");
 cvar_t	net_fakeloss			= CVARFD("net_fakeloss",			"0", CVAR_CHEAT, "Simulates packetloss in both receiving and sending, on a scale from 0 to 1.");
 cvar_t	net_enabled				= CVARD("net_enabled",				"1", "If 0, disables all network access, including name resolution and socket creation. Does not affect loopback/internal connections.");
 #if defined(TCPCONNECT) && !defined(CLIENTONLY)
 cvar_t	net_enable_qizmo		= CVARD("net_enable_qizmo",			"1", "Enables compatibility with qizmo's tcp connections serverside. Frankly, using sv_port_tcp without this is a bit pointless.");
 cvar_t	net_enable_qtv			= CVARD("net_enable_qtv",			"1", "Listens for qtv proxies, or clients using the qtvplay command.");
+#if defined(HAVE_SSL)
 cvar_t	net_enable_tls			= CVARD("net_enable_tls",			"1", "If enabled, binary data sent to a non-tls tcp port will be interpretted as a tls handshake (enabling https or wss over the same tcp port.");
+#endif
 cvar_t	net_enable_http			= CVARD("net_enable_http",			"0", "If enabled, tcp ports will accept http clients, potentially serving large files which could distrupt gameplay.");
 cvar_t	net_enable_websockets	= CVARD("net_enable_websockets",	"1", "If enabled, tcp ports will accept websocket game clients.");
 cvar_t	net_enable_webrtcbroker	= CVARD("net_enable_webrtcbroker",	"0", "If 1, tcp ports will accept websocket connections from clients trying to broker direct webrtc connections. This should be low traffic, but might involve a lot of mostly-idle connections.");
@@ -184,7 +216,7 @@ int NetadrToSockadr (netadr_t *a, struct sockaddr_qstorage *s)
 		((struct sockaddr_in*)s)->sin_port = a->port;
 		return sizeof(struct sockaddr_in);
 #endif
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 	case NA_IPV6:
 		memset (s, 0, sizeof(struct sockaddr_in6));
 		((struct sockaddr_in6*)s)->sin6_family = AF_INET6;
@@ -194,13 +226,29 @@ int NetadrToSockadr (netadr_t *a, struct sockaddr_qstorage *s)
 		((struct sockaddr_in6 *)s)->sin6_scope_id = a->scopeid;
 		return sizeof(struct sockaddr_in6);
 #endif
-#ifdef USEIPX
+#ifdef HAVE_IPX
 	case NA_IPX:
+#ifdef _WIN32
 		((struct sockaddr_ipx *)s)->sa_family = AF_IPX;
 		memcpy(((struct sockaddr_ipx *)s)->sa_netnum, &a->address.ipx[0], 4);
 		memcpy(((struct sockaddr_ipx *)s)->sa_nodenum, &a->address.ipx[4], 6);
 		((struct sockaddr_ipx *)s)->sa_socket = a->port;
+#else
+		((struct sockaddr_ipx *)s)->sipx_family = AF_IPX;
+		memcpy(&((struct sockaddr_ipx *)s)->sipx_network, &a->address.ipx[0], 4);
+		memcpy(((struct sockaddr_ipx *)s)->sipx_node, &a->address.ipx[4], 6);
+		((struct sockaddr_ipx *)s)->sipx_port = a->port;
+#endif
 		return sizeof(struct sockaddr_ipx);
+#endif
+#ifdef UNIXSOCKETS
+	case NA_UNIX:
+		{
+			struct sockaddr_un *un = (struct sockaddr_un*)s;
+			un->sun_family = AF_UNIX;
+			memcpy(un->sun_path, a->address.un.path, a->address.un.len);
+			return offsetof(struct sockaddr_un, sun_path) + a->address.un.len;
+		}
 #endif
 	default:
 		Sys_Error("NetadrToSockadr: Bad type %i", a->type);
@@ -208,11 +256,18 @@ int NetadrToSockadr (netadr_t *a, struct sockaddr_qstorage *s)
 	}
 }
 
-void SockadrToNetadr (struct sockaddr_qstorage *s, netadr_t *a)
+void SockadrToNetadr (struct sockaddr_qstorage *s, int sizeofsockaddr, netadr_t *a)
 {
 	a->scopeid = 0;
 	a->connum = 0;
 	a->prot = NP_DGRAM;
+
+	if (sizeofsockaddr < offsetof(struct sockaddr, sa_family)+sizeof(((struct sockaddr*)s)->sa_family))
+	{	//truncated far too much...
+		memset(a, 0, sizeof(*a));
+		a->type = NA_INVALID;
+		return;
+	}
 
 	switch (((struct sockaddr*)s)->sa_family)
 	{
@@ -230,7 +285,7 @@ void SockadrToNetadr (struct sockaddr_qstorage *s, netadr_t *a)
 		a->port = ((struct sockaddr_in *)s)->sin_port;
 		break;
 #endif
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 	case AF_INET6:
 		a->type = NA_IPV6;
 		memcpy(&a->address.ip6, &((struct sockaddr_in6 *)s)->sin6_addr, sizeof(a->address.ip6));
@@ -238,13 +293,32 @@ void SockadrToNetadr (struct sockaddr_qstorage *s, netadr_t *a)
 		a->scopeid = ((struct sockaddr_in6 *)s)->sin6_scope_id;
 		break;
 #endif
-#ifdef USEIPX
+#ifdef HAVE_IPX
 	case AF_IPX:
 		a->type = NA_IPX;
 		*(int *)a->address.ip = 0xffffffff;
+#ifdef _WIN32
 		memcpy(&a->address.ipx[0], ((struct sockaddr_ipx *)s)->sa_netnum, 4);
 		memcpy(&a->address.ipx[4], ((struct sockaddr_ipx *)s)->sa_nodenum, 6);
 		a->port = ((struct sockaddr_ipx *)s)->sa_socket;
+#else
+		memcpy(&a->address.ipx[0], &((struct sockaddr_ipx *)s)->sipx_network, 4);
+		memcpy(&a->address.ipx[4], ((struct sockaddr_ipx *)s)->sipx_node, 6);
+		a->port = ((struct sockaddr_ipx *)s)->sipx_port;
+#endif
+		break;
+#endif
+#ifdef UNIXSOCKETS
+	case AF_UNIX:
+		{
+			struct sockaddr_un *un = (struct sockaddr_un*)s;
+			a->type = NA_UNIX;
+			a->address.un.len = sizeofsockaddr - offsetof(struct sockaddr_un, sun_path);
+			memcpy(a->address.un.path, un->sun_path, a->address.un.len);
+			if (a->address.un.len && a->address.un.path)
+				a->address.un.len = strnlen(a->address.un.path, a->address.un.len);
+			a->port = 0;
+		}
 		break;
 #endif
 	default:
@@ -255,10 +329,10 @@ void SockadrToNetadr (struct sockaddr_qstorage *s, netadr_t *a)
 		break;
 	}
 }
-char	*NET_SockadrToString (char *s, int len, struct sockaddr_qstorage *a)
+char	*NET_SockadrToString (char *s, int len, struct sockaddr_qstorage *a, size_t sizeofa)
 {
 	netadr_t na;
-	SockadrToNetadr(a, &na);
+	SockadrToNetadr(a, sizeofa, &na);
 	return NET_AdrToString(s, len, &na);
 }
 
@@ -343,7 +417,7 @@ qboolean	NET_CompareAdr (netadr_t *a, netadr_t *b)
 	}
 #endif
 
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 	if (a->type == NA_IPV6)
 	{
 		if ((memcmp(a->address.ip6, b->address.ip6, sizeof(a->address.ip6)) == 0) && a->port == b->port)
@@ -352,7 +426,7 @@ qboolean	NET_CompareAdr (netadr_t *a, netadr_t *b)
 	}
 #endif
 
-#ifdef USEIPX
+#ifdef HAVE_IPX
 	if (a->type == NA_IPX)
 	{
 		if ((memcmp(a->address.ipx, b->address.ipx, sizeof(a->address.ipx)) == 0) && a->port == b->port)
@@ -370,10 +444,19 @@ qboolean	NET_CompareAdr (netadr_t *a, netadr_t *b)
 	}
 #endif
 
+#ifdef UNIXSOCKETS
+	if (a->type == NA_UNIX)
+	{
+		if (a->address.un.len == b->address.un.len && !memcmp(a->address.un.path, b->address.un.path, a->address.un.len))
+			return true;
+		return false;
+	}
+#endif
+
 	Con_Printf("NET_CompareAdr: Bad address type\n");
 	return false;
 }
- 
+
 /*
 ===================
 NET_CompareBaseAdr
@@ -401,7 +484,7 @@ qboolean	NET_CompareBaseAdr (netadr_t *a, netadr_t *b)
 		return false;
 	}
 #endif
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 	if (a->type == NA_IPV6)
 	{
 		if ((memcmp(a->address.ip6, b->address.ip6, 16) == 0))
@@ -409,7 +492,7 @@ qboolean	NET_CompareBaseAdr (netadr_t *a, netadr_t *b)
 		return false;
 	}
 #endif
-#ifdef USEIPX
+#ifdef HAVE_IPX
 	if (a->type == NA_IPX)
 	{
 		if ((memcmp(a->address.ipx, b->address.ipx, 10) == 0))
@@ -435,13 +518,22 @@ qboolean	NET_CompareBaseAdr (netadr_t *a, netadr_t *b)
 	}
 #endif
 
+#ifdef UNIXSOCKETS
+	if (a->type == NA_UNIX)
+	{
+		if (a->address.un.len == b->address.un.len && !memcmp(a->address.un.path, b->address.un.path, a->address.un.len))
+			return true;
+		return false;
+	}
+#endif
+
 	Sys_Error("NET_CompareBaseAdr: Bad address type");
 	return false;
 }
 
 qboolean NET_AddressSmellsFunny(netadr_t *a)
 {
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 	int i;
 #endif
 
@@ -463,7 +555,7 @@ qboolean NET_AddressSmellsFunny(netadr_t *a)
 		return false;
 #endif
 
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 	case NA_IPV6:
 		//reject [::XXXX] (this includes obsolete ipv4-compatible (not ipv4 mapped), and localhost)
 		for (i = 0; i < 12; i++)
@@ -474,7 +566,7 @@ qboolean NET_AddressSmellsFunny(netadr_t *a)
 		return false;
 #endif
 
-#ifdef USEIPX
+#ifdef HAVE_IPX
 	//no idea how this protocol's addresses work
 	case NA_IPX:
 		return false;
@@ -523,12 +615,13 @@ char	*NET_AdrToString (char *s, int len, netadr_t *a)
 {
 	char *rs = s;
 	char *prot = "";
-#ifdef IPPROTO_IPV6
-	qboolean doneblank;
+#ifdef HAVE_IPV6
+	int doneblank;
 #endif
 
 	switch(a->prot)
 	{
+	case NP_INVALID:prot = "invalid://";break;
 	case NP_DGRAM:	prot = "";			break;
 	case NP_DTLS:	prot = "dtls://";	break;
 	case NP_STREAM:	prot = "tcp://";	break;	//not strictly true for ipx, but whatever.
@@ -585,12 +678,12 @@ char	*NET_AdrToString (char *s, int len, netadr_t *a)
 		}
 		break;
 #endif
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 	case NA_IPV6:
 		{
 			char *p;
 			int i;
-			if (!*(int*)&a->address.ip6[0] && 
+			if (!*(int*)&a->address.ip6[0] &&
 				!*(int*)&a->address.ip6[4] &&
 				!*(short*)&a->address.ip6[8] &&
 				*(short*)&a->address.ip6[10] == (short)0xffff)
@@ -669,7 +762,7 @@ char	*NET_AdrToString (char *s, int len, netadr_t *a)
 		}
 		break;
 #endif
-#ifdef USEIPX
+#ifdef HAVE_IPX
 	case NA_IPX:
 		snprintf (s, len, "%s%02x%02x%02x%02x:%02x%02x%02x%02x%02x%02x:%i",
 			prot,
@@ -699,6 +792,69 @@ char	*NET_AdrToString (char *s, int len, netadr_t *a)
 		break;
 #endif
 
+#ifdef UNIXSOCKETS
+	case NA_UNIX:
+		switch(a->prot)
+		{
+		case NP_DGRAM:	prot = "udg://";	break;
+		case NP_STREAM:	prot = "unix://";	break;
+		default:
+			snprintf (s, len, "unix+");
+			len-=strlen(s);
+			s+=strlen(s);
+			break;
+		}
+		snprintf (s, len, prot);
+		len-=strlen(s);
+		s+=strlen(s);
+
+		if (len)	//hopefully this will always be true...
+		{
+			char *end = a->address.un.path+a->address.un.len, *in;
+			char c;
+			for (in = a->address.un.path; in < end; in++)
+			{
+				if (--len == 0)
+					break;
+				if (*in == '\\')		//ugly encoding
+					c = '\\';
+				else if (*in == '\0')	//null chars are always a problem. abstract sockets generally get them displayed using @ chars.
+				{
+					*s++ = '@';
+					continue;
+				}
+				else if (*in == '@')	//which means actual @ chars need to be escaped
+					c = '@';
+				//don't screw up from these, either.
+				else if (*in == '\n')
+					c = 'n';
+				else if (*in == '\r')
+					c = 'r';
+				else if (*in == '\t')
+					c = 't';
+				//special quake chars can screw up display too
+				else if (*in == '\1')
+					c = '1';
+				else if (*in == '\2')
+					c = '2';
+				else if (*in == '\3')
+					c = '3';
+				else
+				{	//as-is.
+					*s++ = *in;
+					continue;
+				}
+				//marked up chars need extra storage.
+				if (--len == 0)
+					break;
+				*s++ = '\\';
+				*s++ = c;
+			}
+			*s = 0;	//and always null terminate the string.
+		}
+		break;
+#endif
+
 	default:
 		snprintf (s, len, "invalid netadr_t type");
 //		Sys_Error("NET_AdrToString: Bad netadr_t type");
@@ -712,6 +868,7 @@ char	*NET_BaseAdrToString (char *s, int len, netadr_t *a)
 	char *prot = "";
 	switch(a->prot)
 	{
+	case NP_INVALID:prot = "invalid://";break;
 	case NP_DGRAM:	prot = "";			break;
 	case NP_DTLS:	prot = "dtls://";	break;
 	case NP_STREAM:	prot = "tcp://";	break;	//not strictly true for ipx, but whatever.
@@ -751,12 +908,12 @@ char	*NET_BaseAdrToString (char *s, int len, netadr_t *a)
 			a->address.ip[2],
 			a->address.ip[3]);
 		break;
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 	case NA_IPV6:
 		{
 			char *p;
 			int i, doneblank;
-			if (!*(int*)&a->address.ip6[0] && 
+			if (!*(int*)&a->address.ip6[0] &&
 				!*(int*)&a->address.ip6[4] &&
 				!*(short*)&a->address.ip6[8] &&
 				*(short*)&a->address.ip6[10] == (short)0xffff)
@@ -809,7 +966,7 @@ char	*NET_BaseAdrToString (char *s, int len, netadr_t *a)
 		}
 		break;
 #endif
-#ifdef USEIPX
+#ifdef HAVE_IPX
 	case NA_IPX:
 		snprintf (s, len, "%s%02x%02x%02x%02x:%02x%02x%02x%02x%02x%02x",
 			prot,
@@ -834,6 +991,13 @@ char	*NET_BaseAdrToString (char *s, int len, netadr_t *a)
 		NET_AdrToString(s, len, a);
 		break;
 #endif
+
+#ifdef UNIXSOCKETS
+	case NA_UNIX:
+		//no ports, so no base paths.
+		return NET_AdrToString(s, len, a);
+#endif
+
 	default:
 		Sys_Error("NET_BaseAdrToString: Bad netadr_t type");
 	}
@@ -852,7 +1016,7 @@ idnewt:28000
 any form of ipv6, including port number.
 =============
 */
-size_t NET_StringToSockaddr2 (const char *s, int defaultport, struct sockaddr_qstorage *sadr, int *addrfamily, int *addrsize, size_t addresses)
+size_t NET_StringToSockaddr2 (const char *s, int defaultport, netadrtype_t afhint, struct sockaddr_qstorage *sadr, int *addrfamily, int *addrsize, size_t addresses)
 {
 	size_t	result = 0;
 
@@ -861,7 +1025,59 @@ size_t NET_StringToSockaddr2 (const char *s, int defaultport, struct sockaddr_qs
 
 	memset (sadr, 0, sizeof(*sadr));
 
-#ifdef USEIPX
+#ifdef UNIXSOCKETS
+	if (afhint == NA_UNIX)
+	{
+		struct sockaddr_un *sa = (struct sockaddr_un *)sadr;
+		int i;
+		sa->sun_family = AF_UNIX;
+
+		//this parsing is so annoying because I want to support abstract sockets too.
+		for (i = 0; *s && i < countof(sa->sun_path); )
+		{
+			if (*s == '@')
+			{
+				sa->sun_path[i++] = 0;
+				s++;
+			}
+			else if (*s == '\\')
+			{
+				if (s[1] == 0)
+					break;	//error.
+				else if (s[1] == '\\')
+					sa->sun_path[i++] = '\\';
+				else if (s[1] == '@')
+					sa->sun_path[i++] = '@';
+				else if (s[1] == 'n')
+					sa->sun_path[i++] = 'n';
+				else if (s[1] == 'r')
+					sa->sun_path[i++] = 'r';
+				else if (s[1] == 't')
+					sa->sun_path[i++] = 't';
+				else if (s[1] == '1')
+					sa->sun_path[i++] = '1';
+				else if (s[1] == '2')
+					sa->sun_path[i++] = '2';
+				else if (s[1] == '3')
+					sa->sun_path[i++] = '3';
+				else
+					sa->sun_path[i++] = '?';
+				s+=2;
+			}
+			else
+				 sa->sun_path[i++] = *s++;
+		}
+		if (i < countof(sa->sun_path))
+			sa->sun_path[i] = 'X';
+		if (addrsize)
+			*addrsize = offsetof(struct sockaddr_un, sun_path) + i;
+		if (addrfamily)
+			*addrfamily = AF_UNIX;
+		result++;
+	}
+	else
+#endif
+#ifdef HAVE_IPX
 	if ((strlen(s) >= 23) && (s[8] == ':') && (s[21] == ':'))	// check for an IPX address
 	{
 		unsigned int val;
@@ -900,7 +1116,7 @@ size_t NET_StringToSockaddr2 (const char *s, int defaultport, struct sockaddr_qs
 	}
 	else
 #endif
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 #ifdef pgetaddrinfo
 	if (1)
 #else
@@ -918,7 +1134,27 @@ size_t NET_StringToSockaddr2 (const char *s, int defaultport, struct sockaddr_qs
 		double restime = Sys_DoubleTime();
 
 		memset(&udp6hint, 0, sizeof(udp6hint));
-		udp6hint.ai_family = 0;//Any... we check for AF_INET6 or 4
+		switch(afhint)
+		{
+#ifdef HAVE_IPV4
+		case NA_IP:
+			udp6hint.ai_family = AF_INET;
+			break;
+#endif
+#ifdef HAVE_IPV6
+		case NA_IPV6:
+			udp6hint.ai_family = AF_INET6;
+			break;
+#endif
+#ifdef HAVE_IPX
+		case NA_IPX:
+			udp6hint.ai_family = AF_IPX;
+			break;
+#endif
+		default:
+			udp6hint.ai_family = 0;//Any... we check for AF_INET6 or 4
+			break;
+		}
 		udp6hint.ai_socktype = SOCK_DGRAM;
 		udp6hint.ai_protocol = 0;
 
@@ -996,7 +1232,7 @@ size_t NET_StringToSockaddr2 (const char *s, int defaultport, struct sockaddr_qs
 		{
 			if (addrfamily)
 				addrfamily[i] = ((struct sockaddr*)sadr)->sa_family;
-		
+
 			if (((struct sockaddr*)&sadr[i])->sa_family == AF_INET)
 			{
 				if (!((struct sockaddr_in *)&sadr[i])->sin_port)
@@ -1070,6 +1306,48 @@ size_t	NET_StringToAdr2 (const char *s, int defaultport, netadr_t *a, size_t num
 {
 	size_t result = 0, i;
 	struct sockaddr_qstorage sadr[8];
+	int asize[countof(sadr)];
+	netproto_t prot;
+	netadrtype_t afhint;
+
+	struct
+	{
+		const char *name;
+		netproto_t prot;
+		netadrtype_t family;
+	} schemes[] =
+	{
+		{"udp://", NP_DGRAM, NA_INVALID},	//placeholder for dgram rather than an actual family.
+		{"udp4//", NP_DGRAM, NA_IP},
+		{"udp6//", NP_DGRAM, NA_IPV6},
+		{"ipx://", NP_DGRAM, NA_IPX},
+
+		//compat with qtv. we don't have any way to exclude specific protocols though.
+		{"qw://", NP_DGRAM, NA_INVALID},
+		{"nq://", NP_DGRAM, NA_INVALID},
+		{"dp://", NP_DGRAM, NA_INVALID},
+		{"q2://", NP_DGRAM, NA_INVALID},
+		{"q3://", NP_DGRAM, NA_INVALID},
+
+		{"tcp://", NP_STREAM_OR_INVALID, NA_INVALID},	//placeholder for dgram rather than an actual family.
+		{"tcp4//", NP_STREAM_OR_INVALID, NA_IP},
+		{"tcp6//", NP_STREAM_OR_INVALID, NA_IPV6},
+		{"spx://", NP_STREAM_OR_INVALID, NA_IPX},
+
+		{"ws://", NP_WS_OR_INVALID, NA_INVALID},
+		{"wss://", NP_WSS_OR_INVALID, NA_INVALID},
+
+		{"tls://", NP_TLS_OR_INVALID, NA_INVALID},
+		{"dtls://", NP_DTLS_OR_INVALID, NA_INVALID},
+
+		{"irc://", NP_INVALID, NA_INVALID},	//should have been handled explicitly, if supported.
+
+#ifdef UNIXSOCKETS
+		{"udg://", NP_DGRAM, NA_UNIX},
+		{"unix://", NP_STREAM_OR_INVALID, NA_UNIX},
+#endif
+	};
+
 
 	memset(a, 0, sizeof(*a)*numaddresses);
 
@@ -1097,21 +1375,23 @@ size_t	NET_StringToAdr2 (const char *s, int defaultport, netadr_t *a, size_t num
 	Con_DPrintf("Resolving address: %s\n", s);
 
 #ifdef HAVE_WEBSOCKCL
+	//with websockets we can't really resolve anything. failure happens only when trying to connect.
+	//`connect /GAMENAME` is equivelent to `connect rtc://broker/GAMENAME`
 	if (!strncmp (s, "/", 1))
 	{
 		char *prefix = "";
 		if (!fs_manifest->rtcbroker || !*fs_manifest->rtcbroker)
 		{	//FIXME: use referrer? or the website's host?
 			Con_DPrintf("No default rtc broker\n");
-			return false;	//can't accept it
+			return 0;	//can't accept it
 		}
 		if (!strstr(fs_manifest->rtcbroker, "://"))
 			prefix = "ws://";
 		Q_snprintfz(a->address.websocketurl, sizeof(a->address.websocketurl), "%s%s%s", prefix, fs_manifest->rtcbroker, s);
-		return true;
+		return 1;
 	}
 	else if (!strncmp (s, "rtc://", 6) || !strncmp (s, "rtcs://", 7))
-	{
+	{	//basically ICE using sdp-via-websockets to a named relay server.
 		const char *prot, *host, *path;
 		a->type = NA_WEBSOCKET;
 		a->prot = NP_DTLS;
@@ -1129,14 +1409,14 @@ size_t	NET_StringToAdr2 (const char *s, int defaultport, netadr_t *a, size_t num
 		{
 			host = fs_manifest->rtcbroker;
 			if (!host || !*host)	//can't guess the host
-				return false;
+				return 0;
 			if (strstr(host, "://"))
 				prot = "";
 		}
 		else
 			host = "";
 		Q_snprintfz(a->address.websocketurl, sizeof(a->address.websocketurl), "%s%s%s", prot, host, path);
-		return true;
+		return 1;
 	}
 	else if (!strncmp (s, "ws://", 5) || !strncmp (s, "wss://", 6))
 	{
@@ -1146,7 +1426,7 @@ size_t	NET_StringToAdr2 (const char *s, int defaultport, netadr_t *a, size_t num
 		else
 			a->prot = NP_WS;
 		Q_strncpyz(a->address.websocketurl, s, sizeof(a->address.websocketurl));
-		return true;
+		return 1;
 	}
 	else
 	{
@@ -1161,91 +1441,13 @@ size_t	NET_StringToAdr2 (const char *s, int defaultport, netadr_t *a, size_t num
 		a->prot = NP_WS;
 		memcpy(a->address.websocketurl, "ws://", 5);
 		Q_strncpyz(a->address.websocketurl+5, s, sizeof(a->address.websocketurl)-5);
-		return true;
+		return 1;
 	}
 #endif
-#ifdef TCPCONNECT
-	if (!strncmp (s, "tcp://", 6))
-	{
-		//make sure that the rest of the address is a valid ip address (4 or 6)
-		if (!NET_StringToSockaddr (s+6, defaultport, &sadr[0], NULL, NULL))
-		{
-			a->type = NA_INVALID;
-			return false;
-		}
 
-		SockadrToNetadr (&sadr[0], a);
-		a->prot = NP_STREAM;
-		return true;
-	}
-	if (!strncmp (s, "ws://", 5))
-	{
-		//make sure that the rest of the address is a valid ip address (4 or 6)
-		if (!NET_StringToSockaddr (s+5, defaultport, &sadr[0], NULL, NULL))
-		{
-			a->type = NA_INVALID;
-			return false;
-		}
-
-		SockadrToNetadr (&sadr[0], a);
-		a->prot = NP_WS;
-		return true;
-	}
-	if (!strncmp (s, "wss://", 6))
-	{
-#ifndef HAVE_SSL
-		return false;
-#else
-		//make sure that the rest of the address is a valid ip address (4 or 6)
-		if (!NET_StringToSockaddr (s+6, defaultport, &sadr[0], NULL, NULL))
-		{
-			a->type = NA_INVALID;
-			return false;
-		}
-
-		SockadrToNetadr (&sadr[0], a);
-		a->prot = NP_WSS;
-		return true;
-#endif
-	}
-	if (!strncmp (s, "tls://", 6))
-	{
-#ifndef HAVE_SSL
-		return false;
-#else
-		//make sure that the rest of the address is a valid ip address (4 or 6)
-		if (!NET_StringToSockaddr (s+6, defaultport, &sadr[0], NULL, NULL))
-		{
-			a->type = NA_INVALID;
-			return false;
-		}
-
-		SockadrToNetadr (&sadr[0], a);
-		a->prot = NP_TLS;
-		return true;
-#endif
-	}
-#endif
-	if (!strncmp (s, "dtls://", 7))
-	{
-#ifndef HAVE_DTLS
-		return false;
-#else
-		//make sure that the rest of the address is a valid ip address (4 or 6)
-		if (!NET_StringToSockaddr (s+7, defaultport, &sadr[0], NULL, NULL))
-		{
-			a->type = NA_INVALID;
-			return false;
-		}
-
-		SockadrToNetadr (&sadr[0], a);
-		a->prot = NP_DTLS;
-		return true;
-#endif
-	}
-#ifdef IRCCONNECT
 	if (!strncmp (s, "irc://", 6))
 	{
+#ifdef IRCCONNECT
 		char *at;
 		char *slash;
 		memset (a, 0, sizeof(*a));
@@ -1273,9 +1475,11 @@ size_t	NET_StringToAdr2 (const char *s, int defaultport, netadr_t *a, size_t num
 			//just a user.
 			Q_strncpyz(a->address.irc.user, s, sizeof(a->address.irc.user));
 		}
-		return true;
-	}
+		return 1;
+#else
+		return 0;
 #endif
+	}
 #ifdef HAVE_NATPMP
 	if (!strncmp (s, "natpmp://", 9))
 	{	//our natpmp thing omits the host part. FIXME: host should be the NAT that we're sending to
@@ -1286,10 +1490,22 @@ size_t	NET_StringToAdr2 (const char *s, int defaultport, netadr_t *a, size_t num
 	}
 #endif
 
-	result = NET_StringToSockaddr2 (s, defaultport, sadr, NULL, NULL, min(numaddresses, sizeof(sadr)/sizeof(sadr[0])));
+	for (prot = NP_DGRAM, afhint = NA_INVALID/*any*/, i = 0; i < countof(schemes); i++)
+	{
+		if (!strncmp(s, schemes[i].name, strlen(schemes[i].name)))
+		{
+			s += strlen(schemes[i].name);
+			prot = schemes[i].prot;
+			afhint = schemes[i].family;
+			break;
+		}
+	}
+
+	result = NET_StringToSockaddr2 (s, defaultport, afhint, sadr, NULL, asize, min(numaddresses, countof(sadr)));
 	for (i = 0; i < result; i++)
 	{
-		SockadrToNetadr (&sadr[i], &a[i]);
+		SockadrToNetadr (&sadr[i], asize[i], &a[i]);
+		a[i].prot = prot;
 	}
 
 	//invalidate any others
@@ -1338,7 +1554,7 @@ void NET_IntegerToMask (netadr_t *a, netadr_t *amask, int bits)
 		}
 		break;
 	case NA_IPV6:
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 		n = amask->address.ip6;
 		if (i > 128)
 			i = 128;
@@ -1358,7 +1574,7 @@ void NET_IntegerToMask (netadr_t *a, netadr_t *amask, int bits)
 #endif
 		break;
 	case NA_IPX:
-#ifdef USEIPX
+#ifdef HAVE_IPX
 		n = amask->address.ipx;
 		if (i > 80)
 			i = 80;
@@ -1379,7 +1595,9 @@ void NET_IntegerToMask (netadr_t *a, netadr_t *amask, int bits)
 		break;
 	case NA_LOOPBACK:
 		break;
-	// warning: enumeration value ‚NA_*‚ not handled in switch
+#ifdef UNIXSOCKETS
+	case NA_UNIX:	//address masks/filtering don't make sense.
+#endif
 #ifdef HAVE_WEBSOCKCL
 	case NA_WEBSOCKET:
 #endif
@@ -1629,7 +1847,7 @@ qboolean NET_CompareAdrMasked(netadr_t *a, netadr_t *b, netadr_t *mask)
 				return false;
 		}
 		break;
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 	case NA_IPV6:
 		for (i = 0; i < 16; i++)
 		{
@@ -1638,7 +1856,7 @@ qboolean NET_CompareAdrMasked(netadr_t *a, netadr_t *b, netadr_t *mask)
 		}
 		break;
 #endif
-#ifdef USEIPX
+#ifdef HAVE_IPX
 	case NA_IPX:
 		for (i = 0; i < 10; i++)
 		{
@@ -1701,7 +1919,7 @@ int UniformMaskedBits(netadr_t *mask)
 				bits -= 8;
 		}
 		break;
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 	case NA_IPV6:
 		bits = 128;
 		for (b = 15; b >= 0; b--)
@@ -1731,7 +1949,7 @@ int UniformMaskedBits(netadr_t *mask)
 		}
 		break;
 #endif
-#ifdef USEIPX
+#ifdef HAVE_IPX
 	case NA_IPX:
 		bits = 80;
 		for (b = 9; b >= 0; b--)
@@ -1819,6 +2037,44 @@ qboolean	NET_IsLoopBackAddress (netadr_t *adr)
 //	return (!strcmp(cls.servername, NET_AdrToString(net_local_adr)) || !strcmp(cls.servername, "local");
 	return adr->type == NA_LOOPBACK;
 }
+
+
+#ifdef HAVE_SSL
+vfsfile_t *FS_OpenSSL(const char *hostname, vfsfile_t *source, qboolean isserver)
+{
+	vfsfile_t *f = NULL;
+#ifdef HAVE_GNUTLS
+	if (!f)
+		f = GNUTLS_OpenVFS(hostname, source, isserver);
+#endif
+#ifdef HAVE_OPENSSL
+	if (!f)
+		f = OSSL_OpenVFS(hostname, source, isserver);
+#endif
+#ifdef HAVE_WINSSPI
+	if (!f)
+		f = SSPI_OpenVFS(hostname, source, isserver);
+#endif
+	return f;
+}
+int TLS_GetChannelBinding(vfsfile_t *stream, qbyte *data, size_t *datasize)
+{
+	int r = -1;
+#ifdef HAVE_GNUTLS
+	if (r == -1)
+		r = GNUTLS_GetChannelBinding(stream, data, datasize);
+#endif
+#ifdef HAVE_OPENSSL
+	if (r == -1)
+		r = OSSL_GetChannelBinding(stream, data, datasize);
+#endif
+#ifdef HAVE_WINSSPI
+	if (r == -1)
+		r = SSPI_GetChannelBinding(stream, data, datasize);
+#endif
+	return r;
+}
+#endif
 
 /////////////////////////////////////////////
 //loopback stuff
@@ -2108,7 +2364,7 @@ static void FTENET_NATPMP_Refresh(pmpcon_t *pmp, short oldport, ftenet_connectio
 {
 	int i, m;
 	netadr_t adr;
-	
+
 	netadr_t	addr[64];
 	struct ftenet_generic_connection_s			*con[sizeof(addr)/sizeof(addr[0])];
 	int			flags[sizeof(addr)/sizeof(addr[0])];
@@ -2145,7 +2401,7 @@ static void FTENET_NATPMP_Refresh(pmpcon_t *pmp, short oldport, ftenet_connectio
 			!*(int*)&adr.address.ip6[0] &&
 			!*(int*)&adr.address.ip6[4] &&
 			!*(short*)&adr.address.ip6[8] &&
-			*(short*)&adr.address.ip6[10]==(short)0xffff && 
+			*(short*)&adr.address.ip6[10]==(short)0xffff &&
 			!*(int*)&adr.address.ip6[12])
 		{
 			*(int*)adr.address.ip = *(int*)&adr.address.ip6[12];
@@ -2228,7 +2484,7 @@ qboolean FTENET_NATPMP_GetPacket(struct ftenet_generic_connection_s *con)
 }
 neterr_t FTENET_NATPMP_SendPacket(struct ftenet_generic_connection_s *con, int length, const void *data, netadr_t *to)
 {
-	return false;
+	return NETERR_NOROUTE;
 }
 void FTENET_NATPMP_Close(struct ftenet_generic_connection_s *con)
 {
@@ -2280,34 +2536,56 @@ struct dtlspeer_s
 
 void NET_DTLS_Timeouts(ftenet_connections_t *col)
 {
-	struct dtlspeer_s *peer;
+	struct dtlspeer_s *peer, **link;
 	if (!col)
 		return;
-	for (peer = col->dtls; peer; peer = peer->next)
+	for (link = &col->dtls; (peer=*link); )
 	{
+		if (peer->timeout < realtime)
+		{
+			peer->funcs->DestroyContext(peer->dtlsstate);
+			*link = peer->next;
+			continue;
+		}
+
 		peer->funcs->Timeouts(peer->dtlsstate);
+		link = &peer->next;
 	}
 }
 
 const dtlsfuncs_t *DTLS_InitServer(void)
 {
-#if defined(HAVE_GNUTLS)
-	return GNUDTLS_InitServer();
-#elif defined(HAVE_WINSSPI)
-	return SSPI_DTLS_InitServer();
-#else
-	return NULL;
+	const dtlsfuncs_t *f = NULL;
+#ifdef HAVE_GNUTLS
+	if (!f)
+		f = GNUDTLS_InitServer();
 #endif
+#ifdef HAVE_OPENSSL
+	if (!f)
+		f = OSSL_InitServer();
+#endif
+#ifdef HAVE_WINSSPI
+	if (!f)
+		f = SSPI_DTLS_InitServer();
+#endif
+	return f;
 }
 const dtlsfuncs_t *DTLS_InitClient(void)
 {
+	const dtlsfuncs_t *f = NULL;
 #ifdef HAVE_WINSSPI
-	return SSPI_DTLS_InitClient();
-#elif defined(HAVE_GNUTLS)
-	return GNUDTLS_InitClient();
-#else
-	return NULL;
+	if (!f)
+		f = SSPI_DTLS_InitClient();
 #endif
+#ifdef HAVE_GNUTLS
+	if (!f)
+		f = GNUDTLS_InitClient();
+#endif
+#ifdef HAVE_OPENSSL
+	if (!f)
+		f = OSSL_InitClient();
+#endif
+	return f;
 }
 
 static neterr_t NET_SendPacketCol (ftenet_connections_t *collection, int length, const void *data, netadr_t *to);
@@ -2318,6 +2596,7 @@ static neterr_t FTENET_DTLS_DoSendPacket(void *cbctx, const qbyte *data, size_t 
 }
 qboolean NET_DTLS_Create(ftenet_connections_t *col, netadr_t *to)
 {
+	extern cvar_t timeout;
 	struct dtlspeer_s *peer;
 	if (to->prot != NP_DGRAM)
 		return false;
@@ -2339,6 +2618,8 @@ qboolean NET_DTLS_Create(ftenet_connections_t *col, netadr_t *to)
 			peer->funcs = DTLS_InitClient();
 		if (peer->funcs)
 			peer->dtlsstate = peer->funcs->CreateContext(NET_BaseAdrToString(hostname, sizeof(hostname), to), peer, FTENET_DTLS_DoSendPacket, col->islisten);
+
+		peer->timeout = realtime+timeout.value;
 		if (peer->dtlsstate)
 		{
 			if (peer->next)
@@ -2401,11 +2682,13 @@ static neterr_t FTENET_DTLS_SendPacket(ftenet_connections_t *col, int length, co
 
 qboolean NET_DTLS_Decode(ftenet_connections_t *col)
 {
+	extern cvar_t timeout;
 	struct dtlspeer_s *peer;
 	for (peer = col->dtls; peer; peer = peer->next)
 	{
 		if (NET_CompareAdr(&peer->addr, &net_from))
 		{
+			peer->timeout = realtime+timeout.value;	//refresh the timeout if our peer is still alive.
 			switch(peer->funcs->Received(peer->dtlsstate, net_message.data, net_message.cursize))
 			{
 			case NETERR_DISCONNECTED:
@@ -2432,6 +2715,37 @@ qboolean NET_DTLS_Decode(ftenet_connections_t *col)
 #endif
 
 
+size_t NET_GetConnectionCertificate(struct ftenet_connections_s *col, netadr_t *a, enum certprops_e prop, char *out, size_t outsize)
+{
+	if (!col)
+		return 0;
+
+	switch(prop)
+	{
+	default:
+		break;
+	case QCERT_PEERFINGERPRINT:
+#if 0//def HAVE_DTLS
+		if (a->prot == NP_DTLS)
+		{
+			struct dtlspeer_s *peer;
+			{
+				a->prot = NP_DGRAM;
+				for (peer = col->dtls; peer; peer = peer->next)
+				{
+					if (NET_CompareAdr(&peer->addr, a))
+						break;
+				}
+				a->prot = NP_DTLS;
+			}
+			if (peer)
+				return peer->funcs->GetPeerCertificate(peer->dtlsstate, data, length);
+		}
+#endif
+		return 0;
+	}
+	return 0;
+}
 
 
 
@@ -2532,8 +2846,16 @@ qboolean FTENET_AddToCollection(ftenet_connections_t *col, const char *name, con
 #ifdef HAVE_IPV6
 		if ((adr[i].prot == NP_DGRAM) && adr[i].type == NA_IPV6)	establish[i] = FTENET_Datagram_EstablishConnection;	else
 #endif
-#ifdef USEIPX
+#ifdef HAVE_IPX
 		if (adr[i].prot == NP_DGRAM && adr[i].type == NA_IPX)	establish[i] = FTENET_Datagram_EstablishConnection;	else
+#endif
+#ifdef UNIXSOCKETS
+		if (adr[i].prot == NP_DGRAM && adr[i].type == NA_UNIX)	establish[i] = FTENET_Datagram_EstablishConnection;	else
+	#if defined(TCPCONNECT)
+		if (adr[i].prot == NP_STREAM&& adr[i].type == NA_UNIX)	establish[i] = FTENET_TCPConnect_EstablishConnection;	else
+		if (adr[i].prot == NP_WS    && adr[i].type == NA_UNIX)	establish[i] = FTENET_TCPConnect_EstablishConnection;	else
+		if (adr[i].prot == NP_TLS    && adr[i].type == NA_UNIX)	establish[i] = FTENET_TCPConnect_EstablishConnection;	else
+	#endif
 #endif
 #if defined(TCPCONNECT) && defined(HAVE_IPV4)
 		if (adr[i].prot == NP_WS	&& adr[i].type == NA_IP)	establish[i] = FTENET_TCPConnect_EstablishConnection;	else
@@ -2606,7 +2928,7 @@ int FTENET_GetLocalAddress(int port, qboolean ipx, qboolean ipv4, qboolean ipv6,
 	int found = 0;
 
 	gethostname(adrs, sizeof(adrs));
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 	if (pgetaddrinfo)
 	{
 		struct addrinfo hints, *result, *itr;
@@ -2622,13 +2944,13 @@ int FTENET_GetLocalAddress(int port, qboolean ipx, qboolean ipv4, qboolean ipv6,
 			{
 				if ((itr->ai_addr->sa_family == AF_INET && ipv4)
 					|| (itr->ai_addr->sa_family == AF_INET6 && ipv6)
-#ifdef USEIPX
+#ifdef HAVE_IPX
 					|| (itr->ai_addr->sa_family == AF_IPX && ipx)
 #endif
 					)
 				if (maxaddresses)
 				{
-					SockadrToNetadr((struct sockaddr_qstorage*)itr->ai_addr, addresses);
+					SockadrToNetadr((struct sockaddr_qstorage*)itr->ai_addr, sizeof(struct sockaddr_qstorage), addresses);
 					addresses->port = port;
 					*adrflags++ = 0;
 					addresses++;
@@ -2673,7 +2995,7 @@ int FTENET_GetLocalAddress(int port, qboolean ipx, qboolean ipv4, qboolean ipv6,
 				from.sin_family = AF_INET;
 				from.sin_port = port;
 				memcpy(&from.sin_addr, h->h_addr_list[b], sizeof(from.sin_addr));
-				SockadrToNetadr((struct sockaddr_qstorage*)&from, addresses);
+				SockadrToNetadr((struct sockaddr_qstorage*)&from, sizeof(from), addresses);
 
 				*adrflags++ = 0;
 				addresses++;
@@ -2682,7 +3004,7 @@ int FTENET_GetLocalAddress(int port, qboolean ipx, qboolean ipv4, qboolean ipv6,
 			}
 		}
 #endif
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 		if(h && h->h_addrtype == AF_INET6)
 		{
 			for (b = 0; h->h_addr_list[b] && maxaddresses; b++)
@@ -2692,7 +3014,7 @@ int FTENET_GetLocalAddress(int port, qboolean ipx, qboolean ipv4, qboolean ipv6,
 				from.sin6_port = port;
 				from.sin6_scope_id = 0;
 				memcpy(&from.sin6_addr, h->h_addr_list[b], sizeof(((struct sockaddr_in6*)&from)->sin6_addr));
-				SockadrToNetadr((struct sockaddr_qstorage*)&from, addresses);
+				SockadrToNetadr((struct sockaddr_qstorage*)&from, sizeof(from), addresses);
 				*adrflags++ = 0;
 				addresses++;
 				maxaddresses--;
@@ -2742,15 +3064,15 @@ int FTENET_GetLocalAddress(int port, qboolean ipx, qboolean ipv4, qboolean ipv6,
 #ifdef HAVE_IPV4
 			(fam == AF_INET && ipv4) ||
 #endif
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 			(fam == AF_INET6 && ipv6) ||
 #endif
-#ifdef USEIPX
+#ifdef HAVE_IPX
 			(fam == AF_IPX && ipx) ||
 #endif
 			0)
 		{
-			SockadrToNetadr((struct sockaddr_qstorage*)ifa->ifa_addr, &addresses[idx]);
+			SockadrToNetadr((struct sockaddr_qstorage*)ifa->ifa_addr, sizeof(struct sockaddr_qstorage), &addresses[idx]);
 			addresses[idx].port = port;
 			adrflags[idx] = 0;
 			idx++;
@@ -2778,7 +3100,7 @@ int FTENET_Generic_GetLocalAddresses(struct ftenet_generic_connection_s *con, un
 	if (getsockname (con->thesocket, (struct sockaddr*)&from, &fromsize) != -1)
 	{
 		memset(&adr, 0, sizeof(adr));
-		SockadrToNetadr(&from, &adr);
+		SockadrToNetadr(&from, fromsize, &adr);
 
 #ifdef USE_GETHOSTNAME_LOCALLISTING
 		//if its bound to 'any' address, ask the system what addresses it actually accepts.
@@ -2786,7 +3108,7 @@ int FTENET_Generic_GetLocalAddresses(struct ftenet_generic_connection_s *con, un
 			!*(int*)&adr.address.ip6[0] &&
 			!*(int*)&adr.address.ip6[4] &&
 			!*(short*)&adr.address.ip6[8] &&
-			*(short*)&adr.address.ip6[10]==(short)0xffff && 
+			*(short*)&adr.address.ip6[10]==(short)0xffff &&
 			!*(int*)&adr.address.ip6[12])
 		{
 			//ipv6 socket bound to the ipv4-any address is a bit weird, but oh well.
@@ -2889,7 +3211,7 @@ qboolean FTENET_Datagram_GetPacket(ftenet_generic_connection_t *con)
 			unsigned int curtime = Sys_Milliseconds();
 			if (curtime-resettime >= 5000)	//throttle prints to once per 5 secs (even if they're about different clients, yay ddos)
 			{
-				SockadrToNetadr (&from, &net_from);
+				SockadrToNetadr (&from, fromlen, &net_from);
 				Con_TPrintf ("Warning:  Oversize packet from %s\n",
 				NET_AdrToString (adr, sizeof(adr), &net_from));
 			}
@@ -2903,7 +3225,7 @@ qboolean FTENET_Datagram_GetPacket(ftenet_generic_connection_t *con)
 			{
 				if (((struct sockaddr*)&from)->sa_family != AF_UNSPEC)
 				{
-					SockadrToNetadr (&from, &net_from);
+					SockadrToNetadr (&from, fromlen, &net_from);
 					Con_TPrintf ("Connection lost or aborted (%s)\n", NET_AdrToString (adr, sizeof(adr), &net_from));	//server died/connection lost.
 				}
 				else
@@ -2930,7 +3252,14 @@ qboolean FTENET_Datagram_GetPacket(ftenet_generic_connection_t *con)
 			Con_Printf ("NET_GetPacket: Error (%i): %s\n", err, strerror(err));
 		return false;
 	}
-	SockadrToNetadr (&from, &net_from);
+
+	SockadrToNetadr (&from, fromlen, &net_from);
+
+	if (net_from.type == NA_INVALID)
+	{	//this really shouldn't happen. Blame the OS.
+		Con_TPrintf ("Warning: sender's address type not known (%i)\n", (int)((struct sockaddr*)&from)->sa_family);
+		return false;	//packet from an unsupported protocol? no way can we respond, so what's the point
+	}
 
 	net_message.packing = SZ_RAWBYTES;
 	net_message.currentbit = 0;
@@ -2963,7 +3292,7 @@ neterr_t FTENET_Datagram_SendPacket(ftenet_generic_connection_t *con, int length
 	if (size == FTENET_ADDRTYPES)
 		return NETERR_NOROUTE;
 
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 	/*special code to handle sending to hybrid sockets*/
 	if (con->addrtype[1] == NA_IPV6 && to->type == NA_IP)
 	{
@@ -2983,6 +3312,7 @@ neterr_t FTENET_Datagram_SendPacket(ftenet_generic_connection_t *con, int length
 	ret = sendto (con->thesocket, data, length, 0, (struct sockaddr*)&addr, size );
 	if (ret == -1)
 	{
+		const char *prot;
 		int ecode = neterrno();
 // wouldblock is silent
 		if (ecode == NET_EWOULDBLOCK)
@@ -3000,15 +3330,25 @@ neterr_t FTENET_Datagram_SendPacket(ftenet_generic_connection_t *con, int length
 			return NETERR_DISCONNECTED;
 		}
 
+		//network is unreachable scares the socks off people when IPv6 is non-functional despite ipv4 working fine.
+		//name the problem protocol in the error message.
+		switch(to->type)
+		{
+		case NA_IP: prot = "IPv4"; break;
+		case NA_IPV6: prot = "IPv6"; break;
+		case NA_IPX: prot = "IPX"; break;
+		default: prot = ""; break;
+		}
+
 #ifndef SERVERONLY
 		if (ecode == NET_EADDRNOTAVAIL)
-			Con_DPrintf("NET_SendPacket Warning: %i\n", ecode);
+			Con_DPrintf("NET_Send%sPacket Warning: %i\n", prot, ecode);
 		else
 #endif
 #ifdef _WIN32
-			Con_TPrintf ("NET_SendPacket ERROR: %i\n", ecode);
+			Con_TPrintf ("NET_Send%sPacket ERROR: %i\n", prot, ecode);
 #else
-			Con_TPrintf ("NET_SendPacket ERROR: %s\n", strerror(ecode));
+			Con_TPrintf ("NET_Send%sPacket ERROR: %s\n", prot, strerror(ecode));
 #endif
 	}
 	else if (ret < length)
@@ -3048,7 +3388,7 @@ static qboolean FTENET_Datagram_ChangeLocalAddress(struct ftenet_generic_connect
 	int namelen = sizeof(address);
 	if (getsockname (con->thesocket, (struct sockaddr *)&address, &namelen) == 0)
 	{
-		SockadrToNetadr(&address, &current);
+		SockadrToNetadr(&address, namelen, &current);
 
 		//make sure the types match (special check for ipv6 hybrid sockets that accept ipv4 too)
 		if (adr->type == current.type
@@ -3096,7 +3436,7 @@ ftenet_generic_connection_t *FTENET_Datagram_EstablishConnection(qboolean isserv
 		protocol = IPPROTO_UDP;
 		break;
 #endif
-#ifdef USEIPX
+#ifdef HAVE_IPX
 	case NA_IPX:
 		protocol = NSPROTO_IPX;
 		break;
@@ -3105,7 +3445,7 @@ ftenet_generic_connection_t *FTENET_Datagram_EstablishConnection(qboolean isserv
 		protocol = 0;
 		break;
 	}
-	
+
 
 	if (adr.type == NA_INVALID)
 	{
@@ -3115,7 +3455,7 @@ ftenet_generic_connection_t *FTENET_Datagram_EstablishConnection(qboolean isserv
 	temp = NetadrToSockadr(&adr, &qs);
 	family = ((struct sockaddr*)&qs)->sa_family;
 
-#if defined(IPPROTO_IPV6) && defined(IPV6_V6ONLY)
+#if defined(HAVE_IPV6) && defined(IPV6_V6ONLY)
 	if (/*isserver &&*/ family == AF_INET && net_hybriddualstack.ival && !((struct sockaddr_in*)&qs)->sin_addr.s_addr)
 	{
 		unsigned long _false = false;
@@ -3160,7 +3500,7 @@ ftenet_generic_connection_t *FTENET_Datagram_EstablishConnection(qboolean isserv
 			return NULL;
 		}
 
-#if defined(IPPROTO_IPV6) && defined(IPV6_V6ONLY)
+#if defined(HAVE_IPV6) && defined(IPV6_V6ONLY)
 	if (family == AF_INET6)
 		setsockopt(newsocket, IPPROTO_IPV6, IPV6_V6ONLY, (char *)&_true, sizeof(_true));
 #endif
@@ -3173,42 +3513,81 @@ ftenet_generic_connection_t *FTENET_Datagram_EstablishConnection(qboolean isserv
 	bufsz = 1<<18;
 	setsockopt(newsocket, SOL_SOCKET, SO_RCVBUF, (void*)&bufsz, sizeof(bufsz));
 
-	//try and find an unused port.
-	port = ntohs(((struct sockaddr_in*)&qs)->sin_port);
-	for (bindtries = 0; bindtries < bindmaxtries; bindtries++)
+	switch(family)
 	{
-		((struct sockaddr_in*)&qs)->sin_port = htons((unsigned short)(port+bindtries));
-		if ((bind(newsocket, (struct sockaddr *)&qs, temp) == INVALID_SOCKET))
+#ifdef UNIXSOCKETS
+	case AF_UNIX:
 		{
-			if (port == 0)
-			{	//if binding to an ephemerial port failed, binding to the admin-only ports won't work any better...
-				bindtries = bindmaxtries;
-				break;
+			struct sockaddr_un *sa = (struct sockaddr_un *)&qs;
+			if (!isserver)
+				temp = (char*)&sa->sun_path[0] - (char*)sa;	//linux-specific: bind to an automatic abstract address.
+			if (*sa->sun_path && isserver)
+			{	//non-abstract sockets don't clean up the filesystem when the socket is closed
+				//and we can't re-bind to it while it still exists.
+				//so standard practise is to delete it before the bind.
+				//we do want to make sure the file is actually a socket before we remove it (so people can't abuse stuffcmds)
+				struct stat s;
+				if (stat(sa->sun_path, &s)!=-1)
+				{
+					if ((s.st_mode & S_IFMT) == S_IFSOCK)
+						unlink(sa->sun_path);
+				}
 			}
-			continue;
+			if (bind(newsocket, (struct sockaddr *)sa, temp) == INVALID_SOCKET)
+			{
+//				perror("gah");
+				SockadrToNetadr(&qs, temp, &adr);
+				NET_AdrToString(addrstr, sizeof(addrstr), &adr);
+				Con_Printf(CON_ERROR "Unable to bind to %s\n", addrstr);
+				closesocket(newsocket);
+				return NULL;
+			}
 		}
 		break;
-	}
-	if (bindtries == bindmaxtries)
-	{
-		SockadrToNetadr(&qs, &adr);
-		NET_AdrToString(addrstr, sizeof(addrstr), &adr);
-		Con_Printf(CON_ERROR "Unable to listen at %s\n", addrstr);
-		closesocket(newsocket);
-		return NULL;
-	}
-	else if (bindtries && isserver)
-	{
-		SockadrToNetadr(&qs, &adr);
-		NET_AdrToString(addrstr, sizeof(addrstr), &adr);
-		Con_Printf(CON_ERROR "Unable to bind to port %i, bound to %s instead\n", port, addrstr);
+#endif
+
+//	case AF_INET:
+//	case AF_INET6:
+//	case AF_IPX:
+	default:
+		//try and find an unused port.
+		port = ntohs(((struct sockaddr_in*)&qs)->sin_port);
+		for (bindtries = 0; bindtries < bindmaxtries; bindtries++)
+		{
+			((struct sockaddr_in*)&qs)->sin_port = htons((unsigned short)(port+bindtries));
+			if ((bind(newsocket, (struct sockaddr *)&qs, temp) == INVALID_SOCKET))
+			{
+				if (port == 0)
+				{	//if binding to an ephemerial port failed, binding to the admin-only ports won't work any better...
+					bindtries = bindmaxtries;
+					break;
+				}
+				continue;
+			}
+			break;
+		}
+		if (bindtries == bindmaxtries)
+		{
+			SockadrToNetadr(&qs, temp, &adr);
+			NET_AdrToString(addrstr, sizeof(addrstr), &adr);
+			Con_Printf(CON_ERROR "Unable to listen at %s\n", addrstr);
+			closesocket(newsocket);
+			return NULL;
+		}
+		else if (bindtries && isserver)
+		{
+			SockadrToNetadr(&qs, temp, &adr);
+			NET_AdrToString(addrstr, sizeof(addrstr), &adr);
+			Con_Printf(CON_ERROR "Unable to bind to port %i, bound to %s instead\n", port, addrstr);
+		}
+		break;
 	}
 
 	if (ioctlsocket (newsocket, FIONBIO, &_true) == -1)
 		Sys_Error ("UDP_OpenSocket: ioctl FIONBIO: %s", strerror(neterrno()));
 
 	//ipv6 sockets need to add themselves to a multicast group, so that we can receive broadcasts on a lan
-#if defined(IPPROTO_IPV6)
+#if defined(HAVE_IPV6)
 	if (family == AF_INET6 || hybrid || isserver)
 	{
 		struct ipv6_mreq req;
@@ -3296,7 +3675,9 @@ typedef struct ftenet_tcpconnect_stream_s {
 	{
 		qboolean connection_close;
 	} httpstate;
+#ifdef MVD_RECORDING
 	qtvpendingstate_t qtvstate;
+#endif
 	struct
 	{
 		char resource[32];
@@ -3464,8 +3845,8 @@ qboolean FTENET_TCPConnect_HTTPResponse(ftenet_tcpconnect_stream_t *st, httparg_
 	char adr[256];
 	int i;
 	const char *filetype = NULL;
-	char *resp = NULL;	//response headers (no length/gap)
-	char *body = NULL;	//response body
+	const char *resp = NULL;	//response headers (no length/gap)
+	const char *body = NULL;	//response body
 	int method;
 	if (!strcmp(arg[WCATTR_METHOD], "GET"))
 		method = 0;
@@ -3478,15 +3859,14 @@ qboolean FTENET_TCPConnect_HTTPResponse(ftenet_tcpconnect_stream_t *st, httparg_
 		body = NULL;
 	}
 
-	//FIXME: demonum/
-
 	st->dlfile = NULL;
 	if (!resp && *arg[WCATTR_URL] == '/')
 	{	//'can't use SV_LocateDownload, as that assumes an active client.
-		char *name = arg[WCATTR_URL]+1;
+		const char *name = arg[WCATTR_URL]+1;
 		char *extraheaders = "";
 		time_t modificationtime = 0;
 		char *query = strchr(arg[WCATTR_URL]+1, '?');
+		func_t func = 0;
 		if (query)
 			*query++ = 0;
 
@@ -3495,33 +3875,35 @@ qboolean FTENET_TCPConnect_HTTPResponse(ftenet_tcpconnect_stream_t *st, httparg_
 		if (!*name)
 			name = "index.html";
 
+		if (sv.state && svs.gametype == GT_PROGS && svprogfuncs)
+			func = svprogfuncs->FindFunction(svprogfuncs, "HTTP_GeneratePage", PR_ANY);
+
+		if (func)
+		{
+			void *pr_globals = PR_globals(svprogfuncs, PR_CURRENT);
+			((string_t *)pr_globals)[OFS_PARM0] = svprogfuncs->TempString(svprogfuncs, query?va("%s?%s", name, query):name);
+			((string_t *)pr_globals)[OFS_PARM1] = svprogfuncs->TempString(svprogfuncs, arg[WCATTR_METHOD]);
+			((string_t *)pr_globals)[OFS_PARM2] = 0;	//we don't support any postdata at this time.
+			((string_t *)pr_globals)[OFS_PARM3] = 0;	//we don't support any request headers at this time.
+			((string_t *)pr_globals)[OFS_PARM4] = 0;	//we don't have any default response headers yet.
+			((string_t *)pr_globals)[OFS_PARM5] = 0;
+			((string_t *)pr_globals)[OFS_PARM6] = 0;
+			((string_t *)pr_globals)[OFS_PARM7] = 0;
+			svprogfuncs->ExecuteProgram(svprogfuncs, func);
+
+			if (((string_t *)pr_globals)[OFS_RETURN])
+			{	//note that "" is not null
+				body = svprogfuncs->StringToNative(svprogfuncs, ((string_t *)pr_globals)[OFS_RETURN]);
+				resp = svprogfuncs->StringToNative(svprogfuncs, ((string_t *)pr_globals)[OFS_PARM4]);
+				resp = va("%s%s", *body?"HTTP/1.1 200 Ok\r\n":"HTTP/1.1 404 File Not Found\r\n", resp);
+			}
+		}
+
 		//FIXME: provide some resource->filename mapping that allows various misc files.
 
-		/*if (!strcmp(name, "live.html"))
-		{
-			resp = "HTTP/1.1 200 Ok\r\n"
-				"Content-Type: text/html\r\n";
-			body =
-				"<!DOCTYPE HTML>"
-				"<html>"
-				"<style>"
-				"html, body { height: 100%%; width: 100%%; margin: 0; padding: 0;}"
-				"div { height: 100%%; width: 100%%; }"
-				"</style>"
-				"<div>"
-				"<object	name=\"ieplug\" type=\"application/x-fteplugin\" classid=\"clsid:7d676c9f-fb84-40b6-b3ff-e10831557eeb\" width=\"100%%\" height=\"100%%\">"
-					"<param name=\"game\" value=\"q1\">"
-					"<object	name=\"npplug\" type=\"application/x-fteplugin\" width=\"100%%\" height=\"100%%\">"
-						"<param name=\"game\" value=\"q1\">"
-						"Please install a plugin first.<br/>"
-					"</object>"
-				"</object>"
-				"</div>"
-				"</html>"
-				;
-		}
-		else */
-			if (!strcmp(name, "index.html"))
+		if (body)
+			;
+		else if (!strcmp(name, "index.html"))
 		{
 			resp = "HTTP/1.1 200 Ok\r\n"
 				"Content-Type: text/html\r\n";
@@ -3625,6 +4007,7 @@ qboolean FTENET_TCPConnect_HTTPResponse(ftenet_tcpconnect_stream_t *st, httparg_
 					"Content-Type: application/x-ftemanifest\r\n";
 			body = NULL;
 		}*/
+#ifdef MVD_RECORDING
 		else if (!Q_strncasecmp(name, "demolist", 8))
 		{
 			filetype = "text/html";
@@ -3645,6 +4028,7 @@ qboolean FTENET_TCPConnect_HTTPResponse(ftenet_tcpconnect_stream_t *st, httparg_
 				body = NULL;
 			}
 		}
+#endif
 		else if (!SV_AllowDownload(name))
 		{
 			Con_Printf("Denied download of %s to %s\n", arg[WCATTR_URL], NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
@@ -3669,9 +4053,10 @@ qboolean FTENET_TCPConnect_HTTPResponse(ftenet_tcpconnect_stream_t *st, httparg_
 		{
 			flocation_t gzloc;
 			flocation_t rawloc;
-			extern cvar_t sv_demoDir;
+#ifdef MVD_RECORDING
 			if (!Q_strncasecmp(name, "demos/", 6))
 				name = va("%s/%s", sv_demoDir.string, name+6);
+#endif
 
 			if (FS_FLocateFile(name, FSLF_IFFOUND, &rawloc))
 			{
@@ -3999,12 +4384,12 @@ qboolean FTENET_TCP_ParseHTTPRequest(ftenet_tcpconnect_connection_t *con, ftenet
 				attr = WCATTR_WSKEY;
 			else if (j-i == 21 && !strnicmp(&st->inbuffer[i], "Sec-WebSocket-Version", 21))
 				attr = WCATTR_WSVER;
-//					else if (j-i == 6 && !strnicmp(&st->inbuffer[i], "Origin", j-i))
-//						attr = WCATTR_ORIGIN;
+//			else if (j-i == 6 && !strnicmp(&st->inbuffer[i], "Origin", j-i))
+//				attr = WCATTR_ORIGIN;
 			else if (j-i == 22 && !strnicmp(&st->inbuffer[i], "Sec-WebSocket-Protocol", 22))
 				attr = WCATTR_WSPROTO;
-//					else if (j-i == 24 && !strnicmp(&st->inbuffer[i], "Sec-WebSocket-Extensions", 24))
-//						attr = WCATTR_WSEXT;
+//			else if (j-i == 24 && !strnicmp(&st->inbuffer[i], "Sec-WebSocket-Extensions", 24))
+//				attr = WCATTR_WSEXT;
 			//http stuff
 			else if (j-i == 14 && !strnicmp(&st->inbuffer[i], "Content-Length", 14))
 				attr = WCATTR_CONTENT_LENGTH;	//in case they're trying to post/put stuff
@@ -4050,7 +4435,7 @@ qboolean FTENET_TCP_ParseHTTPRequest(ftenet_tcpconnect_connection_t *con, ftenet
 							}
 							else if (j+4 <= i && !strncmp(&st->inbuffer[j], "gzip", 4) && (j+4==i || st->inbuffer[j+4] == ';' || st->inbuffer[j+4] == ','))
 								acceptsgzip = true;
-							
+
 							while (j < i && st->inbuffer[j] != ',')
 								j++;
 							if (j < i && st->inbuffer[j] == ',')
@@ -4473,6 +4858,7 @@ closesvstream:
 
 				if (headerscomplete)
 				{
+#ifdef MVD_RECORDING
 					//for QTV connections, we just need the method and a blank line. our qtv parser will parse the actual headers.
 					if (!Q_strncasecmp(st->inbuffer, "QTV", 3))
 					{
@@ -4492,6 +4878,7 @@ closesvstream:
 						}
 					}
 					else
+#endif
 					{
 						net_message.cursize = 0;
 						if (!FTENET_TCP_ParseHTTPRequest(con, st))
@@ -4585,7 +4972,7 @@ closesvstream:
 				if (ctrl & 0x7000)
 				{
 					Con_Printf ("%s: reserved bits set\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
-					goto closesvstream; 
+					goto closesvstream;
 				}
 				if ((ctrl & 0x7f) == 127)
 				{
@@ -4594,13 +4981,13 @@ closesvstream:
 					if (sizeof(ullpaylen) < 8)
 					{
 						Con_Printf ("%s: payload frame too large\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
-						goto closesvstream; 
+						goto closesvstream;
 					}
 					else
 					{
 						if (payoffs + 8 > st->inlen)
 							break;
-						ullpaylen = 
+						ullpaylen =
 							(quint64_t)((unsigned char*)st->inbuffer)[payoffs+0]<<56u |
 							(quint64_t)((unsigned char*)st->inbuffer)[payoffs+1]<<48u |
 							(quint64_t)((unsigned char*)st->inbuffer)[payoffs+2]<<40u |
@@ -4612,12 +4999,12 @@ closesvstream:
 						if (ullpaylen < 0x10000)
 						{
 							Con_Printf ("%s: payload size (%"PRIu64") encoded badly\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr), ullpaylen);
-							goto closesvstream; 
+							goto closesvstream;
 						}
 						if (ullpaylen > 0x40000)
 						{
 							Con_Printf ("%s: payload size (%"PRIu64") is abusive\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr), ullpaylen);
-							goto closesvstream; 
+							goto closesvstream;
 						}
 						paylen = ullpaylen;
 						payoffs += 8;
@@ -4627,13 +5014,13 @@ closesvstream:
 				{
 					if (payoffs + 2 > st->inlen)
 						break;
-					paylen = 
+					paylen =
 						((unsigned char*)st->inbuffer)[payoffs+0]<<8 |
 						((unsigned char*)st->inbuffer)[payoffs+1]<<0;
 					if (paylen < 126)
 					{
 						Con_Printf ("%s: payload size encoded badly\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
-						goto closesvstream; 
+						goto closesvstream;
 					}
 					payoffs += 2;
 				}
@@ -4823,7 +5210,7 @@ closesvstream:
 			con->active++;
 			st = Z_Malloc(sizeof(*con->tcpstreams));
 			/*grab the net address*/
-			SockadrToNetadr(&from, &st->remoteaddr);
+			SockadrToNetadr(&from, fromlen, &st->remoteaddr);
 			st->clienttype = TCPC_UNKNOWN;
 			st->next = con->tcpstreams;
 			con->tcpstreams = st;
@@ -4927,7 +5314,7 @@ neterr_t FTENET_TCPConnect_SendPacket(ftenet_generic_connection_t *gcon, int len
 	return NETERR_NOROUTE;
 }
 
-int FTENET_TCPConnect_GetLocalAddresses(struct ftenet_generic_connection_s *gcon, unsigned int *adrflags, netadr_t *addresses, int maxaddresses)
+static int FTENET_TCPConnect_GetLocalAddresses(struct ftenet_generic_connection_s *gcon, unsigned int *adrflags, netadr_t *addresses, int maxaddresses)
 {
 	ftenet_tcpconnect_connection_t *con = (ftenet_tcpconnect_connection_t*)gcon;
 	netproto_t prot = con->tls?NP_TLS:NP_STREAM;
@@ -4939,7 +5326,7 @@ int FTENET_TCPConnect_GetLocalAddresses(struct ftenet_generic_connection_s *gcon
 	return r;
 }
 
-qboolean FTENET_TCPConnect_ChangeLocalAddress(struct ftenet_generic_connection_s *con, netadr_t *adr)
+static qboolean FTENET_TCPConnect_ChangeLocalAddress(struct ftenet_generic_connection_s *con, netadr_t *adr)
 {
 	//if we're a server, we want to try switching listening tcp port without shutting down all other connections.
 	//yes, this might mean we leave a connection active on the old port, but oh well.
@@ -4950,9 +5337,28 @@ qboolean FTENET_TCPConnect_ChangeLocalAddress(struct ftenet_generic_connection_s
 	netadr_t n;
 	SOCKET newsocket;
 	unsigned long _true = true;
+	int sysprot;
 
 	addrsize = NetadrToSockadr(adr, &qs);
 	family = ((struct sockaddr*)&qs)->sa_family;
+
+	switch(adr->type)
+	{
+#if defined(HAVE_IPV4) || defined(HAVE_IPV6)
+	case NA_IP:
+	case NA_IPV6:
+		sysprot = IPPROTO_TCP;
+		break;
+#endif
+#ifdef HAVE_IPX
+	case NA_IPX:
+		sysprot = NSPROTO_IPX;
+		break;
+#endif
+	default:
+		sysprot = 0;
+		break;
+	}
 
 	if (con->thesocket != INVALID_SOCKET)
 	{
@@ -4961,7 +5367,7 @@ qboolean FTENET_TCPConnect_ChangeLocalAddress(struct ftenet_generic_connection_s
 
 		if (addrsize == addrsize2)
 		{
-			SockadrToNetadr(&cur, &n);
+			SockadrToNetadr(&cur, addrsize2, &n);
 			if (NET_CompareAdr(adr, &n))	//the address+port we're trying is already current, apparently.
 				return true;
 		}
@@ -4970,11 +5376,11 @@ qboolean FTENET_TCPConnect_ChangeLocalAddress(struct ftenet_generic_connection_s
 		con->thesocket = INVALID_SOCKET;
 	}
 
-#if defined(IPPROTO_IPV6) && defined(IPV6_V6ONLY)
+#if defined(HAVE_IPV6) && defined(IPV6_V6ONLY)
 	if (family == AF_INET && net_hybriddualstack.ival && !((struct sockaddr_in*)&qs)->sin_addr.s_addr)
 	{	//hybrid sockets pathway takes over when INADDR_ANY
 		unsigned long _false = false;
-		if ((newsocket = socket (AF_INET6, SOCK_STREAM, IPPROTO_TCP)) != INVALID_SOCKET)
+		if ((newsocket = socket (AF_INET6, SOCK_STREAM, sysprot)) != INVALID_SOCKET)
 		{
 			if (0 == setsockopt(newsocket, IPPROTO_IPV6, IPV6_V6ONLY, (char *)&_false, sizeof(_false)))
 			{
@@ -5003,14 +5409,36 @@ qboolean FTENET_TCPConnect_ChangeLocalAddress(struct ftenet_generic_connection_s
 	}
 #endif
 
-	if ((newsocket = socket (family, SOCK_STREAM, IPPROTO_TCP)) != INVALID_SOCKET)
+	if ((newsocket = socket (family, SOCK_STREAM, sysprot)) != INVALID_SOCKET)
 	{
+#ifdef UNIXSOCKETS
+		if (family == AF_UNIX)
+		{
+			struct sockaddr_un *un = (struct sockaddr_un *)&qs;
+			struct stat s;
+			if (*un->sun_path)
+			{	//non-abstract sockets don't clean up the filesystem when the socket is closed
+				//and we can't re-bind to it while it still exists.
+				//so standard practise is to delete it before the bind.
+				//we do want to make sure the file is actually a socket before we remove it (so people can't abuse stuffcmds)
+				if (stat(un->sun_path, &s)!=-1)
+				{
+					if ((s.st_mode & S_IFMT) == S_IFSOCK)
+						unlink(un->sun_path);
+				}
+			}
+		}
+#endif
+
 		if ((bind(newsocket, (struct sockaddr *)&qs, addrsize) != INVALID_SOCKET) &&
 			(listen(newsocket, 2) != INVALID_SOCKET))
 		{
 			if (ioctlsocket (newsocket, FIONBIO, &_true) != -1)
 			{
-				setsockopt(newsocket, IPPROTO_TCP, TCP_NODELAY, (char *)&_true, sizeof(_true));
+#ifdef UNIXSOCKETS
+				if (family != NA_UNIX)
+#endif
+					setsockopt(newsocket, IPPROTO_TCP, TCP_NODELAY, (char *)&_true, sizeof(_true));
 
 				con->thesocket = newsocket;
 				return true;
@@ -5020,7 +5448,7 @@ qboolean FTENET_TCPConnect_ChangeLocalAddress(struct ftenet_generic_connection_s
 	}
 	return false;
 }
-void FTENET_TCPConnect_Close(ftenet_generic_connection_t *gcon)
+static void FTENET_TCPConnect_Close(ftenet_generic_connection_t *gcon)
 {
 	ftenet_tcpconnect_connection_t *con = (ftenet_tcpconnect_connection_t*)gcon;
 	ftenet_tcpconnect_stream_t *st;
@@ -5122,8 +5550,13 @@ ftenet_generic_connection_t *FTENET_TCPConnect_EstablishConnection(qboolean isse
 			return NULL;
 		}
 
-		//this isn't fatal
-		setsockopt(newsocket, IPPROTO_TCP, TCP_NODELAY, (char *)&_true, sizeof(_true));
+#ifdef UNIXSOCKETS
+		if (adr.type != NA_UNIX)
+#endif
+		{
+			//this isn't fatal
+			setsockopt(newsocket, IPPROTO_TCP, TCP_NODELAY, (char *)&_true, sizeof(_true));
+		}
 	}
 
 
@@ -5783,7 +6216,7 @@ typedef struct
 	int datasock;	//only if we're a client
 
 	size_t numclients;
-	struct 
+	struct
 	{
 		netadr_t remoteadr;
 		int datasock;
@@ -6413,7 +6846,7 @@ qboolean NET_UpdateRates(ftenet_connections_t *collection, qboolean inbound, siz
 	int ctime;
 	if (!collection)
 		return false;
-	
+
 	if (inbound)
 	{
 		cls.sockets->bytesin += size;
@@ -6544,7 +6977,7 @@ static neterr_t NET_SendPacketCol (ftenet_connections_t *collection, int length,
 	if (!collection)
 		return NETERR_NOROUTE;
 
-	if (net_fakeloss.value)
+	if (net_fakeloss.value && data)
 	{
 		if (frandom () < net_fakeloss.value)
 		{
@@ -6645,32 +7078,26 @@ neterr_t NET_SendPacket (netsrc_t netsrc, int length, const void *data, netadr_t
 	return NET_SendPacketCol (collection, length, data, to);
 }
 
-qboolean NET_EnsureRoute(ftenet_connections_t *collection, char *routename, char *host)
+qboolean NET_EnsureRoute(ftenet_connections_t *collection, char *routename, char *host, netadr_t *adr)
 {
-	netadr_t adr;
-
-	if (NET_StringToAdr(host, 0, &adr))
+	switch(adr->prot)
 	{
-		switch(adr.prot)
-		{
-		case NP_DTLS:
-#ifdef HAVE_DTLS
-//			if (FTENET_DTLS_Create(collection, &adr) == NETERR_NOROUTE)
-///				return false;
-			break;
-#endif
-		case NP_WS:
-		case NP_WSS:
-		case NP_TLS:
-		case NP_STREAM:
-			if (!FTENET_AddToCollection(collection, routename, host, adr.type, adr.prot))
-				return false;
-			Con_Printf("Establishing connection to %s\n", host);
-			break;
-		default:
-			//not recognised, or not needed
-			break;
-		}
+	case NP_DTLS:
+		break;
+	case NP_DGRAM:
+		if (NET_SendPacketCol(collection, 0, NULL, adr) != NETERR_NOROUTE)
+			return true;
+	case NP_WS:
+	case NP_WSS:
+	case NP_TLS:
+	case NP_STREAM:
+		if (!FTENET_AddToCollection(collection, routename, host, adr->type, adr->prot))
+			return false;
+		Con_Printf("Establishing connection to %s\n", host);
+		break;
+	default:
+		//not recognised, or not needed
+		break;
 	}
 	return true;
 }
@@ -6809,11 +7236,21 @@ void NET_PrintConnectionsStatus(ftenet_connections_t *collection)
 	}
 
 #ifdef HAVE_DTLS
+	if (developer.ival)
 	{
 		struct dtlspeer_s *dtls;
 		char adr[64];
 		for (dtls = collection->dtls; dtls; dtls = dtls->next)
 			Con_Printf("dtls: %s\n", NET_AdrToString(adr, sizeof(adr), &dtls->addr));
+	}
+	else
+	{
+		struct dtlspeer_s *dtls;
+		int c = 0;
+		for (dtls = collection->dtls; dtls; dtls = dtls->next)
+			c++;
+		if (c)
+			Con_Printf("dtls connections : %i\n", c);
 	}
 #endif
 }
@@ -6831,10 +7268,28 @@ int TCP_OpenStream (netadr_t *remoteaddr)
 	struct sockaddr_qstorage qs;
 //	struct sockaddr_qstorage loc;
 	int recvbufsize = (1<<19);//512kb
+	int sysprot;
 
+	switch(remoteaddr->type)
+	{
+#if defined(HAVE_IPV4) || defined(HAVE_IPV6)
+	case NA_IP:
+	case NA_IPV6:
+		sysprot = IPPROTO_TCP;
+		break;
+#endif
+#ifdef HAVE_IPX
+	case NA_IPX:
+		sysprot = NSPROTO_IPX;
+		break;
+#endif
+	default:
+		sysprot = 0;
+		break;
+	}
 	temp = NetadrToSockadr(remoteaddr, &qs);
 
-	if ((newsocket = socket (((struct sockaddr_in*)&qs)->sin_family, SOCK_CLOEXEC|SOCK_STREAM, IPPROTO_TCP)) == INVALID_SOCKET)
+	if ((newsocket = socket (((struct sockaddr_in*)&qs)->sin_family, SOCK_CLOEXEC|SOCK_STREAM, sysprot)) == INVALID_SOCKET)
 		return (int)INVALID_SOCKET;
 
 	setsockopt(newsocket, SOL_SOCKET, SO_RCVBUF, (void*)&recvbufsize, sizeof(recvbufsize));
@@ -6842,9 +7297,20 @@ int TCP_OpenStream (netadr_t *remoteaddr)
 	if (ioctlsocket (newsocket, FIONBIO, &_true) == -1)
 		Sys_Error ("UDP_OpenSocket: ioctl FIONBIO: %s", strerror(neterrno()));
 
-//	memset(&loc, 0, sizeof(loc));
-//	((struct sockaddr*)&loc)->sa_family = ((struct sockaddr*)&loc)->sa_family;
-//	bind(newsocket, (struct sockaddr *)&loc, ((struct sockaddr_in*)&qs)->sin_family == AF_INET?sizeof(struct sockaddr_in):sizeof(struct sockaddr_in6));
+#ifdef UNIXSOCKETS
+	if (remoteaddr->type == AF_UNIX)
+	{	//if its a unix socket, attempt to bind it to an unnamed address. linux should generate an ephemerial abstract address (otherwise the server will see an empty address).
+		struct sockaddr_un un;
+		memset(&un, 0, offsetof(struct sockaddr_un, sun_path));
+		bind(newsocket, &un, offsetof(struct sockaddr_un, sun_path));
+	}
+	else
+#endif
+	{
+//		memset(&loc, 0, sizeof(loc));
+//		((struct sockaddr*)&loc)->sa_family = ((struct sockaddr*)&loc)->sa_family;
+//		bind(newsocket, (struct sockaddr *)&loc, ((struct sockaddr_in*)&qs)->sin_family == AF_INET?sizeof(struct sockaddr_in):sizeof(struct sockaddr_in6));
+	}
 
 	if (connect(newsocket, (struct sockaddr *)&qs, temp) == INVALID_SOCKET)
 	{
@@ -6860,6 +7326,8 @@ int TCP_OpenStream (netadr_t *remoteaddr)
 				else
 					Con_Printf ("TCP_OpenStream: invalid address trying to connect to %s\n", buf);
 			}
+			else if (err == NET_ECONNREFUSED)
+				Con_Printf ("TCP_OpenStream: connection refused (%s)\n", buf);
 			else if (err == NET_EACCES)
 				Con_Printf ("TCP_OpenStream: access denied: check firewall (%s)\n", buf);
 			else
@@ -6998,7 +7466,7 @@ int maxport = port + 100;
 	return newsocket;
 }
 
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 int UDP6_OpenSocket (int port)
 {
 	int err;
@@ -7072,7 +7540,7 @@ void UDP_CloseSocket (int socket)
 
 int IPX_OpenSocket (int port)
 {
-#ifndef USEIPX
+#ifndef HAVE_IPX
 	return 0;
 #else
 	SOCKET					newsocket;
@@ -7115,7 +7583,7 @@ int IPX_OpenSocket (int port)
 
 void IPX_CloseSocket (int socket)
 {
-#ifdef USEIPX
+#ifdef HAVE_IPX
 	closesocket(socket);
 #endif
 }
@@ -7213,11 +7681,11 @@ void NET_GetLocalAddress (int socket, netadr_t *out)
 	if (getsockname (socket, (struct sockaddr *)&address, &namelen) == -1)
 	{
 		notvalid = true;
-		NET_StringToSockaddr2("0.0.0.0", 0, (struct sockaddr_qstorage *)&address, NULL, NULL, 1);
+		NET_StringToSockaddr2("0.0.0.0", 0, NA_INVALID, (struct sockaddr_qstorage *)&address, NULL, NULL, 1);
 //		Sys_Error ("NET_Init: getsockname:", strerror(qerrno));
 	}
 
-	SockadrToNetadr(&address, out);
+	SockadrToNetadr(&address, namelen, out);
 	if (out->type == NA_IP)
 	{
 		if (!*(int*)out->address.ip)	//socket was set to auto
@@ -7344,7 +7812,7 @@ void NET_Init (void)
 	{
 #if defined(_WIN32) && defined(HAVE_PACKET)
 		int		r;
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 		dllfunction_t fncs[] =
 		{
 			{(void**)&pgetaddrinfo, "getaddrinfo"},
@@ -7361,6 +7829,7 @@ void NET_Init (void)
 #endif
 	}
 
+	Cvar_Register(&timeout, "networking");
 	Cvar_Register(&net_hybriddualstack, "networking");
 	Cvar_Register(&net_fakeloss, "networking");
 
@@ -7432,7 +7901,7 @@ void NET_InitClient(qboolean loopbackonly)
 			FTENET_AddToCollection(cls.sockets, "CLUDP6", port, NA_IPV6, NP_DGRAM);
 		#endif
 	}
-#ifdef USEIPX
+#ifdef HAVE_IPX
 	FTENET_AddToCollection(cls.sockets, "CLIPX", port, NA_IPX, NP_DGRAM);
 #endif
 
@@ -7442,7 +7911,7 @@ void NET_InitClient(qboolean loopbackonly)
 
 #ifndef CLIENTONLY
 #ifdef HAVE_IPV4
-void QDECL SV_Tcpport_Callback(struct cvar_s *var, char *oldvalue)
+static void QDECL SV_Tcpport_Callback(struct cvar_s *var, char *oldvalue)
 {
 	if (!strcmp(var->string, "0"))	//qtv_streamport had an old default value of 0. make sure we don't end up listening on random ports.
 		FTENET_AddToCollection(svs.sockets, var->name, "", NA_IP, NP_STREAM);
@@ -7455,36 +7924,43 @@ cvar_t	qtv_streamport	= CVARAFCD(	"qtv_streamport", "",
 									"mvd_streamport", 0, SV_Tcpport_Callback, "Legacy cvar. Use sv_port_tcp instead.");
 #endif
 #endif
-#ifdef IPPROTO_IPV6
-void QDECL SV_Tcpport6_Callback(struct cvar_s *var, char *oldvalue)
+#ifdef HAVE_IPV6
+static void QDECL SV_Tcpport6_Callback(struct cvar_s *var, char *oldvalue)
 {
 	FTENET_AddToCollection(svs.sockets, var->name, var->string, NA_IPV6, NP_STREAM);
 }
 cvar_t	sv_port_tcp6 = CVARC("sv_port_tcp6", "", SV_Tcpport6_Callback);
 #endif
 #ifdef HAVE_IPV4
-void QDECL SV_Port_Callback(struct cvar_s *var, char *oldvalue)
+static void QDECL SV_Port_Callback(struct cvar_s *var, char *oldvalue)
 {
 	FTENET_AddToCollection(svs.sockets, var->name, var->string, NA_IP, NP_DGRAM);
 }
 cvar_t  sv_port_ipv4 = CVARC("sv_port", STRINGIFY(PORT_DEFAULTSERVER), SV_Port_Callback);
 #endif
-#ifdef IPPROTO_IPV6
-void QDECL SV_PortIPv6_Callback(struct cvar_s *var, char *oldvalue)
+#ifdef HAVE_IPV6
+static void QDECL SV_PortIPv6_Callback(struct cvar_s *var, char *oldvalue)
 {
 	FTENET_AddToCollection(svs.sockets, var->name, var->string, NA_IPV6, NP_DGRAM);
 }
 cvar_t  sv_port_ipv6 = CVARCD("sv_port_ipv6", "", SV_PortIPv6_Callback, "Port to use for incoming ipv6 udp connections. Due to hybrid sockets this might not be needed. You can specify an ipv4 address:port for a second ipv4 port if you want.");
 #endif
-#ifdef USEIPX
+#ifdef HAVE_IPX
 void QDECL SV_PortIPX_Callback(struct cvar_s *var, char *oldvalue)
 {
 	FTENET_AddToCollection(svs.sockets, var->name, var->string, NA_IPX, NP_DGRAM);
 }
 cvar_t  sv_port_ipx = CVARC("sv_port_ipx", "", SV_PortIPX_Callback);
 #endif
+#ifdef UNIXSOCKETS
+void QDECL SV_PortUNIX_Callback(struct cvar_s *var, char *oldvalue)
+{
+	FTENET_AddToCollection(svs.sockets, var->name, var->string, NA_UNIX, NP_DGRAM);
+}
+cvar_t  sv_port_unix = CVARC("sv_port_unix", "/tmp/fte.sock", SV_PortUNIX_Callback);
+#endif
 #ifdef HAVE_NATPMP
-void QDECL SV_Port_NatPMP_Callback(struct cvar_s *var, char *oldvalue)
+static void QDECL SV_Port_NatPMP_Callback(struct cvar_s *var, char *oldvalue)
 {
 	FTENET_AddToCollection(svs.sockets, var->name, va("natpmp://%s", var->string), NA_IP, NP_NATPMP);
 }
@@ -7518,15 +7994,15 @@ void SVNET_RegisterCvars(void)
 	qtv_streamport.restriction = RESTRICT_MAX;
 #endif
 #endif
-#if defined(TCPCONNECT) && defined(IPPROTO_IPV6)
+#if defined(TCPCONNECT) && defined(HAVE_IPV6)
 	Cvar_Register (&sv_port_tcp6,	"networking");
 	sv_port_tcp6.restriction = RESTRICT_MAX;
 #endif
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 	Cvar_Register (&sv_port_ipv6,	"networking");
 	sv_port_ipv6.restriction = RESTRICT_MAX;
 #endif
-#ifdef USEIPX
+#ifdef HAVE_IPX
 	Cvar_Register (&sv_port_ipx,	"networking");
 	sv_port_ipx.restriction = RESTRICT_MAX;
 #endif
@@ -7538,12 +8014,17 @@ void SVNET_RegisterCvars(void)
 	Cvar_Register (&sv_port_natpmp,	"networking");
 	sv_port_natpmp.restriction = RESTRICT_MAX;
 #endif
+#ifdef UNIXSOCKETS
+//	Cvar_Register (&sv_port_unix,	"networking");
+#endif
 
 
 #if defined(TCPCONNECT) && !defined(CLIENTONLY)
 	Cvar_Register (&net_enable_qizmo,			"networking");
 	Cvar_Register (&net_enable_qtv,				"networking");
+#if defined(HAVE_SSL)
 	Cvar_Register (&net_enable_tls,				"networking");
+#endif
 	Cvar_Register (&net_enable_http,			"networking");
 	Cvar_Register (&net_enable_websockets,		"networking");
 	Cvar_Register (&net_enable_webrtcbroker,	"networking");
@@ -7561,11 +8042,12 @@ void NET_CloseServer(void)
 
 void NET_InitServer(void)
 {
-	if (sv_listen_nq.value || sv_listen_dp.value || sv_listen_qw.value
+	qboolean singleplayer = (sv.allocated_client_slots == 1) && !isDedicated;
+	if ((sv_listen_nq.value || sv_listen_dp.value || sv_listen_qw.value
 #ifdef QWOVERQ3
 		|| sv_listen_q3.ival
 #endif
-		)
+		) && !singleplayer)
 	{
 		if (!svs.sockets)
 		{
@@ -7581,10 +8063,10 @@ void NET_InitServer(void)
 #ifdef HAVE_IPV4
 		Cvar_ForceCallback(&sv_port_ipv4);
 #endif
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 		Cvar_ForceCallback(&sv_port_ipv6);
 #endif
-#ifdef USEIPX
+#ifdef HAVE_IPX
 		Cvar_ForceCallback(&sv_port_ipx);
 #endif
 #if defined(TCPCONNECT) && defined(HAVE_TCP)
@@ -7592,12 +8074,15 @@ void NET_InitServer(void)
 #ifndef NOLEGACY
 		Cvar_ForceCallback(&qtv_streamport);
 #endif
-#ifdef IPPROTO_IPV6
+#ifdef HAVE_IPV6
 		Cvar_ForceCallback(&sv_port_tcp6);
 #endif
 #endif
 #ifdef HAVE_NATPMP
 		Cvar_ForceCallback(&sv_port_natpmp);
+#endif
+#ifdef UNIXSOCKETS
+//		Cvar_ForceCallback(&sv_port_unix);
 #endif
 #ifdef HAVE_DTLS
 		Cvar_ForceCallback(&net_enable_dtls);
@@ -7661,7 +8146,7 @@ typedef struct {
 	int readbuffered;
 	char peer[1];
 } tcpfile_t;
-void VFSTCP_Error(tcpfile_t *f)
+static void VFSTCP_Error(tcpfile_t *f)
 {
 	if (f->sock != INVALID_SOCKET)
 	{
@@ -7777,13 +8262,15 @@ int QDECL VFSTCP_WriteBytes (struct vfsfile_s *file, const void *buffer, int byt
 
 	if (tf->conpending)
 	{
-		fd_set fd;
+		fd_set fdw, fdx;
 		struct timeval timeout;
 		timeout.tv_sec = 0;
 		timeout.tv_usec = 0;
-		FD_ZERO(&fd);
-		FD_SET(tf->sock, &fd);
-		if (!select((int)tf->sock+1, NULL, &fd, &fd, &timeout))
+		FD_ZERO(&fdw);
+		FD_SET(tf->sock, &fdw);
+		FD_ZERO(&fdx);
+		FD_SET(tf->sock, &fdx);
+		if (!select((int)tf->sock+1, NULL, &fdw, &fdx, &timeout))
 			return 0;
 		tf->conpending = false;
 	}
@@ -7818,16 +8305,16 @@ qboolean QDECL VFSTCP_Seek (struct vfsfile_s *file, qofs_t pos)
 	VFSTCP_Error((tcpfile_t*)file);
 	return false;
 }
-qofs_t QDECL VFSTCP_Tell (struct vfsfile_s *file)
+static qofs_t QDECL VFSTCP_Tell (struct vfsfile_s *file)
 {
 	VFSTCP_Error((tcpfile_t*)file);
 	return 0;
 }
-qofs_t QDECL VFSTCP_GetLen (struct vfsfile_s *file)
+static qofs_t QDECL VFSTCP_GetLen (struct vfsfile_s *file)
 {
 	return 0;
 }
-qboolean QDECL VFSTCP_Close (struct vfsfile_s *file)
+static qboolean QDECL VFSTCP_Close (struct vfsfile_s *file)
 {
 	tcpfile_t *f = (tcpfile_t *)file;
 	qboolean success = f->sock != INVALID_SOCKET;

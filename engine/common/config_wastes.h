@@ -1,80 +1,90 @@
 // The Wastes' config.h
-// We support both GL and D3D9. If Vulkan matures yeahsurewhynot
-// I want to get this mostly running on all systems. 
-// Possibly Xbox. Yes, the original one. Sue me.
+// We support both GL and Vulkan.
+// I want to get this mostly running on all systems post 2000.
 
 //general rebranding
 #define DISTRIBUTION "VTW"
 #define DISTRIBUTIONLONG "Vera Visions"
 #define FULLENGINENAME "The Wastes"
-#define ENGINEWEBSITE "http://www.vera-visions.com/"
+#define ENGINEWEBSITE "https://www.vera-visions.com/"
 #define BRANDING_ICON "wastes.ico"
 
 //filesystem rebranding
 #define GAME_SHORTNAME		"wastes"	//short alphanumeric description
 #define GAME_FULLNAME		FULLENGINENAME 	//full name of the game we're playing
 #define GAME_BASEGAMES		GAME_SHORTNAME	//comma-separate list of basegame strings to use
-#define GAME_PROTOCOL		"FTE-Wastes"	//so other games won't show up in the server browser
-#define GAME_DEFAULTPORT	27500			//FIXME: change me!
+#define GAME_PROTOCOL		"FTE-TW"	//so other games won't show up in the server browser
+#define GAME_DEFAULTPORT	23000	// This is our port. Don't mess with it or use it for any custom games
 //#define GAME_IDENTIFYINGFILES	NULL	//with multiple games, this string-list gives verification that the basedir is actually valid. if null, will just be assumed correct.
 //#define GAME_DOWNLOADSURL	NULL	//url for the package manger to update from
 //#define GAME_DEFAULTCMDS	NULL	//a string containing the things you want to 
 
+// All my fault -eukara
+#define ENGINE_ROUTING
+#undef USE_INTERNAL_BULLET
+#define MENU_NATIVECODE // Will make a debut eventually, hopefully
 
 // What do we use
-//#define D3D9QUAKE
-//#define GLQUAKE
-#undef D3D11QUAKE
-#if defined(WIN32) && !defined(D3D8QUAKE)
-#define D3D8QUAKE
+#ifndef GLQUAKE
+#define GLQUAKE
 #endif
-#undef VKQUAKE
-#undef HEADLESSQUAKE
-#undef WAYLANDQUAKE
 
+#ifndef VKQUAKE
+#define VKQUAKE
+#endif
+
+#define PLUGINS		//support for external plugins (like huds or fancy menus or whatever)
 #define HAVE_PACKET
 #define QUAKETC
 #define AVAIL_OPENAL
 #define AVAIL_ZLIB
 #define AVAIL_OGGVORBIS
+#define IMAGEFMT_PCX
 #define NOMEDIA
 #define CL_MASTER
 #define CSQC_DAT
 #define MENU_DAT
 #define PSET_SCRIPT
 #define VOICECHAT
-#undef RTLIGHTS
+#define RTLIGHTS
 #ifndef MULTITHREAD
 #define MULTITHREAD	//misc basic multithreading - dsound, downloads, basic stuff that's unlikely to have race conditions.
 #endif
-#define LOADERTHREAD	//worker threads for loading misc stuff. falls back on main thread if not supported.
-//#define USEAREAGRID		//world collision optimisation. REQUIRED for performance with xonotic. hopefully it helps a few other mods too.
-
+#define LOADERTHREAD	// worker threads for loading misc stuff. falls back on main thread if not supported.
+#define USEAREAGRID		// world collision optimisation
+#define USERBE
+#define IMAGEFMT_DDS	// .dds files embed mipmaps and texture compression. faster to load.
+#define DECOMPRESS_ETC2
+#define DECOMPRESS_RGTC
+#define DECOMPRESS_S3TC
+#define USE_VORBISFILE
 #define NOBUILTINMENUS
-#define NOLEGACY	//just spike trying to kill off crappy crap...
+#define NOLEGACY //just spike trying to kill off crappy crap...
 #define AVAIL_DINPUT
+
 #ifndef DEBUG
-#define NOQCDESCRIPTIONS 2	//if 2, disables writing fteextensions.qc completely.
+#define NOQCDESCRIPTIONS 2 //if 2, disables writing fteextensions.qc completely.
 #endif
 
-
-//various package formats
+// Various package formats
 #define PACKAGE_PK3
-#undef PACKAGE_Q1PAK	//also q2
-#undef PACKAGE_DOOMWAD	//doom wad support (generates various file names, and adds support for doom's audio, sprites, etc)
-#undef PACKAGE_TEXWAD	//quake's image wad support
+#define PACKAGE_TEXWAD // HL content support, WAD3
+#define PACKAGE_Q1PAK // HL content support, PAK
+#undef PACKAGE_DOOMWAD
+#undef PACKAGE_VPK	//legacy crap
 
-//map formats
-#define Q3BSPS
-#undef Q1BSPS
+// Map formats
+#define Q3BSPS // What we use exclusively
+#define Q1BSPS // HL content support
 #undef Q2BSPS
-#undef RFBSPS	//qfusion's bsp format / jk2o etc.
-#undef TERRAIN
+#undef RFBSPS
+#define TERRAIN
 #undef DOOMWADS
 #undef MAP_PROC
 
-//model formats
+// Model formats
 #define INTERQUAKEMODELS
+#define HALFLIFEMODELS // HL content support
 #undef SPRMODELS
 #undef SP2MODELS
 #undef DSPMODELS
@@ -85,14 +95,17 @@
 #undef ZYMOTICMODELS
 #undef DPMMODELS
 #undef PSKMODELS
-#undef HALFLIFEMODELS
 
 // What do we NOT want to use
-#undef AVAIL_FREETYPE	//for truetype font rendering
+#undef MVD_RECORDING //server can record MVDs.
+#undef D3D9QUAKE
+#undef D3D11QUAKE
+#undef D3D8QUAKE
 #undef AVAIL_WASAPI	//windows advanced sound api
 #undef AVAIL_DSOUND
-#undef AVAIL_BOTLIB	//q3 botlib
+#undef BOTLIB_STATIC	//q3 botlib
 #undef AVAIL_XZDEC	//.xz decompression
+#undef AVAIL_SPEEX	//.xz decompression
 #undef AVAIL_GZDEC	//.gz decompression
 #undef AVAIL_DZIP	//.dzip special-case archive support
 #undef AVAIL_PNGLIB	//.png image format support (read+screenshots)
@@ -100,11 +113,10 @@
 #undef AVAIL_MP3_ACM	//.mp3 support (in windows).
 #undef IMAGEFMT_KTX
 #undef IMAGEFMT_PKM
-#undef IMAGEFMT_DDS	//.dds files embed mipmaps and texture compression. faster to load.
 #undef IMAGEFMT_BLP	//legacy crap
-#undef DECOMPRESS_ETC2
-#undef DECOMPRESS_RGTC
-#undef DECOMPRESS_S3TC
+#undef IMAGEFMT_VTF	//legacy crap
+#define IMAGEFMT_BMP	//legacy crap
+//#undef IMAGEFMT_PCX	//legacy crap
 #undef NETPREPARSE	//allows for running both nq+qw on the same server (if not, protocol used must match gamecode).
 #undef USE_SQLITE	//sql-database-as-file support
 #undef QUAKESTATS	//defines STAT_HEALTH etc. if omitted, you'll need to provide that functionality yourself.
@@ -128,7 +140,6 @@
 #undef TEXTEDITOR	//my funky text editor! its awesome!
 #undef TCPCONNECT	//support for playing over tcp sockets, instead of just udp. compatible with qizmo.
 #undef IRCCONNECT	//lame support for routing game packets via irc server. not a good idea.
-#undef PLUGINS		//support for external plugins (like huds or fancy menus or whatever)
 #undef SUPPORT_ICE	//Internet Connectivity Establishment, for use by plugins to establish voice or game connections.
 #undef PSET_CLASSIC	//support the 'classic' particle system, for that classic quake feel.
 #undef HAVE_CDPLAYER	//includes cd playback. actual cds. named/numbered tracks are supported regardless (though you need to use the 'music' command to play them without this).
@@ -150,6 +161,12 @@
 #undef HAVE_MEDIA_DECODER	//can play cin/roq, more with plugins
 #undef HAVE_MEDIA_ENCODER	//capture/capturedemo work.
 #undef HAVE_SPEECHTOTEXT	//windows speech-to-text thing
+//#define SAVEDGAMES			//Can save the game.
+#undef PACKAGEMANAGER			//Allows the user to enable/disable/download packages and plugins.
+#undef HEADLESSQUAKE
+#undef WAYLANDQUAKE
+#undef AVAIL_FREETYPE	// for truetype font rendering
+#undef SERVER_DEMO_PLAYBACK	//outdated crap
 
 #ifdef COMPILE_OPTS
 //things to configure qclib, which annoyingly doesn't include this file itself
@@ -159,12 +176,16 @@
 -DNO_ZLIB	//disable zlib
 #endif
 
+#ifdef USE_INTERNAL_BULLET	//makefile will respond to this by trying to link bullet into the engine itself, instead of as a plugin.
+-DLINK_INTERNAL_BULLET
+#endif
 
 -DNO_SPEEX	//disable static speex
-#ifndef AVAIL_BOTLIB
+#ifndef BOTLIB_STATIC
 -DNO_BOTLIB	//disable static botlib
 #endif
--DNO_VORBISFILE	//disable static vorbisfile
 
--Os		//optimise for size instead of speed. less cpu cache needed means that its sometimes faster anyway.
+-DLIBVORBISFILE_STATIC
+
+//-Os //optimise for size instead of speed. less cpu cache needed means that its sometimes faster anyway.
 #endif

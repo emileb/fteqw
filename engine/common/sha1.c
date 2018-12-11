@@ -16,7 +16,7 @@ This file came to FTE via EzQuake.
 
 /* #define SHA1HANDSOFF * Copies data before messing with it. */
 #define SHA1HANDSOFF
-//#include "quakedef.h"
+#include "quakedef.h"
 #include <string.h>
 
 #define BigLong(l)  (((unsigned char*)&l)[0]<<24) | (((unsigned char*)&l)[1]<<16) | (((unsigned char*)&l)[2]<<8) | (((unsigned char*)&l)[3]<<0)
@@ -240,8 +240,10 @@ static void memxor(char *dest, const char *src, size_t length)
 	}
 }
 
-typedef size_t hashfunc_t(unsigned char *digest, size_t maxdigestsize, size_t numstrings, const unsigned char **strings, size_t *stringlens);
+
+//typedef size_t hashfunc_t(unsigned char *digest, size_t maxdigestsize, size_t numstrings, const unsigned char **strings, size_t *stringlens);
 size_t HMAC_fte(hashfunc_t *hashfunc, unsigned char *digest, size_t maxdigestsize,
+
 				 const unsigned char *data, size_t datalen,
 				 const unsigned char *key, size_t keylen)
 {

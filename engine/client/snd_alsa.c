@@ -29,10 +29,11 @@
 //I guess noone can be arsed to write it themselves. :/
 //
 //This file is otherwise known as 'will the linux jokers please stop fucking over the open sound system please'
-
+#ifndef NO_ALSA
 #include <alsa/asoundlib.h>
 
 #include "quakedef.h"
+#ifdef HAVE_MIXER
 #include <dlfcn.h>
 
 static void *alsasharedobject;
@@ -204,6 +205,10 @@ static qboolean Alsa_InitAlsa(void)
 	if (tried)
 		return alsaworks;
 	tried = true;
+
+	//pulseaudio's wrapper library fucks with alsa in bad ways, making it unusable on some systems.
+	if (COM_CheckParm("-noalsa"))
+		return false;
 
 	// Try alternative names of libasound, sometimes it is not linked correctly.
 	alsasharedobject = dlopen("libasound.so.2", RTLD_LAZY|RTLD_LOCAL);
@@ -584,3 +589,5 @@ sounddriver_t ALSA_Output =
 	ALSA_InitCard,
 	ALSA_Enumerate
 };
+#endif
+#endif

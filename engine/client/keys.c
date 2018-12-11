@@ -455,7 +455,7 @@ void Key_UpdateCompletionDesc(void)
 	}
 }
 
-void CompleteCommand (qboolean force)
+void CompleteCommand (qboolean force, int direction)
 {
 	const char	*cmd, *s;
 	const char *desc;
@@ -535,11 +535,13 @@ void CompleteCommand (qboolean force)
 		}
 	}
 
-	con_commandmatch++;
+	con_commandmatch += direction;
+	if (con_commandmatch <= 0)
+		con_commandmatch += c->num;
 	Key_UpdateCompletionDesc();
 }
 
-int Con_Navigate(console_t *con, char *line)
+int Con_Navigate(console_t *con, const char *line)
 {
 	if (con->backshader)
 	{
@@ -556,7 +558,7 @@ int Con_Navigate(console_t *con, char *line)
 }
 
 //lines typed at the main console enter here
-int Con_ExecuteLine(console_t *con, char *line)
+int Con_ExecuteLine(console_t *con, const char *line)
 {
 	qboolean waschat = false;
 	char *deutf8 = NULL;
@@ -596,7 +598,7 @@ int Con_ExecuteLine(console_t *con, char *line)
 		Cbuf_AddText (line, RESTRICT_LOCAL);
 	else
 	{
-		char *exec = NULL;
+		const char *exec = NULL;
 		if (line[0] == '\\' || line[0] == '/')
 			exec = line+1;	// skip the slash
 		else if (cl_chatmode.value == 2 && Cmd_IsCommand(line))
@@ -669,7 +671,7 @@ qboolean Key_GetConsoleSelectionBox(console_t *con, int *sx, int *sy, int *ex, i
 {
 	*sx = *sy = *ex = *ey = 0;
 
-	if (con->buttonsdown == CB_SCROLL)
+	if (con->buttonsdown == CB_SCROLL || con->buttonsdown == CB_SCROLL_R)
 	{
 		//left-mouse.
 		//scroll the console with the mouse. trigger links on release.
@@ -1041,6 +1043,12 @@ void Key_DefaultLinkClicked(console_t *con, char *text, char *info)
 		return;
 	}
 #endif
+	c = Info_ValueForKey(info, "playaudio");
+	if (*c && !strchr(c, ';') && !strchr(c, '\n'))
+	{
+		Cbuf_AddText(va("\nplay \"%s\"\n", c), RESTRICT_LOCAL);
+		return;
+	}
 	c = Info_ValueForKey(info, "desc");
 	if (*c)
 	{
@@ -1069,6 +1077,53 @@ void Key_DefaultLinkClicked(console_t *con, char *text, char *info)
 	}
 }
 
+void Key_HandleConsoleLink(console_t *con, char *buffer)
+{
+	if (!buffer)
+		return;
+	if (buffer[0] == '^' && buffer[1] == '[')
+	{
+		//looks like it might be a link!
+		char *end = NULL;
+		char *info;
+		for (info = buffer + 2; *info; )
+		{
+			if (info[0] == '^' && info[1] == ']')
+				break; //end of tag, with no actual info, apparently
+			if (*info == '\\')
+				break;
+			else if (info[0] == '^' && info[1] == '^')
+				info+=2;
+			else
+				info++;
+		}
+		for(end = info; *end; )
+		{
+			if (end[0] == '^' && end[1] == ']')
+			{
+				//okay, its a valid link that they clicked
+				*end = 0;
+#ifdef PLUGINS
+				if (!Plug_ConsoleLink(buffer+2, info, con->name))
+#endif
+#ifdef CSQC_DAT
+				if (!CSQC_ConsoleLink(buffer+2, info))
+#endif
+				{
+					Key_DefaultLinkClicked(con, buffer+2, info);
+				}
+
+				break;
+			}
+			if (end[0] == '^' && end[1] == '^')
+				end+=2;
+			else
+				end++;
+		}
+	}
+}
+
+#define Key_IsTouchScreen() false
 void Key_ConsoleRelease(console_t *con, int key, unsigned int unicode)
 {
 	char *buffer;	
@@ -1079,21 +1134,54 @@ void Key_ConsoleRelease(console_t *con, int key, unsigned int unicode)
 	{
 		if (con->selstartline)
 		{
+			if (con->userline)
+			{
+				if (con->flags & CONF_BACKSELECTION)
+				{
+					con->userline = con->selendline;
+					con->useroffset = con->selendoffset;
+				}
+				else
+				{
+					con->userline = con->selstartline;
+					con->useroffset = con->selstartoffset;
+				}
+			}
 			if (con->selstartline == con->selendline && con->selendoffset <= con->selstartoffset+1)
+			{
 				con->flags &= ~CONF_KEEPSELECTION;
+				if (keydown[K_LSHIFT] || keydown[K_RSHIFT])
+					;
+				else
+				{
+					buffer = Con_CopyConsole(con, false, true, false);
+					if (buffer)
+					{
+						Key_HandleConsoleLink(con, buffer);
+						Z_Free(buffer);
+					}
+				}
+			}
 			else
+			{
 				con->flags |= CONF_KEEPSELECTION;
-			con->userline = con->selstartline;
-			con->useroffset = con->selstartoffset;
+
+				buffer = Con_CopyConsole(con, true, false, true);	//don't keep markup if we're copying to the clipboard
+				if (buffer)
+				{
+					Sys_SaveClipboard(CBT_SELECTION,  buffer);
+					Z_Free(buffer);
+				}
+			}
 		}
 		con->buttonsdown = CB_NONE;
 	}
-	if (key == K_MOUSE1 && con->buttonsdown == CB_SCROLL)
+	if ((key == K_MOUSE1 && con->buttonsdown == CB_SCROLL) || (key == K_MOUSE2 && con->buttonsdown == CB_SCROLL_R))
 	{
 		con->buttonsdown = CB_NONE;
 		if (abs(con->mousedown[0] - con->mousecursor[0]) < 5 && abs(con->mousedown[1] - con->mousecursor[1]) < 5)
 		{
-			buffer = Con_CopyConsole(con, false, false);
+			buffer = Con_CopyConsole(con, false, false, false);
 			Con_Footerf(con, false, "");
 			if (!buffer)
 				return;
@@ -1117,48 +1205,7 @@ void Key_ConsoleRelease(console_t *con, int key, unsigned int unicode)
 				Key_ConsoleInsert(buffer);
 			}
 			else
-			{
-				if (buffer[0] == '^' && buffer[1] == '[')
-				{
-					//looks like it might be a link!
-					char *end = NULL;
-					char *info;
-					for (info = buffer + 2; *info; )
-					{
-						if (info[0] == '^' && info[1] == ']')
-							break; //end of tag, with no actual info, apparently
-						if (*info == '\\')
-							break;
-						else if (info[0] == '^' && info[1] == '^')
-							info+=2;
-						else
-							info++;
-					}
-					for(end = info; *end; )
-					{
-						if (end[0] == '^' && end[1] == ']')
-						{
-							//okay, its a valid link that they clicked
-							*end = 0;
-#ifdef PLUGINS
-							if (!Plug_ConsoleLink(buffer+2, info, con->name))
-#endif
-#ifdef CSQC_DAT
-							if (!CSQC_ConsoleLink(buffer+2, info))
-#endif
-							{
-								Key_DefaultLinkClicked(con, buffer+2, info);
-							}
-
-							break;
-						}
-						if (end[0] == '^' && end[1] == '^')
-							end+=2;
-						else
-							end++;
-					}
-				}
-			}
+				Key_HandleConsoleLink(con, buffer);
 			Z_Free(buffer);
 		}
 		else
@@ -1167,10 +1214,10 @@ void Key_ConsoleRelease(console_t *con, int key, unsigned int unicode)
 	if (key == K_MOUSE2 && con->buttonsdown == CB_COPY)
 	{
 		con->buttonsdown = CB_NONE;
-		buffer = Con_CopyConsole(con, true, false);	//don't keep markup if we're copying to the clipboard
+		buffer = Con_CopyConsole(con, true, false, true);	//don't keep markup if we're copying to the clipboard
 		if (!buffer)
 			return;
-		Sys_SaveClipboard(buffer);
+		Sys_SaveClipboard(CBT_CLIPBOARD,  buffer);
 		Z_Free(buffer);
 	}
 	if (con->buttonsdown == CB_CLOSE)
@@ -1195,6 +1242,111 @@ void Key_ConsoleRelease(console_t *con, int key, unsigned int unicode)
 	}
 #endif
 }
+
+const char *Key_Demoji(char *buffer, size_t buffersize, const char *in)
+{
+	static const struct
+	{
+		const char *pattern;
+		const char *repl;
+	} emoji[] =
+	{
+		//https://www.webpagefx.com/tools/emoji-cheat-sheet/
+//		{":)",				"\xE2\x98\xBA"},
+
+#ifdef QUAKEHUD
+		{":sg:",			"\xEE\x84\x82"},
+		{":ssg:",			"\xEE\x84\x83"},
+		{":ng:",			"\xEE\x84\x84"},
+		{":sng:",			"\xEE\x84\x85"},
+		{":gl:",			"\xEE\x84\x86"},
+		{":rl:",			"\xEE\x84\x87"},
+		{":lg:",			"\xEE\x84\x88"},
+
+		{":sg2:",			"\xEE\x84\x92"},
+		{":ssg2:",			"\xEE\x84\x93"},
+		{":ng2:",			"\xEE\x84\x94"},
+		{":sng2:",			"\xEE\x84\x95"},
+		{":gl2:",			"\xEE\x84\x96"},
+		{":rl2:",			"\xEE\x84\x97"},
+		{":lg2:",			"\xEE\x84\x98"},
+
+		{":shells:",		"\xEE\x84\xA0"},
+		{":nails:",			"\xEE\x84\xA1"},
+		{":rocket:",		"\xEE\x84\xA2"},
+		{":cells:",			"\xEE\x84\xA3"},
+		{":ga:",			"\xEE\x84\xA4"},
+		{":ya:",			"\xEE\x84\xA5"},
+		{":ra:",			"\xEE\x84\xA6"},
+
+		{":key1:",			"\xEE\x84\xB0"},
+		{":key2:",			"\xEE\x84\xB1"},
+		{":ring:",			"\xEE\x84\xB2"},
+		{":pent:",			"\xEE\x84\xB3"},
+		{":suit:",			"\xEE\x84\xB4"},
+		{":quad:",			"\xEE\x84\xB5"},
+		{":sigil1:",		"\xEE\x84\xB6"},
+		{":sigil2:",		"\xEE\x84\xB7"},
+		{":sigil3:",		"\xEE\x84\xB8"},
+		{":sigil4:",		"\xEE\x84\xB9"},
+
+		{":face1:",			"\xEE\x85\x80"},
+		{":face_p1:",		"\xEE\x85\x81"},
+		{":face2:",			"\xEE\x85\x82"},
+		{":face_p2:",		"\xEE\x85\x83"},
+		{":face3:",			"\xEE\x85\x84"},
+		{":face_p3:",		"\xEE\x85\x85"},
+		{":face4:",			"\xEE\x85\x86"},
+		{":face_p4:",		"\xEE\x85\x87"},
+		{":face5:",			"\xEE\x85\x88"},
+		{":face_p5:",		"\xEE\x85\x89"},
+		{":face_invis:",	"\xEE\x85\x8A"},
+		{":face_invul2:",	"\xEE\x85\x8B"},
+		{":face_inv2:",		"\xEE\x85\x8C"},
+		{":face_quad:",		"\xEE\x85\x8D"},
+#endif
+	};
+	char *estart = strchr(in, ':');
+	size_t i;
+	char *out = buffer, *outend = buffer+buffersize-1;
+	if (!estart)
+		return in;
+	for(; estart; )
+	{
+		if (out + (estart-in) >= outend)
+			break; //not enough space
+		memcpy(out, in, estart-in);
+		out += estart-in;
+		in = estart;
+
+		for (i = 0; i < countof(emoji); i++)
+		{
+			if (!strncmp(in, emoji[i].pattern, strlen(emoji[i].pattern)))
+				break;	//its this one!
+		}
+		if (i < countof(emoji))
+		{
+			if (out + strlen(emoji[i].repl) >= outend)
+			{
+				in = "";	//no half-emoji
+				break;
+			}
+			in += strlen(emoji[i].pattern);
+			memcpy(out, emoji[i].repl, strlen(emoji[i].repl));
+			out += strlen(emoji[i].repl);
+			estart = strchr(in, ':');
+		}
+		else
+		{
+			estart = strchr(in+1, ':');
+		}
+	}
+	while (*in && out < outend)
+		*out++ = *in++;
+	*out = 0;
+	return buffer;
+}
+
 //if the referenced (trailing) chevron is doubled up, then it doesn't act as part of any markup and should be ignored for such things.
 static qboolean utf_specialchevron(unsigned char *start, unsigned char *chev)
 {
@@ -1318,7 +1470,14 @@ void Key_EntryInsert(unsigned char **line, int *linepos, char *instext)
 	*linepos += len;
 }
 
-qboolean Key_EntryLine(unsigned char **line, int lineoffset, int *linepos, int key, unsigned int unicode)
+static void Key_ConsolePaste(void *ctx, char *utf8)
+{
+	unsigned char **line = ctx;
+	int *linepos = ((line == &chat_buffer)?&chat_bufferpos:&key_linepos);
+	if (utf8)
+		Key_EntryInsert(line, linepos, utf8);
+}
+qboolean Key_EntryLine(console_t *con, unsigned char **line, int lineoffset, int *linepos, int key, unsigned int unicode)
 {
 	qboolean alt = keydown[K_LALT] || keydown[K_RALT];
 	qboolean ctrl = keydown[K_LCTRL] || keydown[K_RCTRL];
@@ -1406,18 +1565,29 @@ qboolean Key_EntryLine(unsigned char **line, int lineoffset, int *linepos, int k
 	//beware that windows translates ctrl+c and ctrl+v to a control char
 	if (((unicode=='C' || unicode=='c' || unicode==3) && ctrl) || (ctrl && key == K_INS))
 	{
-		Sys_SaveClipboard(*line);
+		if (con && (con->flags & CONF_KEEPSELECTION))
+		{	//copy selected text to the system clipboard
+			char *buffer = Con_CopyConsole(con, true, false, true);
+			if (buffer)
+			{
+				Sys_SaveClipboard(CBT_CLIPBOARD,  buffer);
+				Z_Free(buffer);
+			}
+			return true;
+		}
+		//copy the entire input line if there's nothing selected.
+		Sys_SaveClipboard(CBT_CLIPBOARD, *line);
 		return true;
 	}
 
+	if (key == K_MOUSE3)
+	{	//middle-click to paste from the unixy primary buffer.
+		Sys_Clipboard_PasteText(CBT_SELECTION, Key_ConsolePaste, line);
+		return true;
+	}
 	if (((unicode=='V' || unicode=='v' || unicode==22) && ctrl) || (shift && key == K_INS))
-	{
-		char *clipText = Sys_GetClipboard();
-		if (clipText)
-		{
-			Key_EntryInsert(line, linepos, clipText);
-			Sys_CloseClipboard(clipText);
-		}
+	{	//ctrl+v to paste from the windows-style clipboard.
+		Sys_Clipboard_PasteText(CBT_CLIPBOARD, Key_ConsolePaste, line);
 		return true;
 	}
 
@@ -1514,21 +1684,22 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 	qboolean ctrl = keydown[K_LCTRL] || keydown[K_RCTRL];
 	qboolean shift = keydown[K_LSHIFT] || keydown[K_RSHIFT];
 	int rkey = key;
+	char *buffer;
 
 	//weirdness for the keypad.
 	if ((unicode >= '0' && unicode <= '9') || unicode == '.' || key < 0)
 		key = 0;
 
+	if (key == K_TAB && !(con->flags & CONF_ISWINDOW) && ctrl&&shift)
+	{	// cycle consoles with ctrl+shift+tab.
+		// (ctrl+tab forces tab completion,
+		//	shift+tab controls completion cycle,
+		//  so it has to be both.)
+		Con_CycleConsole();
+		return true;
+	}
 	if (con->redirect)
 	{
-		if (key == K_TAB)
-		{	// command completion
-			if (ctrl || shift)
-			{
-				Con_CycleConsole();
-				return true;
-			}
-		}
 		if (key == K_MOUSE1 || key == K_MOUSE2)
 			;
 		else if (con->redirect(con, unicode, key))
@@ -1537,6 +1708,7 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 
 	if ((key == K_MOUSE1 || key == K_MOUSE2))
 	{
+		int olddown[2] = {con->mousedown[0],con->mousedown[1]};
 		if (con->flags & CONF_ISWINDOW)
 			if (con->mousecursor[0] < -8 || con->mousecursor[1] < 0 || con->mousecursor[0] > con->wnd_w || con->mousecursor[1] > con->wnd_h)
 				return true;
@@ -1553,7 +1725,7 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 		{
 			if (key == K_MOUSE2 && !(con->flags & CONF_ISWINDOW))
 			{
-				if (con->close && !con->close(con, true))
+				if (con->close && !con->close(con, false))
 					return true;
 				Con_Destroy (con);
 			}
@@ -1570,8 +1742,12 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 		{
 			if (con->redirect && con->redirect(con, unicode, key))
 				return true;
-			con->buttonsdown = CB_COPY;
+
 			con->flags &= ~CONF_KEEPSELECTION;
+			if (Key_IsTouchScreen())	//o.O mouse2+touchscreen? really?
+				con->buttonsdown = CB_COPY;
+			else
+				con->buttonsdown = CB_SCROLL_R;
 		}
 		else
 		{
@@ -1586,7 +1762,39 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 			{
 				if (con->redirect && con->redirect(con, unicode, key))
 					return true;
-				con->buttonsdown = CB_SCROLL;
+				if (Key_IsTouchScreen() || con->mousecursor[0] > ((con->flags & CONF_ISWINDOW)?con->wnd_w-16:vid.width)-8)
+				{	//just scroll the console up/down
+					con->buttonsdown = CB_SCROLL;
+				}
+				else
+				{	//selecting text. woo.
+					if (realtime < con->mousedowntime + 0.4
+						&& con->mousecursor[0] >= olddown[0]-3 && con->mousecursor[0] <= olddown[0]+3
+						&& con->mousecursor[1] >= olddown[1]-3 && con->mousecursor[1] <= olddown[1]+3
+						)
+					{	//this was a double-click... expand the selection to the entire word
+						//FIXME: detect tripple-clicks to select the entire line
+						Con_ExpandConsoleSelection(con);
+						con->flags |= CONF_KEEPSELECTION;
+
+						buffer = Con_CopyConsole(con, true, false, true);	//don't keep markup if we're copying to the clipboard
+						if (buffer)
+						{
+							Sys_SaveClipboard(CBT_SELECTION,  buffer);
+							Z_Free(buffer);
+						}
+						return true;
+					}
+					con->mousedowntime = realtime;
+
+					con->buttonsdown = CB_SELECT;
+
+					if (shift)
+					{
+						con->mousedown[0] = olddown[0];
+						con->mousedown[1] = olddown[1];
+					}
+				}
 				con->flags &= ~CONF_KEEPSELECTION;
 			}
 		}
@@ -1669,6 +1877,10 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 	}
 #endif
 
+	if (key == K_MOUSE3)	//mousewheel click/middle button
+	{
+	}
+
 	//console does not have any way to accept input, so don't try giving it any.
 	if (!con->linebuffered)
 	{
@@ -1688,21 +1900,22 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 	
 	if (key == K_ENTER || key == K_KP_ENTER || key == K_GP_START)
 	{	// backslash text are commands, else chat
-		int oldl = edit_line;
+		char demoji[8192];
+		const char *txt = Key_Demoji(demoji, sizeof(demoji), key_lines[edit_line]);
 
 #ifndef FTE_TARGET_WEB
 		if (keydown[K_LALT] || keydown[K_RALT])
 			Cbuf_AddText("\nvid_toggle\n", RESTRICT_LOCAL);
 #endif
 
-		if (con_commandmatch)
+		if ((con_commandmatch && !strchr(txt, ' ')) || shift)
 		{	//if that isn't actually a command, and we can actually complete it to something, then lets try to complete it.
-			char *txt = key_lines[edit_line];
 			if (*txt == '/')
 				txt++;
-			if (!Cmd_IsCommand(txt) && Cmd_CompleteCommand(txt, true, true, con_commandmatch, NULL))
+
+			if ((shift||!Cmd_IsCommand(txt)) && Cmd_CompleteCommand(txt, true, true, con_commandmatch, NULL))
 			{
-				CompleteCommand (true);
+				CompleteCommand (true, 1);
 				return true;
 			}
 			Con_Footerf(con, false, "");
@@ -1712,7 +1925,7 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 
 		if (con->linebuffered)
 		{
-			if (con->linebuffered(con, key_lines[oldl]) != 2)
+			if (con->linebuffered(con, txt) != 2)
 			{
 				edit_line = (edit_line + 1) & (CON_EDIT_LINES_MASK);
 				history_line = edit_line;
@@ -1723,6 +1936,7 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 		key_lines[edit_line] = BZ_Malloc(1);
 		key_lines[edit_line][0] = '\0';
 		key_linepos = 0;
+		con_commandmatch = 0;
 		return true;
 	}
 
@@ -1733,21 +1947,15 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 			txt++;
 		if (Cmd_CompleteCommand(txt, true, true, con->commandcompletion, NULL))
 		{
-			CompleteCommand (true);
+			CompleteCommand (true, 1);
 			return true;
 		}
 	}
 
 	if (key == K_TAB)
 	{	// command completion
-		if (shift)
-		{
-			Con_CycleConsole();
-			return true;
-		}
-
 		if (con->commandcompletion)
-			CompleteCommand (ctrl);
+			CompleteCommand (ctrl, shift?-1:1);
 		return true;
 	}
 	
@@ -1802,9 +2010,31 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 		if (rkey != '`' || key_linepos==0)
 			return false;
 	}
+
 	if (con_commandmatch)
-		con_commandmatch = 1;
-	Key_EntryLine(&key_lines[edit_line], 0, &key_linepos, key, unicode);
+	{	//if they're typing, try to retain the current completion guess.
+		cmd_completion_t *c;
+		char *txt = key_lines[edit_line];
+		char *guess = Cmd_CompleteCommand(*txt=='/'?txt+1:txt, true, true, con_commandmatch, NULL);
+		Key_EntryLine(con, &key_lines[edit_line], 0, &key_linepos, key, unicode);
+		if (!key_linepos)
+			con_commandmatch = 0;
+		else if (guess)
+		{
+			guess = Z_StrDup(guess);
+			txt = key_lines[edit_line];
+			c = Cmd_Complete(*txt=='/'?txt+1:txt, true);
+			for (con_commandmatch = c->num; con_commandmatch > 1; con_commandmatch--) 
+			{
+				if (!strcmp(guess, c->completions[con_commandmatch-1].text))
+					break;
+			}
+			Z_Free(guess);
+		}
+	}
+	else
+		Key_EntryLine(con, &key_lines[edit_line], 0, &key_linepos, key, unicode);
+
 	return true;
 }
 
@@ -1827,8 +2057,11 @@ void Key_Message (int key, int unicode)
 	{
 		if (chat_buffer && chat_buffer[0])
 		{	//send it straight into the command.
-			char *line = chat_buffer;
+			const char *line = chat_buffer;
 			char deutf8[8192];
+			char demoji[8192];
+			line = Key_Demoji(demoji, sizeof(demoji), line);
+
 			if (com_parseutf8.ival <= 0)
 			{
 				unsigned int unicode;
@@ -1861,7 +2094,7 @@ void Key_Message (int key, int unicode)
 		return;
 	}
 
-	Key_EntryLine(&chat_buffer, 0, &chat_bufferpos, key, unicode);
+	Key_EntryLine(NULL, &chat_buffer, 0, &chat_bufferpos, key, unicode);
 }
 
 //============================================================================
@@ -1999,9 +2232,9 @@ static char *Key_KeynumToStringRaw (int keynum)
 	return "<UNKNOWN KEYNUM>";
 }
 
-char *Key_KeynumToString (int keynum, int modifier)
+const char *Key_KeynumToString (int keynum, int modifier)
 {
-	char *r = Key_KeynumToStringRaw(keynum);
+	const char *r = Key_KeynumToStringRaw(keynum);
 	if (r[0] == '<' && r[1])
 		modifier = 0;	//would be too weird.
 	switch(modifier)
@@ -2716,7 +2949,13 @@ void Key_Event (unsigned int devid, int key, unsigned int unicode, qboolean down
 	{
 		if (Key_Dest_Has(kdm_console|kdm_cwindows))
 		{
-			console_t *con = Key_Dest_Has(kdm_console)?con_current:con_curwindow;
+			console_t *con;
+			if (Key_Dest_Has(kdm_console))
+				con = con_current;
+			else if (Key_Dest_Has(kdm_cwindows))
+				con = con_curwindow;
+			else
+				con = NULL;
 			if (con_mouseover && key >= K_MOUSE1 && key <= K_MWHEELDOWN)
 				con = con_mouseover;
 			if (con_curwindow && con_curwindow != con)

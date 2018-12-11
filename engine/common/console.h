@@ -113,25 +113,35 @@ typedef struct conline_s {
 } conline_t;
 
 //majority of these are mututally exclusive. the bits allow multiple.
-#define CB_NONE			0
-#define CB_SCROLL		1
-#define CB_COPY			2
-#define CB_CLOSE		3
-#define CB_MOVE			4
-#define CB_ACTIONBAR	5
-#define CB_SELECT		6
-#define CB_SIZELEFT		(1u<<29)
-#define CB_SIZERIGHT	(1u<<30)
-#define CB_SIZEBOTTOM	(1u<<31)
-#define CONF_HIDDEN			1	/*do not show in the console list (unless active)*/
-#define CONF_NOTIFY			2	/*text printed to console also appears as notify lines*/
-#define CONF_NOTIFY_BOTTOM	4	/*align the bottom*/
-#define CONF_NOTIFY_RIGHT	8
-//#define CONF_NOTIMES		16
-#define CONF_KEYFOCUSED		32
-#define CONF_ISWINDOW		64
-#define CONF_NOWRAP			128
-#define CONF_KEEPSELECTION	256
+enum
+{
+	CB_NONE			= 0,
+	CB_SCROLL		= 1,
+	CB_COPY			= 2,
+	CB_CLOSE		= 3,
+	CB_MOVE			= 4,
+	CB_ACTIONBAR	= 5,
+	CB_SELECT		= 6,
+	CB_SCROLL_R		= 7,
+
+	//the flags part
+	CB_SIZELEFT		= (1u<<29),
+	CB_SIZERIGHT	= (1u<<30),
+	CB_SIZEBOTTOM	= (1u<<31),
+};
+enum
+{
+	CONF_HIDDEN			= 1u<<0,	/*do not show in the console list (unless active)*/
+	CONF_NOTIFY			= 1u<<1,	/*text printed to console also appears as notify lines*/
+	CONF_NOTIFY_BOTTOM	= 1u<<2,	/*align the bottom*/
+	CONF_NOTIFY_RIGHT	= 1u<<3,
+	//CONF_NOTIMES		= 1u<<4,
+	CONF_KEYFOCUSED		= 1u<<5,
+	CONF_ISWINDOW		= 1u<<6,
+	CONF_NOWRAP			= 1u<<7,
+	CONF_KEEPSELECTION	= 1u<<8,	//there's text selected, keep it selected.
+	CONF_BACKSELECTION	= 1u<<9,	//a hint that the text was selected from the end
+};
 typedef struct console_s
 {
 	int id;
@@ -141,7 +151,7 @@ typedef struct console_s
 	char prompt[128];
 	char icon[MAX_QPATH];	//should really dynamically allocate this stuff.
 	char backimage[MAX_QPATH];
-	shader_t *backshader;
+	struct shader_s *backshader;
 	float wnd_x;
 	float wnd_y;
 	float wnd_w;
@@ -169,9 +179,9 @@ typedef struct console_s
 	int		commandcompletion;	//allows tab completion of quake console commands
 
 	//WARNING: note that links do NOT represent any sort of security. text can be inserted from anywhere. Its fine to use such things for context, but don't treat them as sescure.
-	int				(*linebuffered) (struct console_s *con, char *line);	//if present, called on enter, causes the standard console input to appear. return 2 to not save the line in history.
+	int				(*linebuffered) (struct console_s *con, const char *line);	//if present, called on enter, causes the standard console input to appear. return 2 to not save the line in history.
 	qboolean		(*redirect) (struct console_s *con, unsigned int unicode, int key);	//if present, called every character.
-	qboolean		(*mouseover)(struct console_s *con, char **out_tiptext, shader_t **out_shader);
+	qboolean		(*mouseover)(struct console_s *con, char **out_tiptext, struct shader_s **out_shader);
 	qboolean		(*close) (struct console_s *con, qboolean force);
 	void			*userdata;		//user context
 	conline_t		*userline;	//editor cursor line
@@ -185,14 +195,16 @@ typedef struct console_s
 	int mousedown[2];	//x,y position that the current buttons were clicked.
 	unsigned int buttonsdown;
 	int mousecursor[2];	//x,y
+	float mousedowntime;	//time mouse1 last went down, to detect double-clicks
 
 	struct console_s *next;
 } console_t;
 
-extern	console_t	con_main;
+extern	console_t	*con_head;
 extern	console_t	*con_curwindow;		// refers to a windowed console
 extern	console_t	*con_current;		// point to either con_main or con_chat
 extern	console_t	*con_mouseover;
+
 extern	console_t	*con_chat;
 
 //shared between console and keys.
@@ -219,7 +231,8 @@ void Con_History_Load(void);
 struct font_s;
 void Con_DrawOneConsole(console_t *con, qboolean focused, struct font_s *font, float fx, float fy, float fsx, float fsy, float lineagelimit);
 void Con_DrawConsole (int lines, qboolean noback);
-char *Con_CopyConsole(console_t *con, qboolean nomarkup, qboolean onlyiflink);
+void Con_ExpandConsoleSelection(console_t *con);
+char *Con_CopyConsole(console_t *con, qboolean nomarkup, qboolean onlyiflink, qboolean forceutf8);
 void Con_Print (const char *txt);
 void Con_CenterPrint(const char *txt);
 void Con_PrintFlags(const char *text, unsigned int setflags, unsigned int clearflags);
@@ -227,6 +240,7 @@ void VARGS Con_Printf (const char *fmt, ...) LIKEPRINTF(1);
 void VARGS Con_TPrintf (translation_t text, ...);
 void VARGS Con_DPrintf (const char *fmt, ...) LIKEPRINTF(1);	//developer>=1, for stuff that's probably actually slightly useful
 void VARGS Con_DLPrintf (int level, const char *fmt, ...) LIKEPRINTF(2);	//developer>=2, for spammy stuff
+void VARGS Con_ThrottlePrintf (float *timer, int developerlevel, const char *fmt, ...); //for spammed warnings, so they don't spam prints with every single frame/call. the timer arg should be a static local.
 void VARGS Con_SafePrintf (const char *fmt, ...) LIKEPRINTF(1);
 void Con_Footerf(console_t *con, qboolean append, const char *fmt, ...) LIKEPRINTF(3); 
 void Con_Clear_f (void);
@@ -235,8 +249,8 @@ void Con_ClearNotify (void);
 void Con_ToggleConsole_f (void);//note: allows csqc to intercept the toggleconsole
 void Con_ToggleConsole_Force(void);
 
-int Con_ExecuteLine(console_t *con, char *line);	//takes normal console commands
-int Con_Navigate(console_t *con, char *line);		//special webbrowser hacks
+int Con_ExecuteLine(console_t *con, const char *line);	//takes normal console commands
+int Con_Navigate(console_t *con, const char *line);		//special webbrowser hacks
 
 vfsfile_t *Con_POpen(char *conname);
 void Con_CycleConsole (void);
@@ -247,6 +261,7 @@ void Con_SetActive (console_t *con);
 qboolean Con_NameForNum(int num, char *buffer, int buffersize);
 console_t *Con_FindConsole(const char *name);
 console_t *Con_Create(const char *name, unsigned int flags);
+console_t *Con_GetMain(void); //retrieves the main console (creating it if needed)
 void Con_PrintCon (console_t *con, const char *txt, unsigned int parseflags);
 qboolean Con_InsertConChars (console_t *con, conline_t *line, int offset, conchar_t *c, int len);
 conline_t *Con_ResizeLineBuffer(console_t *con, conline_t *old, unsigned int length);

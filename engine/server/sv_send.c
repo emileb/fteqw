@@ -329,6 +329,22 @@ void Con_DLPrintf (int level, const char *fmt, ...)
 	if (log_developer.value)
 		Con_Log(msg); // log to console
 }
+
+//for spammed warnings, so they don't spam prints with every single frame/call. the timer arg should be a static local.
+void VARGS Con_ThrottlePrintf (float *timer, int developerlevel, const char *fmt, ...)
+{
+	va_list		argptr;
+	char		msg[MAXPRINTMSG];
+
+	va_start (argptr,fmt);
+	vsnprintf (msg,sizeof(msg)-1, fmt,argptr);
+	va_end (argptr);
+
+	if (developerlevel)
+		Con_DLPrintf (developerlevel, "%s", msg);
+	else
+		Con_Printf("%s", msg);
+}
 #endif
 
 /*
@@ -501,6 +517,7 @@ void VARGS SV_ClientPrintf (client_t *cl, int level, const char *fmt, ...)
 	if(strlen(string) >= sizeof(string))
 		Sys_Error("SV_ClientPrintf: Buffer stomped\n");
 
+#ifdef MVD_RECORDING
 	if (sv.mvdrecording)
 	{
 		sizebuf_t *msg = MVDWrite_Begin (dem_single, cl - svs.clients, strlen(string)+3);
@@ -508,6 +525,7 @@ void VARGS SV_ClientPrintf (client_t *cl, int level, const char *fmt, ...)
 		MSG_WriteByte (msg, level);
 		MSG_WriteString (msg, string);
 	}
+#endif
 
 	if (cl->controller)
 		SV_PrintToClient(cl->controller, level, string);
@@ -531,6 +549,7 @@ void VARGS SV_ClientTPrintf (client_t *cl, int level, translation_t stringnum, .
 	if(strlen(string) >= sizeof(string))
 		Sys_Error("SV_ClientTPrintf: Buffer stomped\n");
 
+#ifdef MVD_RECORDING
 	if (sv.mvdrecording)
 	{
 		sizebuf_t *msg = MVDWrite_Begin (dem_single, cl - svs.clients, strlen(string)+3);
@@ -538,6 +557,7 @@ void VARGS SV_ClientTPrintf (client_t *cl, int level, translation_t stringnum, .
 		MSG_WriteByte (msg, level);
 		MSG_WriteString (msg, string);
 	}
+#endif
 
 	SV_PrintToClient(cl, level, string);
 }
@@ -585,6 +605,7 @@ void VARGS SV_BroadcastPrintf (int level, const char *fmt, ...)
 		SV_PrintToClient(cl, level, string);
 	}
 
+#ifdef MVD_RECORDING
 	if (sv.mvdrecording)
 	{
 		sizebuf_t *msg = MVDWrite_Begin (dem_all, 0, strlen(string)+3);
@@ -592,6 +613,7 @@ void VARGS SV_BroadcastPrintf (int level, const char *fmt, ...)
 		MSG_WriteByte (msg, level);
 		MSG_WriteString (msg, string);
 	}
+#endif
 }
 
 
@@ -706,6 +728,7 @@ void SV_MulticastProtExt(vec3_t origin, multicast_t to, int dimension_mask, int 
 	qboolean	reliable;
 	client_t	*oneclient = NULL, *split;
 	int seat;
+	qboolean	andspecs = false;
 
 	if (!sv.multicast.cursize 
 #ifdef NQPROT
@@ -790,9 +813,11 @@ void SV_MulticastProtExt(vec3_t origin, multicast_t to, int dimension_mask, int 
 			mask = CM_ClusterPVS (sv.world.worldmodel, cluster, NULL, PVM_FAST);
 			break;
 
-		case MULTICAST_ONE_R:
+		case MULTICAST_ONE_R_NOSPECS:
+		case MULTICAST_ONE_R_SPECS:
 			reliable = true;
-		case MULTICAST_ONE:
+		case MULTICAST_ONE_NOSPECS:
+		case MULTICAST_ONE_SPECS:
 			if (svprogfuncs)
 			{
 				edict_t *ent = PROG_TO_EDICT(svprogfuncs, pr_global_struct->msg_entity);
@@ -801,6 +826,7 @@ void SV_MulticastProtExt(vec3_t origin, multicast_t to, int dimension_mask, int 
 			else
 				oneclient = NULL;	//unsupported in this game mode
 			mask = NULL;
+			andspecs = (to==MULTICAST_ONE_R_SPECS||to==MULTICAST_ONE_SPECS);
 			break;
 
 		default:
@@ -838,7 +864,7 @@ void SV_MulticastProtExt(vec3_t origin, multicast_t to, int dimension_mask, int 
 				{
 					if (oneclient != split)
 					{
-						if (split->spectator && split->spec_track >= 0 && oneclient == &svs.clients[split->spec_track])
+						if (andspecs && split->spectator && split->spec_track >= 0 && oneclient == &svs.clients[split->spec_track])
 							;
 						else
 							continue;
@@ -975,9 +1001,11 @@ void SV_MulticastProtExt(vec3_t origin, multicast_t to, int dimension_mask, int 
 				mask = NULL;
 			break;
 
-		case MULTICAST_ONE_R:
+		case MULTICAST_ONE_R_NOSPECS:
+		case MULTICAST_ONE_R_SPECS:
 			reliable = true;
-		case MULTICAST_ONE:
+		case MULTICAST_ONE_NOSPECS:
+		case MULTICAST_ONE_SPECS:
 			if (svprogfuncs)
 			{
 				edict_t *ent = PROG_TO_EDICT(svprogfuncs, pr_global_struct->msg_entity);
@@ -986,6 +1014,7 @@ void SV_MulticastProtExt(vec3_t origin, multicast_t to, int dimension_mask, int 
 			else
 				oneclient = NULL;
 			mask = NULL;
+			andspecs = (to==MULTICAST_ONE_R_SPECS||to==MULTICAST_ONE_SPECS);
 			break;
 
 		default:
@@ -1025,7 +1054,7 @@ void SV_MulticastProtExt(vec3_t origin, multicast_t to, int dimension_mask, int 
 				{
 					if (oneclient != split)
 					{
-						if (split->spectator && split->spec_track >= 0 && oneclient == &svs.clients[split->spec_track])
+						if (andspecs && split->spectator && split->spec_track >= 0 && oneclient == &svs.clients[split->spec_track])
 							;
 						else
 							continue;
@@ -1129,6 +1158,7 @@ void SV_MulticastProtExt(vec3_t origin, multicast_t to, int dimension_mask, int 
 		}
 	}
 
+#ifdef MVD_RECORDING
 	if (sv.mvdrecording && ((demo.recorder.fteprotocolextensions & with) == with) && !(demo.recorder.fteprotocolextensions & without))
 	{
 		sizebuf_t *msg;
@@ -1150,9 +1180,15 @@ void SV_MulticastProtExt(vec3_t origin, multicast_t to, int dimension_mask, int 
 			msg = &demo.datagram;
 			break;
 
+		case MULTICAST_ONE_R_NOSPECS:
+		case MULTICAST_ONE_NOSPECS:
+			msg = &demo.datagram;
+			sv.multicast.cursize = 0;
+			break;
+
 		//mvds are all reliables really.
-		case MULTICAST_ONE_R:
-		case MULTICAST_ONE:
+		case MULTICAST_ONE_R_SPECS:
+		case MULTICAST_ONE_SPECS:
 			{
 				int pnum;
 				if (svprogfuncs)
@@ -1171,6 +1207,7 @@ void SV_MulticastProtExt(vec3_t origin, multicast_t to, int dimension_mask, int 
 		}
 		SZ_Write(msg, sv.multicast.data, sv.multicast.cursize);
 	}
+#endif
 
 #ifdef NQPROT
 	SZ_Clear (&sv.nqmulticast);
@@ -1190,6 +1227,7 @@ void SV_MulticastCB(vec3_t origin, multicast_t to, int dimension_mask, void (*ca
 	int			cluster;
 	int			j;
 	client_t	*oneclient = NULL, *split;
+	qboolean	andspecs = false;
 
 	switch (to)
 	{
@@ -1224,9 +1262,12 @@ void SV_MulticastCB(vec3_t origin, multicast_t to, int dimension_mask, void (*ca
 			mask = NULL;
 		break;
 
-	case MULTICAST_ONE_R:
+	case MULTICAST_ONE_R_NOSPECS:
+	case MULTICAST_ONE_R_SPECS:
 		reliable = true;
-	case MULTICAST_ONE:
+
+	case MULTICAST_ONE_NOSPECS:
+	case MULTICAST_ONE_SPECS:
 		if (svprogfuncs)
 		{
 			edict_t *ent = PROG_TO_EDICT(svprogfuncs, pr_global_struct->msg_entity);
@@ -1235,6 +1276,7 @@ void SV_MulticastCB(vec3_t origin, multicast_t to, int dimension_mask, void (*ca
 		else
 			oneclient = NULL;
 		mask = NULL;
+		andspecs = (to == MULTICAST_ONE_R_SPECS || to == MULTICAST_ONE_SPECS);
 		break;
 
 	default:
@@ -1262,7 +1304,7 @@ void SV_MulticastCB(vec3_t origin, multicast_t to, int dimension_mask, void (*ca
 			{
 				if (oneclient != split)
 				{
-					if (split->spectator && split->spec_track >= 0 && oneclient == &svs.clients[split->spec_track])
+					if (andspecs && split->spectator && split->spec_track >= 0 && oneclient == &svs.clients[split->spec_track])
 						;
 					else
 						continue;
@@ -1318,6 +1360,7 @@ void SV_MulticastCB(vec3_t origin, multicast_t to, int dimension_mask, void (*ca
 			callback(client, &client->datagram, ctx);
 	}
 
+#ifdef MVD_RECORDING
 	if (sv.mvdrecording)
 	{
 		sizebuf_t *msg;
@@ -1340,9 +1383,13 @@ void SV_MulticastCB(vec3_t origin, multicast_t to, int dimension_mask, void (*ca
 			msg = &demo.datagram;
 			break;
 
+		case MULTICAST_ONE_R_NOSPECS:
+		case MULTICAST_ONE_NOSPECS:
+			return;	//demos count as spectators.
+
 		//mvds are all reliables really.
-		case MULTICAST_ONE_R:
-		case MULTICAST_ONE:
+		case MULTICAST_ONE_R_SPECS:
+		case MULTICAST_ONE_SPECS:
 			{
 				int pnum = -1;
 				if (svprogfuncs)
@@ -1366,6 +1413,7 @@ void SV_MulticastCB(vec3_t origin, multicast_t to, int dimension_mask, void (*ca
 		}
 		callback(&demo.recorder, msg, ctx);
 	}
+#endif
 }
 
 //version does all the work now
@@ -1508,7 +1556,7 @@ static void SV_SoundMulticast(client_t *client, sizebuf_t *msg, void *vctx)
 void SV_StartSound (int ent, vec3_t origin, float *velocity, int seenmask, int channel, const char *sample, int volume, float attenuation, float ratemul, float timeofs, unsigned int chflags)
 {
 	qboolean	use_phs;
-	qboolean	reliable = chflags & CF_RELIABLE;
+	qboolean	reliable = chflags & CF_SV_RELIABLE;
 	struct startsoundcontext_s ctx;
 
 	if (volume < 0 || volume > 255)
@@ -1587,9 +1635,9 @@ void SV_StartSound (int ent, vec3_t origin, float *velocity, int seenmask, int c
 	else
 		use_phs = attenuation!=0;
 
-	if (chflags & CF_UNICAST)
+	if (chflags & CF_SV_UNICAST)
 	{
-		SV_MulticastCB(origin, reliable ? MULTICAST_ONE_R : MULTICAST_ONE, seenmask, SV_SoundMulticast, &ctx);
+		SV_MulticastCB(origin, reliable ? MULTICAST_ONE_R_SPECS : MULTICAST_ONE_SPECS, seenmask, SV_SoundMulticast, &ctx);
 	}
 	else
 	{
@@ -1619,7 +1667,7 @@ void QDECL SVQ1_StartSound (float *origin, wedict_t *wentity, int channel, const
 			//making them all reliable avoids packetloss and phs issues.
 			//this applies only to pushers. you won't get extra latency on player actions because of this.
 			//be warned that it does mean you might be able to hear people triggering stuff on the other side of the map however.
-			chflags |= CF_RELIABLE;
+			chflags |= CF_SV_RELIABLE;
 		}
 		else if (progstype == PROG_QW)
 		{	//quakeworld puts the sound ONLY at the entity's actual origin. this is annoying and stupid. I'm not really sure what to do here. it seems wrong.
@@ -1631,7 +1679,7 @@ void QDECL SVQ1_StartSound (float *origin, wedict_t *wentity, int channel, const
 				origin[i] = entity->v->origin[i]+0.5*(entity->v->mins[i]+entity->v->maxs[i]);
 		}
 
-		if (chflags & CF_SENDVELOCITY)
+		if (chflags & CF_SV_SENDVELOCITY)
 			velocity = entity->v->velocity;
 	}
 
@@ -1781,12 +1829,14 @@ void SV_WriteCenterPrint(client_t *cl, char *s)
 	}
 	ClientReliableWrite_String (cl, s);
 
+#ifdef MVD_RECORDING
 	if (sv.mvdrecording)
 	{
 		sizebuf_t *msg = MVDWrite_Begin (dem_single, cl - svs.clients, 2 + strlen(s));
 		MSG_WriteByte (msg, svc_centerprint);
 		MSG_WriteString (msg, s);
 	}
+#endif
 }
 
 /*
@@ -1880,13 +1930,10 @@ void SV_WriteClientdataToMessage (client_t *client, sizebuf_t *msg)
 	if (client->fteprotocolextensions2 & PEXT2_PREDINFO)
 		return;
 
-
-#ifdef NQPROT
 	if (client->protocol == SCP_DARKPLACES6 || client->protocol == SCP_DARKPLACES7)
 		nqjunk = false;
 	else
 		nqjunk = true;
-#endif
 
 	bits = 0;
 
@@ -2168,7 +2215,7 @@ void SV_QCStatName(int type, char *name, int statnum)
 void SV_QCStatFieldIdx(int type, unsigned int fieldindex, int statnum)
 {
 	evalc_t cache;
-	char *name;
+	const char *name;
 	etype_t ftype;
 
 	if (type < 0)
@@ -2683,7 +2730,7 @@ qboolean SV_CanTrack(client_t *client, int entity)
 		return false;
 	if (svs.clients[entity-1].spectator)
 		return false;
-	if (svs.clients[entity-1].state == cs_spawned || (svs.clients[entity-1].state == cs_free && *svs.clients[entity-1].userinfo))
+	if (svs.clients[entity-1].state == cs_spawned || (svs.clients[entity-1].state == cs_free && svs.clients[entity-1].userinfo.numkeys))
 		return true;
 	return false;
 }
@@ -2784,7 +2831,9 @@ qboolean SV_SendClientDatagram (client_t *client)
 		SZ_Clear (&msg);
 	}
 
+#ifdef NQPROT
 	SV_DarkPlacesDownloadChunk(client, &msg);
+#endif
 
 	// send the datagram
 	sentbytes = Netchan_Transmit (&client->netchan, msg.cursize, buf, SV_RateForClient(client));
@@ -2909,8 +2958,10 @@ void SV_FlushBroadcasts (void)
 		}
 	}
 
+#ifdef MVD_RECORDING
 	if (sv.mvdrecording)
 		SV_MVD_WriteReliables(true);
+#endif
 
 	SZ_Clear (&sv.reliable_datagram);
 	SZ_Clear (&sv.datagram);
@@ -2922,6 +2973,107 @@ void SV_FlushBroadcasts (void)
 	SZ_Clear (&sv.q2reliable_datagram);
 	SZ_Clear (&sv.q2datagram);
 #endif
+}
+
+static qboolean SV_SyncInfoBuf(client_t *client)
+{
+	const char *key = client->infosync.keys[0].name;
+	infobuf_t *info = client->infosync.keys[0].context;
+	size_t bloboffset = client->infosync.keys[0].syncpos;
+	//unsigned int seat = info - cls.userinfo;
+	size_t blobsize;
+	const char *blobdata = InfoBuf_BlobForKey(info, key, &blobsize);
+	size_t sendsize;
+	size_t bufferspace;
+
+	qboolean final;
+	char enckey[2048];
+	char encval[2048];
+
+	if (client->protocol == SCP_QUAKE2)
+	{	//q2 gamecode is fully responsible for networking this via configstrings.
+		InfoSync_Clear(&client->infosync);
+		return false;
+	}
+
+	if (host_client->num_backbuf)
+		return false;
+	if (client->netchan.message.cursize >= MAX_BACKBUFLEN/2)
+		return false;	//don't bother trying to send anything.
+
+	if (!InfoBuf_EncodeString(key, strlen(key), enckey, sizeof(enckey)))
+	{
+		InfoSync_Remove(&client->infosync, 0);
+		return false;
+	}
+
+	sendsize = blobsize - bloboffset;
+	bufferspace = MAX_BACKBUFLEN - client->netchan.message.cursize;
+	bufferspace -= 7 - strlen(enckey) - 2;	//extra overhead
+	bufferspace = (bufferspace/4)*3;			//encoding overhead
+	sendsize = min(bufferspace, sendsize);
+	final = (bloboffset+sendsize >= blobsize);
+
+	if (!InfoBuf_EncodeString(blobdata+bloboffset, sendsize, encval, sizeof(encval)))
+	{
+		InfoSync_Remove(&client->infosync, 0);
+		return false;
+	}
+
+	if (final && !bloboffset && *enckey != '\xff' && *encval != '\xff')
+	{	//vanilla-compatible info.
+		if (ISNQCLIENT(client))
+		{	//except that nq never had any userinfo
+			const char *s;
+			if (info == &svs.info)
+				s = va("//svi \"%s\" \"%s\"\n", enckey, encval);
+			else
+			{
+				int playerslot = (client_t*)((char*)info-(char*)&((client_t*)NULL)->userinfo)-svs.clients;
+				s = va("//ui %i \"%s\" \"%s\"\n", playerslot, enckey, encval);
+			}
+			ClientReliableWrite_Begin(client, svc_stufftext, strlen(s)+2);
+			ClientReliableWrite_String(client, s);
+		}
+		else
+		{
+			if (info == &svs.info)
+				ClientReliableWrite_Begin(client, svc_serverinfo, 1+strlen(enckey)+1+strlen(encval)+1);
+			else
+			{
+				ClientReliableWrite_Begin(client, svc_setinfo, 2+strlen(enckey)+1+strlen(encval)+1);
+				ClientReliableWrite_Byte(client, (client_t*)((char*)info-(char*)&((client_t*)NULL)->userinfo)-svs.clients);
+			}
+			ClientReliableWrite_String(client, enckey);
+			ClientReliableWrite_String(client, encval);
+		}
+	}
+	else if (client->fteprotocolextensions2 & PEXT2_INFOBLOBS)
+	{
+		int pl;
+		if (info == &svs.info)
+			pl = 255;	//colourmaps being 1-based with these being 0-based means that only 0-254 are valid players, and 255 is unused, so lets use it for serverinfo blobs.
+		else
+			pl = (client_t*)info-svs.clients;
+
+		ClientReliableWrite_Begin(client, svc_setinfo, 7+strlen(enckey)+1+strlen(encval)+1);
+		ClientReliableWrite_Byte(client, 255); //special meaning to say that this is a partial update
+		ClientReliableWrite_Byte(client, pl);
+		ClientReliableWrite_Long(client, (final?0x80000000:0)|bloboffset);
+		ClientReliableWrite_String(client, enckey);
+		ClientReliableWrite_String(client, encval);
+	}
+	else
+	{	//client can't receive this info, stop trying to send it.
+		InfoSync_Remove(&client->infosync, 0);
+		return true;
+	}
+
+	if (bloboffset+sendsize == blobsize)
+		InfoSync_Remove(&client->infosync, 0);
+	else
+		client->infosync.keys[0].syncpos += sendsize;
+	return true;
 }
 
 /*
@@ -2949,8 +3101,8 @@ void SV_UpdateToReliableMessages (void)
 			//DP_SV_CLIENTCOLORS
 			if (host_client->edict->xv->clientcolors != host_client->playercolor)
 			{
-				Info_SetValueForKey(host_client->userinfo, "topcolor", va("%i", (int)host_client->edict->xv->clientcolors/16), sizeof(host_client->userinfo));
-				Info_SetValueForKey(host_client->userinfo, "bottomcolor", va("%i", (int)host_client->edict->xv->clientcolors&15), sizeof(host_client->userinfo));
+				InfoBuf_SetValueForKey(&host_client->userinfo, "topcolor", va("%i", (int)host_client->edict->xv->clientcolors/16));
+				InfoBuf_SetValueForKey(&host_client->userinfo, "bottomcolor", va("%i", (int)host_client->edict->xv->clientcolors&15));
 				{
 					SV_ExtractFromUserinfo (host_client, true);	//this will take care of nq for us anyway.
 					SV_BroadcastUserinfoChange(host_client, true, "*bothcolours", NULL);
@@ -2974,7 +3126,7 @@ void SV_UpdateToReliableMessages (void)
 					Q_strncpyz(oname, host_client->name, sizeof(oname));
 
 					Con_DPrintf("Client %s programatically renamed to %s\n", host_client->name, name);
-					Info_SetValueForKey(host_client->userinfo, "name", name, sizeof(host_client->userinfo));
+					InfoBuf_SetValueForKey(&host_client->userinfo, "name", name);
 					SV_ExtractFromUserinfo (host_client, true);
 
 					if (strcmp(oname, host_client->name))
@@ -3013,6 +3165,7 @@ void SV_UpdateToReliableMessages (void)
 							ClientReliableWrite_Short(client, host_client->edict->v->frags);
 					}
 
+#ifdef MVD_RECORDING
 					if (sv.mvdrecording)
 					{
 						sizebuf_t *msg = MVDWrite_Begin(dem_all, 0, 4);
@@ -3020,6 +3173,7 @@ void SV_UpdateToReliableMessages (void)
 						MSG_WriteByte(msg, i);
 						MSG_WriteShort(msg, host_client->edict->v->frags);
 					}
+#endif
 
 					host_client->old_frags = host_client->edict->v->frags;
 				}
@@ -3081,6 +3235,7 @@ void SV_UpdateToReliableMessages (void)
 						ClientReliableWrite_Short(client, curfrags);
 				}
 
+#ifdef MVD_RECORDING
 				if (sv.mvdrecording)
 				{
 					sizebuf_t *msg = MVDWrite_Begin(dem_all, 0, 4);
@@ -3088,6 +3243,7 @@ void SV_UpdateToReliableMessages (void)
 					MSG_WriteByte(msg, i);
 					MSG_WriteShort(msg, curfrags);
 				}
+#endif
 
 				host_client->old_frags = curfrags;
 			}
@@ -3135,6 +3291,12 @@ void SV_UpdateToReliableMessages (void)
 				}
 			}
 		}
+
+		while (host_client->infosync.numkeys)
+		{
+			if (!SV_SyncInfoBuf(host_client))
+				break;
+		}
 	}
 
 	if (sv.reliable_datagram.overflowed)
@@ -3173,7 +3335,7 @@ static void SV_SendUserinfoChange(client_t *to, client_t *about, qboolean isbasi
 		return;
 
 	if (!newval)
-		newval = Info_ValueForKey(about->userinfo, key);
+		newval = InfoBuf_ValueForKey(&about->userinfo, key);
 
 	if (ISQWCLIENT(to))
 	{
@@ -3181,13 +3343,13 @@ static void SV_SendUserinfoChange(client_t *to, client_t *about, qboolean isbasi
 		{
 			if (ISQWCLIENT(to) && !strcmp(key, "*bothcolours")) 
 			{
-				newval = Info_ValueForKey(about->userinfo, "topcolor");
+				newval = InfoBuf_ValueForKey(&about->userinfo, "topcolor");
 				ClientReliableWrite_Begin(to, svc_setinfo, 4+strlen(key)+strlen(newval));
 				ClientReliableWrite_Byte(to, playernum);
 				ClientReliableWrite_String(to, "topcolor");
-				ClientReliableWrite_String(to, Info_ValueForKey(about->userinfo, "topcolor"));
+				ClientReliableWrite_String(to, InfoBuf_ValueForKey(&about->userinfo, "topcolor"));
 				
-				newval = Info_ValueForKey(about->userinfo, "bottomcolor");
+				newval = InfoBuf_ValueForKey(&about->userinfo, "bottomcolor");
 				ClientReliableWrite_Begin(to, svc_setinfo, 4+strlen(key)+strlen(newval));
 				ClientReliableWrite_Byte(to, playernum);
 				ClientReliableWrite_String(to, "bottomcolor");
@@ -3223,8 +3385,8 @@ static void SV_SendUserinfoChange(client_t *to, client_t *about, qboolean isbasi
 		}
 		else if (!strcmp(key, "topcolor") || !strcmp(key, "bottomcolor") || !strcmp(key, "*bothcolours"))
 		{	//due to these being combined, nq players get double colour change notifications...
-			int tc = atoi(Info_ValueForKey(about->userinfo, "topcolor"));
-			int bc = atoi(Info_ValueForKey(about->userinfo, "bottomcolor"));
+			int tc = atoi(InfoBuf_ValueForKey(&about->userinfo, "topcolor"));
+			int bc = atoi(InfoBuf_ValueForKey(&about->userinfo, "bottomcolor"));
 			if (tc < 0 || tc > 13)
 				tc = 0;
 			if (bc < 0 || bc > 13)
@@ -3250,7 +3412,7 @@ void SV_BroadcastUserinfoChange(client_t *about, qboolean isbasic, const char *k
 	client_t *client;
 	int j;
 	if (!newval)
-		newval = Info_ValueForKey(about->userinfo, key);
+		newval = InfoBuf_ValueForKey(&about->userinfo, key);
 	for (j = 0; j < svs.allocated_client_slots; j++)
 	{
 		client = svs.clients+j;
@@ -3265,6 +3427,7 @@ void SV_BroadcastUserinfoChange(client_t *about, qboolean isbasic, const char *k
 		SV_SendUserinfoChange(client, about, isbasic, key, newval);
 	}
 
+#ifdef MVD_RECORDING
 	if (sv.mvdrecording && (isbasic || (demo.recorder.fteprotocolextensions & PEXT_BIGUSERINFOS)))
 	{
 		sizebuf_t *msg = MVDWrite_Begin (dem_all, 0, strlen(key)+strlen(newval)+4);
@@ -3273,6 +3436,7 @@ void SV_BroadcastUserinfoChange(client_t *about, qboolean isbasic, const char *k
 		MSG_WriteString (msg, key);
 		MSG_WriteString (msg, newval);
 	}
+#endif
 }
 
 /*
@@ -3351,13 +3515,6 @@ void SV_SendClientMessages (void)
 		SV_ChatThink(c);
 #endif
 
-		if (c->wasrecorded)
-		{
-			c->netchan.message.cursize = 0;
-			c->datagram.cursize = 0;
-			continue;
-		}
-
 #ifdef NEWSPEEDCHEATPROT
 		//allow the client more time for client movement.
 		//if they're running too slowly, FORCE them to run
@@ -3381,6 +3538,7 @@ void SV_SendClientMessages (void)
 				cmd.buttons = c->lastcmd.buttons;
 				SV_RunCmd (&cmd, true);
 				SV_PostRunCmd();
+				c->lastruncmd = sv.time*1000;
 				if (stepmsec > c->msecs)
 					c->msecs = 0;
 				else
@@ -3537,7 +3695,9 @@ void SV_SendClientMessages (void)
 			SV_SendClientDatagram (c);
 		else
 		{
+#ifdef NQPROT
 			SV_DarkPlacesDownloadChunk(c, &c->datagram);
+#endif
 			fnum = c->netchan.outgoing_sequence;
 			sentbytes = Netchan_Transmit (&c->netchan, c->datagram.cursize, c->datagram.data, SV_RateForClient(c));	// just update reliable
 			if (ISQWCLIENT(c) || ISNQCLIENT(c))
@@ -3546,7 +3706,10 @@ void SV_SendClientMessages (void)
 		}
 		c->lastoutgoingphysicstime = sv.world.physicstime;
 	}
-
+#ifdef MVD_RECORDING
+	if (sv.mvdrecording)
+		SV_ProcessSendFlags(&demo.recorder);
+#endif
 	SV_CleanupEnts();
 }
 
@@ -3554,6 +3717,7 @@ void SV_SendClientMessages (void)
 //#pragma optimize( "", on )
 //#endif
 
+#ifdef MVD_RECORDING
 void SV_WriteMVDMessage (sizebuf_t *msg, int type, int to, float time);
 
 void DemoWriteQTVTimePad(int msecs);
@@ -3726,7 +3890,8 @@ void SV_SendMVDMessage(void)
 
 	while (demo.lastwritten < demo.parsecount-1 && sv.mvdrecording)
 	{
-		SV_MVDWritePackets(1);
+		if (!SV_MVDWritePackets(1))
+			break;
 	}
 
 	if (demo.resetdeltas)
@@ -3751,7 +3916,7 @@ void SV_SendMVDMessage(void)
 
 //	MVDSetMsgBuf(demo.dbuf,&demo.frames[demo.parsecount&DEMO_FRAMES_MASK].buf);
 }
-
+#endif
 
 
 /*

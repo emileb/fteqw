@@ -26,8 +26,13 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 cvar_t ruleset_allow_in		= CVAR("ruleset_allow_in", "1");
 cvar_t rcon_level			= CVAR("rcon_level", "20");
 cvar_t cmd_maxbuffersize	= CVAR("cmd_maxbuffersize", "65536");
+#ifndef NOLEGACY
 cvar_t dpcompat_set         = CVAR("dpcompat_set", "0");
 cvar_t dpcompat_console     = CVARD("dpcompat_console", "0", "Enables hacks to emulate DP's console.");
+#else
+static const cvar_t dpcompat_set = {0};
+static const cvar_t dpcompat_console = {0};
+#endif
 int	Cmd_ExecLevel;
 qboolean cmd_didwait;
 qboolean cmd_blockwait;
@@ -40,9 +45,9 @@ typedef struct cmdalias_s
 {
 	struct cmdalias_s	*next;
 	char	*value;
+	int flags;
 	qbyte execlevel;
 	qbyte restriction;
-	int flags;
 	char	name[1];
 } cmdalias_t;
 
@@ -105,7 +110,7 @@ void Cmd_AddMacro(char *s, char *(*f)(void), int disputableintentions)
 		macro_count++;
 }
 
-char *TP_MacroString (char *s, int *newaccesslevel, int *len)
+static char *TP_MacroString (char *s, int *newaccesslevel, int *len)
 {
 	int i;
 	macro_command_t	*macro;
@@ -126,7 +131,7 @@ char *TP_MacroString (char *s, int *newaccesslevel, int *len)
 	return NULL;
 }
 
-void Cmd_MacroList_f (void)
+static void Cmd_MacroList_f (void)
 {
 	int	i;
 
@@ -177,7 +182,7 @@ next frame.  This allows commands like:
 bind g "impulse 5 ; +attack ; wait ; -attack ; impulse 2"
 ============
 */
-void Cmd_Wait_f (void)
+static void Cmd_Wait_f (void)
 {
 	if (cmd_blockwait)
 		return;
@@ -196,8 +201,9 @@ lame timers. :s
 typedef struct cmdtimer_s {
 	struct cmdtimer_s *next;
 	float timer;
-	int level;
-	char cmdtext[1];
+	int iarg;
+	void(*callback)(int iarg, void *data);
+	char data[1];
 } cmdtimer_t;
 static cmdtimer_t *cmdtimers;
 static void Cmd_ExecuteTimers(void)
@@ -210,16 +216,33 @@ static void Cmd_ExecuteTimers(void)
 		if (t->timer < realtime)
 		{
 			*link = t->next;
-			Cbuf_InsertText(t->cmdtext, t->level, true);
+			t->callback(t->iarg, t->data);
 			Z_Free(t);
 		}
 		else
 			link = &t->next;
 	}
 }
+void Cmd_AddTimer(float delay, void(*callback)(int iarg, void *data), int iarg, void *data, size_t datasize)
+{
+	cmdtimer_t *n = Z_Malloc(sizeof(*n) + datasize);
+	n->iarg = iarg;
+	n->callback = callback;
+	memcpy(n->data, data, datasize);
+	n->data[datasize] = 0;	//just in case.
+
+	n->timer = realtime + delay;
+
+	n->next = cmdtimers;
+	cmdtimers = n;
+}
+static void Cmd_In_Callback(int iarg, void *data)
+{
+	Cbuf_AddText((char*)data, iarg);
+	Cbuf_AddText("\n", iarg);
+}
 static void Cmd_In_f(void)
 {
-	cmdtimer_t *n;
 	float delay = atof(Cmd_Argv(1));
 	char *cmd;
 	if (Cmd_Argc() < 3)
@@ -231,15 +254,7 @@ static void Cmd_In_f(void)
 	cmd = Cmd_Args();
 
 	if (ruleset_allow_in.ival || !delay)
-	{
-		n = Z_Malloc(sizeof(*n) + strlen(cmd));
-		strcpy(n->cmdtext, cmd);
-		n->timer = realtime + delay;
-		n->level = Cmd_ExecLevel;
-
-		n->next = cmdtimers;
-		cmdtimers = n;
-	}
+		Cmd_AddTimer(delay, Cmd_In_Callback, Cmd_ExecLevel, cmd, strlen(cmd));
 }
 
 /*
@@ -411,7 +426,7 @@ start:
 	return text;
 }
 
-char *Cbuf_StripText(int level)	//remove all text in the command buffer and return it (so it can be readded later)
+static char *Cbuf_StripText(int level)	//remove all text in the command buffer and return it (so it can be readded later)
 {
 	char *buf;
 	buf = (char*)Z_Malloc(cmd_text[level].buf.cursize+1);
@@ -621,7 +636,7 @@ void Cmd_StuffCmds (void)
 Cmd_Exec_f
 ===============
 */
-void Cmd_Exec_f (void)
+static void Cmd_Exec_f (void)
 {
 	char	*f, *s;
 	char	name[256];
@@ -702,7 +717,7 @@ void Cmd_Exec_f (void)
 		return;
 	}
 
-	if (!FS_FLocateFile(name, FSLF_IFFOUND, &loc) && !FS_FLocateFile(va("%s.cfg", name), FSLF_IFFOUND, &loc))
+	if (!FS_FLocateFile(name, FSLF_IFFOUND|FSLF_IGNOREPURE, &loc) && !FS_FLocateFile(va("%s.cfg", name), FSLF_IFFOUND, &loc))
 	{
 		Con_TPrintf ("couldn't exec %s\n", name);
 		return;
@@ -714,7 +729,12 @@ void Cmd_Exec_f (void)
 		return;
 	}
 	if (cl_warncmd.ival || developer.ival || cvar_watched)
-		Con_TPrintf ("execing %s\n",name);
+	{
+		if (loc.search)
+			Con_TPrintf ("execing ^[^7%s\\tip\\from %s/%s^]\n", name, loc.search->logicalpath, name);
+		else
+			Con_TPrintf ("execing %s\n", name);
+	}
 
 	l = VFS_GETLEN(file);
 	f = BZ_Malloc(l+1);
@@ -808,6 +828,9 @@ void Cmd_Exec_f (void)
 	if (cvar_watched)
 		Cbuf_InsertText (va("echo BEGIN %s", buf), level, true);
 	BZ_Free(f);
+
+	if (level != Cmd_ExecLevel)
+		Cbuf_ExecuteLevel(level);
 }
 
 static int QDECL CompleteExecList (const char *name, qofs_t flags, time_t mtime, void *parm, searchpathfuncs_t *spath)
@@ -816,7 +839,7 @@ static int QDECL CompleteExecList (const char *name, qofs_t flags, time_t mtime,
 	ctx->cb(name, NULL, NULL, ctx);
 	return true;
 }
-void Cmd_Exec_c(int argn, const char *partial, struct xcommandargcompletioncb_s *ctx)
+static void Cmd_Exec_c(int argn, const char *partial, struct xcommandargcompletioncb_s *ctx)
 {
 	if (argn == 1)
 	{
@@ -834,7 +857,7 @@ Just prints the rest of the line to the console
 ===============
 */
 char *TP_ParseFunChars (char *s);
-void Cmd_Echo_f (void)
+static void Cmd_Echo_f (void)
 {
 	char text[4096];
 	char extext[4096], *t;
@@ -857,7 +880,11 @@ void Cmd_Echo_f (void)
 	Con_Printf ("%s", t);
 #else
 	t = TP_ParseFunChars(t);
+#ifndef NOLEGACY
 	Con_PrintFlags (t, (com_parseezquake.ival?PFS_EZQUAKEMARKUP:0), 0);
+#else
+	Con_PrintFlags (t, 0, 0);
+#endif
 #endif
 }
 
@@ -948,7 +975,7 @@ Creates a new command that executes a command string (possibly ; seperated)
 ===============
 */
 
-void Cmd_Alias_f (void)
+static void Cmd_Alias_f (void)
 {
 	cmdalias_t	*a, *b;
 	char		cmd[65536];
@@ -1151,7 +1178,7 @@ static void Cmd_AliasEdit_f (void)
 }
 #endif
 
-void Cmd_DeleteAlias(const char *name)
+/*static void Cmd_DeleteAlias(const char *name)
 {
 	cmdalias_t	*a, **link;
 	for (link = &cmd_alias; (a = *link); link = &(*link)->next)
@@ -1164,7 +1191,7 @@ void Cmd_DeleteAlias(const char *name)
 			return;
 		}
 	}
-}
+}*/
 
 char *Cmd_AliasExist(const char *name, int restrictionlevel)
 {
@@ -1184,7 +1211,7 @@ char *Cmd_AliasExist(const char *name, int restrictionlevel)
 	return NULL;
 }
 
-void Cmd_AliasLevel_f (void)
+static void Cmd_AliasLevel_f (void)
 {
 	cmdalias_t	*a;
 	char *s = Cmd_Argv(1);
@@ -1234,7 +1261,7 @@ void Cmd_AliasLevel_f (void)
 }
 
 //lists commands, also prints restriction level
-void Cmd_AliasList_f (void)
+static void Cmd_AliasList_f (void)
 {
 	cmdalias_t	*cmd;
 	int num=0;
@@ -1263,7 +1290,7 @@ void Cmd_AliasList_f (void)
 		Con_Printf("\n");
 }
 
-void Alias_WriteAliases (vfsfile_t *f)
+static void Alias_WriteAliases (vfsfile_t *f)
 {
 	const char *s;
 	cmdalias_t	*cmd;
@@ -1441,7 +1468,7 @@ void Cmd_ShiftArgs (int ammount, qboolean expandstring)
 	}
 }
 
-const char *Cmd_ExpandCvar(char *cvarterm, int maxaccesslevel, int *newaccesslevel, qboolean enclosed, int *len)
+static const char *Cmd_ExpandCvar(char *cvarterm, int maxaccesslevel, int *newaccesslevel, qboolean enclosed, int *len)
 {
 	const char *ret = NULL;
 	char *fixup = NULL, fixval=0, *t;
@@ -1477,7 +1504,7 @@ const char *Cmd_ExpandCvar(char *cvarterm, int maxaccesslevel, int *newaccesslev
 		pl = 2;
 		quotetype = 1;
 	}
-	else if (fixup-cvarterm > 2 && !strncmp(fixup-5, " asis", 5))
+	else if (fixup-cvarterm > 5 && !strncmp(fixup-5, " asis", 5))
 	{	//no escaping...
 		pl = 5;
 		quotetype = 0;
@@ -1710,7 +1737,7 @@ char *Cmd_ExpandString (const char *data, char *dest, int destlen, int *accessle
 	return dest;
 }
 
-char *Cmd_ExpandStringArguments (char *data, char *dest, int destlen)
+static char *Cmd_ExpandStringArguments (char *data, char *dest, int destlen)
 {
 	char c;
 	int quotes = 0;
@@ -1990,7 +2017,7 @@ void	Cmd_RemoveCommands (xcommand_t function)
 	}
 }
 
-void Cmd_RestrictCommand_f (void)
+static void Cmd_RestrictCommand_f (void)
 {
 	cmdalias_t *a;
 	cvar_t *v;
@@ -2194,7 +2221,7 @@ fte_inlinestatic int Q_tolower(char c)
 		c -= ('a' - 'A');
 	return c;
 }
-void Cmd_Complete_CheckArg(const char *value, const char *desc, const char *repl, struct xcommandargcompletioncb_s *vctx)	//compare cumulative strings and join the result
+static void Cmd_Complete_CheckArg(const char *value, const char *desc, const char *repl, struct xcommandargcompletioncb_s *vctx)	//compare cumulative strings and join the result
 {
 	struct cmdargcompletion_ctx_s *ctx = (struct cmdargcompletion_ctx_s*)vctx;
 	cmd_completion_t *res = ctx->res;
@@ -2278,7 +2305,7 @@ void Cmd_Complete_CheckArg(const char *value, const char *desc, const char *repl
 	res->num++;
 }
 
-void Cmd_Complete_Check(const char *check, cmd_completion_t *res, const char *desc)	//compare cumulative strings and join the result
+static void Cmd_Complete_Check(const char *check, cmd_completion_t *res, const char *desc)	//compare cumulative strings and join the result
 {
 	const char *c;
 	char *p;
@@ -2309,7 +2336,7 @@ void Cmd_Complete_Check(const char *check, cmd_completion_t *res, const char *de
 	res->completions[res->num].repl = NULL;
 	res->num++;
 }
-void Cmd_Complete_End(cmd_completion_t *c)
+static void Cmd_Complete_End(cmd_completion_t *c)
 {
 	size_t u;
 	for (u = 0; u < c->num; u++)
@@ -2333,10 +2360,10 @@ void Cmd_Complete_End(cmd_completion_t *c)
 	Z_Free(c->partial);
 	c->partial = NULL;
 }
-int QDECL Cmd_Complete_Sort(const void *a, const void *b)
+static int QDECL Cmd_Complete_Sort(const void *a, const void *b)
 {	//FIXME: its possible that they're equal (eg: filesystem searches). we should strip one in that case, but gah.
 	const struct cmd_completion_opt_s *c1 = a, *c2 = b;
-	return strcmp(c1->text, c2->text);
+	return Q_strcasecmp(c1->text, c2->text);
 }
 cmd_completion_t *Cmd_Complete(const char *partial, qboolean caseinsens)
 {
@@ -2351,7 +2378,7 @@ cmd_completion_t *Cmd_Complete(const char *partial, qboolean caseinsens)
 	qboolean quoted = false;
 
 	static cmd_completion_t c;
-	
+
 	if (!partial)
 	{
 		Cmd_Complete_End(&c);
@@ -2487,7 +2514,7 @@ char *Cmd_CompleteCommand (const char *partial, qboolean fullonly, qboolean case
 
 
 //lists commands, also prints restriction level
-void Cmd_List_f (void)
+static void Cmd_List_f (void)
 {
 	cmd_function_t	*cmd;
 	int num=0;
@@ -2505,7 +2532,7 @@ void Cmd_List_f (void)
 }
 
 //I'm not personally keen on this name, but its somewhat standard in both DP and suse (which lh uses, hence why DP uses that name). oh well.
-void Cmd_Apropos_f (void)
+static void Cmd_Apropos_f (void)
 {
 	extern cvar_group_t *cvar_groups;
 	cmd_function_t	*cmd;
@@ -2601,7 +2628,7 @@ void Cmd_ForwardToServer (void)
 }
 
 // don't forward the first argument
-void Cmd_ForwardToServer_f (void)
+static void Cmd_ForwardToServer_f (void)
 {
 	if (cls.state == ca_disconnected)
 	{
@@ -2609,11 +2636,13 @@ void Cmd_ForwardToServer_f (void)
 		return;
 	}
 
+#ifdef IMAGEFMT_PCX
 	if (Q_strcasecmp(Cmd_Argv(1), "snap") == 0 && cls.protocol == CP_QUAKEWORLD)
 	{
 		if (SCR_RSShot())
 			return;
 	}
+#endif
 #ifdef NQPROT
 	if (Q_strcasecmp(Cmd_Argv(1), "protocols") == 0 && cls.protocol == CP_NETQUAKE)
 	{
@@ -2724,8 +2753,8 @@ void	Cmd_ExecuteString (const char *text, int level)
 				if (MP_ConsoleCommand(text))
 					return;	//let the csqc handle it if it wants.
 #endif
-#if defined(MENU_NATIVECODE)
-				if (mn_entry && mn_entry->ConsoleCommand(text, cmd_argc, cmd_argv))
+#if defined(MENU_NATIVECODE) && !defined(SERVERONLY)
+				if (mn_entry && mn_entry->ConsoleCommand(text, cmd_argc, (char const*const*)cmd_argv))
 					return;
 #endif
 				Cmd_ForwardToServer ();
@@ -2889,8 +2918,8 @@ void	Cmd_ExecuteString (const char *text, int level)
 	if (MP_ConsoleCommand(text))
 		return;	//let the csqc handle it if it wants.
 #endif
-#if defined(MENU_NATIVECODE)
-	if (mn_entry && mn_entry->ConsoleCommand(text, cmd_argc, cmd_argv))
+#if defined(MENU_NATIVECODE) && !defined(SERVERONLY)
+	if (mn_entry && mn_entry->ConsoleCommand(text, cmd_argc, (char const*const*)cmd_argv))
 		return;
 #endif
 
@@ -3103,7 +3132,16 @@ static const char *If_Token_Term(const char *func, const char **end)
 				level++;
 			s2++;
 		}
-		func = If_Token(s, end, IF_PRI_MAX);
+		if (!level)
+		{
+			char *t = malloc(s2-s+1);
+			memcpy(t, s, s2-s);
+			t[s2-s-((s2==s)?0:1)] = 0;
+			func = If_Token(t, end, IF_PRI_MAX);
+			free(t);
+		}
+		else
+			func = If_Token(s, end, IF_PRI_MAX);
 		*end = s2;
 		s = *end;
 		s2 = func;
@@ -3360,7 +3398,7 @@ qboolean If_EvaluateBoolean(const char *text, int restriction)
 	return ret;
 }
 
-void Cbuf_ExecBlock(int level)
+static void Cbuf_ExecBlock(int level)
 {
 	char *remainingcbuf;
 	char *exectext = NULL;
@@ -3427,7 +3465,7 @@ void Cbuf_ExecBlock(int level)
 	Z_Free(remainingcbuf);
 }
 
-void Cbuf_SkipBlock(int level)
+static void Cbuf_SkipBlock(int level)
 {
 	char *line, *end;
 	line = Cbuf_GetNext(level, false);
@@ -3579,7 +3617,7 @@ skipblock:
 	If_Token_Clear(ts);
 }
 
-void Cmd_Vstr_f( void )
+static void Cmd_Vstr_f( void )
 {
 	char	*v;
 
@@ -3593,7 +3631,7 @@ void Cmd_Vstr_f( void )
 	Cbuf_InsertText(v, Cmd_ExecLevel, true);
 }
 
-void Cmd_toggle_f(void)
+static void Cmd_toggle_f(void)
 {
 	cvar_t *v;
 	if (Cmd_Argc()<2)
@@ -3629,7 +3667,7 @@ static void Cmd_Set_c(int argn, const char *partial, struct xcommandargcompletio
 		}
 }
 
-void Cmd_set_f(void)
+static void Cmd_set_f(void)
 {
 	void *mark;
 	cvar_t *var;
@@ -3809,7 +3847,7 @@ void Cmd_set_f(void)
 	If_Token_Clear(mark);
 }
 
-void Cvar_Inc_f (void)
+static void Cvar_Inc_f (void)
 {
 	int c;
 	cvar_t *var;
@@ -3872,7 +3910,7 @@ void Cvar_ParseWatches(void)
 	}
 }
 
-void Cvar_Watch_f(void)
+static void Cvar_Watch_f(void)
 {
 	char *cvarname = Cmd_Argv(1);
 	cvar_t *var;
@@ -3917,7 +3955,7 @@ void Cvar_Watch_f(void)
 	}
 }
 
-void Cmd_WriteConfig_f(void)
+static void Cmd_WriteConfig_f(void)
 {
 	vfsfile_t *f;
 	char *filename;
@@ -4000,19 +4038,20 @@ void Cmd_WriteConfig_f(void)
 	Con_Printf ("Wrote %s\n",sysname);
 }
 
-void Cmd_Reset_f(void)
+static void Cmd_Reset_f(void)
 {
 }
 
 #ifndef SERVERONLY
 // dumps current console contents to a text file
-void Cmd_Condump_f(void)
+static void Cmd_Condump_f(void)
 {
+	console_t *c = Con_GetMain();
 	vfsfile_t *f;
 	char *filename;
 	char line[8192];
 
-	if (!con_current)
+	if (!c)
 	{
 		Con_Printf ("No console to dump.\n");
 		return;
@@ -4038,13 +4077,12 @@ void Cmd_Condump_f(void)
 	// print out current contents of console
 	// stripping out starting blank lines and blank spaces
 	{
-		console_t *curcon = &con_main;
 		conline_t *l;
 		conchar_t *t;
-		for (l = curcon->oldest; l; l = l->newer)
+		for (l = c->oldest; l; l = l->newer)
 		{
 			t = (conchar_t*)(l+1);
-			COM_DeFunString(t, t + l->length, line, sizeof(line), true, !!(curcon->parseflags & PFS_FORCEUTF8));
+			COM_DeFunString(t, t + l->length, line, sizeof(line), true, !!(c->parseflags & PFS_FORCEUTF8));
 			VFS_WRITE(f, line, strlen(line));
 			VFS_WRITE(f, "\n", 1);
 		}
@@ -4222,12 +4260,12 @@ void Cmd_Init (void)
 
 	Cmd_AddCommand ("cmdlist", Cmd_List_f);
 	Cmd_AddCommand ("aliaslist", Cmd_AliasList_f);
-	Cmd_AddCommand ("macrolist", Cmd_MacroList_f);
-	Cmd_AddCommand ("cvarlist", Cvar_List_f);
-	Cmd_AddCommand ("cvarreset", Cvar_Reset_f);
+	Cmd_AddCommandD ("macrolist", Cmd_MacroList_f, "Lists all available $macro expansions.");
+	Cmd_AddCommandD ("cvarlist", Cvar_List_f, "Lists all cvars. eg, 'cvarlist -cvd *' can be used to list all cvars with a value other than the mod's default.");
+	Cmd_AddCommandD ("cvarreset", Cvar_Reset_f, "Resets the named cvar to its default value.");
 	Cmd_AddCommandD ("cvarwatch", Cvar_Watch_f, "Prints a notification when the named cvar is changed. Also displays the start/end of configs. Alternatively, use '-watch foo' on the commandline.");
 	Cmd_AddCommand ("cvar_lockdefaults", Cvar_LockDefaults_f);
-	Cmd_AddCommand ("cvar_purgedefaults", Cvar_PurgeDefaults_f);
+	Cmd_AddCommandD ("cvar_purgedefaults", Cvar_PurgeDefaults_f, "Resets all cvar defaults to back to the engine's default. Does not change their active value.");
 
 	Cmd_AddCommandD ("apropos", Cmd_Apropos_f, "Lists all cvars or commands with the specified substring somewhere in their name or descrition.");
 	Cmd_AddCommandD ("find", Cmd_Apropos_f, "Lists all cvars or commands with the specified substring somewhere in their name or descrition.");
@@ -4237,7 +4275,6 @@ void Cmd_Init (void)
 	Cmd_AddMacro("ukdate", Macro_UKDate, false);
 	Cmd_AddMacro("usdate", Macro_USDate, false);
 	Cmd_AddMacro("date", Macro_ProperDate, false);
-	Cmd_AddMacro("properdate", Macro_ProperDate, false);
 	Cmd_AddMacro("version", Macro_Version, false);
 	Cmd_AddMacro("qt", Macro_Quote, false);
 	Cmd_AddMacro("dedicated", Macro_Dedicated, false);
@@ -4247,8 +4284,10 @@ void Cmd_Init (void)
 	Cvar_Register(&ruleset_allow_in, "Console");
 	Cmd_AddCommandD ("in", Cmd_In_f, "Issues the given command after a time delay. Disabled if ruleset_allow_in is 0.");
 
+#ifndef NOLEGACY
 	Cvar_Register(&dpcompat_set, "Darkplaces compatibility");
 	Cvar_Register(&dpcompat_console, "Darkplaces compatibility");
+#endif
 	Cvar_Register (&cl_warncmd, "Warnings");
 	Cvar_Register (&cfg_save_all, "client operation options");
 	Cvar_Register (&cfg_save_auto, "client operation options");

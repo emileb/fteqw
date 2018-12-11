@@ -122,7 +122,9 @@ typedef struct q2trace_s
 #define	MOVE_NORMAL		0
 #define	MOVE_NOMONSTERS	(1<<0)
 #define	MOVE_MISSILE	(1<<1)
-#define MOVE_WORLDONLY	(MOVE_NOMONSTERS|MOVE_MISSILE)
+#ifndef NOLEGACY
+#define MOVE_WORLDONLY	(MOVE_NOMONSTERS|MOVE_MISSILE) //use MOVE_OTHERONLY instead
+#endif
 #define	MOVE_HITMODEL	(1<<2)
 #define MOVE_RESERVED	(1<<3)			//so we are less likly to get into tricky situations when we want to steal annother future DP extension.
 #define MOVE_TRIGGERS	(1<<4)			//triggers must be marked with FINDABLE_NONSOLID	(an alternative to solid-corpse)
@@ -191,12 +193,14 @@ typedef struct
 	void (QDECL *RagDestroyJoint)(struct world_s *world, rbejoint_t *joint);
 	void (QDECL *RunFrame)(struct world_s *world, double frametime, double gravity);
 	void (QDECL *PushCommand)(struct world_s *world, rbecommandqueue_t *cmd);
+//	void (QDECL *ExpandBodyAABB)(struct world_s *world, rbebody_t *bodyptr, float *mins, float *maxs);	//expands an aabb to include the size of the body.
+	void (QDECL *Trace) (struct world_s *world, wedict_t *ed, vec3_t start, vec3_t end, trace_t *trace);
 } rigidbodyengine_t;
 #endif
 
 struct world_s
 {
-	void (QDECL *Event_Touch)(struct world_s *w, wedict_t *s, wedict_t *o);
+	void (QDECL *Event_Touch)(struct world_s *w, wedict_t *s, wedict_t *o, trace_t *trace);
 	void (QDECL *Event_Think)(struct world_s *w, wedict_t *s);
 	void (QDECL *Event_Sound) (float *origin, wedict_t *entity, int channel, const char *sample, int volume, float attenuation, float pitchadj, float timeoffset, unsigned int flags);
 	qboolean (QDECL *Event_ContentsTransition) (struct world_s *w, wedict_t *ent, int oldwatertype, int newwatertype);
@@ -368,7 +372,7 @@ void Q23BSP_FindTouchedLeafs(model_t *mod, struct pvscache_s *ent, float *mins, 
 /*sv_move.c*/
 #if defined(CSQC_DAT) || !defined(CLIENTONLY)
 qboolean World_CheckBottom (world_t *world, wedict_t *ent, vec3_t up);
-qboolean World_movestep (world_t *world, wedict_t *ent, vec3_t move, vec3_t axis[3], qboolean relink, qboolean noenemy, void (*set_move_trace)(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals, trace_t *trace), struct globalvars_s *set_trace_globs);
+qboolean World_movestep (world_t *world, wedict_t *ent, vec3_t move, vec3_t axis[3], qboolean relink, qboolean noenemy, void (*set_move_trace)(pubprogfuncs_t *prinst, trace_t *trace));
 qboolean World_MoveToGoal (world_t *world, wedict_t *ent, float dist);
 qboolean World_GetEntGravityAxis(wedict_t *ent, vec3_t axis[3]);
 #endif

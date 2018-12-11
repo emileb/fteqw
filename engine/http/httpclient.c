@@ -38,8 +38,8 @@ static void DL_OnLoad(void *c, int buf)
 	{
 		if (*dl->localname)
 		{
-			FS_CreatePath(dl->localname, FS_GAMEONLY);
-			dl->file = FS_OpenVFS(dl->localname, "w+b", FS_GAMEONLY);
+			FS_CreatePath(dl->localname, dl->fsroot);
+			dl->file = FS_OpenVFS(dl->localname, "w+b", dl->fsroot);
 		}
 		else
 		{
@@ -199,8 +199,8 @@ static void readfinished(void* user_data, int32_t result)
 		{
 			if (*f->localname)
 			{
-				FS_CreatePath(f->localname, FS_GAME);
-				f->file = FS_OpenVFS(f->localname, "w+b", FS_GAME);
+				FS_CreatePath(f->localname, dl->fsroot);
+				f->file = FS_OpenVFS(f->localname, "w+b", dl->fsroot);
 			}
 			else
 				f->file = FS_OpenTemp();
@@ -375,7 +375,7 @@ void Cookie_Monster(void)
 //path) I'm going to call this an optimisation feature and not bother with it... hopefully there won't be too many sites that have sub-paths or third-party stuff... gah.
 //httponly) irrelevant until we support javascript... which we don't.
 //secure) assumed to be true. https:// vs http:// are thus completely independant. sorry.
-//expires) gah, parsing time values sucks! plus we don't have persistent storage.
+//expires) gah, parsing time values sucks! plus we don't have persistent storage. All cookies are session cookies.
 void Cookie_Parse(char *domain, int secure, char *line, char *end)
 {
 	char *e;
@@ -724,7 +724,7 @@ static qboolean HTTP_DL_Work(struct dl_download *dl)
 				nl = strchr(msg, '\n');
 				if (nl)
 					*nl = '\0';
-				Con_Printf("HTTP: %s %s (%s)\n", buffer, COM_TrimString(msg, trimmed, sizeof(trimmed)), Location);
+				Con_Printf("%s: %s %s (%s)\n", dl->url, buffer, COM_TrimString(msg, trimmed, sizeof(trimmed)), Location);
 				if (!*Location)
 					Con_Printf("Server redirected to null location\n");
 				else
@@ -763,7 +763,7 @@ static qboolean HTTP_DL_Work(struct dl_download *dl)
 				if (nl>msg&&nl[-1] == '\r')
 					nl--;
 				*nl = '\0';
-				Con_Printf("HTTP: %s%s\n", buffer, msg);
+				Con_Printf("%s: %s%s\n", dl->url, buffer, msg);
 				return false;	//something went wrong.
 			}
 
@@ -797,8 +797,8 @@ static qboolean HTTP_DL_Work(struct dl_download *dl)
 #ifndef NPFTE
 			if (*dl->localname)
 			{
-				FS_CreatePath(dl->localname, FS_GAME);
-				dl->file = FS_OpenVFS(dl->localname, "w+b", FS_GAME);
+				FS_CreatePath(dl->localname, dl->fsroot);
+				dl->file = FS_OpenVFS(dl->localname, "w+b", dl->fsroot);
 			}
 			else
 				dl->file = FS_OpenTemp();
@@ -1332,8 +1332,8 @@ qboolean DataScheme_Decode(struct dl_download *dl)
 #ifndef NPFTE
 		if (*dl->localname)
 		{
-			FS_CreatePath(dl->localname, FS_GAME);
-			dl->file = FS_OpenVFS(dl->localname, "w+b", FS_GAME);
+			FS_CreatePath(dl->localname, dl->fsroot);
+			dl->file = FS_OpenVFS(dl->localname, "w+b", dl->fsroot);
 		}
 		else
 			dl->file = FS_OpenTemp();
@@ -1448,7 +1448,7 @@ qboolean DL_CreateThread(struct dl_download *dl, vfsfile_t *file, void (*NotifyF
 
 	dl->threadenable = true;
 #if defined(LOADERTHREAD) && !defined(NPFTE)
-	if (dlthreads < 0)
+	if (dlthreads < 4)
 #endif
 	{
 		dl->threadctx = Sys_CreateThread("download", DL_Thread_Work, dl, THREADP_NORMAL, 0);
@@ -1485,6 +1485,7 @@ struct dl_download *DL_Create(const char *url)
 	newdl->url = (char*)(newdl+1);
 	strcpy(newdl->url, url);
 	newdl->poll = DL_Decide;
+	newdl->fsroot = FS_GAMEONLY;
 	newdl->sizelimit = 0x80000000u;	//some sanity limit.
 #if !defined(NPFTE) && !defined(SERVERONLY)
 	newdl->qdownload.method = DL_HTTP;

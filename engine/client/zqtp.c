@@ -727,7 +727,7 @@ static char *Skin_To_TFSkin (char *myskin)
 
 static char *Macro_TF_Skin (void)
 {
-	return Skin_To_TFSkin(Info_ValueForKey(cl.players[cl.playerview[SP].playernum].userinfo, "skin"));
+	return Skin_To_TFSkin(InfoBuf_ValueForKey(&cl.players[cl.playerview[SP].playernum].userinfo, "skin"));
 }
 
 //Spike: added these:
@@ -745,8 +745,6 @@ static char *Macro_demoplayback (void)
 {
 	switch (cls.demoplayback)
 	{
-	case DPB_EZTV: // warning: enumeration value ‘DPB_EZTV’ not handled in switch
-		break;
 	case DPB_NONE:
 		return "0";
 	case DPB_QUAKEWORLD:
@@ -761,7 +759,10 @@ static char *Macro_demoplayback (void)
 	case DPB_QUAKE2:
 		return "dm2playback";
 #endif
+
 	//gcc will warn if we add annother playback and forget here, otherwise I'd use a default.
+	case DPB_EZTV:
+		break;
 	}
 	return "1";	//unknown.
 }
@@ -1485,7 +1486,7 @@ static void TP_LoadLocFile (char *filename, qbool quiet)
 	Q_snprintfz (fullpath, sizeof(fullpath) - 4, "locs/%s", filename);
 	COM_DefaultExtension (fullpath, ".loc", sizeof(fullpath));
 
-	buf = (char *) COM_LoadTempFile (fullpath, NULL);
+	buf = (char *) COM_LoadTempFile (fullpath, 0, NULL);
 	if (!buf)
 	{
 		if (!quiet)
@@ -3189,19 +3190,19 @@ char *Utils_TF_ColorToTeam(int color)
 	switch (color)
 	{
 		case 13:
-			if (*(s = Info_ValueForKey(cl.serverinfo, "team1")) || *(s = Info_ValueForKey(cl.serverinfo, "t1")))
+			if (*(s = InfoBuf_ValueForKey(&cl.serverinfo, "team1")) || *(s = InfoBuf_ValueForKey(&cl.serverinfo, "t1")))
 				return s;
 			break;
 		case 4:
-			if (*(s = Info_ValueForKey(cl.serverinfo, "team2")) || *(s = Info_ValueForKey(cl.serverinfo, "t2")))
+			if (*(s = InfoBuf_ValueForKey(&cl.serverinfo, "team2")) || *(s = InfoBuf_ValueForKey(&cl.serverinfo, "t2")))
 				return s;
 			break;
 		case 12:
-			if (*(s = Info_ValueForKey(cl.serverinfo, "team3")) || *(s = Info_ValueForKey(cl.serverinfo, "t3")))
+			if (*(s = InfoBuf_ValueForKey(&cl.serverinfo, "team3")) || *(s = InfoBuf_ValueForKey(&cl.serverinfo, "t3")))
 				return s;
 			break;
 		case 11:
-			if (*(s = Info_ValueForKey(cl.serverinfo, "team4")) || *(s = Info_ValueForKey(cl.serverinfo, "t4")))
+			if (*(s = InfoBuf_ValueForKey(&cl.serverinfo, "team4")) || *(s = InfoBuf_ValueForKey(&cl.serverinfo, "t4")))
 				return s;
 			break;
 		default:
@@ -3343,7 +3344,7 @@ static void TP_FindPoint (void)
 				name = tp_name_enemy.string;
 
 			if (!eyes)
-				name = va("%s%s%s", name, name[0] ? " " : "", Skin_To_TFSkin(Info_ValueForKey(bestinfo->userinfo, "skin")));
+				name = va("%s%s%s", name, name[0] ? " " : "", Skin_To_TFSkin(InfoBuf_ValueForKey(&bestinfo->userinfo, "skin")));
 		}
 		else
 		{

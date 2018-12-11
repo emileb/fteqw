@@ -23,6 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define WINQUAKE_H
 
 #ifdef _WIN32
+void GLVID_Crashed(void);
 
 #if defined(_WIN32) && !defined(WIN32)
 #define WIN32 _WIN32
@@ -127,7 +128,7 @@ extern qboolean	mouseinitialized;
 //extern HANDLE	hinput, houtput;
 
 extern HCURSOR	hArrowCursor, hCustomCursor;
-void *WIN_CreateCursor(const char *filename, float hotx, float hoty, float scale);
+void *WIN_CreateCursor(const qbyte *imagedata, int width, int height, uploadfmt_t format, float hotx, float hoty, float scale);
 qboolean WIN_SetCursor(void *cursor);
 void WIN_DestroyCursor(void *cursor);
 void WIN_WindowCreated(HWND window);
