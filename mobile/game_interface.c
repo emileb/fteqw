@@ -16,6 +16,7 @@ int main_android (int c, const char **v);
 void PortableInit(int argc,const char ** argv)
 {
 	LOGI("PortableInit");
+	setenv("FTEHOME",".fte",1);
     main_android( argc, argv );
 }
 
