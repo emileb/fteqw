@@ -856,7 +856,12 @@ qboolean GL_LoadTextureMips(texid_t tex, const struct pendingtextureinfo *mips)
 				}
 
 				if (gl_config.formatinfo[encoding].type)
+				{
+#ifdef __ANDROID__ // Needed for GLES1, otherwise npot RGB textures can be read unaligned
+				    glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
+#endif
 					qglTexImage2D				(targface, j, ifmt, mips->mip[i].width, mips->mip[i].height, 0, gl_config.formatinfo[encoding].format, gl_config.formatinfo[encoding].type,	mips->mip[i].data);
+				}
 				else
 					qglCompressedTexImage2D		(targface, j, ifmt, mips->mip[i].width, mips->mip[i].height, 0,								mips->mip[i].datasize,							mips->mip[i].data);
 			}
