@@ -139,7 +139,9 @@ void GL_SetupFormats(void)
 		glfmt(PTI_L8A8,		GL_LUMINANCE_ALPHA,	GL_LUMINANCE_ALPHA,		GL_LUMINANCE_ALPHA,		GL_UNSIGNED_BYTE);
 		glfmt(PTI_L8,		GL_LUMINANCE,		GL_LUMINANCE,			GL_LUMINANCE,			GL_UNSIGNED_BYTE);
 //		glfmt(PTI_RGBA8,	GL_ALPHA,			GL_ALPHA,				GL_ALPHA,				GL_UNSIGNED_BYTE);
-
+#ifdef __ANDROID__ // Make this valid so if its used to doesn't crash GDPXD
+        glfmtc(PTI_BGRX8,	GL_RGBA,			GL_RGBA,					GL_RGBA,	    GL_UNSIGNED_BYTE,	tc_rgb);
+#endif
 		if (!gl_config.webgl_ie)
 		{	//these should work on all gles2+webgl1 devices, but microsoft doesn't give a shit.
 			glfmtc(PTI_RGB565,	GL_RGB,				GL_RGB,					GL_RGB,					GL_UNSIGNED_SHORT_5_6_5,	tc_rgb);
