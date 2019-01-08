@@ -567,6 +567,9 @@ void GLBE_UploadAllLightmaps(void)
 			qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 		}
 
+#ifdef __ANDROID__
+    if(gl_config.formatinfo[lm->fmt].type)
+#endif
 		qglTexImage2D(GL_TEXTURE_2D, 0, gl_config.formatinfo[lm->fmt].internalformat,	lm->width, lm->height, 0, gl_config.formatinfo[lm->fmt].format, gl_config.formatinfo[lm->fmt].type, lightmap[i]->lightmaps);
 
 		if (gl_config.glversion >= (gl_config.gles?3.0:3.3))

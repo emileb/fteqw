@@ -5454,6 +5454,9 @@ static void BE_UpdateLightmaps(void)
 			else
 			{
 				GL_MTBind(0, GL_TEXTURE_2D, lm->lightmap_texture);
+#ifdef __ANDROID__
+            if (gl_config.formatinfo[lm->fmt].type) // BGRX format is invalid
+#endif
 				qglTexSubImage2D(GL_TEXTURE_2D, 0, 0, t, lm->width, b-t, gl_config.formatinfo[lm->fmt].format, gl_config.formatinfo[lm->fmt].type, lm->lightmaps+t*lm->width*lm->pixbytes);
 			}
 			lm->modified = false;
