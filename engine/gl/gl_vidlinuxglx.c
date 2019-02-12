@@ -1309,7 +1309,10 @@ static struct
 
 	const char * (*QueryExtensionsString)(Display * dpy,  int screen);
 	void *(*GetProcAddress) (char *name);
-	void (*SwapInterval) (Display *dpy, GLXDrawable drawable, int interval);
+	void (*SwapIntervalSGI) (int interval);				//FFS!
+	void (*SwapIntervalMESA) (unsigned int interval);	//FFS!
+	void (*SwapIntervalEXT) (Display *dpy, GLXDrawable drawable, int interval);
+	qboolean swaptear;
 
 	GLXFBConfig *(*ChooseFBConfig)(Display *dpy, int screen, const int *attrib_list, int *nelements);
 	int (*GetFBConfigAttrib)(Display *dpy, GLXFBConfig config, int attribute, int * value);
@@ -1327,9 +1330,343 @@ static void GLX_CloseLibrary(void)
 }
 */
 
+#if 0//def _DEBUG
+//this is a list of the functions that exist in opengles2, as well as wglCreateContextAttribsARB.
+//functions not in this list *should* be stubs that just return errors, but we can't always depend on drivers for that... they shouldn't get called.
+//this list is just to make it easier to test+debug android gles2 stuff using windows.
+static char *gles2funcs[] =
+{
+#define f(n) #n,
+		f(glActiveTexture)
+		f(glAttachShader)
+		f(glBindAttribLocation)
+		f(glBindBuffer)
+		f(glBindFramebuffer)
+		f(glBindRenderbuffer)
+		f(glBindTexture)
+		f(glBlendColor)
+		f(glBlendEquation)
+		f(glBlendEquationSeparate)
+		f(glBlendFunc)
+		f(glBlendFuncSeparate)
+		f(glBufferData)
+		f(glBufferSubData)
+		f(glCheckFramebufferStatus)
+		f(glClear)
+		f(glClearColor)
+		f(glClearDepthf)
+		f(glClearStencil)
+		f(glColorMask)
+		f(glCompileShader)
+		f(glCompressedTexImage2D)
+		f(glCompressedTexSubImage2D)
+		f(glCopyTexImage2D)
+		f(glCopyTexSubImage2D)
+		f(glCreateProgram)
+		f(glCreateShader)
+		f(glCullFace)
+		f(glDeleteBuffers)
+		f(glDeleteFramebuffers)
+		f(glDeleteProgram)
+		f(glDeleteRenderbuffers)
+		f(glDeleteShader)
+		f(glDeleteTextures)
+		f(glDepthFunc)
+		f(glDepthMask)
+		f(glDepthRangef)
+		f(glDetachShader)
+		f(glDisable)
+		f(glDisableVertexAttribArray)
+		f(glDrawArrays)
+		f(glDrawElements)
+		f(glEnable)
+		f(glEnableVertexAttribArray)
+		f(glFinish)
+		f(glFlush)
+		f(glFramebufferRenderbuffer)
+		f(glFramebufferTexture2D)
+		f(glFrontFace)
+		f(glGenBuffers)
+		f(glGenerateMipmap)
+		f(glGenFramebuffers)
+ 		f(glGenRenderbuffers)
+		f(glGenTextures)
+		f(glGetActiveAttrib)
+		f(glGetActiveUniform)
+		f(glGetAttachedShaders)
+		f(glGetAttribLocation)
+		f(glGetBooleanv)
+		f(glGetBufferParameteriv)
+		f(glGetError)
+		f(glGetFloatv)
+		f(glGetFramebufferAttachmentParameteriv)
+		f(glGetIntegerv)
+		f(glGetProgramiv)
+		f(glGetProgramInfoLog)
+		f(glGetRenderbufferParameteriv)
+		f(glGetShaderiv)
+		f(glGetShaderInfoLog)
+		f(glGetShaderPrecisionFormat)
+		f(glGetShaderSource)
+		f(glGetString)
+		f(glGetTexParameterfv)
+		f(glGetTexParameteriv)
+		f(glGetUniformfv)
+		f(glGetUniformiv)
+		f(glGetUniformLocation)
+		f(glGetVertexAttribfv)
+		f(glGetVertexAttribiv)
+		f(glGetVertexAttribPointerv)
+		f(glHint)
+		f(glIsBuffer)
+		f(glIsEnabled)
+		f(glIsFramebuffer)
+		f(glIsProgram)
+		f(glIsRenderbuffer)
+		f(glIsShader)
+		f(glIsTexture)
+		f(glLineWidth)
+		f(glLinkProgram)
+		f(glPixelStorei)
+		f(glPolygonOffset)
+		f(glReadPixels)
+		f(glReleaseShaderCompiler)
+		f(glRenderbufferStorage)
+		f(glSampleCoverage)
+		f(glScissor)
+		f(glShaderBinary)
+		f(glShaderSource)
+		f(glStencilFunc)
+		f(glStencilFuncSeparate)
+		f(glStencilMask)
+		f(glStencilMaskSeparate)
+		f(glStencilOp)
+		f(glStencilOpSeparate)
+		f(glTexImage2D)
+		f(glTexParameterf)
+		f(glTexParameterfv)
+		f(glTexParameteri)
+		f(glTexParameteriv)
+		f(glTexSubImage2D)
+		f(glUniform1f)
+		f(glUniform1fv)
+		f(glUniform1i)
+		f(glUniform1iv)
+		f(glUniform2f)
+		f(glUniform2fv)
+		f(glUniform2i)
+		f(glUniform2iv)
+		f(glUniform3f)
+		f(glUniform3fv)
+		f(glUniform3i)
+		f(glUniform3iv)
+		f(glUniform4f)
+		f(glUniform4fv)
+		f(glUniform4i)
+		f(glUniform4iv)
+		f(glUniformMatrix2fv)
+		f(glUniformMatrix3fv)
+		f(glUniformMatrix4fv)
+		f(glUseProgram)
+		f(glValidateProgram)
+		f(glVertexAttrib1f)
+		f(glVertexAttrib1fv)
+		f(glVertexAttrib2f)
+		f(glVertexAttrib2fv)
+		f(glVertexAttrib3f)
+		f(glVertexAttrib3fv)
+		f(glVertexAttrib4f)
+		f(glVertexAttrib4fv)
+		f(glVertexAttribPointer)
+		f(glViewport)
+		f(wglCreateContextAttribsARB)
+		NULL
+};
+
+//this is a list of the functions that exist in opengles2, as well as wglCreateContextAttribsARB.
+//functions not in this list *should* be stubs that just return errors, but we can't always depend on drivers for that... they shouldn't get called.
+//this list is just to make it easier to test+debug android gles2 stuff using windows.
+static char *gles1funcs[] =
+{
+#define f(n) #n,
+
+		/* Available only in Common profile */
+		f(glAlphaFunc)
+		f(glClearColor)
+		f(glClearDepthf)
+		f(glClipPlanef)
+		f(glColor4f)
+		f(glDepthRangef)
+		f(glFogf)
+		f(glFogfv)
+		f(glFrustumf)
+		f(glGetClipPlanef)
+		f(glGetFloatv)
+		f(glGetLightfv)
+		f(glGetMaterialfv)
+		f(glGetTexEnvfv)
+		f(glGetTexParameterfv)
+		f(glLightModelf)
+		f(glLightModelfv)
+		f(glLightf)
+		f(glLightfv)
+		f(glLineWidth)
+		f(glLoadMatrixf)
+		f(glMaterialf)
+		f(glMaterialfv)
+		f(glMultMatrixf)
+		f(glMultiTexCoord4f)
+		f(glNormal3f)
+		f(glOrthof)
+		f(glPointParameterf)
+		f(glPointParameterfv)
+		f(glPointSize)
+		f(glPolygonOffset)
+		f(glRotatef)
+		f(glScalef)
+		f(glTexEnvf)
+		f(glTexEnvfv)
+		f(glTexParameterf)
+		f(glTexParameterfv)
+		f(glTranslatef)
+
+		/* Available in both Common and Common-Lite profiles */
+		f(glActiveTexture)
+		f(glAlphaFuncx)
+		f(glBindBuffer)
+		f(glBindTexture)
+		f(glBlendFunc)
+		f(glBufferData)
+		f(glBufferSubData)
+		f(glClear)
+		f(glClearColorx)
+		f(glClearDepthx)
+		f(glClearStencil)
+		f(glClientActiveTexture)
+		f(glClipPlanex)
+		f(glColor4ub)
+		f(glColor4x)
+		f(glColorMask)
+		f(glColorPointer)
+		f(glCompressedTexImage2D)
+		f(glCompressedTexSubImage2D)
+		f(glCopyTexImage2D)
+		f(glCopyTexSubImage2D)
+		f(glCullFace)
+		f(glDeleteBuffers)
+		f(glDeleteTextures)
+		f(glDepthFunc)
+		f(glDepthMask)
+		f(glDepthRangex)
+		f(glDisable)
+		f(glDisableClientState)
+		f(glDrawArrays)
+		f(glDrawElements)
+		f(glEnable)
+		f(glEnableClientState)
+		f(glFinish)
+		f(glFlush)
+		f(glFogx)
+		f(glFogxv)
+		f(glFrontFace)
+		f(glFrustumx)
+		f(glGetBooleanv)
+		f(glGetBufferParameteriv)
+		f(glGetClipPlanex)
+		f(glGenBuffers)
+		f(glGenTextures)
+		f(glGetError)
+		f(glGetFixedv)
+		f(glGetIntegerv)
+		f(glGetLightxv)
+		f(glGetMaterialxv)
+		f(glGetPointerv)
+		f(glGetString)
+		f(glGetTexEnviv)
+		f(glGetTexEnvxv)
+		f(glGetTexParameteriv)
+		f(glGetTexParameterxv)
+		f(glHint)
+		f(glIsBuffer)
+		f(glIsEnabled)
+		f(glIsTexture)
+		f(glLightModelx)
+		f(glLightModelxv)
+		f(glLightx)
+		f(glLightxv)
+		f(glLineWidthx)
+		f(glLoadIdentity)
+		f(glLoadMatrixx)
+		f(glLogicOp)
+		f(glMaterialx)
+		f(glMaterialxv)
+		f(glMatrixMode)
+		f(glMultMatrixx)
+		f(glMultiTexCoord4x)
+		f(glNormal3x)
+		f(glNormalPointer)
+		f(glOrthox)
+		f(glPixelStorei)
+		f(glPointParameterx)
+		f(glPointParameterxv)
+		f(glPointSizex)
+		f(glPolygonOffsetx)
+		f(glPopMatrix)
+		f(glPushMatrix)
+		f(glReadPixels)
+		f(glRotatex)
+		f(glSampleCoverage)
+		f(glSampleCoveragex)
+		f(glScalex)
+		f(glScissor)
+		f(glShadeModel)
+		f(glStencilFunc)
+		f(glStencilMask)
+		f(glStencilOp)
+		f(glTexCoordPointer)
+		f(glTexEnvi)
+		f(glTexEnvx)
+		f(glTexEnviv)
+		f(glTexEnvxv)
+		f(glTexImage2D)
+		f(glTexParameteri)
+		f(glTexParameterx)
+		f(glTexParameteriv)
+		f(glTexParameterxv)
+		f(glTexSubImage2D)
+		f(glTranslatex)
+		f(glVertexPointer)
+		f(glViewport)
+
+		/*required to switch stuff around*/
+		f(wglCreateContextAttribsARB)
+		f(glXGetProcAddress)
+		f(glXQueryExtensionsString)
+		f(glXChooseFBConfig)
+		f(glXGetFBConfigAttrib)
+		f(glXGetVisualFromFBConfig)
+		f(glXCreateContextAttribsARB)
+		NULL
+};
+#endif
+
 static void *GLX_GetSymbol(char *name)
 {
 	void *symb;
+
+#if 0//def _DEBUG
+	if (1)
+	{
+		int i;
+		for (i = 0; gles1funcs[i]; i++)
+		{
+			if (!strcmp(name, gles1funcs[i]))
+				break;
+		}
+		if (!gles1funcs[i])
+			return NULL;	//not in the list
+	}
+#endif
 
 	if (glx.GetProcAddress)
 		symb = glx.GetProcAddress(name);
@@ -1339,6 +1676,29 @@ static void *GLX_GetSymbol(char *name)
 	if (!symb)
 		symb = Sys_GetAddressForName(glx.gllibrary, name);
 	return symb;
+}
+
+static qboolean GLX_CheckExtension(const char *ext)
+{
+	const char *e = glx.glxextensions, *n;
+	size_t el = strlen(ext);
+	while(e && *e)
+	{
+		while (*e == ' ')
+			e++;
+		n = strchr(e, ' ');
+		if (!n)
+			n = n+strlen(e);
+
+		if (n-e == el && !strncmp(ext, e, el))
+		{
+			Con_DPrintf("GLX: Found %s\n", ext);
+			return true;
+		}
+		e = n;
+	}
+	Con_DPrintf("GLX: Missing %s\n", ext);
+	return false;
 }
 
 static qboolean GLX_InitLibrary(char *driver)
@@ -1369,17 +1729,15 @@ static qboolean GLX_InitLibrary(char *driver)
 	if (!glx.gllibrary)
 		return false;
 
+	glx.QueryExtensionsString = GLX_GetSymbol("glXQueryExtensionsString");
 	glx.GetProcAddress = GLX_GetSymbol("glXGetProcAddress");
 	if (!glx.GetProcAddress)
 		glx.GetProcAddress = GLX_GetSymbol("glXGetProcAddressARB");
-	glx.QueryExtensionsString = GLX_GetSymbol("glXQueryExtensionsString");
 
 	glx.ChooseFBConfig = GLX_GetSymbol("glXChooseFBConfig");
 	glx.GetFBConfigAttrib = GLX_GetSymbol("glXGetFBConfigAttrib");
 	glx.GetVisualFromFBConfig = GLX_GetSymbol("glXGetVisualFromFBConfig");
 	glx.CreateContextAttribs = GLX_GetSymbol("glXCreateContextAttribsARB");
-	glx.SwapInterval = GLX_GetSymbol("glXSwapIntervalEXT");
-
 	return true;
 }
 
@@ -1390,29 +1748,6 @@ static qboolean GLX_InitLibrary(char *driver)
 #define GLX_CONTEXT_OPENGL_NO_ERROR_ARB	0x31B3
 #endif
 
-static qboolean GLX_CheckExtension(const char *ext)
-{
-	const char *e = glx.glxextensions, *n;
-	size_t el = strlen(ext);
-	while(e && *e)
-	{
-		while (*e == ' ')
-			e++;
-		n = strchr(e, ' ');
-		if (!n)
-			n = n+strlen(e);
-
-		if (n-e == el && !strncmp(ext, e, el))
-		{
-			Con_DPrintf("GLX: Found %s\n", ext);
-			return true;
-		}
-		e = n;
-	}
-	Con_DPrintf("GLX: Missing %s\n", ext);
-	return false;
-}
-
 //Since GLX1.3 (equivelent to gl1.2)
 static GLXFBConfig GLX_GetFBConfig(rendererstate_t *info)
 {
@@ -1422,9 +1757,6 @@ static GLXFBConfig GLX_GetFBConfig(rendererstate_t *info)
 	GLXFBConfig *fbconfigs;
 
 	qboolean hassrgb, hasmultisample;//, hasfloats;
-
-	if (glx.QueryExtensionsString)
-		glx.glxextensions = glx.QueryExtensionsString(vid_dpy, scrnum);
 
 	if (!glx.ChooseFBConfig || !glx.GetVisualFromFBConfig)
 	{
@@ -1498,7 +1830,7 @@ static GLXFBConfig GLX_GetFBConfig(rendererstate_t *info)
 			if (!info->multisample || !hasmultisample)
 				continue;
 			attrib[n++] = GLX_SAMPLE_BUFFERS_ARB;	attrib[n++] = True;
-			attrib[n++] = GLX_SAMPLES_ARB,			attrib[n++] = info->multisample;
+			attrib[n++] = GLX_SAMPLES_ARB;			attrib[n++] = info->multisample;
 		}
 
 		//attrib[n++] = GLX_ACCUM_RED_SIZE;	attrib[n++] = 0;
@@ -3098,14 +3430,28 @@ void GLVID_SwapBuffers (void)
 			int n = vid_vsync.ival;
 			if (cls.timedemo && cls.demoplayback)
 				n = 0;
+			if (!glx.swaptear)
+				n = abs(n);
 			if (glx.swapint != n)
 			{
 				glx.swapint = n;
-				if (glx.SwapInterval)
+				if (glx.SwapIntervalEXT)
 				{
-					glx.SwapInterval(vid_dpy, vid_window, glx.swapint);
-					Con_Printf("Swap interval %i\n", glx.swapint);
+					glx.SwapIntervalEXT(vid_dpy, vid_window, glx.swapint);
+					Con_DPrintf("Swap interval changed to %i\n", glx.swapint);
 				}
+				else if (glx.SwapIntervalMESA && glx.swapint>=0)
+				{
+					glx.SwapIntervalMESA(glx.swapint);
+					Con_DPrintf("Swap interval changed to %i\n", glx.swapint);
+				}
+				else if (glx.SwapIntervalSGI && glx.swapint>0)
+				{
+					glx.SwapIntervalSGI(glx.swapint);
+					Con_DPrintf("Swap interval changed to %i\n", glx.swapint);
+				}
+				else
+					Con_Printf("Unable to change swap interval to %i\n", glx.swapint);
 			}
 		}
 
@@ -3144,35 +3490,43 @@ static void X_StoreIcon(Window wnd)
 	if (!filedata)
 		filedata = FS_LoadMallocFile("icon.jpg", &filesize);
 #endif
+#ifdef IMAGEFMT_BMP
 	if (!filedata)
 		filedata = FS_LoadMallocFile("icon.ico", &filesize);
+#endif
 	if (filedata)
 	{
 		int imagewidth, imageheight;
-		int *iconblob;
+		unsigned long *iconblob;	//yes, long, even on 64bit machines. and even when we claim it to be 32bit. xlib legacy cruft that'll get stripped...
 		uploadfmt_t format;
 		qbyte *imagedata = ReadRawImageFile(filedata, filesize, &imagewidth, &imageheight, &format, true, "icon.png");
 		Z_Free(filedata);
 
-		iconblob = BZ_Malloc(sizeof(int)*(2+imagewidth*imageheight));
-		iconblob[0] = imagewidth;
-		iconblob[1] = imageheight;
-		//needs to be 0xARGB, rather than RGBA bytes
-		for (i = 0; i < imagewidth*imageheight; i++)
-			iconblob[i+2] = (imagedata[i*4+3]<<24) | (imagedata[i*4+0]<<16) | (imagedata[i*4+1]<<8) | (imagedata[i*4+2]<<0);
-		Z_Free(imagedata);
+		if (imagedata)
+		{
+			iconblob = BZ_Malloc(sizeof(*iconblob)*(2+imagewidth*imageheight));
+			iconblob[0] = imagewidth;
+			iconblob[1] = imageheight;
+			//needs to be 0xARGB, rather than RGBA bytes
+			for (i = 0; i < imagewidth*imageheight; i++)
+				iconblob[i+2] = (imagedata[i*4+3]<<24) | (imagedata[i*4+0]<<16) | (imagedata[i*4+1]<<8) | (imagedata[i*4+2]<<0);
+			Z_Free(imagedata);
 
-		x11.pXChangeProperty(vid_dpy, wnd, propname, proptype, 32, PropModeReplace, (void*)iconblob, 2+imagewidth*imageheight);
-		BZ_Free(iconblob);
+			x11.pXChangeProperty(vid_dpy, wnd, propname, proptype, 32, PropModeReplace, (void*)iconblob, 2+imagewidth*imageheight);
+			BZ_Free(iconblob);
+			return;
+		}
 	}
-	else
+
 	{
 		//fall back to the embedded icon.
 		unsigned long data[64*64+2];
 		data[0] = icon.width;
 		data[1] = icon.height;
+
+		/* GIMP exports dumps as RGBA only, so we have to convert them too - eukara */
 		for (i = 0; i < data[0]*data[1]; i++)
-			data[i+2] = ((const unsigned int*)icon.pixel_data)[i];
+			data[i+2] = (icon.pixel_data[i*4+3]<<24) | (icon.pixel_data[i*4+0]<<16) | (icon.pixel_data[i*4+1]<<8) | (icon.pixel_data[i*4+2]<<0);
 
 		x11.pXChangeProperty(vid_dpy, wnd, propname, proptype, 32, PropModeReplace, (void*)data, data[0]*data[1]+2);
 	}
@@ -3502,6 +3856,8 @@ static qboolean X11VID_Init (rendererstate_t *info, unsigned char *palette, int 
 		break;
 #endif
 	case PSL_GLX:
+		if (glx.QueryExtensionsString)
+			glx.glxextensions = glx.QueryExtensionsString(vid_dpy, scrnum);
 		fbconfig = GLX_GetFBConfig(info);
 		if (fbconfig)
 			visinfo = glx.GetVisualFromFBConfig(vid_dpy, fbconfig);
@@ -3596,9 +3952,38 @@ static qboolean X11VID_Init (rendererstate_t *info, unsigned char *palette, int 
 		if (visinfo != &vinfodef)
 #endif
 			x11.pXFree(visinfo);
+
+		glx.SwapIntervalEXT = GLX_CheckExtension("GLX_EXT_swap_control")?GLX_GetSymbol("glXSwapIntervalEXT"):NULL;
+		glx.swaptear = glx.SwapIntervalEXT&&GLX_CheckExtension("GLX_EXT_swap_control_tear");
+//		if (glx.swaptear)
+//			glx.QueryDrawable(vid_dpy, vid_window, 0x20F3, &glx.swaptear);
+		if (!glx.SwapIntervalEXT)
+			glx.SwapIntervalMESA = GLX_CheckExtension("GLX_MESA_swap_control")?GLX_GetSymbol("glXSwapIntervalMESA"):NULL;
+		if (!glx.SwapIntervalEXT && !glx.SwapIntervalMESA)
+			glx.SwapIntervalSGI = GLX_CheckExtension("GLX_SGI_swap_control")?GLX_GetSymbol("glXSwapIntervalSGI"):NULL;
 		glx.swapint = vid_vsync.ival;
-		if (glx.SwapInterval)
-			glx.SwapInterval(vid_dpy, vid_window, glx.swapint);
+		if (!glx.swaptear)
+			glx.swapint	= abs(glx.swapint);
+		if (*vid_vsync.string)
+		{
+			if (glx.SwapIntervalEXT /*&& (glx.swapint>=0 || swap_tear)*/)
+			{
+				glx.SwapIntervalEXT(vid_dpy, vid_window, glx.swapint);
+				Con_DPrintf("Swap interval %i\n", glx.swapint);
+			}
+			else if (glx.SwapIntervalMESA && glx.swapint>=0)
+			{
+				glx.SwapIntervalMESA(abs(glx.swapint));
+				Con_DPrintf("Swap interval %i\n", glx.swapint);
+			}
+			else if (glx.SwapIntervalSGI && glx.swapint>0)
+			{
+				glx.SwapIntervalSGI(glx.swapint);
+				Con_DPrintf("Swap interval %i\n", glx.swapint);
+			}
+			else
+				Con_Printf("Unable to explicitly %s vsync\n", glx.swapint?"configure":"disable");
+		}
 		break;
 #ifdef USE_EGL
 	case PSL_EGL:

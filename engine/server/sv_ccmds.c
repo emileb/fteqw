@@ -777,10 +777,15 @@ void SV_Map_f (void)
 
 		gametype = Cvar_Get("g_gametype", "", CVAR_LATCH|CVAR_SERVERINFO, "Q3 compatability");
 //		gametype->callback = gtcallback;
-		if (q3singleplayer)
-			Cvar_ForceSet(gametype, "2");//singleplayer
-		else if (gametype->value == 2)
-			Cvar_ForceSet(gametype, "");//force to ffa deathmatch
+
+		/* map_restart doesn't need to handle gametype changes - eukara */
+		if (!isrestart)
+		{
+			if (q3singleplayer)
+				Cvar_ForceSet(gametype, "2");//singleplayer
+			else if (gametype->value == 2)
+				Cvar_ForceSet(gametype, "");//force to ffa deathmatch
+		}
 	}
 #endif
 
@@ -2015,8 +2020,16 @@ static void SV_Status_f (void)
 
 	if (svs.gametype == GT_PROGS)
 	{
-		int count = 0;
-		Con_Printf("entities         : %i/%i (mem: %.1f%%)\n", sv.world.num_edicts, sv.world.max_edicts, 100*(float)(sv.world.progs->stringtablesize/(double)sv.world.progs->stringtablemaxsize));
+		int count = 0, i;
+		edict_t *e;
+		for (i = 0; i < sv.world.num_edicts; i++)
+		{
+			e = EDICT_NUM_PB(svprogfuncs, i);
+			if (e && e->ereftype == ER_FREE && sv.time - e->freetime > 0.5)
+				continue;	//free, and older than the zombie time
+			count++;
+		}
+		Con_Printf("entities         : %i/%i/%i (mem: %.1f%%)\n", count, sv.world.num_edicts, sv.world.max_edicts, 100*(float)(sv.world.progs->stringtablesize/(double)sv.world.progs->stringtablemaxsize));
 		for (count = 1; count < MAX_PRECACHE_MODELS; count++)
 			if (!sv.strings.model_precache[count])
 				break;

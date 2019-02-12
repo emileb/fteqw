@@ -1,3 +1,27 @@
+/*
+	Lingering issues:
+
+	nvidia vsync:
+			with vsync enabled and framerates fluctuating across the 1000fps boundary, there is serious stuttering, like its re-showing the previous frame again.
+			this only happens with windows gl, and not vulkan/d3d so I'm assuming this is a driver bug with it mispredicting timings.
+			workaround: enable bloom or something else that's wasteful in terms of gpu time, to keep it under 1000fps.
+
+	nouveau vsync:
+			vsync seems forced when running fullscreen, but not when running windowed.
+			workaround: run windowed.
+
+	nouveau framerates:
+			nouveau doesn't seem to have any pstate control enabled.
+			workaround: sudo echo AUTO>/sys/kernel/debug/dri/0/pstate
+			(you could also use different ids for explicit pstates - eg to return to a low-power state)
+			(the engine cannot do this, as it requires root, nor does it know WHICH dri device to control)
+			(more recent gpus might not support this at all due to nvidia blocking them, but works for my 750ti)
+			(note that nouveau's presentation engine isn't that good, so don't expect 5000fps, but it should make rtlights usable)
+
+	core vs compatibility:
+			vid_gl_context_compatibility defaults to 1, because it still gives higher framerates (due to streaming vertex data from the cpu).
+*/
+
 #include "quakedef.h"
 #ifdef GLQUAKE
 #include "glquake.h"
@@ -170,6 +194,7 @@ void (APIENTRY *qglGetTexLevelParameteriv) (GLenum target, GLint level, GLenum p
 void (APIENTRY *qglGetTexEnviv) (GLenum target, GLenum pname, GLint *params);
 
 void (APIENTRY *qglDrawRangeElements) (GLenum, GLuint, GLuint, GLsizei, GLenum, const GLvoid *);
+void (APIENTRY *qglMultiDrawElements) (GLenum mode, const GLsizei * count, GLenum type, const GLvoid * const * indices, GLsizei drawcount);
 void (APIENTRY *qglArrayElement) (GLint i);
 void (APIENTRY *qglVertexPointer) (GLint size, GLenum type, GLsizei stride, const GLvoid *pointer);
 void (APIENTRY *qglNormalPointer) (GLenum type, GLsizei stride, const GLvoid *pointer);
@@ -238,11 +263,8 @@ FTEPFNGLUNLOCKARRAYSEXTPROC qglUnlockArraysEXT;
 qlpSelTexFUNC qglActiveTextureARB;
 #endif
 qlpSelTexFUNC qglClientActiveTextureARB;
-qlpMTex3FUNC	qglMultiTexCoord3fARB;
-qlpMTex2FUNC	qglMultiTexCoord2fARB;
 
 //generic multitexture
-lpMTexFUNC qglMTexCoord2fSGIS;
 lpSelTexFUNC qglSelectTextureSGIS;
 int mtexid0;
 
@@ -627,9 +649,6 @@ void GL_CheckExtensions (void *(*getglfunction) (char *name))
 #ifndef qglActiveTextureARB
 	qglActiveTextureARB = NULL;
 #endif
-	qglMultiTexCoord2fARB = NULL;
-	qglMultiTexCoord3fARB = NULL;
-	qglMTexCoord2fSGIS = NULL;
 	qglSelectTextureSGIS = NULL;
 	mtexid0 = 0;
 
@@ -709,12 +728,12 @@ void GL_CheckExtensions (void *(*getglfunction) (char *name))
 //	if (GL_CheckExtension("GL_SGIS_generate_mipmap"))	//a suprising number of implementations have this broken.
 //		gl_config.sgis_generate_mipmap = true;
 
-	if (gl_config.gles)
+	if (gl_config.gles || gl_config_nofixedfunc)
 	{
 #ifndef qglActiveTextureARB
 		qglActiveTextureARB = (void *) getglext("glActiveTexture");
 #endif
-		qglClientActiveTextureARB = (void *) getglext("glClientActiveTexture");
+		qglClientActiveTextureARB = (void *) getglext("glClientActiveTexture");	//compat contexts only...
 		qglSelectTextureSGIS = qglActiveTextureARB;
 		mtexid0 = GL_TEXTURE0_ARB;
 		if (!gl_config.nofixedfunc)
@@ -728,19 +747,16 @@ void GL_CheckExtensions (void *(*getglfunction) (char *name))
 		qglActiveTextureARB = (void *) getglext("glActiveTextureARB");
 #endif
 		qglClientActiveTextureARB = (void *) getglext("glClientActiveTextureARB");
-		qglMultiTexCoord2fARB = (void *) getglext("glMultiTexCoord2fARB");
-		qglMultiTexCoord3fARB = (void *) getglext("glMultiTexCoord3fARB");
 
 		qglGetIntegerv(GL_MAX_TEXTURE_UNITS_ARB, &gl_mtexarbable);
 		gl_mtexable = true;
 
-		qglMTexCoord2fSGIS = qglMultiTexCoord2fARB;
 		qglSelectTextureSGIS = qglActiveTextureARB;
 
 		mtexid0 = GL_TEXTURE0_ARB;
 
 #ifndef qglActiveTextureARB
-		if (!qglActiveTextureARB || !qglClientActiveTextureARB || !qglMultiTexCoord2fARB)
+		if (!qglActiveTextureARB || !qglClientActiveTextureARB)
 			gl_mtexable = false;
 		else if (gl_mtexarbable == 1)
 		{
@@ -751,8 +767,6 @@ void GL_CheckExtensions (void *(*getglfunction) (char *name))
 		{
 			qglActiveTextureARB = NULL;
 			qglClientActiveTextureARB = NULL;
-			qglMultiTexCoord2fARB = NULL;
-			qglMTexCoord2fSGIS = NULL;
 			qglSelectTextureSGIS = NULL;
 			gl_mtexable=false;
 			gl_mtexarbable = false;
@@ -845,10 +859,21 @@ void GL_CheckExtensions (void *(*getglfunction) (char *name))
 		qglPNTrianglesfATI = (void *)getglext("glPNTrianglesfATI");
 		qglPNTrianglesiATI = (void *)getglext("glPNTrianglesiATI");
 	}
-	if (!gl_config.gles && gl_config.glversion >= 4.0)
+	if ((!gl_config.gles && gl_config.glversion >= 4.0) || (gl_config.gles && gl_config.glversion >= 3.2))
+	{
+		gl_config.arb_tessellation_shader = true;
 		qglPatchParameteriARB = getglext("glPatchParameteri");
+	}
 	else if (GL_CheckExtension("GL_ARB_tessellation_shader"))
+	{
+		gl_config.arb_tessellation_shader = true;
 		qglPatchParameteriARB = getglext("glPatchParameteriARB");
+	}
+	else if (GL_CheckExtension("GL_OES_tessellation_shader"))
+	{
+		gl_config.arb_tessellation_shader = true;
+		qglPatchParameteriARB = getglext("glPatchParameteriOES");
+	}
 	else
 		qglPatchParameteriARB = NULL;
 
@@ -879,8 +904,6 @@ void GL_CheckExtensions (void *(*getglfunction) (char *name))
 	gl_config.nv_tex_env_combine4 = GL_CheckExtension("GL_NV_texture_env_combine4");
 	gl_config.arb_texture_env_combine = GL_CheckExtension("GL_ARB_texture_env_combine");
 	gl_config.arb_texture_env_dot3 = GL_CheckExtension("GL_ARB_texture_env_dot3");
-
-	gl_config.arb_texture_cube_map = GL_CheckExtension("GL_ARB_texture_cube_map");
 
 	qglBufferStorage = NULL;
 #if !defined(GL_STATIC)
@@ -1127,21 +1150,22 @@ void GL_CheckExtensions (void *(*getglfunction) (char *name))
 		gl_config.arb_depth_texture |= GL_CheckExtension("GL_CHROMIUM_depth_texture");	//nacl
 		gl_config.arb_depth_texture |= GL_CheckExtension("GL_WEBGL_depth_texture");	//webgl. duh.
 		gl_config.arb_depth_texture |= GL_CheckExtension("GL_ANGLE_depth_texture");	//gah. should just use wildcards huh (no uploads)
+		gl_config.arb_shadow = gl_config.glversion>=3.0;//||GL_CheckExtension("GL_EXT_shadow_samplers");
 	}
 	else
 	{
-		gl_config.arb_depth_texture = GL_CheckExtension("GL_ARB_depth_texture");
+		gl_config.arb_depth_texture = gl_config.glversion>=1.4 || GL_CheckExtension("GL_ARB_depth_texture");
+		gl_config.arb_shadow = gl_config.glversion>=1.4||GL_CheckExtension("GL_ARB_shadow");
 	}
-	gl_config.arb_shadow = GL_CheckExtension("GL_ARB_shadow");
 	//gl_config.arb_shadow |= GL_CheckExtension("GL_EXT_shadow_samplers");	//gles2. nvidia fucks up. depend on brute-force. :s
 
 	if (GL_CheckExtension("GL_ARB_seamless_cube_map"))
 		qglEnable(0x884F);	//TEXTURE_CUBE_MAP_SEAMLESS                   0x884F
 
-	if (!gl_config.gles && gl_config.glversion >= 3.2)
-		gl_config.geometryshaders = true;
+	if (gl_config.gles)
+		gl_config.geometryshaders = (gl_config.glversion >= 3.2) || GL_CheckExtension("GL_OES_geometry_shader");
 	else
-		gl_config.geometryshaders = false;
+		gl_config.geometryshaders = (gl_config.glversion >= 3.2);
 
 	qglTexStorage2D = NULL;
 	qglTexStorage3D = NULL;
@@ -1325,13 +1349,7 @@ static const char *glsl_hdrs[] =
 				"attribute vec4 v_colour4;"
 #endif
 			"\n#endif\n"
-#ifdef SHADOWDBG_COLOURNOTDEPTH
-			"#define sampler2DShadow sampler2D\n"
-#else
-			"#ifndef USE_ARB_SHADOW\n"	//fall back on regular samplers if we must
-				"#define sampler2DShadow sampler2D\n"
-			"#endif\n"
-#endif
+
 			"#ifndef SPECEXP\n"
 				"#define SPECEXP 1.0\n"
 			"#endif\n"
@@ -1420,9 +1438,9 @@ static const char *glsl_hdrs[] =
 					"layout(std140) unform u_bones\n"
 					"{\n"
 						"#ifdef PACKEDBONES\n"
-							"vec4 m_bones[3*MAX_GPU_BONES];\n"
+							"vec4 m_bones_packed[3*MAX_GPU_BONES];\n"
 						"#else\n"
-							"mat3x4 m_bones[MAX_GPU_BONES]\n"
+							"mat3x4 m_bones_mat3x4[MAX_GPU_BONES]\n"
 						"#endif\n"
 					"};\n"
 				"#endif\n"
@@ -1436,9 +1454,9 @@ static const char *glsl_hdrs[] =
 				"#endif\n"
 				"#ifdef SKELETAL\n"	//skeletal permutation tends to require glsl 120
 					"#ifdef PACKEDBONES\n"
-						"uniform vec4 m_bones[3*MAX_GPU_BONES];\n"
+						"uniform vec4 m_bones_packed[3*MAX_GPU_BONES];\n"
 					"#else\n"
-						"uniform mat3x4 m_bones[MAX_GPU_BONES];\n"
+						"uniform mat3x4 m_bones_mat3x4[MAX_GPU_BONES];\n"
 					"#endif\n"
 				"#endif\n"
 				"uniform mat4 m_invviewprojection;"
@@ -1497,9 +1515,9 @@ static const char *glsl_hdrs[] =
 					"attribute vec4 v_bone;"
 					"attribute vec4 v_weight;\n"
 					"#ifdef PACKEDBONES\n"
-						"uniform vec4 m_bones[3*MAX_GPU_BONES];\n"
+						"uniform vec4 m_bones_packed[3*MAX_GPU_BONES];\n"
 					"#else\n"
-						"uniform mat3x4 m_bones[MAX_GPU_BONES];\n"
+						"uniform mat3x4 m_bones_mat3x4[MAX_GPU_BONES];\n"
 					"#endif\n"
 				"#endif\n"
 				
@@ -1507,36 +1525,36 @@ static const char *glsl_hdrs[] =
 					"vec4 skeletaltransform()"
 					"{"
 						"mat4 wmat;"
-						"wmat[0]  = m_bones[0+3*int(v_bone.x)] * v_weight.x;"
-						"wmat[0] += m_bones[0+3*int(v_bone.y)] * v_weight.y;"
-						"wmat[0] += m_bones[0+3*int(v_bone.z)] * v_weight.z;"
-						"wmat[0] += m_bones[0+3*int(v_bone.w)] * v_weight.w;"
-						"wmat[1]  = m_bones[1+3*int(v_bone.x)] * v_weight.x;"
-						"wmat[1] += m_bones[1+3*int(v_bone.y)] * v_weight.y;"
-						"wmat[1] += m_bones[1+3*int(v_bone.z)] * v_weight.z;"
-						"wmat[1] += m_bones[1+3*int(v_bone.w)] * v_weight.w;"
-						"wmat[2]  = m_bones[2+3*int(v_bone.x)] * v_weight.x;"
-						"wmat[2] += m_bones[2+3*int(v_bone.y)] * v_weight.y;"
-						"wmat[2] += m_bones[2+3*int(v_bone.z)] * v_weight.z;"
-						"wmat[2] += m_bones[2+3*int(v_bone.w)] * v_weight.w;"
+						"wmat[0]  = m_bones_packed[0+3*int(v_bone.x)] * v_weight.x;"
+						"wmat[0] += m_bones_packed[0+3*int(v_bone.y)] * v_weight.y;"
+						"wmat[0] += m_bones_packed[0+3*int(v_bone.z)] * v_weight.z;"
+						"wmat[0] += m_bones_packed[0+3*int(v_bone.w)] * v_weight.w;"
+						"wmat[1]  = m_bones_packed[1+3*int(v_bone.x)] * v_weight.x;"
+						"wmat[1] += m_bones_packed[1+3*int(v_bone.y)] * v_weight.y;"
+						"wmat[1] += m_bones_packed[1+3*int(v_bone.z)] * v_weight.z;"
+						"wmat[1] += m_bones_packed[1+3*int(v_bone.w)] * v_weight.w;"
+						"wmat[2]  = m_bones_packed[2+3*int(v_bone.x)] * v_weight.x;"
+						"wmat[2] += m_bones_packed[2+3*int(v_bone.y)] * v_weight.y;"
+						"wmat[2] += m_bones_packed[2+3*int(v_bone.z)] * v_weight.z;"
+						"wmat[2] += m_bones_packed[2+3*int(v_bone.w)] * v_weight.w;"
 						"wmat[3] = vec4(0.0,0.0,0.0,1.0);\n"
 						"return m_modelviewprojection * (vec4(v_position.xyz, 1.0) * wmat);"
 					"}\n"
 					"vec4 skeletaltransform_nst(out vec3 n, out vec3 t, out vec3 b)"
 					"{"
 						"mat4 wmat;"
-						"wmat[0]  = m_bones[0+3*int(v_bone.x)] * v_weight.x;"
-						"wmat[0] += m_bones[0+3*int(v_bone.y)] * v_weight.y;"
-						"wmat[0] += m_bones[0+3*int(v_bone.z)] * v_weight.z;"
-						"wmat[0] += m_bones[0+3*int(v_bone.w)] * v_weight.w;"
-						"wmat[1]  = m_bones[1+3*int(v_bone.x)] * v_weight.x;"
-						"wmat[1] += m_bones[1+3*int(v_bone.y)] * v_weight.y;"
-						"wmat[1] += m_bones[1+3*int(v_bone.z)] * v_weight.z;"
-						"wmat[1] += m_bones[1+3*int(v_bone.w)] * v_weight.w;"
-						"wmat[2]  = m_bones[2+3*int(v_bone.x)] * v_weight.x;"
-						"wmat[2] += m_bones[2+3*int(v_bone.y)] * v_weight.y;"
-						"wmat[2] += m_bones[2+3*int(v_bone.z)] * v_weight.z;"
-						"wmat[2] += m_bones[2+3*int(v_bone.w)] * v_weight.w;"
+						"wmat[0]  = m_bones_packed[0+3*int(v_bone.x)] * v_weight.x;"
+						"wmat[0] += m_bones_packed[0+3*int(v_bone.y)] * v_weight.y;"
+						"wmat[0] += m_bones_packed[0+3*int(v_bone.z)] * v_weight.z;"
+						"wmat[0] += m_bones_packed[0+3*int(v_bone.w)] * v_weight.w;"
+						"wmat[1]  = m_bones_packed[1+3*int(v_bone.x)] * v_weight.x;"
+						"wmat[1] += m_bones_packed[1+3*int(v_bone.y)] * v_weight.y;"
+						"wmat[1] += m_bones_packed[1+3*int(v_bone.z)] * v_weight.z;"
+						"wmat[1] += m_bones_packed[1+3*int(v_bone.w)] * v_weight.w;"
+						"wmat[2]  = m_bones_packed[2+3*int(v_bone.x)] * v_weight.x;"
+						"wmat[2] += m_bones_packed[2+3*int(v_bone.y)] * v_weight.y;"
+						"wmat[2] += m_bones_packed[2+3*int(v_bone.z)] * v_weight.z;"
+						"wmat[2] += m_bones_packed[2+3*int(v_bone.w)] * v_weight.w;"
 						"wmat[3] = vec4(0.0,0.0,0.0,1.0);"
 						"n = (vec4(v_normal.xyz, 0.0) * wmat).xyz;"
 						"t = (vec4(v_svector.xyz, 0.0) * wmat).xyz;"
@@ -1546,18 +1564,18 @@ static const char *glsl_hdrs[] =
 					"vec4 skeletaltransform_wnst(out vec3 w, out vec3 n, out vec3 t, out vec3 b)"
 					"{"
 						"mat4 wmat;"
-						"wmat[0]  = m_bones[0+3*int(v_bone.x)] * v_weight.x;"
-						"wmat[0] += m_bones[0+3*int(v_bone.y)] * v_weight.y;"
-						"wmat[0] += m_bones[0+3*int(v_bone.z)] * v_weight.z;"
-						"wmat[0] += m_bones[0+3*int(v_bone.w)] * v_weight.w;"
-						"wmat[1]  = m_bones[1+3*int(v_bone.x)] * v_weight.x;"
-						"wmat[1] += m_bones[1+3*int(v_bone.y)] * v_weight.y;"
-						"wmat[1] += m_bones[1+3*int(v_bone.z)] * v_weight.z;"
-						"wmat[1] += m_bones[1+3*int(v_bone.w)] * v_weight.w;"
-						"wmat[2]  = m_bones[2+3*int(v_bone.x)] * v_weight.x;"
-						"wmat[2] += m_bones[2+3*int(v_bone.y)] * v_weight.y;"
-						"wmat[2] += m_bones[2+3*int(v_bone.z)] * v_weight.z;"
-						"wmat[2] += m_bones[2+3*int(v_bone.w)] * v_weight.w;"
+						"wmat[0]  = m_bones_packed[0+3*int(v_bone.x)] * v_weight.x;"
+						"wmat[0] += m_bones_packed[0+3*int(v_bone.y)] * v_weight.y;"
+						"wmat[0] += m_bones_packed[0+3*int(v_bone.z)] * v_weight.z;"
+						"wmat[0] += m_bones_packed[0+3*int(v_bone.w)] * v_weight.w;"
+						"wmat[1]  = m_bones_packed[1+3*int(v_bone.x)] * v_weight.x;"
+						"wmat[1] += m_bones_packed[1+3*int(v_bone.y)] * v_weight.y;"
+						"wmat[1] += m_bones_packed[1+3*int(v_bone.z)] * v_weight.z;"
+						"wmat[1] += m_bones_packed[1+3*int(v_bone.w)] * v_weight.w;"
+						"wmat[2]  = m_bones_packed[2+3*int(v_bone.x)] * v_weight.x;"
+						"wmat[2] += m_bones_packed[2+3*int(v_bone.y)] * v_weight.y;"
+						"wmat[2] += m_bones_packed[2+3*int(v_bone.z)] * v_weight.z;"
+						"wmat[2] += m_bones_packed[2+3*int(v_bone.w)] * v_weight.w;"
 						"wmat[3] = vec4(0.0,0.0,0.0,1.0);"
 						"n = (vec4(v_normal.xyz, 0.0) * wmat).xyz;"
 						"t = (vec4(v_svector.xyz, 0.0) * wmat).xyz;"
@@ -1568,18 +1586,18 @@ static const char *glsl_hdrs[] =
 					"vec4 skeletaltransform_n(out vec3 n)"
 					"{"
 						"mat4 wmat;"
-						"wmat[0]  = m_bones[0+3*int(v_bone.x)] * v_weight.x;"
-						"wmat[0] += m_bones[0+3*int(v_bone.y)] * v_weight.y;"
-						"wmat[0] += m_bones[0+3*int(v_bone.z)] * v_weight.z;"
-						"wmat[0] += m_bones[0+3*int(v_bone.w)] * v_weight.w;"
-						"wmat[1]  = m_bones[1+3*int(v_bone.x)] * v_weight.x;"
-						"wmat[1] += m_bones[1+3*int(v_bone.y)] * v_weight.y;"
-						"wmat[1] += m_bones[1+3*int(v_bone.z)] * v_weight.z;"
-						"wmat[1] += m_bones[1+3*int(v_bone.w)] * v_weight.w;"
-						"wmat[2]  = m_bones[2+3*int(v_bone.x)] * v_weight.x;"
-						"wmat[2] += m_bones[2+3*int(v_bone.y)] * v_weight.y;"
-						"wmat[2] += m_bones[2+3*int(v_bone.z)] * v_weight.z;"
-						"wmat[2] += m_bones[2+3*int(v_bone.w)] * v_weight.w;"
+						"wmat[0]  = m_bones_packed[0+3*int(v_bone.x)] * v_weight.x;"
+						"wmat[0] += m_bones_packed[0+3*int(v_bone.y)] * v_weight.y;"
+						"wmat[0] += m_bones_packed[0+3*int(v_bone.z)] * v_weight.z;"
+						"wmat[0] += m_bones_packed[0+3*int(v_bone.w)] * v_weight.w;"
+						"wmat[1]  = m_bones_packed[1+3*int(v_bone.x)] * v_weight.x;"
+						"wmat[1] += m_bones_packed[1+3*int(v_bone.y)] * v_weight.y;"
+						"wmat[1] += m_bones_packed[1+3*int(v_bone.z)] * v_weight.z;"
+						"wmat[1] += m_bones_packed[1+3*int(v_bone.w)] * v_weight.w;"
+						"wmat[2]  = m_bones_packed[2+3*int(v_bone.x)] * v_weight.x;"
+						"wmat[2] += m_bones_packed[2+3*int(v_bone.y)] * v_weight.y;"
+						"wmat[2] += m_bones_packed[2+3*int(v_bone.z)] * v_weight.z;"
+						"wmat[2] += m_bones_packed[2+3*int(v_bone.w)] * v_weight.w;"
 						"wmat[3] = vec4(0.0,0.0,0.0,1.0);"
 						"n = (vec4(v_normal.xyz, 0.0) * wmat).xyz;"
 						"return m_modelviewprojection * (vec4(v_position.xyz, 1.0) * wmat);"
@@ -1588,19 +1606,19 @@ static const char *glsl_hdrs[] =
 					"vec4 skeletaltransform()"
 					"{"
 						"mat3x4 wmat;"
-						"wmat = m_bones[int(v_bone.x)] * v_weight.x;"
-						"wmat += m_bones[int(v_bone.y)] * v_weight.y;"
-						"wmat += m_bones[int(v_bone.z)] * v_weight.z;"
-						"wmat += m_bones[int(v_bone.w)] * v_weight.w;"
+						"wmat = m_bones_mat3x4[int(v_bone.x)] * v_weight.x;"
+						"wmat += m_bones_mat3x4[int(v_bone.y)] * v_weight.y;"
+						"wmat += m_bones_mat3x4[int(v_bone.z)] * v_weight.z;"
+						"wmat += m_bones_mat3x4[int(v_bone.w)] * v_weight.w;"
 						"return m_modelviewprojection * vec4(vec4(v_position.xyz, 1.0) * wmat, 1.0);"
 					"}\n"
 					"vec4 skeletaltransform_nst(out vec3 n, out vec3 t, out vec3 b)"
 					"{"
 						"mat3x4 wmat;"
-						"wmat = m_bones[int(v_bone.x)] * v_weight.x;"
-						"wmat += m_bones[int(v_bone.y)] * v_weight.y;"
-						"wmat += m_bones[int(v_bone.z)] * v_weight.z;"
-						"wmat += m_bones[int(v_bone.w)] * v_weight.w;"
+						"wmat = m_bones_mat3x4[int(v_bone.x)] * v_weight.x;"
+						"wmat += m_bones_mat3x4[int(v_bone.y)] * v_weight.y;"
+						"wmat += m_bones_mat3x4[int(v_bone.z)] * v_weight.z;"
+						"wmat += m_bones_mat3x4[int(v_bone.w)] * v_weight.w;"
 						"n = vec4(v_normal.xyz, 0.0) * wmat;"
 						"t = vec4(v_svector.xyz, 0.0) * wmat;"
 						"b = vec4(v_tvector.xyz, 0.0) * wmat;"
@@ -1609,10 +1627,10 @@ static const char *glsl_hdrs[] =
 					"vec4 skeletaltransform_wnst(out vec3 w, out vec3 n, out vec3 t, out vec3 b)"
 					"{"
 						"mat3x4 wmat;"
-						"wmat = m_bones[int(v_bone.x)] * v_weight.x;"
-						"wmat += m_bones[int(v_bone.y)] * v_weight.y;"
-						"wmat += m_bones[int(v_bone.z)] * v_weight.z;"
-						"wmat += m_bones[int(v_bone.w)] * v_weight.w;"
+						"wmat = m_bones_mat3x4[int(v_bone.x)] * v_weight.x;"
+						"wmat += m_bones_mat3x4[int(v_bone.y)] * v_weight.y;"
+						"wmat += m_bones_mat3x4[int(v_bone.z)] * v_weight.z;"
+						"wmat += m_bones_mat3x4[int(v_bone.w)] * v_weight.w;"
 						"n = vec4(v_normal.xyz, 0.0) * wmat;"
 						"t = vec4(v_svector.xyz, 0.0) * wmat;"
 						"b = vec4(v_tvector.xyz, 0.0) * wmat;"
@@ -1622,10 +1640,10 @@ static const char *glsl_hdrs[] =
 					"vec4 skeletaltransform_n(out vec3 n)"
 					"{"
 						"mat3x4 wmat;"
-						"wmat = m_bones[int(v_bone.x)] * v_weight.x;"
-						"wmat += m_bones[int(v_bone.y)] * v_weight.y;"
-						"wmat += m_bones[int(v_bone.z)] * v_weight.z;"
-						"wmat += m_bones[int(v_bone.w)] * v_weight.w;"
+						"wmat = m_bones_mat3x4[int(v_bone.x)] * v_weight.x;"
+						"wmat += m_bones_mat3x4[int(v_bone.y)] * v_weight.y;"
+						"wmat += m_bones_mat3x4[int(v_bone.z)] * v_weight.z;"
+						"wmat += m_bones_mat3x4[int(v_bone.w)] * v_weight.w;"
 						"n = vec4(v_normal.xyz, 0.0) * wmat;"
 						"return m_modelviewprojection * vec4(vec4(v_position.xyz, 1.0) * wmat, 1.0);"
 					"}\n"
@@ -1748,9 +1766,9 @@ static const char *glsl_hdrs[] =
 				"vec2 tc = base;\n"
 				"tc += OffsetVector;\n"
 				"OffsetVector *= 0.333;\n"
-				"tc -= OffsetVector * texture2D(normtex, tc).w;\n"
-				"tc -= OffsetVector * texture2D(normtex, tc).w;\n"
-				"tc -= OffsetVector * texture2D(normtex, tc).w;\n"
+				"tc -= OffsetVector * texture2D(normtex, tc).a;\n"
+				"tc -= OffsetVector * texture2D(normtex, tc).a;\n"
+				"tc -= OffsetVector * texture2D(normtex, tc).a;\n"
 				"return tc;\n"
 			"#else\n"
 				"return base;\n"
@@ -2043,6 +2061,7 @@ static GLhandleARB GLSlang_CreateShader (program_t *prog, const char *name, int 
 			//150 [core|compatibility] == gl3.2
 			//300 ES == gles3
 			//310 ES == gles3.1
+			//320 ES == gles3.2
 			//330, 400, 410, 420, 430 [core|compatibility] == gl?.??
 
 			if (gl_config_gles)
@@ -2051,6 +2070,13 @@ static GLhandleARB GLSlang_CreateShader (program_t *prog, const char *name, int 
 					ver = 100;
 				else if (ver <= 330)	//gles3 is rougly gl3.3 so 300es==330ish
 					ver = 300;
+			}
+			else
+			{
+				if (ver == 100)
+					ver = 110;	//gles2 is roughly equivelent to gl2
+				else if (ver >= 300 && ver < 330)
+					ver = 330;	//gles3 is roughly equivelent to gl3.3
 			}
 
 
@@ -2071,6 +2097,8 @@ static GLhandleARB GLSlang_CreateShader (program_t *prog, const char *name, int 
 		GLSlang_GenerateInternal(&glsl, *precompilerconstants++);
 
 	GLSlang_GenerateInternal(&glsl, "#define ENGINE_"DISTRIBUTION"\n");
+	if (ver < 120)
+		GLSlang_GenerateInternal(&glsl, "#define PACKEDBONES\n");
 
 	switch (shadertype)
 	{
@@ -2089,7 +2117,7 @@ static GLhandleARB GLSlang_CreateShader (program_t *prog, const char *name, int 
 		if (ver >= 130)
 		{
 			GLSlang_GenerateInternal(&glsl, 
-				//gl3+ deprecated the some things. these are removed in forwards-compatible / core contexts.
+				//gl3+ deprecated some things. these are removed in forwards-compatible / core contexts.
 				//varying became either in or out, which is important if you have geometry shaders...
 				"#define varying in\n"
 				//now only the 'texture' function exists, with overloads for each sampler type.
@@ -2126,7 +2154,17 @@ static GLhandleARB GLSlang_CreateShader (program_t *prog, const char *name, int 
 #if 1//def NOLEGACY
 			const char *defaultsamplernames[] =
 			{
+				#ifdef SHADOWDBG_COLOURNOTDEPTH
+							"#define sampler2DShadow sampler2D\n"
+				#else
+							"#ifndef USE_ARB_SHADOW\n"	//fall back on regular samplers if we must
+								"#define sampler2DShadow sampler2D\n"
+							"#elif defined(GL_ES)\n"
+								"precision lowp sampler2DShadow;\n"	//gah
+							"#endif\n"
+				#endif
 				"uniform sampler2DShadow s_shadowmap;\n",
+
 				"uniform samplerCube s_projectionmap;\n",
 				"uniform sampler2D s_diffuse;\n",
 				"uniform sampler2D s_normalmap;\n",
@@ -2137,6 +2175,7 @@ static GLhandleARB GLSlang_CreateShader (program_t *prog, const char *name, int 
 				"uniform sampler2D s_paletted;\n",
 				"uniform samplerCube s_reflectcube;\n",
 				"uniform sampler2D s_reflectmask;\n",
+				"uniform sampler2D s_displacement;\n",
 				"uniform sampler2D s_lightmap;\n#define s_lightmap0 s_lightmap\n",
 				"uniform sampler2D s_deluxemap;\n#define s_deluxemap0 s_deluxemap\n",
 
@@ -2201,8 +2240,6 @@ static GLhandleARB GLSlang_CreateShader (program_t *prog, const char *name, int 
 					"#define varying out\n"
 				);
 		}
-		else if (ver < 120)
-			GLSlang_GenerateInternal(&glsl, "#define PACKEDBONES\n");
 
 		if (gl_config_nofixedfunc)
 		{
@@ -2365,19 +2402,41 @@ static GLhandleARB GLSlang_FinishShader(GLhandleARB shader, const char *name, GL
 
 			if (developer.ival>1)
 			{	//could use echo console-link I guess (with embedded line numbers). shaders can get quite big though.
-				unsigned int line;
-				char *eol, *start;
+				unsigned int rawline, line, filenum = 0;
+				char *eol, *start, *e;
+				const char *filename = name;
 				qglGetShaderSource(shader, sizeof(str), NULL, str);
 				Con_Printf("Shader \"%s\" source:\n", name);
-				for(start = str, line = 1; ;line++)
+				for(start = str, line = 1, rawline = 1; ;)
 				{
 					eol = strchr(start, '\n');
 					if (eol)
 						*eol=0;
-					Con_Printf("%3u: %s\n", line, start);
+					if (filename)
+						Con_Printf("%s:%u:%u: %s\n", filename, line, rawline, start);
+					else
+						Con_Printf("%u:%u:%u: %s\n", filenum, line, rawline, start);
+					if (!strncmp(start, "#line ", 6))
+					{
+						line = strtoul(start+6, &e, 0);
+						while(*e == ' ')
+							e++;
+						if (*e)
+						{
+							filenum = strtoul(e, &e, 0);
+							while(*e == ' ')
+								e++;
+							filename = NULL;
+							if (e[0]=='/'&&e[1]=='/')
+								filename = e+2;
+						}
+					}
+					else
+						line++;
 					if (!eol)
 						break;
 					start = eol+1;
+					rawline++;
 				}
 			}
 		}
@@ -2512,7 +2571,7 @@ union programhandle_u GLSlang_CreateProgram(program_t *prog, const char *name, i
 
 	if (!gl_config.arb_shader_objects)
 		return ret;
-	if ((cont || eval) && !qglPatchParameteriARB)
+	if ((cont || eval) && !gl_config.arb_tessellation_shader)
 	{
 		Con_Printf("GLSlang_CreateProgram: %s requires tesselation support, but your gl drivers do not appear to support this (gl4.0 feature)\n", name);
 		return ret;
@@ -2589,11 +2648,7 @@ qboolean GLSlang_CreateProgramPermu(program_t *prog, struct programpermu_s *perm
 		if (gl_config.gles)
 			ver = 100;
 		else
-		{
 			ver = 110;
-			if (sh_config.maxver>=120 && (permu->permutation & PERMUTATION_SKELETAL))
-				ver = 120;
-		}
 	}
 	if ((permu->permutation & PERMUTATION_SKELETAL) && gl_config.maxattribs < 10)
 		return false;	//can happen in gles2
@@ -2918,11 +2973,6 @@ void GL_ForgetPointers(void)
 #endif
 	qglClientActiveTextureARB = NULL;
 	qglSelectTextureSGIS = NULL;
-	qglMTexCoord2fSGIS = NULL;
-	qglMultiTexCoord2fARB = NULL;
-	qglMultiTexCoord3fARB = NULL;
-	qglMTexCoord2fSGIS = NULL;
-	qglSelectTextureSGIS = NULL;
 	mtexid0 = 0;
 
 #ifndef GL_STATIC
@@ -3178,6 +3228,8 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 	if (qglDrawRangeElements == 0)
 		qglDrawRangeElements = GL_DrawRangeElementsEmul;
 
+	qglMultiDrawElements	= (void *)getglext("glMultiDrawElements");	//since gl2
+
 	//fixme: definatly make non-core
 	qglPushAttrib		= (void *)getglcore("glPushAttrib");
 	qglPopAttrib		= (void *)getglcore("glPopAttrib");
@@ -3303,7 +3355,7 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 	{
 		sh_config.can_mipcap = gl_config.glversion >= 1.2;
 
-		sh_config.havecubemaps = gl_config.glversion >= 1.3;	//cubemaps AND clamp-to-edge.
+		sh_config.havecubemaps = gl_config.glversion >= 1.3||GL_CheckExtension("GL_ARB_texture_cube_map");;	//cubemaps AND clamp-to-edge.
 
 		if (gl_config.nofixedfunc)
 		{	//core contexts don't normally support glsl < 140 (such glsl versions have lots of compat syntax still, which will not function on core. drivers might accept it anyway, but yeah, lots of crap that shouldn't work)
@@ -3330,6 +3382,10 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 	sh_config.texturecube_maxsize = 0;
 	if (sh_config.havecubemaps)
 		qglGetIntegerv(GL_MAX_CUBE_MAP_TEXTURE_SIZE_ARB, &sh_config.texturecube_maxsize);
+	if (!gl_config_gles || gl_config.glversion >= 3)
+		qglGetIntegerv(GL_MAX_3D_TEXTURE_SIZE, &sh_config.texture3d_maxsize);
+	if (gl_config.glversion >= 3)
+		qglGetIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS, &sh_config.texture2darray_maxlayers);
 
 	sh_config.progs_supported	= gl_config.arb_shader_objects;
 	sh_config.progs_required	= gl_config_nofixedfunc;

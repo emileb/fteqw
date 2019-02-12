@@ -45,15 +45,13 @@ static cvar_t	cl_iDrive = CVARFD("cl_iDrive", "1", CVAR_SEMICHEAT, "Effectively 
 cvar_t	cl_run = CVARD("cl_run", "0", "Enables autorun, inverting the state of the +speed key.");
 cvar_t	cl_fastaccel = CVARD("cl_fastaccel", "1", "Begin moving at full speed instantly, instead of waiting a frame or so.");
 extern cvar_t cl_rollspeed;
+static cvar_t cl_sendchatstate = CVARD("cl_sendchatstate", "1", "Announce your chat state to the server in a privacy-violating kind of way. This allows other players to see your afk/at-console status.");
 
 cvar_t	cl_prydoncursor = CVAR("cl_prydoncursor", "");	//for dp protocol
 cvar_t	cl_instantrotate = CVARF("cl_instantrotate", "1", CVAR_SEMICHEAT);
 cvar_t in_xflip = {"in_xflip", "0"};
 
 cvar_t	prox_inmenu = CVAR("prox_inmenu", "0");
-
-static int preselectedweapons[MAX_SPLITS];
-static int preselectedweapon[MAX_SPLITS][32];
 
 usercmd_t cl_pendingcmd[MAX_SPLITS];
 
@@ -270,6 +268,9 @@ static cvar_t	cl_weaponhide_preference = CVARAD("cl_weaponhide_preference", "2 1
 static cvar_t	cl_weaponpreselect = CVARD("cl_weaponpreselect", "0", "HACK: Controls the interaction between the ^aweapon^a and ^a+attack^a commands (does not affect ^aimpulse^a).\n0: weapon switch happens instantly\n1: weapon switch happens on next attack\n2: instant only when already firing, otherwise delayed\n3: delay until new attack only in deathmatch 1\n4: delay until any attack only in deathmatch 1");
 static cvar_t	cl_weaponforgetorder = CVARD("cl_weaponforgetorder", "0", "The 'weapon' command will lock in its weapon choice, instead of choosing a different weapon between select+fire.");
 cvar_t r_viewpreselgun = CVARD("r_viewpreselgun", "0", "HACK: Display the preselected weaponmodel, instead of the current weaponmodel.");
+static int preselectedweapons[MAX_SPLITS];
+static int preselectedweapon[MAX_SPLITS][32];
+
 //hacks, because we have to guess what the mod is doing. we'll probably get it wrong, which sucks.
 static qboolean IN_HaveWeapon(int pnum, int imp)
 {
@@ -1811,10 +1812,17 @@ qboolean CLQW_SendCmd (sizebuf_t *buf, qboolean actuallysend)
 	if (!clientcount)
 		clientcount = 1;
 
-
 	chatstate = 0;
-	chatstate |= Key_Dest_Has(~kdm_game)?1:0;
-	chatstate |= vid.activeapp?0:2;
+	if (cl_sendchatstate.ival)
+	{
+		if (Key_Dest_Has(kdm_message|kdm_console|kdm_cwindows))
+			chatstate |= 1;		//chatting
+		else if (Key_Dest_Has(~(kdm_game|kdm_centerprint)))
+			chatstate |= 2;		//afk. ezquake sends chatting, but neither are really appropriate.
+		if (!vid.activeapp || vid.isminimized)
+			chatstate |= 2;		//afk.
+		//FIXME: flag as afk if no new inputs for a while.
+	}
 	for (plnum = 0; plnum<clientcount; plnum++)
 	{
 		if (cl.playerview[plnum].chatstate != chatstate)
@@ -2524,7 +2532,7 @@ void CL_InitInput (void)
 #ifdef NQPROT
 	Cvar_Register (&cl_movement, inputnetworkcvargroup);
 #endif
-
+	Cvar_Register (&cl_sendchatstate, inputnetworkcvargroup);
 	Cvar_Register (&cl_smartjump, inputnetworkcvargroup);
 
 	Cvar_Register (&cl_prydoncursor, inputnetworkcvargroup);

@@ -13,12 +13,12 @@
 //filesystem rebranding
 #define GAME_SHORTNAME		"freecs"	//short alphanumeric description
 #define GAME_FULLNAME		FULLENGINENAME 	//full name of the game we're playing
-#define GAME_BASEGAMES		GAME_SHORTNAME	//comma-separate list of basegame strings to use
+#define GAME_BASEGAMES		"logos","valve","cstrike","freecs"	//comma-separate list of basegame strings to use
 #define GAME_PROTOCOL		"FTE-FCS"	//so other games won't show up in the server browser
-#define GAME_DEFAULTPORT	27500			//FIXME: change me!
+#define GAME_DEFAULTPORT	23000		//FIXME: change me!
 //#define GAME_IDENTIFYINGFILES	NULL	//with multiple games, this string-list gives verification that the basedir is actually valid. if null, will just be assumed correct.
-//#define GAME_DOWNLOADSURL	NULL	//url for the package manger to update from
-//#define GAME_DEFAULTCMDS	NULL	//a string containing the things you want to 
+//#define GAME_DOWNLOADSURL	NULL		//url for the package manger to update from
+//#define GAME_DEFAULTCMDS	NULL		//a string containing the things you want to 
 
 // All my fault -eukara
 #define ENGINE_ROUTING
@@ -34,12 +34,13 @@
 #undef HEADLESSQUAKE
 #undef WAYLANDQUAKE
 
+#define AVAIL_FREETYPE	//for truetype font rendering
 #define HAVE_PACKET
 #define QUAKETC
 #define AVAIL_OPENAL
 #define AVAIL_ZLIB
 #define AVAIL_OGGVORBIS
-#define NOMEDIA
+//#define NOMEDIA
 #define CL_MASTER
 #define CSQC_DAT
 #define MENU_DAT
@@ -90,7 +91,6 @@
 #define HALFLIFEMODELS
 
 // What do we NOT want to use
-#undef AVAIL_FREETYPE	//for truetype font rendering
 #undef AVAIL_WASAPI	//windows advanced sound api
 #undef AVAIL_DSOUND
 #undef BOTLIB_STATIC	//q3 botlib
@@ -102,10 +102,11 @@
 #undef AVAIL_MP3_ACM	//.mp3 support (in windows).
 #undef IMAGEFMT_KTX
 #undef IMAGEFMT_PKM
+#define IMAGEFMT_PCX
 #undef IMAGEFMT_DDS	//.dds files embed mipmaps and texture compression. faster to load.
 #undef IMAGEFMT_BLP	//legacy crap
 #define IMAGEFMT_BMP	//legacy crap
-#undef IMAGEFMT_PCX	//legacy crap
+//#undef IMAGEFMT_PCX	//legacy crap
 #undef DECOMPRESS_ETC2
 #undef DECOMPRESS_RGTC
 #undef DECOMPRESS_S3TC
@@ -132,7 +133,7 @@
 #undef TEXTEDITOR	//my funky text editor! its awesome!
 #undef TCPCONNECT	//support for playing over tcp sockets, instead of just udp. compatible with qizmo.
 #undef IRCCONNECT	//lame support for routing game packets via irc server. not a good idea.
-#undef PLUGINS		//support for external plugins (like huds or fancy menus or whatever)
+#define PLUGINS		//support for external plugins (like huds or fancy menus or whatever)
 #undef SUPPORT_ICE	//Internet Connectivity Establishment, for use by plugins to establish voice or game connections.
 #undef PSET_CLASSIC	//support the 'classic' particle system, for that classic quake feel.
 #undef HAVE_CDPLAYER	//includes cd playback. actual cds. named/numbered tracks are supported regardless (though you need to use the 'music' command to play them without this).
@@ -147,12 +148,12 @@
 #undef HLSERVER
 #undef FTPSERVER
 //undef CLIENTONLY	//leave this up to the makefiles.
-#undef HAVE_TCP
+#define HAVE_TCP
 #undef HAVE_GNUTLS	//linux tls/dtls support
 #undef HAVE_WINSSPI	//windows tls/dtls support
 #undef HAVE_JUKEBOX	//includes built-in jukebox crap
-#undef HAVE_MEDIA_DECODER	//can play cin/roq, more with plugins
-#undef HAVE_MEDIA_ENCODER	//capture/capturedemo work.
+#define HAVE_MEDIA_DECODER	//can play cin/roq, more with plugins
+#define HAVE_MEDIA_ENCODER	//capture/capturedemo work.
 #undef HAVE_SPEECHTOTEXT	//windows speech-to-text thing
 
 #ifdef COMPILE_OPTS

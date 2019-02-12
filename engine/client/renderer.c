@@ -127,7 +127,7 @@ cvar_t r_refractreflect_scale				= CVARD ("r_refractreflect_scale", "0.5", "Use 
 cvar_t r_drawviewmodel						= CVARF  ("r_drawviewmodel", "1", CVAR_ARCHIVE);
 cvar_t r_drawviewmodelinvis					= CVAR  ("r_drawviewmodelinvis", "0");
 cvar_t r_dynamic							= CVARFD ("r_dynamic", IFMINIMAL("0","1"),
-													  CVAR_ARCHIVE, "-1: the engine will bypass dlights completely, allowing for better batching.\n0: no standard dlights at all.\n1: coloured dlights will be used, they may show through walls. These are not realtime things.\n2: The dlights will be forced to monochrome (this does not affect coronas/flashblends/rtlights attached to the same light).");
+													  CVAR_ARCHIVE, "-1: the engine will use only pvs to determine which surfaces are visible. This can significantly reduce CPU time, but only if there are many surfaces with few textures visible from the camera.\n0: no standard dlights at all.\n1: coloured dlights will be used, they may show through walls. These are not realtime things.\n2: The dlights will be forced to monochrome (this does not affect coronas/flashblends/rtlights attached to the same light).");
 cvar_t r_fastturb							= CVARF ("r_fastturb", "0",
 													CVAR_SHADERSYSTEM);
 cvar_t r_fastsky							= CVARF ("r_fastsky", "0",
@@ -175,7 +175,7 @@ cvar_t r_hdr_irisadaptation_fade_up			= CVAR	("r_hdr_irisadaptation_fade_up", "0
 cvar_t r_loadlits							= CVARF	("r_loadlit", "1", CVAR_ARCHIVE);
 cvar_t r_menutint							= CVARF	("r_menutint", "0.68 0.4 0.13",
 												CVAR_RENDERERCALLBACK);
-cvar_t r_netgraph							= CVAR	("r_netgraph", "0");
+cvar_t r_netgraph							= CVARD	("r_netgraph", "0", "Displays a graph of packet latency. A value of 2 will give additional info about what sort of data is being received from the server.");
 extern cvar_t r_lerpmuzzlehack;
 cvar_t r_nolerp								= CVARF	("r_nolerp", "0", CVAR_ARCHIVE);
 cvar_t r_noframegrouplerp					= CVARF	("r_noframegrouplerp", "0", CVAR_ARCHIVE);
@@ -186,7 +186,7 @@ cvar_t r_part_rain							= CVARFD ("r_part_rain", "0",
 												"Enable particle effects to emit off of surfaces. Mainly used for weather or lava/slime effects.");
 cvar_t r_skyboxname							= CVARFC ("r_skybox", "",
 												CVAR_RENDERERCALLBACK | CVAR_SHADERSYSTEM, R_SkyBox_Changed);
-cvar_t r_softwarebanding_cvar				= CVARFD ("r_softwarebanding", "0", CVAR_SHADERSYSTEM|CVAR_RENDERERLATCH, "Utilise the Quake colormap in order to emulate 8bit software rendering. This results in banding as well as other artifacts that some believe adds character. Also forces nearest sampling on affected surfaces (palette indicies do not interpolate well).");
+cvar_t r_softwarebanding_cvar				= CVARFD ("r_softwarebanding", "0", CVAR_SHADERSYSTEM|CVAR_RENDERERLATCH|CVAR_ARCHIVE, "Utilise the Quake colormap in order to emulate 8bit software rendering. This results in banding as well as other artifacts that some believe adds character. Also forces nearest sampling on affected surfaces (palette indicies do not interpolate well).");
 qboolean r_softwarebanding;
 cvar_t r_speeds								= CVAR ("r_speeds", "0");
 cvar_t r_stainfadeammount					= CVAR  ("r_stainfadeammount", "1");
@@ -1565,8 +1565,8 @@ TRACE(("dbg: R_ApplyRenderer: wad loaded\n"));
 		Draw_Init();
 TRACE(("dbg: R_ApplyRenderer: draw inited\n"));
 #ifdef MENU_NATIVECODE
-	if (mn_entry)
-		mn_entry->Init(MI_RENDERER, vid.width, vid.height, vid.rotpixelwidth, vid.rotpixelheight);
+		if (mn_entry)
+			mn_entry->Init(MI_RENDERER, vid.width, vid.height, vid.rotpixelwidth, vid.rotpixelheight);
 #endif
 		R_Init();
 		RQ_Init();
@@ -2096,7 +2096,7 @@ static int QDECL R_SortRenderers(const void *av, const void *bv)
 
 void R_RestartRenderer (rendererstate_t *newr)
 {
-#ifndef CLIENTONLY
+#if !defined(CLIENTONLY) && (defined(Q2BSPS) || defined(Q3BSPS))
 	void *portalblob = NULL;
 	size_t portalsize = 0;
 #endif
@@ -3004,7 +3004,7 @@ void R_SetFrustum (float projmat[16], float viewmat[16])
 
 	//do far plane
 	//fog will logically not actually reach 0, though precision issues will force it. we cut off at an exponant of -500
-	if (r_refdef.globalfog.density && r_fog_cullentities.ival)
+	if (r_refdef.globalfog.density && r_refdef.globalfog.alpha>=1 && r_fog_cullentities.ival)
 	{
 		float culldist;
 		float fog;

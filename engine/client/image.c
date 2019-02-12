@@ -3003,6 +3003,8 @@ qboolean Image_WriteKTXFile(const char *filename, enum fs_relative fsroot, struc
 	case PTI_L8A8_SRGB:			header.glinternalformat = 0x8C45/*GL_SLUMINANCE8_ALPHA8*/;	header.glbaseinternalformat = 0x190A/*GL_LUMINANCE_ALPHA*/;	header.glformat = 0x190A/*GL_LUMINANCE_ALPHA*/;	header.gltype = 0x1401/*GL_UNSIGNED_BYTE*/;					header.gltypesize = 1; break;
 	case PTI_RGB8:				header.glinternalformat = 0x8051/*GL_RGB8*/;				header.glbaseinternalformat = 0x1907/*GL_RGB*/;				header.glformat = 0x1907/*GL_RGB*/;				header.gltype = 0x1401/*GL_UNSIGNED_BYTE*/;					header.gltypesize = 1; break;
 	case PTI_BGR8:				header.glinternalformat = 0x8051/*GL_RGB8*/;				header.glbaseinternalformat = 0x1907/*GL_RGB*/;				header.glformat = 0x80E0/*GL_BGR*/;				header.gltype = 0x1401/*GL_UNSIGNED_BYTE*/;					header.gltypesize = 1; break;
+	case PTI_R16F:				header.glinternalformat = 0x822D/*GL_R16F*/;				header.glbaseinternalformat = 0x1903/*GL_RED*/;				header.glformat = 0x1903/*GL_RED*/;				header.gltype = 0x140B/*GL_HALF_FLOAT*/;					header.gltypesize = 2; break;
+	case PTI_R32F:				header.glinternalformat = 0x822E/*GL_R32F*/;				header.glbaseinternalformat = 0x1903/*GL_RED*/;				header.glformat = 0x1903/*GL_RED*/;				header.gltype = 0x1406/*GL_FLOAT*/;							header.gltypesize = 4; break;
 	case PTI_RGBA16F:			header.glinternalformat = 0x881A/*GL_RGBA16F*/;				header.glbaseinternalformat = 0x1908/*GL_RGBA*/;			header.glformat = 0x1908/*GL_RGBA*/;			header.gltype = 0x140B/*GL_HALF_FLOAT*/;					header.gltypesize = 2; break;
 	case PTI_RGBA32F:			header.glinternalformat = 0x8814/*GL_RGBA32F*/;				header.glbaseinternalformat = 0x1908/*GL_RGBA*/;			header.glformat = 0x1908/*GL_RGBA*/;			header.gltype = 0x1406/*GL_FLOAT*/;							header.gltypesize = 4; break;
 	case PTI_A2BGR10:			header.glinternalformat = 0x8059/*GL_RGB10_A2*/;			header.glbaseinternalformat = 0x1908/*GL_RGBA*/;			header.glformat = 0x1908/*GL_RGBA*/;			header.gltype = 0x8368/*GL_UNSIGNED_INT_2_10_10_10_REV*/;	header.gltypesize = 4; break;
@@ -3174,6 +3176,8 @@ static struct pendingtextureinfo *Image_ReadKTXFile(unsigned int flags, const ch
 	case 0x81A6/*GL_DEPTH_COMPONENT24*/:						encoding = PTI_DEPTH24;				break;
 	case 0x81A7/*GL_DEPTH_COMPONENT32*/:						encoding = PTI_DEPTH32;				break;
 	case 0x88F0/*GL_DEPTH24_STENCIL8*/:							encoding = PTI_DEPTH24_8;			break;
+	case 0x822D/*GL_R16F*/:										encoding = PTI_R16F;				break;
+	case 0x822E/*GL_R32F*/:										encoding = PTI_R32F;				break;
 
 	case 0x8C40/*GL_SRGB*/:
 	case 0x8C41/*GL_SRGB8*/:
@@ -3790,6 +3794,8 @@ qboolean Image_WriteDDSFile(const char *filename, enum fs_relative fsroot, struc
 	case PTI_L8A8_SRGB:			return false;	//unsupported
 	case PTI_RGB8:				return false;	//unsupported
 	case PTI_BGR8:				return false;	//unsupported
+	case PTI_R16F:				h10.dxgiformat = 54/*DXGI_FORMAT_R16_FLOAT*/; break;
+	case PTI_R32F:				h10.dxgiformat = 41/*DXGI_FORMAT_R32_FLOAT*/; break;
 	case PTI_RGBA16F:			h10.dxgiformat = 10/*DXGI_FORMAT_R16G16B16A16_FLOAT*/; break;
 	case PTI_RGBA32F:			h10.dxgiformat = 2/*DXGI_FORMAT_R32G32B32A32_FLOAT*/; break;
 	case PTI_A2BGR10:			h10.dxgiformat = 24/*DXGI_FORMAT_R10G10B10A2_UNORM*/; break;
@@ -5714,6 +5720,12 @@ void Image_BlockSizeForEncoding(uploadfmt_t encoding, unsigned int *blockbytes, 
 		b = 4;
 		break;
 
+	case PTI_R16F:
+		b = 1*2;
+		break;
+	case PTI_R32F:
+		b = 1*4;
+		break;
 	case PTI_RGBA16F:
 		b = 4*2;
 		break;
@@ -5851,6 +5863,8 @@ const char *Image_FormatName(uploadfmt_t fmt)
 	case PTI_BGRX8_SRGB:		return "RGBX8_SRGB";
 	case PTI_A2BGR10:			return "A2BGR10";
 	case PTI_E5BGR9:			return "E5BGR9";
+	case PTI_R16F:				return "R16F";
+	case PTI_R32F:				return "R32F";
 	case PTI_RGBA16F:			return "RGBA16F";
 	case PTI_RGBA32F:			return "RGBA32F";
 	case PTI_R8:				return "R8";
@@ -6867,6 +6881,8 @@ static qboolean Image_GenMip0(struct pendingtextureinfo *mips, unsigned int flag
 		case PTI_EAC_R11_SNORM:
 		case PTI_EAC_RG11:
 		case PTI_EAC_RG11_SNORM:
+		case PTI_R16F:
+		case PTI_R32F:
 			break;	//already no alpha in these formats
 		case PTI_DEPTH16:
 		case PTI_DEPTH24:
@@ -8446,6 +8462,66 @@ void Image_List_f(void)
 	Con_Printf("%i images failed\n", failed);
 }
 
+void Image_Formats_f(void)
+{
+	size_t i;
+
+#ifdef GLQUAKE
+	if (qrenderer == QR_OPENGL)
+	{
+		Con_Printf("OpenGL info:\n");
+		Con_Printf("OpenGL Version: %s%g\n", gl_config.gles?"ES ":"", gl_config.glversion);
+		Con_Printf("OpenGLSL Version: %i\n", gl_config.maxglslversion);
+		Con_Printf("OpenGLSL Attributes: %u\n", gl_config.maxattribs);
+
+		Con_Printf("arb_texture_env_combine: %u\n", gl_config.arb_texture_env_combine);
+		Con_Printf("arb_texture_env_dot3: %u\n", gl_config.arb_texture_env_dot3);
+		Con_Printf("arb_texture_compression: %u\n", gl_config.arb_texture_compression);
+		Con_Printf("geometryshaders: %u\n", gl_config.geometryshaders);
+		Con_Printf("ext_framebuffer_objects: %u\n", gl_config.ext_framebuffer_objects);
+		Con_Printf("arb_framebuffer_srgb: %u\n", gl_config.arb_framebuffer_srgb);
+		Con_Printf("arb_shader_objects: %u\n", gl_config.arb_shader_objects);
+		Con_Printf("arb_shadow: %u\n", gl_config.arb_shadow);
+		Con_Printf("arb_depth_texture: %u\n", gl_config.arb_depth_texture);
+		Con_Printf("ext_stencil_wrap: %u\n", gl_config.ext_stencil_wrap);
+		Con_Printf("ext_packed_depth_stencil: %u\n", gl_config.ext_packed_depth_stencil);
+		Con_Printf("arb_depth_clamp: %u\n", gl_config.arb_depth_clamp);
+		Con_Printf("ext_texture_filter_anisotropic: %u\n", gl_config.ext_texture_filter_anisotropic);
+	}
+#endif
+
+	Con_Printf(		"            Programs: "S_COLOR_GREEN"%s\n", sh_config.progs_supported?va(sh_config.progpath, "*"):S_COLOR_RED"Unsupported");
+	if (sh_config.progs_supported)
+	{
+		Con_Printf(	"     Shader versions: %u - %u\n", sh_config.minver, sh_config.maxver);
+		Con_Printf(	"       Max GPU Bones: %s%u\n", sh_config.max_gpu_bones?S_COLOR_GREEN:S_COLOR_RED, sh_config.max_gpu_bones);
+	}
+	Con_Printf(		"     Legacy Pipeline: %s\n", sh_config.progs_required?S_COLOR_RED"Unsupported":S_COLOR_GREEN"Supported");
+	if (!sh_config.progs_required)
+	{
+		Con_Printf(	"       Env_Combiners: %s\n", sh_config.nv_tex_env_combine4?S_COLOR_GREEN"Extended":sh_config.tex_env_combine?S_COLOR_GREEN"Supported":S_COLOR_RED"Unsupported");
+		Con_Printf(	"             Env_Add: %s\n", sh_config.env_add?S_COLOR_GREEN"Supported":S_COLOR_RED"Unsupported");
+	}
+	Con_Printf(		"  Max Texture2d Size: %s%u*%u\n", S_COLOR_GREEN, sh_config.texture2d_maxsize, sh_config.texture2d_maxsize);
+	Con_Printf(		"Max Texture2d Layers: %s%u\n", sh_config.texture2darray_maxlayers?S_COLOR_GREEN:S_COLOR_RED, sh_config.texture2darray_maxlayers);
+	Con_Printf(		"  Max Texture3d Size: %s%u*%u*%u\n", sh_config.texture3d_maxsize?S_COLOR_GREEN:S_COLOR_RED, sh_config.texture3d_maxsize, sh_config.texture3d_maxsize, sh_config.texture3d_maxsize);
+	Con_Printf(		"Max TextureCube Size: %s%u*%u\n", sh_config.havecubemaps?S_COLOR_GREEN:S_COLOR_RED, sh_config.texturecube_maxsize, sh_config.texturecube_maxsize);
+	Con_Printf(		"    Non-Power-Of-Two: %s%s\n", sh_config.texture_non_power_of_two?S_COLOR_GREEN"Supported":(sh_config.texture_non_power_of_two_pic?S_COLOR_YELLOW"Limited":S_COLOR_RED"Unsupported"), sh_config.npot_rounddown?" (rounded down)":"");
+	Con_Printf(		"  Block Size Padding: %s\n", sh_config.texture_allow_block_padding?S_COLOR_GREEN"Supported":S_COLOR_RED"Unsupported");
+	Con_Printf(		"              Mipcap: %s\n", sh_config.can_mipcap?S_COLOR_GREEN"Supported":S_COLOR_RED"Unsupported");
+	for (i = 0; i < PTI_MAX; i++)
+	{
+		switch(i)
+		{
+		case PTI_EMULATED:
+			continue;
+		default:
+			break;
+		}
+		Con_Printf("%20s: %s\n", Image_FormatName(i), sh_config.texfmt[i]?S_COLOR_GREEN"Enabled":S_COLOR_RED"Disabled");
+	}
+}
+
 //may not create any images yet.
 void Image_Init(void)
 {
@@ -8454,6 +8530,7 @@ void Image_Init(void)
 	Hash_InitTable(&imagetable, sizeof(imagetablebuckets)/sizeof(imagetablebuckets[0]), imagetablebuckets);
 
 	Cmd_AddCommandD("r_imagelist", Image_List_f, "Prints out a list of the currently-known textures.");
+	Cmd_AddCommandD("r_imageformats", Image_Formats_f, "Prints out a list of the usable texture formats.");
 }
 //destroys all textures
 void Image_Shutdown(void)

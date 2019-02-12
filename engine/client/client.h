@@ -541,7 +541,6 @@ typedef struct
 #ifdef NQPROT
 	int signon;
 #endif
-	int language;
 
 	colourised_t *colourised;
 	qboolean	nqexpectingstatusresponse;
@@ -1271,7 +1270,7 @@ void CL_ParseQTVFile(vfsfile_t *f, const char *fname, qtvfile_t *result);
 //
 #define NET_TIMINGS 256
 #define NET_TIMINGSMASK 255
-extern int	packet_latency[NET_TIMINGS];
+extern float	packet_latency[NET_TIMINGS];
 int CL_CalcNet (float scale);
 void CL_CalcNet2 (float *pings, float *pings_min, float *pings_max, float *pingms_stddev, float *pingfr, int *pingfr_min, int *pingfr_max, float *dropped, float *choked, float *invalid);
 void CL_ClearParseState(void);
@@ -1283,6 +1282,7 @@ void CLNQ_ParseServerMessage (void);
 #ifdef Q2CLIENT
 void CLQ2_ParseServerMessage (void);
 #endif
+void CL_ShowTrafficUsage(float x, float y);
 void CL_NewTranslation (int slot);
 
 int CL_IsDownloading(const char *localname);
@@ -1622,6 +1622,8 @@ void Editor_Draw(void);
 void Editor_Init(void);
 struct pubprogfuncs_s;
 void Editor_ProgsKilled(struct pubprogfuncs_s *dead);
+#else
+#define editormodal false
 #endif
 
 void SCR_StringToRGB (char *rgbstring, float *rgb, float rgbinputscale);

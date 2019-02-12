@@ -269,6 +269,7 @@ typedef struct shaderpass_s {
 		T_GEN_PALETTED,		//texture's original paletted data (8bit)
 		T_GEN_REFLECTCUBE,	//dpreflectcube
 		T_GEN_REFLECTMASK,	//dpreflectcube mask
+		T_GEN_DISPLACEMENT,	//displacement texture (probably half-float or something so higher precision than normalmap.a)
 
 		T_GEN_CURRENTRENDER,//copy the current screen to a texture, and draw that
 
@@ -437,7 +438,8 @@ typedef struct {
 		SP_W_FOG,
 		SP_W_USER,	//user-specified blob of data.
 
-		SP_M_ENTBONES,
+		SP_M_ENTBONES_PACKED,
+		SP_M_ENTBONES_MAT3X4,
 		SP_M_VIEW,
 		SP_M_MODEL,
 		SP_M_MODELVIEW,
@@ -646,6 +648,7 @@ struct shader_s
 		SHADER_HASPALETTED		= 1 << 28,	//has a T_GEN_PALETTED pass
 		SHADER_HASCURRENTRENDER	= 1 << 29,	//has a $currentrender pass
 		SHADER_HASPORTAL		= 1 << 30,	//reflection image is actually a portal rather than a simple reflection (must be paired with SHADER_HASREFRACT)
+		SHADER_HASDISPLACEMENT	= (int)(1u << 31)
 	} flags;
 
 	program_t *prog;
@@ -780,6 +783,8 @@ typedef struct
 
 	qboolean texfmt[PTI_MAX];		//which texture formats are supported (renderable not implied)
 	unsigned int texture2d_maxsize;			//max size of a 2d texture
+	unsigned int texture3d_maxsize;			//max size of a 3d texture
+	unsigned int texture2darray_maxlayers;	//max layers of a 2darray texture
 	unsigned int texturecube_maxsize;
 	qboolean texture_non_power_of_two;		//full support for npot
 	qboolean texture_non_power_of_two_pic;	//npot only works with clamp-to-edge mipless images.

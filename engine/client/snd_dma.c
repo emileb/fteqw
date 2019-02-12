@@ -104,7 +104,7 @@ cvar_t snd_khz					= CVARAFD(	"s_khz", DEFAULT_SND_KHZ,
 											"snd_khz", CVAR_ARCHIVE, "Sound speed, in kilohertz. Common values are 11, 22, 44, 48. Values above 1000 are explicitly in hertz.");
 cvar_t	snd_inactive			= CVARAFD(	"s_inactive", "1",
 											"snd_inactive", CVAR_ARCHIVE,
-											"Play sound while application is inactive (ex. tabbed out). Needs a snd_restart if changed."
+											"Play sound while application is inactive (ie: tabbed out). Needs a snd_restart if changed."
 											);	//set if you want sound even when tabbed out.
 cvar_t _snd_mixahead			= CVARAFD(	"s_mixahead", "0.1",
 											"_snd_mixahead", CVAR_ARCHIVE, "Specifies how many seconds to prebuffer audio. Lower values give less latency, but might result in crackling. Different hardware/drivers have different tolerances, and this setting may be ignored completely where drivers are expected to provide their own tolerances.");
@@ -113,7 +113,7 @@ cvar_t snd_leftisright			= CVARAF(	"s_swapstereo", "0",
 cvar_t snd_eax					= CVARAF(	"s_eax", "0",
 											"snd_eax", 0);
 cvar_t snd_speakers				= CVARAFD(	"s_numspeakers", "2",
-											"snd_numspeakers", CVAR_ARCHIVE, "Number of hardware audio channels to use. "DISTRIBUTION" supports up to 6.");
+											"snd_numspeakers", CVAR_ARCHIVE, "Number of hardware audio channels to use. "FULLENGINENAME" supports up to 6.");
 cvar_t snd_buffersize			= CVARAF(	"s_buffersize", "0",
 											"snd_buffersize", 0);
 cvar_t snd_samplebits			= CVARAF(	"s_bits", "16",
@@ -152,7 +152,7 @@ cvar_t snd_voip_send			= CVARFD("cl_voip_send", "0", CVAR_ARCHIVE, "Sends voice-
 cvar_t snd_voip_test			= CVARD("cl_voip_test", "0", "If 1, enables you to hear your own voice directly, bypassing the server and thus without networking latency, but is fine for checking audio levels. Note that sv_voip_echo can be set if you want to include latency and packetloss considerations, but setting that cvar requires server admin access and is thus much harder to use.");
 cvar_t snd_voip_vad_threshhold	= CVARFD("cl_voip_vad_threshhold", "15", CVAR_ARCHIVE, "This is the threshhold for voice-activation-detection when sending voip data");
 cvar_t snd_voip_vad_delay		= CVARD("cl_voip_vad_delay", "0.3", "Keeps sending voice data for this many seconds after voice activation would normally stop");
-cvar_t snd_voip_capturingvol	= CVARAFD("cl_voip_capturingvol", "0.5", NULL, CVAR_ARCHIVE, "Volume multiplier applied while capturing, to avoid your audio from being heard by others. Does not affect game volume when other speak (minimum of cl_voip_capturingvol and cl_voip_ducking is used).");
+cvar_t snd_voip_capturingvol	= CVARAFD("cl_voip_capturingvol", "0.5", NULL, CVAR_ARCHIVE, "Volume multiplier applied while capturing, to avoid your audio from being heard by others. Does not affect game volume when others speak (minimum of cl_voip_capturingvol and cl_voip_ducking is used).");
 cvar_t snd_voip_showmeter		= CVARAFD("cl_voip_showmeter", "1", NULL, CVAR_ARCHIVE, "Shows your speech volume above the standard hud. 0=hide, 1=show when transmitting, 2=ignore voice-activation disable");
 
 cvar_t snd_voip_play			= CVARAFCD("cl_voip_play", "1", NULL, CVAR_ARCHIVE, S_Voip_Play_Callback, "Enables voip playback. Value is a volume scaler.");
@@ -286,7 +286,11 @@ enum
 
 	VOIP_INVALID = 16	//not currently generating audio.
 };
+#ifdef NOLEGACY
+#define VOIP_DEFAULT_CODEC VOIP_OPUS
+#else
 #define VOIP_DEFAULT_CODEC (cls.protocol==CP_QUAKEWORLD?VOIP_SPEEX_OLD:VOIP_OPUS)	//opus is preferred, but ezquake is still common and only supports my first attempt at voice compression so favour that for quakeworld.
+#endif
 static struct
 {
 	struct
@@ -1746,6 +1750,7 @@ extern sounddriver_t DSOUND_Output;
 sounddriver_t SDL_Output;
 #ifdef __linux__
 sounddriver_t ALSA_Output;
+sounddriver_t Pulse_Output;
 #endif
 sounddriver_t OSS_Output;
 #ifdef AVAIL_OPENAL
@@ -1790,11 +1795,12 @@ static sounddriver_t *outputdrivers[] =
 	&WASAPI_Output,	//this is last, so that we can default to exclusive. woot.
 #endif
 
-	&SDL_Output,		//prefered on linux
+	&SDL_Output,		//prefered on linux. distros can ensure that its configured correctly.
 #ifdef __linux__
-	&ALSA_Output,		//pure shite
+	&Pulse_Output,		//wasteful, and availability generally means Alsa is broken/defective.
+	&ALSA_Output,		//pure shite, and availability generally means OSS is broken/defective.
 #endif
-	&OSS_Output,		//good, but not likely to work any more on linux (unlike every other unix system with a decent opengl driver)
+	&OSS_Output,		//good for low latency audio, but not likely to work any more on linux (unlike every other unix system with a decent opengl driver)
 #ifdef __DJGPP__
 	&SBLASTER_Output,	//zomgwtfdos?
 #endif
@@ -3490,6 +3496,11 @@ static void S_Q2_AddEntitySounds(soundcardinfo_t *sc)
 		count = CLQ2_GatherSounds(positions, entnums, sounds, countof(sounds));
 	else
 #endif
+#ifdef VM_CG
+	if (cls.protocol == CP_QUAKE3)
+		count = CG_GatherLoopingSounds(positions, entnums, sounds, countof(sounds));
+	else
+#endif
 		return;
 	
 	while(count --> 0)
@@ -3542,7 +3553,11 @@ static void S_Q2_AddEntitySounds(soundcardinfo_t *sc)
 		}
 		if (sc->ChannelUpdate)
 		{	//hardware mixing doesn't support merging
+			VectorCopy(positions[count], c->origin);
 			SND_Spatialize(sc, c);
+
+			if (c->sfx)
+				sc->ChannelUpdate(sc, c, false);
 		}
 		else
 		{	//merge with any other ents, if we can

@@ -549,7 +549,6 @@ void CLQ3_ParseGameState(void)
 	cl.maxpitch = 90;
 
 	ccs.lastServerCommandNum = MSG_ReadLong();
-	ccs.currentServerCommandNum = ccs.lastServerCommandNum;
 
 	for(;;)
 	{
@@ -1028,7 +1027,7 @@ void CLQ3_SendAuthPacket(netadr_t *gameserver)
 				}
 				MSG_WriteByte(&msg, 0);
 
-				NET_SendPacket (NS_CLIENT, msg.cursize, msg.data, &authaddr);
+				NET_SendPacket (cls.sockets, msg.cursize, msg.data, &authaddr);
 			}
 			else
 				Con_Printf("    failed\n");
@@ -1062,7 +1061,7 @@ void CLQ3_SendConnectPacket(netadr_t *to, int challenge, int qport)
 		return;
 	}
 #endif
-	NET_SendPacket (NS_CLIENT, msg.cursize, msg.data, to);
+	NET_SendPacket (cls.sockets, msg.cursize, msg.data, to);
 }
 #endif
 

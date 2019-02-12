@@ -85,6 +85,7 @@ enum fs_relative;
 
 typedef enum uploadfmt
 {
+//NOTE: these values are exposed to native plugins but not QC.
 	PTI_INVALID,
 
 	//these formats are specified as direct byte access (listed in byte order, aka big-endian 0xrrggbbaa order)
@@ -108,6 +109,8 @@ typedef enum uploadfmt
 	PTI_R8_SNORM,
 	PTI_RG8_SNORM,	//might be useful for normalmaps
 	//floating point formats
+	PTI_R16F,
+	PTI_R32F,
 	PTI_RGBA16F,
 	PTI_RGBA32F,
 	//packed/misaligned formats: these are specified in native endian order (high bits listed first because that's how things are represented in hex), so may need byte swapping...
@@ -257,6 +260,7 @@ void Font_BeginString(struct font_s *font, float vx, float vy, int *px, int *py)
 void Font_BeginScaledString(struct font_s *font, float vx, float vy, float szx, float szy, float *px, float *py); /*avoid using*/
 void Font_Transform(float vx, float vy, int *px, int *py);
 int Font_CharHeight(void);
+float Font_CharVHeight(struct font_s *font);
 float Font_CharScaleHeight(void);
 int Font_CharWidth(unsigned int charflags, unsigned int codepoint);
 float Font_CharScaleWidth(unsigned int charflags, unsigned int codepoint);
@@ -322,4 +326,4 @@ fte_inline float M_LinearToSRGB(float x, float mag)
 
 void R_NetgraphInit(void);
 void R_NetGraph (void);
-void R_FrameTimeGraph (int frametime);
+void R_FrameTimeGraph (float frametime);

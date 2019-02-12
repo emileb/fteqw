@@ -648,7 +648,7 @@ static char *SCR_CopyCenterPrint(cprint_t *p)	//reads the link under the mouse c
 }
 
 #define MAX_CPRINT_LINES 512
-void SCR_DrawCenterString (vrect_t *rect, cprint_t *p, struct font_s *font)
+int SCR_DrawCenterString (vrect_t *rect, cprint_t *p, struct font_s *font)
 {
 	int				l;
 	int				y, x;
@@ -689,7 +689,7 @@ void SCR_DrawCenterString (vrect_t *rect, cprint_t *p, struct font_s *font)
 		}
 
 		if (rect->width < 32)
-			return;
+			return 0;
 		rect->x += 16;
 		rect->width -= 32;
 
@@ -794,6 +794,8 @@ void SCR_DrawCenterString (vrect_t *rect, cprint_t *p, struct font_s *font)
 	}
 
 	Font_EndString(font);
+
+	return linecount;
 }
 
 qboolean Key_Centerprint(int key, int unicode, unsigned int devid)
@@ -904,7 +906,7 @@ void SCR_CheckDrawCenterString (void)
 	}
 }
 
-void R_DrawTextField(int x, int y, int w, int h, const char *text, unsigned int defaultmask, unsigned int fieldflags, struct font_s *font, vec2_t fontscale)
+int R_DrawTextField(int x, int y, int w, int h, const char *text, unsigned int defaultmask, unsigned int fieldflags, struct font_s *font, vec2_t fontscale)
 {
 	cprint_t p;
 	vrect_t r;
@@ -923,7 +925,7 @@ void R_DrawTextField(int x, int y, int w, int h, const char *text, unsigned int 
 	p.time_start = cl.time;
 	*p.titleimage = 0;
 
-	SCR_DrawCenterString(&r, &p, font);
+	return SCR_DrawCenterString(&r, &p, font);
 }
 
 qboolean SCR_HardwareCursorIsActive(void)
@@ -948,7 +950,7 @@ void SCR_DrawCursor(void)
 		return;
 
 	//choose the cursor based upon the module that has primary focus
-	if (key_dest_mask & key_dest_absolutemouse & (kdm_console|kdm_cwindows|kdm_editor))
+	if (key_dest_mask & key_dest_absolutemouse & (kdm_console|kdm_cwindows))
 		cmod = kc_console;
 	else if ((key_dest_mask & key_dest_absolutemouse & kdm_emenu))
 		cmod = kc_console;
@@ -1644,8 +1646,10 @@ void SCR_StringXY(const char *str, float x, float y)
 	int px, py;
 	unsigned int codepoint;
 	int error;
+	//pick the largest of the two. this is to avoid awkwardness with fonts that lack a version <12 pixels high.
+	struct font_s *font = (Font_CharVHeight(font_console)>Font_CharVHeight(font_default))?font_console:font_default;
 
-	Font_BeginString(font_default, ((x<0)?vid.width:x), ((y<0)?vid.height - sb_lines:y), &px, &py);
+	Font_BeginString(font, ((x<0)?vid.width:x), ((y<0)?vid.height - sb_lines:y), &px, &py);
 
 	if (x < 0)
 	{
@@ -1664,7 +1668,7 @@ void SCR_StringXY(const char *str, float x, float y)
 		codepoint = unicode_decode(&error, str, &str, true);
 		px = Font_DrawChar(px, py, CON_WHITEMASK, codepoint);
 	}
-	Font_EndString(font_default);
+	Font_EndString(font);
 }
 
 /*
@@ -1783,10 +1787,10 @@ void SCR_DrawFPS (void)
 		lastupdatetime = t;
 		break;
 	case 5:
-		R_FrameTimeGraph((int)(1000.0*2*frametime));
+		R_FrameTimeGraph(1000.0*2*frametime);
 		break;
 	case 7:
-		R_FrameTimeGraph((int)(1000.0*1*frametime));
+		R_FrameTimeGraph(1000.0*1*frametime);
 		break;
 	case 6:
 		{
@@ -1962,6 +1966,7 @@ void SCR_SetLoadingFile(char *str)
 
 	if (scr_loadingrefresh.ival)
 	{
+		r_refdef.warndraw = false;
 		SCR_UpdateScreen();
 	}
 }
@@ -2211,6 +2216,7 @@ void SCR_BeginLoadingPlaque (void)
 	if (!scr_disabled_for_loading)
 	{
 		Sbar_Changed ();
+		r_refdef.warndraw = false;
 		scr_drawloading = true;
 		SCR_UpdateScreen ();
 		scr_drawloading = false;
@@ -2264,8 +2270,10 @@ void SCR_ImageName (const char *mapname)
 	scr_drawloading = true;
 	if (qrenderer != QR_NONE)
 	{
+		r_refdef.warndraw = false;
 		Sbar_Changed ();
 		SCR_UpdateScreen ();
+		r_refdef.warndraw = true;
 	}
 
 	scr_disabled_time = Sys_DoubleTime();	//realtime tends to change... Hmmm....

@@ -139,7 +139,7 @@ extern void SCR_DrawConsole							(qboolean noback);
 extern void SCR_SetUpToDrawConsole					(void);
 extern void SCR_CenterPrint							(int pnum, const char *str, qboolean skipgamecode);
 
-void R_DrawTextField(int x, int y, int w, int h, const char *text, unsigned int defaultmask, unsigned int fieldflags, struct font_s *font, vec2_t fontscale);
+int R_DrawTextField(int x, int y, int w, int h, const char *text, unsigned int defaultmask, unsigned int fieldflags, struct font_s *font, vec2_t fontscale);
 #define CPRINT_LALIGN		(1<<0)	//L
 #define CPRINT_TALIGN		(1<<1)	//T
 #define CPRINT_RALIGN		(1<<2)	//R
@@ -377,6 +377,7 @@ typedef struct texnums_s {
 	texid_t fullbright;
 	texid_t reflectcube;
 	texid_t reflectmask;
+	texid_t displacement;
 
 	//the material's pushconstants. vulkan guarentees only 128 bytes. so 8 vec4s. note that lmscales should want 4 of them...
 	/*struct

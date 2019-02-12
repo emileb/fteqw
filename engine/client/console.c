@@ -635,7 +635,7 @@ void Con_ToggleConsole_f (void)
 	}
 
 #ifdef CSQC_DAT
-	if (!(key_dest_mask & kdm_editor) && CSQC_ConsoleCommand(-1, "toggleconsole"))
+	if (!editormodal && CSQC_ConsoleCommand(-1, "toggleconsole"))
 	{
 		Key_Dest_Remove(kdm_console);
 		return;
@@ -1061,7 +1061,7 @@ Handles cursor positioning, line wrapping, etc
 ================
 */
 
-#ifndef CLIENTONLY
+#ifdef HAVE_SERVER
 extern redirect_t	sv_redirected;
 extern char	sv_redirected_buf[8000];
 void SV_FlushRedirect (void);
@@ -1103,7 +1103,7 @@ void VARGS Con_Printf (const char *fmt, ...)
 		return;
 	}
 
-#ifndef CLIENTONLY
+#ifdef HAVE_SERVER
 	// add to redirected message
 	if (sv_redirected)
 	{
@@ -1147,7 +1147,7 @@ void VARGS Con_TPrintf (translation_t text, ...)
 {
 	va_list		argptr;
 	char		msg[MAXPRINTMSG];
-	const char *fmt = langtext(text, cls.language);
+	const char *fmt = langtext(text, com_language);
 
 	va_start (argptr,text);
 	vsnprintf (msg,sizeof(msg), fmt,argptr);
@@ -1161,7 +1161,7 @@ void VARGS Con_SafeTPrintf (translation_t text, ...)
 {
 	va_list		argptr;
 	char		msg[MAXPRINTMSG];
-	const char *fmt = langtext(text, cls.language);
+	const char *fmt = langtext(text, com_language);
 
 	va_start (argptr,text);
 	vsnprintf (msg,sizeof(msg), fmt,argptr);
@@ -2171,7 +2171,7 @@ static int Con_DrawConsoleLines(console_t *con, conline_t *l, int sx, int ex, in
 	for (; l; l = l->older)
 	{
 		shader_t *pic = NULL;
-		int picw=0, pich=0;
+		float picw=0, pich=0;
 		s = (conchar_t*)(l+1);
 
 		if (lineagelimit)
@@ -2202,23 +2202,59 @@ static int Con_DrawConsoleLines(console_t *con, conline_t *l, int sx, int ex, in
 					imgname = Info_ValueForKey(linkinfo, "img");
 					if (*imgname)
 					{
-						pic = R_RegisterPic(imgname, NULL);
+						char *fl = Info_ValueForKey(linkinfo, "imgtype");
+						if (*fl)
+							pic = R_RegisterCustom(imgname, atoi(fl), NULL, NULL);
+						else
+							pic = R_RegisterPic(imgname, NULL);
 						if (pic)
 						{
-							imgname = Info_ValueForKey(linkinfo, "w");
+							imgname = Info_ValueForKey(linkinfo, "s");
 							if (*imgname)
-								picw = (atoi(imgname) * charh) / 8.0;
-							else if (pic->width)
-								picw = (pic->width * vid.pixelwidth) / vid.width;
+							{
+								if (pic->width <= 0 || pic->height <= 0)
+									picw = pich = 64;
+								else if (pic->width > pic->height)
+								{
+									picw = atof(imgname);
+									pich = picw * (float)pic->height/pic->width;
+								}
+								else
+								{
+									pich = atof(imgname);
+									picw = pich * (float)pic->width/pic->height;
+								}
+							}
 							else
-								picw = 64;
-							imgname = Info_ValueForKey(linkinfo, "h");
-							if (*imgname)
-								pich = (atoi(imgname) * charh) / 8.0;
-							else if (pic->height)
-								pich = (pic->height * vid.pixelheight) / vid.height;
-							else
-								pich = 64;
+							{
+								imgname = Info_ValueForKey(linkinfo, "w");
+								if (*imgname)
+									picw = atof(imgname);
+								else
+									picw = -1;
+								imgname = Info_ValueForKey(linkinfo, "h");
+								if (*imgname)
+									pich = atof(imgname);
+								else
+									pich = -1;
+
+								if (picw<0 && pich<0)
+								{
+									if (pic->width && pic->height)
+									{
+										pich = (pic->height * vid.pixelheight) / vid.height;
+										picw = (pic->width * vid.pixelwidth) / vid.width;
+									}
+									else
+										picw = pich = 64;
+								}
+								else if (picw<0)
+									picw = pich * (float)pic->width/pic->height;
+								else if (pich<0)
+									pich = picw * (float)pic->height/pic->width;
+							}
+							picw *= charh/8.0;
+							pich *= charh/8.0;
 
 							if (picw >= ex-sx)
 							{
@@ -2799,9 +2835,16 @@ void Con_DrawConsole (int lines, qboolean noback)
 				if (!Plug_ConsoleLinkMouseOver(mousecursor_x, mousecursor_y, mouseover+2, info))
 	#endif
 				{
-					char *key = Info_ValueForKey(info, "tipimg");
+					char *key;
+					key = Info_ValueForKey(info, "tipimg");
 					if (*key)
-						shader = R2D_SafeCachePic(key);
+					{
+						char *fl = Info_ValueForKey(info, "tipimgtype");
+						if (*fl)
+							shader = R_RegisterCustom(key, atoi(fl), NULL, NULL);
+						else
+							shader = R2D_SafeCachePic(key);
+					}
 					else
 					{
 						key = Info_ValueForKey(info, "tiprawimg");
@@ -3293,42 +3336,4 @@ char *Con_CopyConsole(console_t *con, qboolean nomarkup, qboolean onlyiflink, qb
 	result[outlen++] = 0;
 
 	return result;
-}
-
-
-/*
-==================
-Con_NotifyBox
-==================
-*/
-void Con_NotifyBox (char *text)
-{
-	double		t1, t2;
-	qboolean hadconsole;
-
-// during startup for sound / cd warnings
-	Con_Printf("\n\n^Ue01d^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01f\n");
-
-	Con_Printf ("%s", text);
-
-	Con_Printf ("Press a key.\n");
-	Con_Printf("^Ue01d^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01e^Ue01f\n");
-
-	key_count = -2;		// wait for a key down and up
-	hadconsole = !!Key_Dest_Has(kdm_console);
-	Key_Dest_Add(kdm_console);
-
-	do
-	{
-		t1 = Sys_DoubleTime ();
-		SCR_UpdateScreen ();
-		Sys_SendKeyEvents ();
-		t2 = Sys_DoubleTime ();
-		realtime += t2-t1;		// make the cursor blink
-	} while (key_count < 0);
-
-	Con_Printf ("\n");
-
-	if (!hadconsole)
-		Key_Dest_Remove(kdm_console);
 }

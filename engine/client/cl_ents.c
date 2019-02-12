@@ -29,6 +29,7 @@ extern	cvar_t	cl_predict_players_frac;
 extern	cvar_t	cl_predict_players_latency;
 extern	cvar_t	cl_predict_players_nudge;
 extern	cvar_t	cl_lerp_players;
+extern  cvar_t	cl_lerp_maxinterval;
 extern	cvar_t	cl_solid_players;
 extern	cvar_t	cl_item_bobbing;
 
@@ -3279,7 +3280,7 @@ static void CL_UpdateNetFrameLerpState(qboolean force, int curframe, int curbase
 		frame = (fst==FST_BASE)?curbaseframe:curframe;
 		if (force || frame != le->newframe[fst])
 		{
-			le->framelerpdeltatime[fst] = bound(0, cl.servertime - le->newframestarttime[fst], 0.1);	//clamp to 10 tics per second
+			le->framelerpdeltatime[fst] = bound(0, cl.servertime - le->newframestarttime[fst], cl_lerp_maxinterval.value);	//clamp to 10 tics per second
 
 			if (!force)
 			{
@@ -3607,7 +3608,7 @@ static void CL_TransitionPacketEntities(int newsequence, packet_entities_t *newp
 				if (!VectorEquals(le->neworigin, snew__origin) || !VectorEquals(le->newangle, snew->angles))
 				{
 					le->newsequence = snew->sequence;
-					le->orglerpdeltatime = bound(0, oldpack->servertime - le->orglerpstarttime, 0.11);	//clamp to 10 tics per second
+					le->orglerpdeltatime = bound(0, oldpack->servertime - le->orglerpstarttime, cl_lerp_maxinterval.value);	//clamp to 10 tics per second
 					le->orglerpstarttime = oldpack->servertime;
 
 					VectorCopy(le->neworigin, le->oldorigin);
@@ -3893,6 +3894,7 @@ void CL_LinkPacketEntities (void)
 	int trailef, trailidx;
 	int modelflags;
 	struct itemtimer_s	*timer, **timerlink;
+	float timestep = host_frametime;
 
 	pack = cl.currentpackentities;
 	if (!pack)
@@ -4022,7 +4024,7 @@ void CL_LinkPacketEntities (void)
 				CL_NewDlight(state->number, ent->origin, radius, 0.1, colour[0], colour[1], colour[2]);
 			}
 		}
-		if (state->lightpflags & (PFLAGS_FULLDYNAMIC|PFLAGS_CORONA))
+		if ((state->lightpflags & (PFLAGS_FULLDYNAMIC|PFLAGS_CORONA)) && ((state->lightpflags&PFLAGS_FULLDYNAMIC)||state->light[3]))
 		{
 			vec3_t colour;
 			if (!state->light[0] && !state->light[1] && !state->light[2])
@@ -4379,9 +4381,9 @@ void CL_LinkPacketEntities (void)
 		//and emit it
 //		if (lasttime != cl.currentpacktime)
 		{
-			if (trailef == P_INVALID || pe->ParticleTrail (old_origin, ent->origin, trailef, ent->keynum, ent->axis, &(le->trailstate)))
+			if (trailef == P_INVALID || pe->ParticleTrail (old_origin, ent->origin, trailef, timestep, ent->keynum, ent->axis, &(le->trailstate)))
 				if (model->traildefaultindex >= 0)
-					pe->ParticleTrailIndex(old_origin, ent->origin, P_INVALID, trailidx, 0, &(le->trailstate));
+					pe->ParticleTrailIndex(old_origin, ent->origin, P_INVALID, timestep, trailidx, 0, &(le->trailstate));
 
 			//dlights are not so customisable.
 			if (r_rocketlight.value && (modelflags & MF_ROCKET) && !(state->lightpflags & (PFLAGS_FULLDYNAMIC|PFLAGS_CORONA)))

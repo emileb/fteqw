@@ -429,8 +429,6 @@ void GL_SelectTexture(int target)
 	shaderstate.currenttmu = target;
 	if (qglActiveTextureARB)
 		qglActiveTextureARB(target + mtexid0);
-	else if (qglSelectTextureSGIS)
-		qglSelectTextureSGIS(target + mtexid0);
 }
 
 void GL_SelectVBO(int vbo)
@@ -1191,7 +1189,7 @@ static void T_Gen_CurrentRender(int tmu)
 	}
 	GL_MTBind(tmu, GL_TEXTURE_2D, shaderstate.temptexture);
 	if (vid.flags&VID_FP16)
-		qglCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F_ARB, 0, 0, vwidth, vheight, 0);
+		qglCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, 0, 0, vwidth, vheight, 0);
 	else if (vid.flags&VID_SRGBAWARE)
 		qglCopyTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB_ALPHA_EXT, 0, 0, vwidth, vheight, 0);
 	else
@@ -1283,6 +1281,12 @@ static void Shader_BindTextureForPass(int tmu, const shaderpass_t *pass)
 			t = shaderstate.curtexnums->reflectmask;
 		else if (shaderstate.curtexnums && TEXLOADED(shaderstate.curtexnums->base))
 			t = shaderstate.curtexnums->base;
+		else
+			t = r_whiteimage;
+		break;
+	case T_GEN_DISPLACEMENT:
+		if (shaderstate.curtexnums && TEXLOADED(shaderstate.curtexnums->displacement))
+			t = shaderstate.curtexnums->displacement;
 		else
 			t = r_whiteimage;
 		break;
@@ -3144,6 +3148,47 @@ static void BE_SubmitMeshChain(qboolean usetesselation)
 		}
 		return;
 	}
+	else if (qglMultiDrawElements)
+	{	//if we're drawing via a VBO then we don't really need DrawRangeElements any more.
+		//and avoiding so many calls into the driver also gives the driver a chance to optimise the draws instead of constantly checking if anything changed.
+		static GLsizei counts[1024];
+		static const GLvoid *indicies[countof(counts)];
+		GLsizei drawcount = 0;
+		GL_SelectEBO(shaderstate.sourcevbo->indicies.gl.vbo);
+
+		for (m = 0, mesh = shaderstate.meshes[0]; m < shaderstate.meshcount; )
+		{
+			startv = mesh->vbofirstvert;
+			starti = mesh->vbofirstelement;
+
+			endv = startv+mesh->numvertexes;
+			endi = starti+mesh->numindexes;
+
+			//find consecutive surfaces
+			for (++m; m < shaderstate.meshcount; m++)
+			{
+				mesh = shaderstate.meshes[m];
+				if (endi == mesh->vbofirstelement)
+				{
+					endv = mesh->vbofirstvert+mesh->numvertexes;
+					endi = mesh->vbofirstelement+mesh->numindexes;
+				}
+				else
+				{
+					break;
+				}
+			}
+			if (drawcount == countof(counts))
+			{
+				qglMultiDrawElements(batchtype, counts, GL_INDEX_TYPE, indicies, drawcount);
+				drawcount = 0;
+			}
+			counts[drawcount] = endi-starti;
+			indicies[drawcount] = (index_t*)shaderstate.sourcevbo->indicies.gl.addr + starti;
+			drawcount++;
+		}
+		qglMultiDrawElements(batchtype, counts, GL_INDEX_TYPE, indicies, drawcount);
+	}
 	else
 	{
 		GL_SelectEBO(shaderstate.sourcevbo->indicies.gl.vbo);
@@ -3460,13 +3505,11 @@ static void BE_Program_Set_Attributes(const program_t *prog, struct programpermu
 		case SP_M_MODEL:
 			qglUniformMatrix4fvARB(ph, 1, false, shaderstate.modelmatrix);
 			break;
-		case SP_M_ENTBONES:
-			{
-				if (sh_config.maxver>=120)
-					qglUniformMatrix3x4fv(ph, shaderstate.sourcevbo->numbones, false, shaderstate.sourcevbo->bones);
-				else
-					qglUniform4fvARB(ph, shaderstate.sourcevbo->numbones*3, shaderstate.sourcevbo->bones);
-			}
+		case SP_M_ENTBONES_PACKED:
+			qglUniform4fvARB(ph, shaderstate.sourcevbo->numbones*3, shaderstate.sourcevbo->bones);
+			break;
+		case SP_M_ENTBONES_MAT3X4:
+			qglUniformMatrix3x4fv(ph, shaderstate.sourcevbo->numbones, false, shaderstate.sourcevbo->bones);
 			break;
 		case SP_M_INVVIEWPROJECTION:
 			{
@@ -4287,7 +4330,7 @@ static void BE_LegacyLighting(void)
 		}
 	}
 
-	if (TEXLOADED(shaderstate.curtexnums->bump) && gl_config.arb_texture_cube_map && gl_config.arb_texture_env_dot3 && gl_config.arb_texture_env_combine && be_maxpasses >= 4)
+	if (TEXLOADED(shaderstate.curtexnums->bump) && sh_config.havecubemaps && gl_config.arb_texture_env_dot3 && gl_config.arb_texture_env_combine && be_maxpasses >= 4)
 	{	//we could get this down to 2 tmus by arranging for the dot3 result to be written the alpha buffer. But then we'd need to have an alpha buffer too.
 
 		if (!shaderstate.normalisationcubemap)
@@ -4571,7 +4614,7 @@ static void DrawMeshes(void)
 #endif
 		break;
 	case BEM_DEPTHDARK:
-		if ((shaderstate.curshader->flags & SHADER_HASLIGHTMAP) && !TEXVALID(shaderstate.curtexnums->fullbright))
+		if ((shaderstate.curshader->flags & (SHADER_HASLIGHTMAP|SHADER_NODLIGHT))==SHADER_HASLIGHTMAP && !TEXVALID(shaderstate.curtexnums->fullbright))
 		{
 			if (gl_config.arb_shader_objects)
 			{
@@ -5158,7 +5201,7 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 			GL_MTBind(0, GL_TEXTURE_2D, shaderstate.tex_reflection[r_refdef.recurse]);
 
 			if ((vid.flags&VID_FP16) && sh_config.texfmt[PTI_RGBA16F])
-				qglTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F_ARB, shaderstate.tex_reflection[r_refdef.recurse]->width, shaderstate.tex_reflection[r_refdef.recurse]->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+				qglTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, shaderstate.tex_reflection[r_refdef.recurse]->width, shaderstate.tex_reflection[r_refdef.recurse]->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 			else if ((vid.flags&(VID_SRGBAWARE|VID_FP16)) && sh_config.texfmt[PTI_RGBA8_SRGB])
 				qglTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8_EXT, shaderstate.tex_reflection[r_refdef.recurse]->width, shaderstate.tex_reflection[r_refdef.recurse]->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 			else
@@ -5208,7 +5251,7 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 				shaderstate.tex_refraction[r_refdef.recurse]->height = r_refdef.pxrect.height;
 				GL_MTBind(0, GL_TEXTURE_2D, shaderstate.tex_refraction[r_refdef.recurse]);
 				if ((vid.flags&VID_FP16) && sh_config.texfmt[PTI_RGBA16F])
-					qglTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F_ARB, r_refdef.pxrect.width, r_refdef.pxrect.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+					qglTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, r_refdef.pxrect.width, r_refdef.pxrect.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 				else if ((vid.flags&(VID_SRGBAWARE|VID_FP16)) && sh_config.texfmt[PTI_RGBA16F])
 					qglTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8_EXT, r_refdef.pxrect.width, r_refdef.pxrect.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 				else
@@ -5288,7 +5331,7 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 			shaderstate.tex_ripplemap[r_refdef.recurse]->width = r_refdef.pxrect.width;
 			shaderstate.tex_ripplemap[r_refdef.recurse]->height = r_refdef.pxrect.height;
 			GL_MTBind(0, GL_TEXTURE_2D, shaderstate.tex_ripplemap[r_refdef.recurse]);
-			qglTexImage2D(GL_TEXTURE_2D, 0, /*(gl_config.glversion>3.1)?GL_RGBA8_SNORM:*/GL_RGBA16F_ARB, r_refdef.pxrect.width, r_refdef.pxrect.height, 0, GL_RGBA, GL_HALF_FLOAT, NULL);
+			qglTexImage2D(GL_TEXTURE_2D, 0, /*(gl_config.glversion>3.1)?GL_RGBA8_SNORM:*/GL_RGBA16F, r_refdef.pxrect.width, r_refdef.pxrect.height, 0, GL_RGBA, GL_HALF_FLOAT, NULL);
 			qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 			qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 			qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -5937,23 +5980,23 @@ void GLBE_DrawLightPrePass(void)
 			{
 				if (gl_config_gles)
 				{	//gles3
-					ifmt = GL_RGBA32F_ARB;
+					ifmt = GL_RGBA32F;
 					dfmt = GL_RGBA;
 					dtype = GL_FLOAT;
 				}
 				else
-					ifmt = GL_RGBA32F_ARB;
+					ifmt = GL_RGBA32F;
 			}
 			else if (!strcmp(var->string, "rgba16f"))
 			{
 				if (gl_config_gles)
 				{	//gles3
-					ifmt = GL_RGBA16F_ARB;
+					ifmt = GL_RGBA16F;
 					dfmt = GL_RGBA;
 					dtype = GL_HALF_FLOAT;
 				}
 				else
-					ifmt = GL_RGBA16F_ARB;
+					ifmt = GL_RGBA16F;
 			}
 //			else if (!strcmp(var->string, "rgba8s"))
 //				ifmt = GL_RGBA8_SNORM;

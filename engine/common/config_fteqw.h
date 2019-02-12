@@ -5,7 +5,7 @@
 // Later code will disable any features if they're not supported on the current platform, so don't worry about win/lin/mac/android/web/etc here - any such issues should be fixed elsewhere.
 
 //general rebranding
-//#define DISTRIBUTION			"FTE"							//should be kept short. 3 or 4 letters is good, with no spaces.
+//#define DISTRIBUTION			"FTE"							//should be kept short. 8 or less letters is good, with no spaces.
 //#define DISTRIBUTIONLONG		"Forethought Entertainment"		//think of this as your company name. It isn't shown too often, so can be quite long.
 //#define FULLENGINENAME		"FTE Quake"						//nominally user-visible name.
 //#define ENGINEWEBSITE			"http://fte.triptohell.info"	//for shameless self-promotion purposes.
@@ -90,7 +90,7 @@
 #define IMAGEFMT_PKM			//file format generally written by etcpack or android's etc1tool. doesn't support mips.
 #define IMAGEFMT_DDS			//.dds files embed mipmaps and texture compression. faster to load.
 //#define IMAGEFMT_BLP			//legacy crap
-#define IMAGEFMT_BMP			//windows bmp. yuck.
+#define IMAGEFMT_BMP			//windows bmp. yuck. also includes .ico for the luls
 #define IMAGEFMT_PCX			//paletted junk. required for qw player skins, q2 and a few old skyboxes.
 //#define IMAGEFMT_VTF			//hl2 image format
 #define AVAIL_PNGLIB			//.png image format support (read+screenshots)

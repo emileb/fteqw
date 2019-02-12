@@ -59,6 +59,8 @@ static csqctreadstate_t *csqcthreads;
 qboolean csqc_resortfrags;
 world_t csqc_world;
 
+float csqc_starttime;	//reset on each csqc reload to restore lost precision of cltime on each map restart.
+
 int	csqc_playerseat;	//can be negative.
 static playerview_t *csqc_playerview;
 qboolean csqc_dp_lastwas3d;	//to emulate DP correctly, we need to track whether drawpic/drawfill or clearscene was called last. blame 515.
@@ -423,7 +425,7 @@ static void CSQC_FindGlobals(qboolean nofuncs)
 	if (csqcg.simtime)
 		*csqcg.simtime = cl.servertime;
 	if (csqcg.cltime)
-		*csqcg.cltime = realtime;
+		*csqcg.cltime = realtime-csqc_starttime;
 
 	if (!csqcg.global_gravitydir)
 		csqcg.global_gravitydir = defaultgravity;
@@ -3199,7 +3201,7 @@ static void QCBUILTIN PF_cs_boxparticles(pubprogfuncs_t *prinst, struct globalva
 	if (flags & 128)	//PARTICLES_DRAWASTRAIL
 	{
 		flags &= ~128;
-		P_ParticleTrail(org_from, org_to, effectnum, 0, NULL, NULL);
+		P_ParticleTrail(org_from, org_to, effectnum, 1, 0, NULL, NULL);
 	}
 	else
 	{
@@ -3235,6 +3237,7 @@ static void QCBUILTIN PF_cs_trailparticles (pubprogfuncs_t *prinst, struct globa
 	csqcedict_t *ent;
 	float *start = G_VECTOR(OFS_PARM2);
 	float *end = G_VECTOR(OFS_PARM3);
+	float timestep = host_frametime;
 
 	if ((unsigned int)G_INT(OFS_PARM1) >= MAX_EDICTS)
 	{	//ents can't be negative, nor can they be huge (like floats are if expressed as an integer)
@@ -3249,9 +3252,9 @@ static void QCBUILTIN PF_cs_trailparticles (pubprogfuncs_t *prinst, struct globa
 	efnum = CL_TranslateParticleFromServer(efnum);
 
 	if (!ent->entnum)	//world trails are non-state-based.
-		pe->ParticleTrail(start, end, efnum, 0, NULL, NULL);
+		pe->ParticleTrail(start, end, efnum, timestep, 0, NULL, NULL);
 	else
-		pe->ParticleTrail(start, end, efnum, -ent->entnum, NULL, &ent->trailstate);
+		pe->ParticleTrail(start, end, efnum, timestep, -ent->entnum, NULL, &ent->trailstate);
 }
 
 void CSQC_ResetTrails(void)
@@ -3865,7 +3868,7 @@ static const char *PF_cs_getplayerkey_internal (unsigned int pnum, const char *k
 	else if (csqc_isdarkplaces && !strcmp(keyname, "colors"))	//checks to see if a player has locally been set to ignored (for text chat)
 	{
 		ret = buffer;
-		sprintf(ret, "%i", cl.players[pnum].ttopcolor + cl.players[pnum].tbottomcolor*16);
+		sprintf(ret, "%i", cl.players[pnum].dtopcolor + cl.players[pnum].dbottomcolor*16);
 	}
 #endif
 	else if (!strcmp(keyname, "ignored"))	//checks to see if a player has locally been set to ignored (for text chat)
@@ -4163,7 +4166,7 @@ static void QCBUILTIN PF_cs_sound(pubprogfuncs_t *prinst, struct globalvars_s *p
 
 	if (sfx)
 		S_StartSound(-entity->entnum, channel, sfx, org, entity->v->velocity, volume, attenuation, startoffset, pitchpct, flags);
-};
+}
 
 static void QCBUILTIN PF_cs_pointsound(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
@@ -5064,9 +5067,9 @@ void CSQC_EntStateToCSQC(unsigned int flags, float lerptime, entity_state_t *src
 		//use entnum as a test to see if its new (if the old origin isn't usable)
 		if (ent->xv->entnum)
 		{
-			if (model->particletrail == P_INVALID || pe->ParticleTrail (ent->v->origin, src->origin, model->particletrail, src->number, NULL, &(le->trailstate)))
+			if (model->particletrail == P_INVALID || pe->ParticleTrail (ent->v->origin, src->origin, model->particletrail, host_frametime, src->number, NULL, &(le->trailstate)))
 				if (model->traildefaultindex >= 0)
-					pe->ParticleTrailIndex(ent->v->origin, src->origin, P_INVALID, model->traildefaultindex, 0, &(le->trailstate));
+					pe->ParticleTrailIndex(ent->v->origin, src->origin, P_INVALID, host_frametime, model->traildefaultindex, 0, &(le->trailstate));
 		}
 	}
 
@@ -6785,7 +6788,7 @@ static struct {
 	{"getsurfacenumtriangles",	PF_getsurfacenumtriangles,628},
 	{"getsurfacetriangle",		PF_getsurfacetriangle,		629},
 
-//	{"setkeybind",				PF_Fixme,					630},
+	{"setkeybind",				PF_cl_setkeybind,			630},
 	{"getbindmaps",				PF_cl_GetBindMap,			631},
 	{"setbindmaps",				PF_cl_SetBindMap,			632},
 
@@ -7331,6 +7334,10 @@ pbool PDECL CSQC_CheckHeaderCrc(pubprogfuncs_t *progs, progsnum_t num, int crc)
 			csqc_isdarkplaces = true;
 			Con_DPrintf(CON_WARNING "Running darkplaces csprogs.dat version\n");
 			break;
+		case 23147:
+			csqc_isdarkplaces = true;
+			Con_DPrintf(CON_WARNING "Running ^aINVALID^a csprogs.dat version\n");
+			break;
 #endif
 		default:
 			Con_Printf(CON_WARNING "Running unknown csprogs.dat version\n");
@@ -7404,6 +7411,7 @@ qboolean CSQC_Init (qboolean anycsqc, const char *csprogsname, unsigned int chec
 		movevars.slidyslopes = false;//(pm_slidyslopes.value!=0);
 		movevars.watersinkspeed = 60;//*pm_watersinkspeed.string?pm_watersinkspeed.value:60;
 		movevars.flyfriction = 4;//*pm_flyfriction.string?pm_flyfriction.value:4;
+		movevars.edgefriction = 2;//*pm_edgefriction.string?pm_edgefriction.value:2;
 		movevars.stepheight = PM_DEFAULTSTEPHEIGHT;
 		movevars.coordsize = 4;
 	}
@@ -7466,6 +7474,7 @@ qboolean CSQC_Init (qboolean anycsqc, const char *csprogsname, unsigned int chec
 		int csaddonnum = -1;
 		in_sensitivityscale = 1;
 		csqcmapentitydataloaded = true;
+		csqc_starttime = realtime;
 		csqcprogs = InitProgs(&csqcprogparms);
 		csqc_world.progs = csqcprogs;
 		csqc_world.usesolidcorpse = true;
@@ -8066,7 +8075,7 @@ qboolean CSQC_DrawView(void)
 		CL_PredictMove ();
 
 	if (csqcg.cltime)
-		*csqcg.cltime = realtime;
+		*csqcg.cltime = realtime-csqc_starttime;
 	if (csqcg.simtime)
 		*csqcg.simtime = cl.servertime;
 	if (csqcg.clientcommandframe)
@@ -8155,7 +8164,7 @@ qboolean CSQC_DrawHud(playerview_t *pv)
 		if (csqcg.frametime)
 			*csqcg.frametime = host_frametime;
 		if (csqcg.cltime)
-			*csqcg.cltime = realtime;
+			*csqcg.cltime = realtime-csqc_starttime;
 
 		G_FLOAT(OFS_PARM0+0) = r_refdef.grect.width;
 		G_FLOAT(OFS_PARM0+1) = r_refdef.grect.height;
@@ -8199,7 +8208,7 @@ qboolean CSQC_DrawScores(playerview_t *pv)
 		if (csqcg.frametime)
 			*csqcg.frametime = host_frametime;
 		if (csqcg.cltime)
-			*csqcg.cltime = realtime;
+			*csqcg.cltime = realtime-csqc_starttime;
 
 		G_FLOAT(OFS_PARM0+0) = r_refdef.grect.width;
 		G_FLOAT(OFS_PARM0+1) = r_refdef.grect.height;
@@ -8628,7 +8637,7 @@ void CSQC_Input_Frame(int seat, usercmd_t *cmd)
 	if (csqcg.simtime)
 		*csqcg.simtime = cl.servertime;
 	if (csqcg.cltime)
-		*csqcg.cltime = realtime;
+		*csqcg.cltime = realtime-csqc_starttime;
 
 	if (csqcg.clientcommandframe)
 		*csqcg.clientcommandframe = cl.movesequence;
@@ -8742,7 +8751,7 @@ void CSQC_ParseEntities(void)
 	if (csqcg.simtime)		//estimated server time
 		*csqcg.simtime = cl.servertime;
 	if (csqcg.cltime)	//smooth client time.
-		*csqcg.cltime = realtime;
+		*csqcg.cltime = realtime-csqc_starttime;
 
 	if (csqcg.netnewtime)
 		*csqcg.netnewtime = cl.gametime;

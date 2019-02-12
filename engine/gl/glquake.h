@@ -229,15 +229,15 @@ typedef struct {
 	qboolean nv_tex_env_combine4;
 	qboolean env_add;
 
-	qboolean sgis_generate_mipmap;
+//	qboolean sgis_generate_mipmap;
 
 	qboolean arb_texture_env_combine;
 	qboolean arb_texture_env_dot3;
-	qboolean arb_texture_cube_map;
 
 	qboolean arb_texture_compression;	//means we support dynamic compression, rather than any specific compressed texture formats
 
 	qboolean geometryshaders;
+	qboolean arb_tessellation_shader;
 
 	qboolean ext_framebuffer_objects;
 	qboolean arb_framebuffer_srgb;
@@ -1039,9 +1039,7 @@ extern PFNGLGENPROGRAMSARBPROC qglGenProgramsARB;
 extern FTEPFNGLLOCKARRAYSEXTPROC qglLockArraysEXT;
 extern FTEPFNGLUNLOCKARRAYSEXTPROC qglUnlockArraysEXT;
 
-typedef void (APIENTRY *lpMTexFUNC) (GLenum en, GLfloat f1, GLfloat f2);
 typedef void (APIENTRY *lpSelTexFUNC) (GLenum en);
-extern lpMTexFUNC qglMTexCoord2fSGIS;
 extern lpSelTexFUNC qglSelectTextureSGIS;
 
 //these functions are not available in gles2, for one reason or another
@@ -1078,6 +1076,7 @@ extern FTEPFNGLACTIVESTENCILFACEEXTPROC qglActiveStencilFaceEXT;
 extern void (APIENTRY *qglDepthBoundsEXT) (GLclampd zmin, GLclampd zmax);
 
 extern void (APIENTRY *qglDrawRangeElements) (GLenum, GLuint, GLuint, GLsizei, GLenum, const GLvoid *);
+extern void (APIENTRY *qglMultiDrawElements) (GLenum mode, const GLsizei * count, GLenum type, const GLvoid * const * indices, GLsizei drawcount);
 extern void (APIENTRY *qglEnableClientState) (GLenum array);
 extern void (APIENTRY *qglVertexPointer) (GLint size, GLenum type, GLsizei stride, const GLvoid *pointer);
 
