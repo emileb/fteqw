@@ -34,7 +34,7 @@ static cvar_t	cl_movement = CVARD("cl_movement","1", "Specifies whether to send 
 
 cvar_t	cl_nodelta = CVAR("cl_nodelta","0");
 
-static cvar_t	cl_c2sdupe = CVAR("cl_c2sdupe", "0");
+cvar_t	cl_c2sdupe = CVAR("cl_c2sdupe", "0");
 cvar_t	cl_c2spps = CVAR("cl_c2spps", "0");
 cvar_t	cl_c2sImpulseBackup = CVAR("cl_c2sImpulseBackup","3");
 cvar_t	cl_netfps = CVAR("cl_netfps", "150");
@@ -906,8 +906,8 @@ void CL_BaseMove (usercmd_t *cmd, int pnum, float priortime, float extratime)
 
 	if (! (in_klook.state[pnum] & 1) )
 	{	
-		cmd->forwardmove = cmd->forwardmove*oscale + nscale*(cl_forwardspeed.value * CL_KeyState (&in_forward, pnum, true)) - 
-								  ((*cl_backspeed.string?cl_backspeed.value:cl_forwardspeed.value) * CL_KeyState (&in_back, pnum, true));
+		cmd->forwardmove = cmd->forwardmove*oscale + nscale*(cl_forwardspeed.value * CL_KeyState (&in_forward, pnum, true) - 
+								(*cl_backspeed.string?cl_backspeed.value:cl_forwardspeed.value) * CL_KeyState (&in_back, pnum, true));
 	}
 
 	if (!priortime)	//only gather buttons if we've not had any this frame. this avoids jump feeling weird with prediction. FIXME: should probably still allow +attack to reduce latency
@@ -1922,7 +1922,7 @@ static void CL_SendUserinfoUpdate(void)
 	size_t bloboffset = cls.userinfosync.keys[0].syncpos;
 	unsigned int seat = info - cls.userinfo;
 	size_t blobsize;
-	const char *blobdata = InfoBuf_BlobForKey(info, key, &blobsize);
+	const char *blobdata = InfoBuf_BlobForKey(info, key, &blobsize, NULL);
 	size_t sendsize = blobsize - bloboffset;
 
 	const char *s;

@@ -23,6 +23,8 @@ void DumpGLState(void);
 extern cvar_t gl_overbright;
 extern cvar_t r_tessellation;
 extern cvar_t r_wireframe;
+extern cvar_t r_outline;
+extern cvar_t r_outline_width;
 extern cvar_t r_refract_fbo;
 
 extern texid_t missing_texture;
@@ -777,7 +779,7 @@ static void BE_ApplyAttributes(unsigned int bitstochange, unsigned int bitstoend
 					continue;
 				}
 				GL_SelectVBO(shaderstate.sourcevbo->bonenums.gl.vbo);
-				qglVertexAttribPointer(VATTR_BONENUMS, 4, GL_UNSIGNED_BYTE, GL_FALSE, 0, shaderstate.sourcevbo->bonenums.gl.addr);
+				qglVertexAttribPointer(VATTR_BONENUMS, 4, GL_BONE_INDEX_TYPE, GL_FALSE, 0, shaderstate.sourcevbo->bonenums.gl.addr);
 				break;
 			case VATTR_BONEWEIGHTS:
 				if (!shaderstate.sourcevbo->boneweights.gl.vbo && !shaderstate.sourcevbo->boneweights.gl.addr)
@@ -1426,12 +1428,12 @@ static float *FTableForFunc ( unsigned int func )
 	}
 }
 
-void Shader_LightPass(const char *shortname, shader_t *s, const void *args)
+void Shader_LightPass(struct shaderparsestate_s *ps, const char *shortname, const void *args)
 {
 	char shadertext[8192*2];
 	extern cvar_t r_drawflat;
 	sprintf(shadertext, LIGHTPASS_SHADER, (r_lightmap.ival||r_drawflat.ival)?"#FLAT=1.0":"");
-	Shader_DefaultScript(shortname, s, shadertext);
+	Shader_DefaultScript(ps, shortname, shadertext);
 }
 
 void GenerateFogTexture(texid_t *tex, float density, float zscale)
@@ -3181,14 +3183,45 @@ static void BE_SubmitMeshChain(qboolean usetesselation)
 			if (drawcount == countof(counts))
 			{
 				qglMultiDrawElements(batchtype, counts, GL_INDEX_TYPE, indicies, drawcount);
+				RQuantAdd(RQUANT_DRAWS, drawcount);
 				drawcount = 0;
 			}
 			counts[drawcount] = endi-starti;
 			indicies[drawcount] = (index_t*)shaderstate.sourcevbo->indicies.gl.addr + starti;
 			drawcount++;
+			RQuantAdd(RQUANT_PRIMITIVEINDICIES, endi-starti);
 		}
 		qglMultiDrawElements(batchtype, counts, GL_INDEX_TYPE, indicies, drawcount);
+		RQuantAdd(RQUANT_DRAWS, drawcount);
 	}
+#if 0 //def FTE_TARGET_WEB
+	else if (shaderstate.meshcount > 1)
+	{	//FIXME: not really needed if index lists are consecutive
+		index_t *tmp;
+		int ebo;
+
+		for (endi = 0, m = 0; m < shaderstate.meshcount; m++)
+		{
+			mesh = shaderstate.meshes[m];
+			endi += mesh->numindexes;
+		}
+		tmp = alloca(endi * sizeof(*tmp));
+		for (endi = 0, m = 0; m < shaderstate.meshcount; m++)
+		{
+			mesh = shaderstate.meshes[m];
+			for (starti = 0; starti < mesh->numindexes; starti++)
+				tmp[endi++] = mesh->vbofirstvert + mesh->indexes[starti];
+		}
+
+		shaderstate.streamid = (shaderstate.streamid + 1) & (sizeof(shaderstate.streamvbo)/sizeof(shaderstate.streamvbo[0]) - 1);
+		ebo = shaderstate.streamebo[shaderstate.streamid];
+		GL_SelectEBO(ebo);
+		qglBufferDataARB(GL_ELEMENT_ARRAY_BUFFER_ARB, sizeof(*tmp) * endi, tmp, GL_STREAM_DRAW_ARB);
+		qglDrawElements(batchtype, endi, GL_INDEX_TYPE, NULL);
+		RQuantAdd(RQUANT_DRAWS, 1);
+		RQuantAdd(RQUANT_PRIMITIVEINDICIES, endi);
+	}
+#endif
 	else
 	{
 		GL_SelectEBO(shaderstate.sourcevbo->indicies.gl.vbo);
@@ -3380,6 +3413,9 @@ static void BE_Program_Set_Attributes(const program_t *prog, struct programpermu
 	int i;
 	unsigned int ph;
 	const shaderprogparm_t *p;
+
+	if (perm->factorsuniform != -1)
+		qglUniform4fvARB(perm->factorsuniform, countof(shaderstate.curshader->factors), shaderstate.curshader->factors[0]);
 
 	/*don't bother setting it if the ent properties are unchanged (but do if the mesh changed)*/
 	if (entunchanged)
@@ -3782,10 +3818,16 @@ static void BE_Program_Set_Attributes(const program_t *prog, struct programpermu
 			qglUniform3fvARB(ph, 1, (float*)shaderstate.curentity->light_dir);
 			break;
 		case SP_E_L_MUL:
-			qglUniform3fvARB(ph, 1, (float*)shaderstate.curentity->light_range);
+			if (shaderstate.mode == BEM_DEPTHDARK)
+				qglUniform3fvARB(ph, 1, vec3_origin);
+			else
+				qglUniform3fvARB(ph, 1, (float*)shaderstate.curentity->light_range);
 			break;
 		case SP_E_L_AMBIENT:
-			qglUniform3fvARB(ph, 1, (float*)shaderstate.curentity->light_avg);
+			if (shaderstate.mode == BEM_DEPTHDARK)
+				qglUniform3fvARB(ph, 1, vec3_origin);
+			else
+				qglUniform3fvARB(ph, 1, (float*)shaderstate.curentity->light_avg);
 			break;
 
 		case SP_E_TIME:
@@ -4132,7 +4174,7 @@ void GLBE_SelectEntity(entity_t *ent)
 	shaderstate.lastuniform = 0;
 }
 
-#if 1
+#ifndef GLSLONLY
 static void BE_SelectFog(vec3_t colour, float alpha, float density)
 {
 	float zscale;
@@ -6263,6 +6305,19 @@ void GLBE_DrawWorld (batch_t **worldbatches)
 				TRACE(("GLBE_DrawWorld: lights drawn\n"));
 			}
 #endif
+		}
+
+		if (r_outline.ival && !r_wireframe.ival && qglPolygonMode && qglLineWidth)
+		{
+			shaderstate.identitylighting = 0;
+			shaderstate.identitylightmap = 0;
+			BE_SelectMode(BEM_DEPTHDARK);
+			qglLineWidth (bound(0.1, r_outline_width.value, 2000.0));
+			qglPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+			GLBE_SubmitMeshes(NULL, SHADER_SORT_PORTAL, SHADER_SORT_SEETHROUGH+1);
+			BE_SelectMode(BEM_STANDARD);
+			qglPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+			qglLineWidth (1);
 		}
 
 		shaderstate.identitylighting = 1;

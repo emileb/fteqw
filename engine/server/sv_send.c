@@ -30,7 +30,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define CHAN_ITEM   3
 #define CHAN_BODY   4
 
-extern cvar_t sv_gravity, sv_friction, sv_waterfriction, sv_gamespeed, sv_stopspeed, sv_spectatormaxspeed, sv_accelerate, sv_airaccelerate, sv_wateraccelerate, pm_edgefriction;
+extern cvar_t sv_gravity, sv_friction, sv_waterfriction, sv_gamespeed, sv_stopspeed, sv_spectatormaxspeed, sv_accelerate, sv_airaccelerate, sv_wateraccelerate, pm_edgefriction, sv_reliable_sound;
 extern cvar_t  dpcompat_stats;
 
 /*
@@ -1016,9 +1016,9 @@ void SV_MulticastProtExt(vec3_t origin, multicast_t to, int dimension_mask, int 
 	SZ_Clear (&sv.multicast);
 }
 
-void SV_MulticastCB(vec3_t origin, multicast_t to, int dimension_mask, void (*callback)(client_t *cl, sizebuf_t *msg, void *ctx), void *ctx)
+void SV_MulticastCB(vec3_t origin, multicast_t to, const char *reliableinfokey, int dimension_mask, void (*callback)(client_t *cl, sizebuf_t *msg, void *ctx), void *ctx)
 {
-	qboolean reliable = false;
+	qboolean reliable = false, doreliable;
 
 	client_t	*client;
 	qbyte		*mask;
@@ -1140,7 +1140,15 @@ void SV_MulticastCB(vec3_t origin, multicast_t to, int dimension_mask, void (*ca
 		if (!split)
 			continue;
 
-		if (reliable)
+		doreliable = reliable;
+		if (reliableinfokey)
+		{	//allow the user to override reliable state according to a userinfo key (primarily "rsnd" right now, but hey).
+			const char *v = InfoBuf_ValueForKey(&client->userinfo, reliableinfokey);
+			if (*v)
+				doreliable = atoi(v);
+		}
+
+		if (doreliable)
 		{
 			char msgbuf[8192];
 			sizebuf_t msg = {0};
@@ -1435,14 +1443,14 @@ void SV_StartSound (int ent, vec3_t origin, float *velocity, int seenmask, int c
 
 	if (chflags & CF_SV_UNICAST)
 	{
-		SV_MulticastCB(origin, reliable ? MULTICAST_ONE_R_SPECS : MULTICAST_ONE_SPECS, seenmask, SV_SoundMulticast, &ctx);
+		SV_MulticastCB(origin, (reliable||sv_reliable_sound.ival) ? MULTICAST_ONE_R_SPECS : MULTICAST_ONE_SPECS, reliable?NULL:"rsnd", seenmask, SV_SoundMulticast, &ctx);
 	}
 	else
 	{
 		if (use_phs)
-			SV_MulticastCB(origin, reliable ? MULTICAST_PHS_R : MULTICAST_PHS, seenmask, SV_SoundMulticast, &ctx);
+			SV_MulticastCB(origin, (reliable||sv_reliable_sound.ival) ? MULTICAST_PHS_R : MULTICAST_PHS, reliable?NULL:"rsnd", seenmask, SV_SoundMulticast, &ctx);
 		else
-			SV_MulticastCB(origin, reliable ? MULTICAST_ALL_R : MULTICAST_ALL, seenmask, SV_SoundMulticast, &ctx);
+			SV_MulticastCB(origin, (reliable||sv_reliable_sound.ival) ? MULTICAST_ALL_R : MULTICAST_ALL, reliable?NULL:"rsnd", seenmask, SV_SoundMulticast, &ctx);
 	}
 }
 
@@ -2180,7 +2188,7 @@ void SV_CalcClientStats(client_t *client, int statsi[MAX_CL_STATS], float statsf
 //			statsfi[STAT_MOVEVARS_AIRSPEEDLIMIT_NONQW]			= 0;
 //			statsfi[STAT_MOVEVARS_AIRSTRAFEACCEL_QW]			= 0;
 //			statsfi[STAT_MOVEVARS_AIRCONTROL_POWER]				= 2;
-			statsi [STAT_MOVEFLAGS]								= MOVEFLAG_QWCOMPAT;
+			statsi [STAT_MOVEFLAGS]								= MOVEFLAG_VALID|MOVEFLAG_QWCOMPAT;
 //			statsfi[STAT_MOVEVARS_WARSOWBUNNY_AIRFORWARDACCEL]	= 0;
 //			statsfi[STAT_MOVEVARS_WARSOWBUNNY_ACCEL]			= 0;
 //			statsfi[STAT_MOVEVARS_WARSOWBUNNY_TOPSPEED]			= 0;
@@ -2786,14 +2794,13 @@ static qboolean SV_SyncInfoBuf(client_t *client)
 	infobuf_t *info = client->infosync.keys[0].context;
 	size_t bloboffset = client->infosync.keys[0].syncpos;
 	//unsigned int seat = info - cls.userinfo;
+	qboolean large;
 	size_t blobsize;
-	const char *blobdata = InfoBuf_BlobForKey(info, key, &blobsize);
+	const char *blobdata = InfoBuf_BlobForKey(info, key, &blobsize, &large);
 	size_t sendsize;
 	size_t bufferspace;
 
 	qboolean final;
-	char enckey[2048];
-	char encval[2048];
 
 	if (client->protocol == SCP_QUAKE2)
 	{	//q2 gamecode is fully responsible for networking this via configstrings.
@@ -2806,36 +2813,20 @@ static qboolean SV_SyncInfoBuf(client_t *client)
 	if (client->netchan.message.cursize >= MAX_BACKBUFLEN/2)
 		return false;	//don't bother trying to send anything.
 
-	if (!InfoBuf_EncodeString(key, strlen(key), enckey, sizeof(enckey)))
-	{
-		InfoSync_Remove(&client->infosync, 0);
-		return false;
-	}
-
-	sendsize = blobsize - bloboffset;
-	bufferspace = MAX_BACKBUFLEN - client->netchan.message.cursize;
-	bufferspace -= 7 - strlen(enckey) - 2;	//extra overhead
-	bufferspace = (bufferspace/4)*3;			//encoding overhead
-	sendsize = min(bufferspace, sendsize);
-	final = (bloboffset+sendsize >= blobsize);
-
-	if (!InfoBuf_EncodeString(blobdata+bloboffset, sendsize, encval, sizeof(encval)))
-	{
-		InfoSync_Remove(&client->infosync, 0);
-		return false;
-	}
-
-	if (final && !bloboffset && *enckey != '\xff' && *encval != '\xff')
+	if (!large)
 	{	//vanilla-compatible info.
+		if (!blobdata)
+			blobdata = "";
+
 		if (ISNQCLIENT(client))
 		{	//except that nq never had any userinfo
 			const char *s;
 			if (info == &svs.info)
-				s = va("//svi \"%s\" \"%s\"\n", enckey, encval);
+				s = va("//svi \"%s\" \"%s\"\n", key, blobdata);
 			else
 			{
 				int playerslot = (client_t*)((char*)info-(char*)&((client_t*)NULL)->userinfo)-svs.clients;
-				s = va("//ui %i \"%s\" \"%s\"\n", playerslot, enckey, encval);
+				s = va("//ui %i \"%s\" \"%s\"\n", playerslot, key, blobdata);
 			}
 			ClientReliableWrite_Begin(client, svc_stufftext, strlen(s)+2);
 			ClientReliableWrite_String(client, s);
@@ -2843,41 +2834,55 @@ static qboolean SV_SyncInfoBuf(client_t *client)
 		else
 		{
 			if (info == &svs.info)
-				ClientReliableWrite_Begin(client, svc_serverinfo, 1+strlen(enckey)+1+strlen(encval)+1);
+				ClientReliableWrite_Begin(client, svc_serverinfo, 1+strlen(key)+1+strlen(blobdata)+1);
 			else
 			{
-				ClientReliableWrite_Begin(client, svc_setinfo, 2+strlen(enckey)+1+strlen(encval)+1);
+				ClientReliableWrite_Begin(client, svc_setinfo, 2+strlen(key)+1+strlen(blobdata)+1);
 				ClientReliableWrite_Byte(client, (client_t*)((char*)info-(char*)&((client_t*)NULL)->userinfo)-svs.clients);
 			}
-			ClientReliableWrite_String(client, enckey);
-			ClientReliableWrite_String(client, encval);
+			ClientReliableWrite_String(client, key);
+			ClientReliableWrite_String(client, blobdata);
 		}
 	}
 	else if (client->fteprotocolextensions2 & PEXT2_INFOBLOBS)
 	{
-		int pl;
+		char enckey[2048];
+		unsigned int pl;
 		if (info == &svs.info)
-			pl = 255;	//colourmaps being 1-based with these being 0-based means that only 0-254 are valid players, and 255 is unused, so lets use it for serverinfo blobs.
+			pl = 0;	//colourmaps being 1-based with these being 0-based means that only 0-254 are valid players, and 255 is unused, so lets use it for serverinfo blobs.
 		else
-			pl = (client_t*)((char*)info-(char*)&((client_t*)NULL)->userinfo)-svs.clients;
+			pl = 1+((client_t*)((char*)info-(char*)&((client_t*)NULL)->userinfo)-svs.clients);
 
-		ClientReliableWrite_Begin(client, svc_setinfo, 7+strlen(enckey)+1+strlen(encval)+1);
-		ClientReliableWrite_Byte(client, 255); //special meaning to say that this is a partial update
-		ClientReliableWrite_Byte(client, pl);
-		ClientReliableWrite_Long(client, (final?0x80000000:0)|bloboffset);
+		if (!InfoBuf_EncodeString(key, strlen(key), enckey, sizeof(enckey)))
+		{
+			InfoSync_Remove(&client->infosync, 0);
+			return false;
+		}
+		if (!blobdata)
+			bloboffset = 0;	//wiped or something? I dunno, don't bug out though.y
+
+		sendsize = blobsize - bloboffset;
+		bufferspace = MAX_BACKBUFLEN - client->netchan.message.cursize;
+		bufferspace -= 8 - strlen(enckey) - 1;	//extra overhead
+		sendsize = min(bufferspace, sendsize);
+		final = (bloboffset+sendsize >= blobsize);
+
+		ClientReliableWrite_Begin(client, svcfte_setinfoblob, 8+strlen(enckey)+1+sendsize);
+		ClientReliableWrite_Byte(client, pl); //special meaning to say that this is a partial update
 		ClientReliableWrite_String(client, enckey);
-		ClientReliableWrite_String(client, encval);
-	}
-	else
-	{	//client can't receive this info, stop trying to send it.
-		InfoSync_Remove(&client->infosync, 0);
-		return true;
-	}
+		ClientReliableWrite_Long(client, (final?0x80000000:0)|bloboffset);
+		ClientReliableWrite_Short(client, sendsize);
+		ClientReliableWrite_SZ(client, blobdata+bloboffset, sendsize);
 
-	if (bloboffset+sendsize == blobsize)
-		InfoSync_Remove(&client->infosync, 0);
-	else
-		client->infosync.keys[0].syncpos += sendsize;
+		if (!final)
+		{
+			client->infosync.keys[0].syncpos += sendsize;
+			return true;
+		}
+	}
+	//else client can't receive this info, stop trying to send it.
+
+	InfoSync_Remove(&client->infosync, 0);
 	return true;
 }
 

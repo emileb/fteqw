@@ -465,7 +465,7 @@ void CLQW_ParseDelta (entity_state_t *from, entity_state_t *to, int bits)
 	if (bits & U_ORIGIN3)
 	{
 		if (cls.ezprotocolextensions1 & EZPEXT1_FLOATENTCOORDS)
-			to->origin[1] = MSG_ReadCoordFloat ();
+			to->origin[2] = MSG_ReadCoordFloat ();
 		else
 			to->origin[2] = MSG_ReadCoord ();
 	}
@@ -2227,13 +2227,7 @@ void CLQ1_AddOrientedHalfSphere(shader_t *shader, float radius, float gap, float
 	}
 
 	if (cl_numstrisvert + latsteps*lngsteps > cl_maxstrisvert)
-	{
-		cl_maxstrisvert = cl_numstrisvert + latsteps*lngsteps;
-
-		cl_strisvertv = BZ_Realloc(cl_strisvertv, sizeof(*cl_strisvertv)*cl_maxstrisvert);
-		cl_strisvertt = BZ_Realloc(cl_strisvertt, sizeof(vec2_t)*cl_maxstrisvert);
-		cl_strisvertc = BZ_Realloc(cl_strisvertc, sizeof(vec4_t)*cl_maxstrisvert);
-	}
+		cl_stris_ExpandVerts(cl_numstrisvert + latsteps*lngsteps);
 	if (cl_maxstrisidx < cl_numstrisidx+latsteps*(lngsteps-1)*6)
 	{
 		cl_maxstrisidx = cl_numstrisidx+latsteps*(lngsteps-1)*6 + 64;
@@ -2358,13 +2352,7 @@ void CLQ1_AddOrientedCylinder(shader_t *shader, float radius, float height, qboo
 		}
 
 		if (cl_numstrisvert + sides*2 > cl_maxstrisvert)
-		{
-			cl_maxstrisvert = cl_numstrisvert + sides*2;
-
-			cl_strisvertv = BZ_Realloc(cl_strisvertv, sizeof(*cl_strisvertv)*cl_maxstrisvert);
-			cl_strisvertt = BZ_Realloc(cl_strisvertt, sizeof(vec2_t)*cl_maxstrisvert);
-			cl_strisvertc = BZ_Realloc(cl_strisvertc, sizeof(vec4_t)*cl_maxstrisvert);
-		}
+			cl_stris_ExpandVerts(cl_numstrisvert + sides*2);
 		if (cl_maxstrisidx < cl_numstrisidx+sides*6)
 		{
 			cl_maxstrisidx = cl_numstrisidx+sides*6 + 64;
@@ -2451,13 +2439,7 @@ void CLQ1_DrawLine(shader_t *shader, vec3_t v1, vec3_t v2, float r, float g, flo
 		t->flags = flags;
 	}
 	if (cl_numstrisvert + 2 > cl_maxstrisvert)
-	{
-		cl_maxstrisvert = cl_numstrisvert + 2;
-
-		cl_strisvertv = BZ_Realloc(cl_strisvertv, sizeof(*cl_strisvertv)*cl_maxstrisvert);
-		cl_strisvertt = BZ_Realloc(cl_strisvertt, sizeof(vec2_t)*cl_maxstrisvert);
-		cl_strisvertc = BZ_Realloc(cl_strisvertc, sizeof(vec4_t)*cl_maxstrisvert);
-	}
+		cl_stris_ExpandVerts(cl_numstrisvert + 2);
 	if (cl_maxstrisidx < cl_numstrisidx+2)
 	{
 		cl_maxstrisidx = cl_numstrisidx+2;
@@ -2517,12 +2499,7 @@ void CLQ1_AddSpriteQuad(shader_t *shader, vec3_t mid, float radius)
 		cl_strisidx = BZ_Realloc(cl_strisidx, sizeof(*cl_strisidx)*cl_maxstrisidx);
 	}
 	if (cl_numstrisvert+4 > cl_maxstrisvert)
-	{
-		cl_maxstrisvert+=64;
-		cl_strisvertv = BZ_Realloc(cl_strisvertv, sizeof(*cl_strisvertv)*cl_maxstrisvert);
-		cl_strisvertt = BZ_Realloc(cl_strisvertt, sizeof(*cl_strisvertt)*cl_maxstrisvert);
-		cl_strisvertc = BZ_Realloc(cl_strisvertc, sizeof(*cl_strisvertc)*cl_maxstrisvert);
-	}
+		cl_stris_ExpandVerts(cl_maxstrisvert+64);
 
 	{
 		VectorMA(mid, radius, vright,     cl_strisvertv[cl_numstrisvert]);
@@ -2589,12 +2566,7 @@ void CL_DrawDebugPlane(float *normal, float dist, float r, float g, float b, qbo
 		cl_strisidx = BZ_Realloc(cl_strisidx, sizeof(*cl_strisidx)*cl_maxstrisidx);
 	}
 	if (cl_numstrisvert+4 > cl_maxstrisvert)
-	{
-		cl_maxstrisvert+=64;
-		cl_strisvertv = BZ_Realloc(cl_strisvertv, sizeof(*cl_strisvertv)*cl_maxstrisvert);
-		cl_strisvertt = BZ_Realloc(cl_strisvertt, sizeof(*cl_strisvertt)*cl_maxstrisvert);
-		cl_strisvertc = BZ_Realloc(cl_strisvertc, sizeof(*cl_strisvertc)*cl_maxstrisvert);
-	}
+		cl_stris_ExpandVerts(cl_maxstrisvert+64);
 
 	{
 		vec3_t tmp = {0,0.04,0.96};
@@ -2686,13 +2658,8 @@ void CLQ1_AddOrientedCube(shader_t *shader, vec3_t mins, vec3_t maxs, float *mat
 
 
 	if (cl_numstrisvert + 8 > cl_maxstrisvert)
-	{
-		cl_maxstrisvert = cl_numstrisvert + 8 + 1024;
+		cl_stris_ExpandVerts(cl_numstrisvert + 8 + 1024);
 
-		cl_strisvertv = BZ_Realloc(cl_strisvertv, sizeof(*cl_strisvertv)*cl_maxstrisvert);
-		cl_strisvertt = BZ_Realloc(cl_strisvertt, sizeof(vec2_t)*cl_maxstrisvert);
-		cl_strisvertc = BZ_Realloc(cl_strisvertc, sizeof(vec4_t)*cl_maxstrisvert);
-	}
 	if (cl_maxstrisidx < cl_numstrisidx+6*6)
 	{
 		cl_maxstrisidx = cl_numstrisidx + 6*6 + 1024;
@@ -2956,13 +2923,7 @@ static void CL_AddDecal_Callback(void *vctx, vec3_t *fte_restrict points, size_t
 
 	
 	if (cl_numstrisvert + numpoints > cl_maxstrisvert)
-	{
-		cl_maxstrisvert = cl_numstrisvert + numpoints;
-
-		cl_strisvertv = BZ_Realloc(cl_strisvertv, sizeof(*cl_strisvertv)*cl_maxstrisvert);
-		cl_strisvertt = BZ_Realloc(cl_strisvertt, sizeof(vec2_t)*cl_maxstrisvert);
-		cl_strisvertc = BZ_Realloc(cl_strisvertc, sizeof(vec4_t)*cl_maxstrisvert);
-	}
+		cl_stris_ExpandVerts(cl_numstrisvert + numpoints);
 	if (cl_maxstrisidx < cl_numstrisidx+numpoints)
 	{
 		cl_maxstrisidx = cl_numstrisidx+numpoints + 64;
@@ -3651,7 +3612,7 @@ static void CL_TransitionPacketEntities(int newsequence, packet_entities_t *newp
 					VectorCopy(snew->angles, le->newangle);
 
 					//fixme: should be oldservertime
-					le->orglerpdeltatime = servertime-le->orglerpstarttime;
+					le->orglerpdeltatime = bound(0.001, servertime-le->orglerpstarttime, cl_lerp_maxinterval.value);
 					le->orglerpstarttime = servertime;
 				}
 
@@ -3894,7 +3855,9 @@ void CL_LinkPacketEntities (void)
 	int trailef, trailidx;
 	int modelflags;
 	struct itemtimer_s	*timer, **timerlink;
-	float timestep = host_frametime;
+	float timestep = cl.time-cl.lastlinktime;
+	cl.lastlinktime = cl.time;
+	timestep = bound(0, timestep, 0.1);
 
 	pack = cl.currentpackentities;
 	if (!pack)
@@ -4629,7 +4592,12 @@ void CLQW_ParsePlayerinfo (void)
 		for (i = 0; i < 3; i++)
 		{
 			if (flags & (DF_ORIGINX << i))
-				state->origin[i] = MSG_ReadCoord ();
+			{
+				if (cls.ezprotocolextensions1 & EZPEXT1_FLOATENTCOORDS)
+					state->origin[i] = MSG_ReadCoordFloat ();
+				else
+					state->origin[i] = MSG_ReadCoord ();
+			}
 		}
 
 		VectorSubtract(state->origin, prevstate->origin, dist);
@@ -4717,8 +4685,12 @@ void CLQW_ParsePlayerinfo (void)
 	flags = (unsigned short)MSG_ReadShort ();
 
 	if (cls.fteprotocolextensions & (PEXT_HULLSIZE|PEXT_TRANS|PEXT_SCALE|PEXT_FATNESS))
+	{
 		if (flags & PF_EXTRA_PFS)
 			flags |= MSG_ReadByte()<<16;
+	}
+	else
+		flags = (flags & 0x3fff) | ((flags & 0xc000)<<8);
 
 	state->flags = flags;
 
@@ -4820,15 +4792,15 @@ void CLQW_ParsePlayerinfo (void)
 	state->gravitydir[2] = -1;
 
 #ifdef PEXT_SCALE
-	if (flags & PF_SCALE && cls.fteprotocolextensions & PEXT_SCALE)
+	if ((flags & PF_SCALE) && (cls.fteprotocolextensions & PEXT_SCALE))
 		state->scale = (float)MSG_ReadByte()/50;
 #endif
 #ifdef PEXT_TRANS
-	if (flags & PF_TRANS && cls.fteprotocolextensions & PEXT_TRANS)
+	if ((flags & PF_TRANS) && (cls.fteprotocolextensions & PEXT_TRANS))
 		state->alpha = MSG_ReadByte();
 #endif
 #ifdef PEXT_FATNESS
-	if (flags & PF_FATNESS && cls.fteprotocolextensions & PEXT_FATNESS)
+	if ((flags & PF_FATNESS) && (cls.fteprotocolextensions & PEXT_FATNESS))
 		state->fatness = (float)MSG_ReadChar();
 #endif
 #ifdef PEXT_HULLSIZE
@@ -4855,8 +4827,12 @@ void CLQW_ParsePlayerinfo (void)
 	}
 	//should be passed to player move func.
 #endif
+	if (cls.z_ext & Z_EXT_PF_ONGROUND)
+		state->onground = !!(flags & PF_ONGROUND);
+	else
+		state->onground = false;
 
-	if (cls.fteprotocolextensions & PEXT_COLOURMOD && (flags & PF_COLOURMOD))
+	if ((cls.fteprotocolextensions & PEXT_COLOURMOD) && (flags & PF_COLOURMOD))
 	{
 		state->colourmod[0] = MSG_ReadByte();
 		state->colourmod[1] = MSG_ReadByte();
@@ -4867,6 +4843,15 @@ void CLQW_ParsePlayerinfo (void)
 		state->colourmod[0] = 32;
 		state->colourmod[1] = 32;
 		state->colourmod[2] = 32;
+	}
+
+	//if we have no solidity info, guess.
+	if (!(cls.z_ext & Z_EXT_PF_SOLID))
+	{
+		if (cl.players[num].spectator || state->flags & PF_DEAD)
+			state->flags &= ~PF_SOLID;
+		else
+			state->flags |= PF_SOLID;
 	}
 
 	if (cls.z_ext & Z_EXT_PM_TYPE)
@@ -5591,6 +5576,7 @@ void CL_SetSolidEntities (void)
 	packet_entities_t	*pak;
 	entity_state_t		*state;
 	physent_t			*pent;
+	model_t				*mod;
 
 	memset(&pmove.physents[0], 0, sizeof(physent_t));
 	pmove.physents[0].model = cl.worldmodel;
@@ -5612,18 +5598,20 @@ void CL_SetSolidEntities (void)
 		{	/*bsp model size*/
 			if (state->modelindex <= 0)
 				continue;
-			if (!cl.model_precache[state->modelindex])
+			mod = cl.model_precache[state->modelindex];
+			if (!mod)
 				continue;
 			/*vanilla protocols have no 'solid' information. all entities get assigned ES_SOLID_BSP, even if its not actually solid.
 			so we need to make sure that item pickups are not erroneously considered solid, but doors etc are.
-			yes, this probably means that externally loaded models will be predicted non-solid - you'll need to upgrade your network protocol for the gamecode to be able to specify solidity.
+			normally, ONLY inline models are considered solid when we have no solid info.
+			monsters will always be non-solid, too.
 			*/
-			if (!(cls.fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS) && !((*cl.model_precache[state->modelindex]->name == '*' || cl.model_precache[state->modelindex]->numsubmodels) && cl.model_precache[state->modelindex]->funcs.NativeTrace))
+			if (!(cls.fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS) && mod->numsubmodels <= 1)
 				continue;
 	
 			pent = &pmove.physents[pmove.numphysent];
 			memset(pent, 0, sizeof(physent_t));
-			pent->model = cl.model_precache[state->modelindex];
+			pent->model = mod;
 			if (pent->model->loadstate != MLS_LOADED)
 				continue;
 			VectorCopy (state->angles, pent->angles);
@@ -5787,9 +5775,8 @@ void CL_SetSolidPlayers (void)
 	{
 		if (!pplayer->active)
 			continue;	// not present this frame
-
-		if (pplayer->flags & PF_DEAD)
-			continue; // dead players aren't solid
+		if (!(pplayer->flags & PF_SOLID))
+			continue;
 
 		memset(pent, 0, sizeof(physent_t));
 		VectorCopy(pplayer->origin, pent->origin);

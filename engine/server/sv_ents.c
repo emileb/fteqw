@@ -67,7 +67,7 @@ static int needcleanup;
 
 //int		fatbytes;
 
-void SV_ExpandNackFrames(client_t *client, int require)
+void SV_ExpandNackFrames(client_t *client, int require, client_frame_t **currentframeptr)
 {
 	client_frame_t *newframes;
 	char *ptr;
@@ -98,6 +98,10 @@ void SV_ExpandNackFrames(client_t *client, int require)
 		newframes[i].senttime = realtime;
 	}
 	Z_Free(client->frameunion.frames);
+
+	//if you're calling this then its because you're currently generating new frame data, and its a problem if that changes from under you. fix it up for the caller (so they can't forget to do so)
+	*currentframeptr = newframes+(*currentframeptr-client->frameunion.frames);
+
 	client->frameunion.frames = newframes;
 }
 
@@ -336,8 +340,11 @@ void SV_EmitCSQCUpdate(client_t *client, sizebuf_t *msg, qbyte svcnumber)
 
 				if (lognum > maxlog)
 				{
-					SV_ExpandNackFrames(client, lognum+1);
-					break;
+					if (maxlog == client->max_net_ents)
+						break;
+					SV_ExpandNackFrames(client, lognum+1, &frame);
+					resend = frame->resend;
+					maxlog = frame->maxresend;
 				}
 				resend[lognum].entnum = entnum;
 				resend[lognum].bits = 0;
@@ -389,8 +396,11 @@ void SV_EmitCSQCUpdate(client_t *client, sizebuf_t *msg, qbyte svcnumber)
 
 			if (lognum > maxlog)
 			{
-				SV_ExpandNackFrames(client, lognum+1);
-				break;
+				if (maxlog == client->max_net_ents)
+					break;
+				SV_ExpandNackFrames(client, lognum+1, &frame);
+				resend = frame->resend;
+				maxlog = frame->maxresend;
 			}
 			resend[lognum].entnum = entnum;
 			resend[lognum].bits = 0;
@@ -423,8 +433,11 @@ void SV_EmitCSQCUpdate(client_t *client, sizebuf_t *msg, qbyte svcnumber)
 
 			if (lognum > maxlog)
 			{
-				SV_ExpandNackFrames(client, lognum+1);
-				break;
+				if (maxlog == client->max_net_ents)
+					break;
+				SV_ExpandNackFrames(client, lognum+1, &frame);
+				resend = frame->resend;
+				maxlog = frame->maxresend;
 			}
 			resend[lognum].entnum = entnum;
 			resend[lognum].bits = 0;
@@ -459,8 +472,11 @@ void SV_EmitCSQCUpdate(client_t *client, sizebuf_t *msg, qbyte svcnumber)
 
 			if (lognum > maxlog)
 			{
-				SV_ExpandNackFrames(client, lognum+1);
-				break;
+				if (maxlog == client->max_net_ents)
+					break;
+				SV_ExpandNackFrames(client, lognum+1, &frame);
+				resend = frame->resend;
+				maxlog = frame->maxresend;
 			}
 			resend[lognum].entnum = entnum;
 			resend[lognum].bits = 0;
@@ -1512,8 +1528,11 @@ qboolean SVFTE_EmitPacketEntities(client_t *client, packet_entities_t *to, sizeb
 			}
 			if (outno >= outmax)
 			{	//expand the frames. may need some copying...
-				SV_ExpandNackFrames(client, outno+1);
-				break;
+				if (outmax == client->max_net_ents)
+					break;
+				SV_ExpandNackFrames(client, outno+1, &frame);
+				resend = frame->resend;
+				outmax = frame->maxresend;
 			}
 
 			if (bits & UF_REMOVE)
@@ -1985,8 +2004,11 @@ void SVDP_EmitEntitiesUpdate (client_t *client, client_frame_t *frame, packet_en
 				break; /*give up if it gets full. FIXME: bone data is HUGE.*/
 			if (outno >= outmax)
 			{	//expand the frames. may need some copying...
-				SV_ExpandNackFrames(client, outno+1);
-				break;
+				if (outmax == client->max_net_ents)
+					break;
+				SV_ExpandNackFrames(client, outno+1, &frame);
+				resend = frame->resend;
+				outmax = frame->maxresend;
 			}
 
 			if (bits & E5_SERVERREMOVE)
@@ -2091,6 +2113,8 @@ typedef struct {
 	int health;
 	int spectator;	//0=send to a player. 1=non-tracked player, to a spec. 2=tracked player, to a spec(or self)
 	qboolean isself;
+	qboolean onground;
+	qboolean solid;
 	int fteext;
 	int zext;
 	int hull;
@@ -2229,17 +2253,24 @@ void SV_WritePlayerToClient(sizebuf_t *msg, clstate_t *ent)
 			pflags |= pm_code << PF_PMC_SHIFT;
 		}
 
-		if (pflags & 0xff0000)
-			pflags |= PF_EXTRA_PFS;
+		if ((zext & Z_EXT_PF_ONGROUND) && ent->onground)
+			pflags |= PF_ONGROUND;
+		if ((zext & Z_EXT_PF_SOLID) && ent->solid)
+			pflags |= PF_SOLID;
 
 		MSG_WriteByte (msg, svc_playerinfo);
 		MSG_WriteByte (msg, ent->playernum);
-		MSG_WriteShort (msg, pflags&0xffff);
 
-		if (pflags & PF_EXTRA_PFS)
+		if (ent->fteext & (PEXT_HULLSIZE|PEXT_TRANS|PEXT_SCALE|PEXT_FATNESS))
 		{
-			MSG_WriteByte(msg, (pflags&0xff0000)>>16);
+			if (pflags & 0xff0000)
+				pflags |= PF_EXTRA_PFS;
+			MSG_WriteShort (msg, pflags&0xffff);
+			if (pflags & PF_EXTRA_PFS)
+				MSG_WriteByte(msg, (pflags&0xff0000)>>16);
 		}
+		else
+			MSG_WriteShort (msg, (pflags&0x3fff) | ((pflags&0xc00000)>>8));
 		//we need to tell the client that it's moved, as it's own origin might not be natural
 
 		for (i=0 ; i<3 ; i++)
@@ -2299,9 +2330,7 @@ void SV_WritePlayerToClient(sizebuf_t *msg, clstate_t *ent)
 		}
 
 		if (pflags & PF_MODEL)
-		{
 			MSG_WriteByte (msg, ent->modelindex);
-		}
 
 		if (pflags & PF_SKINNUM)
 			MSG_WriteByte (msg, ent->skin | (((pflags & PF_MODEL)&&(ent->modelindex>=256))<<7));
@@ -2529,6 +2558,8 @@ void SV_WritePlayersToClient (client_t *client, client_frame_t *frame, edict_t *
 				clst.zext = 0;//client->zquake_extensions;
 				clst.cl = NULL;
 				clst.vw_index = 0;
+				clst.solid = true;
+				clst.onground = true;
 
 				lerp = (realtime - olddemotime) / (nextdemotime - olddemotime);
 				if (lerp < 0)
@@ -2690,6 +2721,8 @@ void SV_WritePlayersToClient (client_t *client, client_frame_t *frame, edict_t *
 			clst.velocity = vent->v->velocity;
 			clst.effects = ent->v->effects;
 			clst.vw_index = ent->xv->vw_index;
+			clst.onground = (int)ent->v->flags & FL_ONGROUND;
+			clst.solid = ent->v->solid && ent->v->solid != SOLID_CORPSE && ent->v->solid != SOLID_TRIGGER;
 
 			if (progstype == PROG_H2 && ((int)vent->v->effects & H2EF_NODRAW))
 			{
@@ -3176,6 +3209,8 @@ void SV_Snapshot_BuildStateQ1(entity_state_t *state, edict_t *ent, client_t *cli
 		if (cl->isindependant)
 		{
 			state->u.q1.pmovetype = ent->v->movetype;
+			if (state->u.q1.pmovetype && ((int)ent->v->flags & FL_ONGROUND) && (client->zquake_extensions&Z_EXT_PF_ONGROUND))
+				state->u.q1.pmovetype |= 0x80;
 			if (cl != client && client)
 			{	/*only generate movement values if the client doesn't already know them...*/
 				state->u.q1.movement[0] = ent->xv->movement[0];
@@ -3205,7 +3240,7 @@ void SV_Snapshot_BuildStateQ1(entity_state_t *state, edict_t *ent, client_t *cli
 		else
 		{
 			if (client->fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS)
-			if (state->u.q1.pmovetype && (state->u.q1.pmovetype != MOVETYPE_TOSS && state->u.q1.pmovetype != MOVETYPE_BOUNCE))
+			if (state->u.q1.pmovetype && ((state->u.q1.pmovetype&0x7f) != MOVETYPE_TOSS && (state->u.q1.pmovetype&0x7f) != MOVETYPE_BOUNCE))
 			{
 				state->angles[0] = ent->v->v_angle[0]/-3.0;
 				state->angles[1] = ent->v->v_angle[1];
@@ -3696,6 +3731,14 @@ void SV_Snapshot_BuildQ1(client_t *client, packet_entities_t *pack, pvscamera_t 
 
 				if (client->gibfilter && SV_GibFilter(ent))
 					continue;
+
+#ifdef VM_Q1
+				//mvdsv compat
+				if (client->hideentity && EDICT_TO_PROG(svprogfuncs, ent) == client->hideentity)
+					continue;
+				if (client->hideplayers && e <= sv.allocated_client_slots)
+					continue;
+#endif
 			}
 			else
 				tracecullent = NULL;
@@ -4026,7 +4069,7 @@ void SV_WriteEntitiesToClient (client_t *client, sizebuf_t *msg, qboolean ignore
 			// on client side doesn't stray too far off
 			if (ISQWCLIENT(client))
 			{
-				if (client->fteprotocolextensions & PEXT_ACCURATETIMINGS && sv.world.physicstime - client->nextservertimeupdate > 0)
+				if ((client->fteprotocolextensions & PEXT_ACCURATETIMINGS )&& sv.world.physicstime - client->nextservertimeupdate > 0)
 				{	//the fte pext causes the server to send out accurate timings, allowing for perfect interpolation.
 					MSG_WriteByte (msg, svcqw_updatestatlong);
 					MSG_WriteByte (msg, STAT_TIME);
@@ -4034,7 +4077,7 @@ void SV_WriteEntitiesToClient (client_t *client, sizebuf_t *msg, qboolean ignore
 
 					client->nextservertimeupdate = sv.world.physicstime;
 				}
-				else if (client->zquake_extensions & Z_EXT_SERVERTIME && sv.world.physicstime - client->nextservertimeupdate > 0)
+				else if ((client->zquake_extensions & Z_EXT_SERVERTIME) && sv.world.physicstime - client->nextservertimeupdate > 0)
 				{	//the zquake ext causes the server to send out peridoic timings, allowing for moderatly accurate game time.
 					MSG_WriteByte (msg, svcqw_updatestatlong);
 					MSG_WriteByte (msg, STAT_TIME);

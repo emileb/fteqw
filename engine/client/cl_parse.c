@@ -2503,11 +2503,15 @@ void DL_Abort(qdownload_t *dl, enum qdlabort aborttype)
 			case DL_QW:
 				break;
 			case DL_DARKPLACES:
+				CL_SendClientCommand(true, "stopdownload");
+				break;
 			case DL_QWCHUNKS:
 				{
-					char *serverversion = InfoBuf_ValueForKey(&cl.serverinfo, "*version");
-					if (strncmp(serverversion , "MVDSV ", 6))	//don't tell mvdsv to stop, because it has retarded annoying clientprints that are spammy as fuck, and we don't want that.
-						CL_SendClientCommand(true, "stopdownload");
+					//char *serverversion = InfoBuf_ValueForKey(&cl.serverinfo, "*version");
+					//if (!strncmp(serverversion , "MVDSV ", 6))	//mvdsv will spam if we use stopdownload. and it'll misreport packetloss if we send nothing. grr.
+						CL_SendClientCommand(true, "nextdl -1 100 %i", dl->filesequence);
+					//else
+					//	CL_SendClientCommand(true, "stopdownload");
 				}
 				break;
 			}
@@ -3089,7 +3093,6 @@ static void CLQW_ParseServerData (void)
 
 // parse protocol version number
 // allow 2.2 and 2.29 demos to play
-#ifdef PROTOCOL_VERSION_FTE
 	cls.fteprotocolextensions = 0;
 	cls.fteprotocolextensions2 = 0;
 	cls.ezprotocolextensions1 = 0;
@@ -3135,18 +3138,18 @@ static void CLQW_ParseServerData (void)
 			break;
 		Host_EndGame ("Server returned version %i, not %i\n", protover, PROTOCOL_VERSION_QW);
 	}
-#else
-	protover = MSG_ReadLong ();
-	if (protover != PROTOCOL_VERSION_QW &&
-		!(cls.demoplayback && (protover >= 24 && protover <= 28)))
-		Host_EndGame ("Server returned version %i, not %i\n", protover, PROTOCOL_VERSION_QW);
-#endif
 
 	if (developer.ival || cl_shownet.ival)
 	{
-		if (cls.fteprotocolextensions2||cls.fteprotocolextensions)
-			Con_TPrintf ("Using FTE extensions 0x%x%08x\n", cls.fteprotocolextensions2, cls.fteprotocolextensions);
+		if (cls.fteprotocolextensions2||cls.fteprotocolextensions||cls.ezprotocolextensions1)
+			Con_TPrintf ("Using FTE extensions 0x%x%08x %#x\n", cls.fteprotocolextensions2, cls.fteprotocolextensions, cls.ezprotocolextensions1);
 	}
+	if (cls.fteprotocolextensions & ~PEXT_CLIENTSUPPORT)
+		Con_TPrintf (CON_WARNING"Using unknown fte-pext1 extensions (%#x)\n", cls.fteprotocolextensions&~PEXT_CLIENTSUPPORT);
+	if (cls.fteprotocolextensions2 & ~PEXT2_CLIENTSUPPORT)
+		Con_TPrintf (CON_WARNING"Using unknown fte-pext2 extensions (%#x)\n", cls.fteprotocolextensions2&~PEXT2_CLIENTSUPPORT);
+	if (cls.ezprotocolextensions1 & ~EZPEXT1_CLIENTSUPPORT)
+		Con_TPrintf (CON_WARNING"Using unknown ezquake extensions (%#x)\n", cls.ezprotocolextensions1&~EZPEXT1_CLIENTSUPPORT);
 
 	if (cls.fteprotocolextensions & PEXT_FLOATCOORDS)
 	{
@@ -3328,6 +3331,7 @@ static void CLQW_ParseServerData (void)
 		movevars.waterfriction		= 1;
 		entgrav						= 1;
 	}
+	movevars.flags = MOVEFLAG_QWCOMPAT;
 
 	for (clnum = 0; clnum < cl.splitclients; clnum++)
 	{
@@ -3878,6 +3882,7 @@ static void CLNQ_SendInitialUserInfo(void *ctx, const char *key, const char *val
 {
 	char keybuf[2048];
 	char valbuf[4096];
+	#warning FIXME: use CL_SendUserinfoUpdate or something
 	CL_SendClientCommand(true, "setinfo %s %s\n", COM_QuotedString(key, keybuf, sizeof(keybuf), false), COM_QuotedString(value, valbuf, sizeof(valbuf), false));
 }
 void CLNQ_SignonReply (void)
@@ -5268,6 +5273,41 @@ static void CL_UpdateUserinfo (void)
 	}
 }
 
+static void CL_ParseSetInfoBlob (void)
+{
+	qbyte slot = MSG_ReadByte();
+	char *key = MSG_ReadString();
+	size_t keysize;
+	unsigned int offset = MSG_ReadLong();
+	qboolean final = !!(offset & 0x80000000);
+	unsigned short valsize = MSG_ReadShort();
+	char *val = BZ_Malloc(valsize);
+	MSG_ReadData(val, valsize);
+	offset &= ~0x80000000;
+	key = InfoBuf_DecodeString(key, key+strlen(key), &keysize);
+
+	if (slot-- == 0)
+		InfoBuf_SyncReceive(&cl.serverinfo, key, keysize, val, valsize, offset, final);
+	else if (slot >= MAX_CLIENTS)
+		Con_Printf("INVALID SETINFO %i: %s=%s\n", slot, key, val);
+	else
+	{
+		player_info_t *player = &cl.players[slot];
+		if (offset)
+			Con_DLPrintf(2,"SETINFO %s: %s+=%s\n", player->name, key, val);
+		else
+			Con_DLPrintf(strcmp(key, "chat")?1:2,"SETINFO %s: %s=%s\n", player->name, key, val);
+
+		InfoBuf_SyncReceive(&player->userinfo, key, keysize, val, valsize, offset, final);
+		player->userinfovalid = true;
+
+		if (final)
+			CL_ProcessUserInfo (slot, player);
+	}
+
+	Z_Free(key);
+	Z_Free(val);
+}
 /*
 ==============
 CL_SetInfo
@@ -5277,67 +5317,27 @@ static void CL_ParseSetInfo (void)
 {
 	int		slot;
 	player_info_t	*player;
-	char *temp;
-	char *key;
 	char *val;
-	unsigned int offset;
-	qboolean final;
-	size_t keysize;
-	size_t valsize;
+	char key[512];
 
 	slot = MSG_ReadByte ();
 
-	if (slot == 255 && (cls.fteprotocolextensions2 & PEXT2_INFOBLOBS))
-	{
-		slot = MSG_ReadByte();
-		offset = MSG_ReadLong();
-		final = !!(offset & 0x80000000);
-		offset &= ~0x80000000;
-	}
-	else
-	{
-		final = true;
-		offset = 0;
-	}
+	MSG_ReadStringBuffer(key, sizeof(key));
+	val = MSG_ReadString();
 
-	temp = MSG_ReadString();
-	if (cls.fteprotocolextensions2 & PEXT2_INFOBLOBS)
-		key = InfoBuf_DecodeString(temp, temp+strlen(temp), &keysize);
-	else
-	{
-		keysize = strlen(temp);
-		key = Z_StrDup(temp);
-	}
-
-	temp = MSG_ReadString();
-	if (cls.fteprotocolextensions2 & PEXT2_INFOBLOBS)
-		val = InfoBuf_DecodeString(temp, temp+strlen(temp), &valsize);
-	else
-	{
-		valsize = strlen(temp);
-		val = Z_StrDup(temp);
-	}
-
-	if (slot == 255)
-		InfoBuf_SyncReceive(&cl.serverinfo, key, keysize, val, valsize, offset, final);
-	else if (slot >= MAX_CLIENTS)
+	if (slot >= MAX_CLIENTS)
 		Con_Printf("INVALID SETINFO %i: %s=%s\n", slot, key, val);
 	else
 	{
 		player = &cl.players[slot];
 
-		if (offset)
-			Con_DLPrintf(2,"SETINFO %s: %s+=%s\n", player->name, key, val);
-		else
-			Con_DLPrintf(strcmp(key, "chat")?1:2,"SETINFO %s: %s=%s\n", player->name, key, val);
+		Con_DLPrintf(strcmp(key, "chat")?1:2,"SETINFO %s: %s=%s\n", player->name, key, val);
 
-		InfoBuf_SyncReceive(&player->userinfo, key, keysize, val, valsize, offset, final);
+		InfoBuf_SetStarKey(&player->userinfo, key, val);
 		player->userinfovalid = true;
 
 		CL_ProcessUserInfo (slot, player);
 	}
-	Z_Free(key);
-	Z_Free(val);
 }
 
 /*
@@ -5452,7 +5452,7 @@ static void CL_SetStatMovevar(int pnum, int stat, int ivalue, float value)
 		}
 		break;
 	case STAT_MOVEFLAGS:
-//		movevars.flags = ivalue;
+		movevars.flags = ivalue;
 		break;
 	case STAT_MOVEVARS_GRAVITY:
 		movevars.gravity = value;
@@ -7156,9 +7156,11 @@ void CLQW_ParseServerMessage (void)
 		case svc_setinfo:
 			CL_ParseSetInfo ();
 			break;
-
 		case svc_serverinfo:
 			CL_ServerInfo ();
+			break;
+		case svcfte_setinfoblob:
+			CL_ParseSetInfoBlob();
 			break;
 
 		case svc_download:
@@ -8304,7 +8306,7 @@ struct sortedsvcs_s
 	const char *name;
 	size_t bytes;
 };
-static QDECL int sorttraffic(const void *l, const void *r)
+static int QDECL sorttraffic(const void *l, const void *r)
 {
 	const struct sortedsvcs_s *a=l, *b=r;
 

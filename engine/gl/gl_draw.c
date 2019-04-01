@@ -42,6 +42,7 @@ static int	gl_filter_pic[3];	//ui elements
 static int	gl_filter_mip[3];	//everything else
 int		gl_mipcap_min = 0;
 int		gl_mipcap_max = 1000;
+int		gl_mip_lod_bias = 0;
 
 void GL_DestroyTexture(texid_t tex)
 {
@@ -153,7 +154,13 @@ void GL_SetupFormats(void)
 		if (GL_CheckExtension("GL_OES_texture_float"))
 			glfmtc(PTI_RGBA32F,	GL_RGBA,			GL_RGBA,				GL_RGBA,				GL_FLOAT,				0);
 
-		if (GL_CheckExtension("GL_OES_depth_texture"))
+		if (GL_CheckExtension("GL_WEBGL_depth_texture"))
+		{	//24bit is okay with this one.
+			glfmt(PTI_DEPTH16,	GL_DEPTH_COMPONENT, GL_DEPTH_COMPONENT,	GL_DEPTH_COMPONENT,		GL_UNSIGNED_SHORT);
+			glfmt(PTI_DEPTH24,	GL_DEPTH_COMPONENT, GL_DEPTH_COMPONENT,	GL_DEPTH_COMPONENT,		GL_UNSIGNED_INT_24_8);
+			glfmt(PTI_DEPTH32,	GL_DEPTH_COMPONENT, GL_DEPTH_COMPONENT,	GL_DEPTH_COMPONENT,		GL_UNSIGNED_INT);
+		}
+		else if (GL_CheckExtension("GL_OES_depth_texture") || GL_CheckExtension("GL_ANGLE_depth_texture"))
 		{	//16+32, not 24.
 			glfmt(PTI_DEPTH16,	GL_DEPTH_COMPONENT, GL_DEPTH_COMPONENT,	GL_DEPTH_COMPONENT,		GL_UNSIGNED_SHORT);
 			glfmt(PTI_DEPTH32,	GL_DEPTH_COMPONENT, GL_DEPTH_COMPONENT,	GL_DEPTH_COMPONENT,		GL_UNSIGNED_INT);
@@ -220,6 +227,7 @@ void GL_SetupFormats(void)
 			glfmt(PTI_A2BGR10,		GL_RGB10_A2,		GL_RGB10_A2,			GL_RGBA,				GL_UNSIGNED_INT_2_10_10_10_REV);
 		if (ver >= 3.0 || GL_CheckExtension("GL_ARB_texture_rg"))
 		{
+			glfmtc(PTI_P8,			GL_R8,				GL_RED,					GL_RED,					GL_UNSIGNED_BYTE,	tc_ru);
 			glfmtc(PTI_R8,			GL_R8,				GL_RED,					GL_RED,					GL_UNSIGNED_BYTE,	tc_ru);
 			glfmtc(PTI_RG8,			GL_RG8,				GL_RG,					GL_RG,					GL_UNSIGNED_BYTE,	tc_rs);
 		}
@@ -231,6 +239,9 @@ void GL_SetupFormats(void)
 
 		if (ver >= 3.0)
 		{
+			glfmtc(PTI_R16,			GL_R16,				GL_RED,					GL_RED,					GL_UNSIGNED_SHORT,	0);
+			glfmtc(PTI_RGBA16,		GL_RGBA16,			GL_RGBA,				GL_RGBA,				GL_UNSIGNED_SHORT,	0);
+
 			glfmtc(PTI_R16F,		GL_R16F,			GL_RED,					GL_RED,					GL_HALF_FLOAT,		0);
 			glfmtc(PTI_R32F,		GL_R32F,			GL_RED,					GL_RED,					GL_FLOAT,			0);
 
@@ -609,6 +620,11 @@ static void GL_Texturemode_Apply(GLenum targ, unsigned int flags)
 		}
 	}
 
+	if (sh_config.can_mipbias)
+	#define GL_TEXTURE_LOD_BIAS               0x8501
+	if (flags & IF_MIPCAP)
+		qglTexParameterf(targ, GL_TEXTURE_LOD_BIAS, (flags & IF_MIPCAP)?gl_mip_lod_bias:0);
+
 	qglTexParameteri(targ, GL_TEXTURE_MIN_FILTER, min);
 	qglTexParameteri(targ, GL_TEXTURE_MAG_FILTER, mag);
 	if (gl_anisotropy_factor)	//0 means driver doesn't support
@@ -742,9 +758,12 @@ qboolean GL_LoadTextureMips(texid_t tex, const struct pendingtextureinfo *mips)
 			{
 				qglTexParameteri(targ, GL_TEXTURE_BASE_LEVEL, 0);
 				qglTexParameteri(targ, GL_TEXTURE_MAX_LEVEL, nummips-1);
+				qglTexParameteri(targ, GL_TEXTURE_LOD_BIAS, 0);
 			}
 		}
 	}
+	if (sh_config.can_mipbias)
+		qglTexParameteri(targ, GL_TEXTURE_LOD_BIAS, (tex->flags & IF_MIPCAP)?gl_mip_lod_bias:0);
 
 //	tex->width = mips->mip[0].width;
 //	tex->height = mips->mip[0].height;
@@ -753,7 +772,7 @@ qboolean GL_LoadTextureMips(texid_t tex, const struct pendingtextureinfo *mips)
 #ifdef FTE_TARGET_WEB
 	if (encoding == PTI_WHOLEFILE)
 	{
-		emscriptenfte_gl_loadtexturefile(tex->num, &tex->width, &tex->height, mips->mip[i].data, mips->mip[i].datasize);
+		emscriptenfte_gl_loadtexturefile(tex->num, &tex->width, &tex->height, mips->mip[0].data, mips->mip[0].datasize, tex->ident);
 		return true;
 	}
 #endif
@@ -987,13 +1006,14 @@ qboolean GL_LoadTextureMips(texid_t tex, const struct pendingtextureinfo *mips)
 	return true;
 }
 
-void GL_UpdateFiltering(image_t *imagelist, int filtermip[3], int filterpic[3], int mipcap[2], float anis)
+void GL_UpdateFiltering(image_t *imagelist, int filtermip[3], int filterpic[3], int mipcap[2], float lodbias, float anis)
 {
 	int targ;
 	image_t *img;
 
 	gl_mipcap_min = mipcap[0];
 	gl_mipcap_max = mipcap[1];
+	gl_mip_lod_bias = lodbias;
 
 	VectorCopy(filterpic, gl_filter_pic);
 	VectorCopy(filtermip, gl_filter_mip);

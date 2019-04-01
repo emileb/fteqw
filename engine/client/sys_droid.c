@@ -346,6 +346,7 @@ void Sys_Error (const char *error, ...)
 	va_start (argptr, error);
 	vsnprintf (string,sizeof(string)-1, error,argptr);
 	va_end (argptr);
+	COM_WorkerAbort(string);
 	if (!*string)
 		strcpy(string, "no error");
 
@@ -490,6 +491,14 @@ void Sys_ServerActivity(void)
 {
 	/*FIXME: flash window*/
 }
+
+#ifdef WEBCLIENT
+qboolean Sys_RunInstaller(void)
+{       //not implemented
+	return false;
+}
+#endif
+
 #ifndef MULTITHREAD
 void Sys_Sleep (double seconds)
 {

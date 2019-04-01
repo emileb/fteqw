@@ -336,18 +336,14 @@ qboolean QDECL Mod_LoadHLModel (model_t *mod, void *buffer, size_t fsize)
 				shader = HLSHADER_CHROME;
 			else
 				shader = "";
-			shaders[i].shader = R_RegisterShader(shaders[i].name, SUF_NONE, shader);
-			shaders[i].shader->defaulttextures->base = Image_GetTexture(shaders[i].name, "", IF_NOALPHA, (qbyte *) texheader + tex[i].offset, (qbyte *) texheader + tex[i].w * tex[i].h + tex[i].offset, tex[i].w, tex[i].h, TF_8PAL24);
-			shaders[i].shader->width = tex[i].w;
-			shaders[i].shader->height = tex[i].h;
+			shaders[i].defaultshadertext = shader;
 		}
 		else
-		{
-			memset(&shaders[i].defaulttex, 0, sizeof(shaders[i].defaulttex));
-			shaders[i].defaulttex.base = Image_GetTexture(shaders[i].name, "", IF_NOALPHA, (qbyte *) texheader + tex[i].offset, (qbyte *) texheader + tex[i].w * tex[i].h + tex[i].offset, tex[i].w, tex[i].h, TF_8PAL24);
-			shaders[i].w = tex[i].w;
-			shaders[i].h = tex[i].h;
-		}
+			shaders[i].defaultshadertext = NULL;
+		memset(&shaders[i].defaulttex, 0, sizeof(shaders[i].defaulttex));
+		shaders[i].defaulttex.base = Image_GetTexture(shaders[i].name, "", IF_NOALPHA, (qbyte *) texheader + tex[i].offset, (qbyte *) texheader + tex[i].w * tex[i].h + tex[i].offset, tex[i].w, tex[i].h, TF_8PAL24);
+		shaders[i].w = tex[i].w;
+		shaders[i].h = tex[i].h;
 	}
 
 	model->numskinrefs = texheader->skinrefs;
@@ -1020,7 +1016,7 @@ qboolean HLMDL_Trace		(model_t *model, int hulloverride, framestate_t *framestat
 		{
 			/* If we have a parent, take the addition. Otherwise just copy the values */
 			if(hm->bones[b].parent>=0)
-				R_ConcatTransforms(transform_matrix[hm->bones[b].parent], (void*)(relbones+b*12), transform_matrix[b]);
+				R_ConcatTransforms((void*)transform_matrix[hm->bones[b].parent], (void*)(relbones+b*12), transform_matrix[b]);
 			else if (axis)
 				R_ConcatTransformsAxis(axis, (void*)(relbones+b*12), transform_matrix[b]);
 			else
@@ -1174,7 +1170,7 @@ void R_HL_BuildFrame(hlmodel_t *model, hlmdl_submodel_t *amodel, entity_t *curen
 				/* If we have a parent, take the addition. Otherwise just copy the values */
 				if(model->bones[b].parent>=0)
 				{
-					R_ConcatTransforms(transform_matrix[model->bones[b].parent], (void*)(curent->framestate.bonestate+b*12), transform_matrix[b]);
+					R_ConcatTransforms((void*)transform_matrix[model->bones[b].parent], (void*)(curent->framestate.bonestate+b*12), transform_matrix[b]);
 				}
 				else
 				{
@@ -1217,7 +1213,7 @@ void R_HL_BuildFrame(hlmodel_t *model, hlmdl_submodel_t *amodel, entity_t *curen
 			/* If we have a parent, take the addition. Otherwise just copy the values */
 			if(model->bones[b].parent>=0)
 			{
-				R_ConcatTransforms(transform_matrix[model->bones[b].parent], (void*)(relatives+b*12), transform_matrix[b]);
+				R_ConcatTransforms((void*)transform_matrix[model->bones[b].parent], (void*)(relatives+b*12), transform_matrix[b]);
 			}
 			else
 			{
@@ -1320,7 +1316,10 @@ static void R_HalfLife_WalkMeshes(entity_t *rent, batch_t *b, batch_t **batches)
 
 				if (!s->shader)
 				{
-					s->shader = R_RegisterSkin(s->name, rent->model->name);
+					if (s->defaultshadertext)
+						s->shader = R_RegisterShader(s->name, SUF_NONE, s->defaultshadertext);
+					else
+						s->shader = R_RegisterSkin(s->name, rent->model->name);
 					R_BuildDefaultTexnums(&s->defaulttex, s->shader, 0);
 				}
 				b->skin = NULL;
@@ -1447,9 +1446,9 @@ void HLMDL_DrawHitBoxes(entity_t *rent)
 	{
 		//If we have a parent, take the addition. Otherwise just copy the values
 		if(model->bones[b].parent>=0)
-			R_ConcatTransforms(transform_matrix[model->bones[b].parent], (void*)(relbones+b*12), transform_matrix[b]);
+			R_ConcatTransforms((void*)transform_matrix[model->bones[b].parent], (void*)(relbones+b*12), transform_matrix[b]);
 		else
-			R_ConcatTransforms(entitymatrix, (void*)(relbones+b*12), transform_matrix[b]);
+			R_ConcatTransforms((void*)entitymatrix, (void*)(relbones+b*12), transform_matrix[b]);
 	}
 
 	for (b = 0; b < model->header->num_hitboxes; b++, hitbox++)

@@ -27,8 +27,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	extern world_t csqc_world;
 #endif
 
-static void S_Play(void);
-static void S_PlayVol(void);
+static void S_Play_f(void);
 static void S_SoundList_f(void);
 #ifdef HAVE_MIXER
 static void S_Update_(soundcardinfo_t *sc);
@@ -75,7 +74,7 @@ int sound_started=0;
 
 cvar_t bgmvolume				= CVARAFD(	"musicvolume", "0.3", "bgmvolume", CVAR_ARCHIVE,
 											"Volume level for background music.");
-cvar_t volume					= CVARFD(	"volume", "0.7", CVAR_ARCHIVE,
+cvar_t volume					= CVARAFD(	"volume", "0.7", /*q3*/"s_volume",CVAR_ARCHIVE,
 											"Main volume level for all engine sound.");
 
 cvar_t nosound					= CVARFD(	"nosound", "0", CVAR_ARCHIVE,
@@ -2212,9 +2211,9 @@ void S_Init (void)
 
 	Con_DPrintf("\nSound Initialization\n");
 
-	Cmd_AddCommand("play", S_Play);
-	Cmd_AddCommand("play2", S_Play);
-	Cmd_AddCommand("playvol", S_PlayVol);
+	Cmd_AddCommand("play", S_Play_f);	//sound that doesn't follow the player
+	Cmd_AddCommand("play2", S_Play_f);	//sound that DOES follow the player
+	Cmd_AddCommand("playvol", S_Play_f);
 	Cmd_AddCommand("stopsound", S_StopAllSounds_f);
 	Cmd_AddCommand("soundlist", S_SoundList_f);
 	Cmd_AddCommand("soundinfo", S_SoundInfo_f);
@@ -2569,6 +2568,9 @@ channel_t *SND_PickChannel(soundcardinfo_t *sc, int entnum, int entchannel)
 
 	if (sc->total_chans <= oldest)
 		sc->total_chans = oldest+1;
+#ifdef Q3CLIENT	//presumably we should be using this instead of pos for oldest, but blurgh.
+	sc->channel[oldest].starttime = Sys_Milliseconds();
+#endif
 	return &sc->channel[oldest];
 }
 
@@ -2964,6 +2966,28 @@ void S_StartSound(int entnum, int entchannel, sfx_t *sfx, vec3_t origin, vec3_t 
 	S_LockMixer();
 	for (sc = sndcardinfo; sc; sc = sc->next)
 	{
+#ifdef Q3CLIENT
+		if (flags & CF_CLI_NODUPES)
+		{	//don't start too many simultaneous sounds. q3 sucks or something.
+			int active = 0, i;
+			unsigned int time = Sys_Milliseconds();
+			for (i = 0; i < sc->total_chans; i++)
+			{	//as per q3, channel isn't important.
+				if (sc->channel[i].entnum == entnum && sc->channel[i].sfx == sfx)
+				{
+					//never allow a new sound within 50ms of the previous one
+					if (time - sc->channel[i].starttime < 50)
+						break;
+					active++;
+				}
+			}
+			if (active >= 4 || i < sc->total_chans)
+			{
+				Con_DPrintf("CF_CLI_NODUPES strikes again!\n");
+				break;
+			}
+		}
+#endif
 		// pick a channel to play on
 		target_chan = SND_PickChannel(sc, entnum, entchannel);
 		if (!target_chan)
@@ -3029,7 +3053,55 @@ float S_GetSoundTime(int entnum, int entchannel)
 		{
 			if (sc->channel[i].entnum == entnum && sc->channel[i].entchannel == entchannel && sc->channel[i].sfx)
 			{
-				result = (sc->channel[i].pos>>PITCHSHIFT) / (float)snd_speed;	//the time into the sound, ignoring play rate.
+				ssamplepos_t spos = sc->GetChannelPos?sc->GetChannelPos(sc, &sc->channel[i]):(sc->channel[i].pos>>PITCHSHIFT);
+				result = spos / (float)snd_speed;	//the time into the sound, ignoring play rate.
+				break;
+			}
+		}
+		//we found one on this sound device card, ignore others.
+		if (result != -1)
+			break;
+	}
+	S_UnlockMixer();
+	return result;
+}
+float S_GetChannelLevel(int entnum, int entchannel)
+{
+	int i, j;
+	float result = -1;	//if we didn't find one
+	soundcardinfo_t *sc;
+	sfxcache_t scachebuf, *scache;
+	S_LockMixer();
+	for (sc = sndcardinfo; sc && result == -1; sc = sc->next)
+	{
+		for (i = 0; i < sc->total_chans; i++)
+		{
+			if (sc->channel[i].entnum == entnum && sc->channel[i].entchannel == entchannel && sc->channel[i].sfx)
+			{
+				ssamplepos_t spos = sc->GetChannelPos?sc->GetChannelPos(sc, &sc->channel[i]):(sc->channel[i].pos>>PITCHSHIFT);
+				scache = sc->channel[i].sfx->decoder.decodedata(sc->channel[i].sfx, &scachebuf, spos, 1);
+				if (!scache)
+					scache = sc->channel[i].sfx->decoder.buf;
+				if (scache && spos >= scache->soundoffset && spos < scache->soundoffset+scache->length)
+				{
+					spos -= scache->soundoffset;
+					spos *= scache->numchannels;
+					switch(scache->width)
+					{
+					case 1:
+						for (j = 0; j < scache->numchannels; j++)	//average the channels
+							result += abs(((signed char*)scache->data)[spos+j]);
+						result /= scache->numchannels*127.0;
+						break;
+					case 2:
+						for (j = 0; j < scache->numchannels; j++)	//average the channels
+							result += abs(((signed short*)scache->data)[spos+j]);
+						result /= scache->numchannels*32767.0;
+						break;
+					}
+				}
+				else
+					result = 0;
 				break;
 			}
 		}
@@ -3884,34 +3956,27 @@ console functions
 ===============================================================================
 */
 
-void S_Play(void)
+void S_Play_f(void)
 {	//plays a sound located around the player
 	int 	i;
 	char name[256];
 	sfx_t	*sfx;
+	const char *cmdname = Cmd_Argv(0);
+	float vol, attenuation = 0;
+	unsigned int flags = CF_NOSPACIALISE;
+	int entnum = 0;
+	float *origin = NULL;
 
-	i = 1;
-	while (i<Cmd_Argc())
+
+/*	//Vanilla compat (breaks modern QW mods):
+   	if (!strcmp(cmdname, "play"))
 	{
-		if (!Q_strrchr(Cmd_Argv(i), '.'))
-		{
-			Q_strncpyz(name, Cmd_Argv(i), sizeof(name)-4);
-			Q_strcat(name, ".wav");
-		}
-		else
-			Q_strncpyz(name, Cmd_Argv(i), sizeof(name));
-		sfx = S_PrecacheSound(name);
-		S_StartSound(0, -1, sfx, NULL, NULL, 1.0, 0.0, 0, 0, CF_NOSPACIALISE);
-		i++;
+		flags = 0;
+		attenuation = 1;
+		origin = listener[0].origin;
+		entnum = listener[0].entnum;
 	}
-}
-
-void S_PlayVol(void)
-{
-	int i;
-	float vol;
-	char name[256];
-	sfx_t	*sfx;
+*/
 
 	i = 1;
 	while (i<Cmd_Argc())
@@ -3923,10 +3988,14 @@ void S_PlayVol(void)
 		}
 		else
 			Q_strncpyz(name, Cmd_Argv(i), sizeof(name));
+		i++;
 		sfx = S_PrecacheSound(name);
-		vol = Q_atof(Cmd_Argv(i+1));
-		S_StartSound(0, -1, sfx, NULL, NULL, vol, 0.0, 0, 0, CF_NOSPACIALISE);
-		i+=2;
+
+		if (!strcmp(cmdname, "playvol"))
+			vol = Q_atof(Cmd_Argv(i++));
+		else
+			vol = 1.0;
+		S_StartSound(entnum, 0, sfx, origin, NULL, vol, attenuation, 0, 0, flags);
 	}
 }
 

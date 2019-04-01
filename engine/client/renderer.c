@@ -119,8 +119,10 @@ cvar_t r_drawflat							= CVARAF ("r_drawflat", "0", "gl_textureless",
 													CVAR_ARCHIVE | CVAR_SEMICHEAT | CVAR_RENDERERCALLBACK | CVAR_SHADERSYSTEM);
 cvar_t r_lightmap							= CVARF ("r_lightmap", "0",
 													CVAR_ARCHIVE | CVAR_SEMICHEAT | CVAR_RENDERERCALLBACK | CVAR_SHADERSYSTEM);
-cvar_t r_wireframe							= CVARFD ("r_wireframe", "0",
-													CVAR_CHEAT, "Developer feature where everything is drawn with wireframe over the top. Only active where cheats are permitted.");
+cvar_t r_wireframe							= CVARAFD ("r_wireframe", "0",
+													"r_showtris", CVAR_CHEAT, "Developer feature where everything is drawn with wireframe over the top. Only active where cheats are permitted.");
+cvar_t r_outline							= CVARD ("gl_outline", "0", "Draw some stylised outlines.");
+cvar_t r_outline_width						= CVARD ("gl_outline_width", "0", "The width of those outlines.");
 cvar_t r_wireframe_smooth					= CVAR ("r_wireframe_smooth", "0");
 cvar_t r_refract_fbo						= CVARD ("r_refract_fbo", "1", "Use an fbo for refraction. If 0, just renders as a portal and uses a copy of the current framebuffer.");
 cvar_t r_refractreflect_scale				= CVARD ("r_refractreflect_scale", "0.5", "Use a different scale for refraction and reflection texturemaps. Because $reasons.");
@@ -143,6 +145,7 @@ cvar_t r_skin_overlays						= CVARF  ("r_skin_overlays", "1",
 cvar_t r_globalskin_first					= CVARFD  ("r_globalskin_first", "100", CVAR_RENDERERLATCH, "Specifies the first .skin value that is a global skin. Entities within this range will use the shader/image called 'gfx/skinSKIN.lmp' instead of their regular skin. See also: r_globalskin_count.");
 cvar_t r_globalskin_count					= CVARFD  ("r_globalskin_count", "10", CVAR_RENDERERLATCH, "Specifies how many globalskins there are.");
 cvar_t r_coronas							= CVARFD ("r_coronas", "0",	CVAR_ARCHIVE, "Draw coronas on realtime lights. Overrides glquake-esque flashblends.");
+cvar_t r_coronas_intensity					= CVARFD ("r_coronas_intensity", "1",	CVAR_ARCHIVE, "Alternative intensity multiplier for coronas.");
 cvar_t r_coronas_occlusion					= CVARFD ("r_coronas_occlusion", "", CVAR_ARCHIVE, "Specifies that coronas should be occluded more carefully.\n0: No occlusion, at all.\n1: BSP occlusion only (simple tracelines).\n2: non-bsp occlusion also (complex tracelines).\n3: Depthbuffer reads (forces synchronisation).\n4: occlusion queries.");
 cvar_t r_coronas_mindist					= CVARFD ("r_coronas_mindist", "128", CVAR_ARCHIVE, "Coronas closer than this will be invisible, preventing near clip plane issues.");
 cvar_t r_coronas_fadedist					= CVARFD ("r_coronas_fadedist", "256", CVAR_ARCHIVE, "Coronas will fade out over this distance.");
@@ -202,6 +205,7 @@ cvar_t r_wallcolour							= CVARAF ("r_wallcolour", "128 128 128",
 													  "r_wallcolor", CVAR_RENDERERCALLBACK|CVAR_SHADERSYSTEM);//FIXME: broken
 //cvar_t r_walltexture						= CVARF ("r_walltexture", "",
 //												CVAR_RENDERERCALLBACK|CVAR_SHADERSYSTEM);	//FIXME: broken
+cvar_t r_skyfog								= CVARD  ("r_skyfog", "0.5", "This controls an alpha-blend value for fog on skyboxes, cumulative with regular fog alpha.");
 cvar_t r_wateralpha							= CVARF  ("r_wateralpha", "1",
 												CVAR_ARCHIVE | CVAR_SHADERSYSTEM);
 cvar_t r_lavaalpha							= CVARF  ("r_lavaalpha", "",
@@ -230,7 +234,7 @@ cvar_t scr_conalpha							= CVARC ("scr_conalpha", "0.7",
 												Cvar_Limiter_ZeroToOne_Callback);
 cvar_t scr_consize							= CVAR  ("scr_consize", "0.5");
 cvar_t scr_conspeed							= CVAR  ("scr_conspeed", "2000");
-cvar_t scr_fov_mode							= CVARFD  ("scr_fov_mode", "0", CVAR_ARCHIVE, "Controls what the fov cvar actually controls:\n0: largest axis (ultra-wide monitors means less height will be visible).\n1: smallest axis (ultra-wide monitors will distort at the edges).\n2: horizontal axis.\n3: vertical axis.");
+cvar_t scr_fov_mode							= CVARFD  ("scr_fov_mode", "4", CVAR_ARCHIVE, "Controls what the fov cvar actually controls:\n0: largest axis (ultra-wide monitors means less height will be visible).\n1: smallest axis (ultra-wide monitors will distort at the edges).\n2: horizontal axis.\n3: vertical axis.\n4: 4:3 horizontal axis, padded for wider resolutions (for a more classic fov)");
 cvar_t scr_fov								= CVARFCD("fov", "90", CVAR_ARCHIVE, SCR_Fov_Callback,
 												"field of vision, 1-170 degrees, standard fov is 90, nquake defaults to 108.");
 cvar_t scr_fov_viewmodel					= CVARFD("r_viewmodel_fov", "", CVAR_ARCHIVE,
@@ -413,15 +417,18 @@ cvar_t gl_specular_fallbackexp				= CVARF  ("gl_specular_fallbackexp", "1", CVAR
 #endif
 
 // The callbacks are not in D3D yet (also ugly way of seperating this)
-cvar_t gl_texture_anisotropic_filtering		= CVARFC("gl_texture_anisotropic_filtering", "0",
+cvar_t gl_texture_anisotropic_filtering		= CVARFCD("gl_texture_anisotropic_filtering", "0",
 												CVAR_ARCHIVE | CVAR_RENDERERCALLBACK,
-												Image_TextureMode_Callback);
+												Image_TextureMode_Callback, "Allows for higher quality textures on surfaces that slope away from the camera (like the floor). Set to 16 or something. Only supported with trilinear filtering.");
 cvar_t gl_texturemode						= CVARFCD("gl_texturemode", "GL_LINEAR_MIPMAP_LINEAR",
 												CVAR_ARCHIVE | CVAR_RENDERERCALLBACK | CVAR_SAVE, Image_TextureMode_Callback,
 												"Specifies how world/model textures appear. Typically 3 letters eg lln.\nFirst letter can be l(inear) or n(earest) and says how to sample from the mip (when downsampling).\nThe middle letter can . to disable mipmaps, or l or n to describe whether to blend between mipmaps.\nThe third letter says what to do when the texture is too low resolution and is thus the most noticable with low resolution textures, a n will make it look like lego, while an l will keep it smooth.");
-cvar_t gl_mipcap							= CVARAFC("d_mipcap", "0 1000", "gl_miptexLevel",
+cvar_t gl_texture_lodbias					= CVARAFCD("d_lodbias", "0", "gl_texture_lodbias",
 												CVAR_ARCHIVE | CVAR_RENDERERCALLBACK,
-												Image_TextureMode_Callback);
+												Image_TextureMode_Callback, "Biases choice of mipmap levels. Positive values will give more blury textures, while negative values will give crisper images (but will also give some mid-surface aliasing artifacts).");
+cvar_t gl_mipcap							= CVARAFCD("d_mipcap", "0 1000", "gl_miptexLevel",
+												CVAR_ARCHIVE | CVAR_RENDERERCALLBACK,
+												Image_TextureMode_Callback, "Specifies the range of mipmap levels to use.");
 cvar_t gl_texturemode2d						= CVARFCD("gl_texturemode2d", "GL_LINEAR",
 												CVAR_ARCHIVE | CVAR_RENDERERCALLBACK, Image_TextureMode_Callback,
 												"Specifies how 2d images are sampled. format is a 3-tupple ");
@@ -846,6 +853,7 @@ void Renderer_Init(void)
 	Cvar_Register (&r_mirroralpha, GLRENDEREROPTIONS);
 	Cvar_Register (&r_softwarebanding_cvar, GRAPHICALNICETIES);
 
+	Cvar_Register (&r_skyfog, GRAPHICALNICETIES);
 	Cvar_Register (&r_skyboxname, GRAPHICALNICETIES);
 	Cmd_AddCommand("sky", R_ForceSky_f);	//QS compat
 	Cmd_AddCommand("loadsky", R_ForceSky_f);//DP compat
@@ -878,6 +886,7 @@ void Renderer_Init(void)
 	Cvar_Register(&r_stainfadeammount, GRAPHICALNICETIES);
 	Cvar_Register(&r_lightprepass_cvar, GLRENDEREROPTIONS);
 	Cvar_Register (&r_coronas, GRAPHICALNICETIES);
+	Cvar_Register (&r_coronas_intensity, GRAPHICALNICETIES);
 	Cvar_Register (&r_coronas_occlusion, GRAPHICALNICETIES);
 	Cvar_Register (&r_coronas_mindist, GRAPHICALNICETIES);
 	Cvar_Register (&r_coronas_fadedist, GRAPHICALNICETIES);
@@ -897,6 +906,8 @@ void Renderer_Init(void)
 	Cvar_Register (&r_telestyle, GRAPHICALNICETIES);
 	Cvar_Register (&r_wireframe, GRAPHICALNICETIES);
 	Cvar_Register (&r_wireframe_smooth, GRAPHICALNICETIES);
+	Cvar_Register (&r_outline, GRAPHICALNICETIES);
+	Cvar_Register (&r_outline_width, GRAPHICALNICETIES);
 	Cvar_Register (&r_refract_fbo, GRAPHICALNICETIES);
 	Cvar_Register (&r_refractreflect_scale, GRAPHICALNICETIES);
 	Cvar_Register (&r_postprocshader, GRAPHICALNICETIES);
@@ -989,6 +1000,7 @@ void Renderer_Init(void)
 	Cvar_Register (&gl_texturemode2d, GLRENDEREROPTIONS);
 	Cvar_Register (&r_font_linear, GLRENDEREROPTIONS);
 	Cvar_Register (&gl_mipcap, GLRENDEREROPTIONS);
+	Cvar_Register (&gl_texture_lodbias, GLRENDEREROPTIONS);
 	Cvar_Register (&gl_texture_anisotropic_filtering, GLRENDEREROPTIONS);
 	Cvar_Register (&r_max_gpu_bones, GRAPHICALNICETIES);
 	Cvar_Register (&r_drawflat, GRAPHICALNICETIES);

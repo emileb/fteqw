@@ -29,7 +29,8 @@ lights are then added over the top based upon the diffusemap, bumpmap and specul
 
 #ifndef SHADER_H
 #define SHADER_H
-typedef void (shader_gen_t)(const char *name, shader_t*, const void *args);
+struct shaderparsestate_s;
+typedef void (shader_gen_t)(struct shaderparsestate_s *ps, const char *name, const void *args);
 
 #define SHADER_TMU_MAX 16
 #define SHADER_PASS_MAX	16
@@ -513,6 +514,9 @@ struct programpermu_s
 	#endif
 	} h;
 #endif
+#ifdef GLQUAKE
+	int factorsuniform;
+#endif
 	unsigned int permutation;
 	unsigned int attrmask;
 	unsigned int texmask;	//'standard' textures that are in use
@@ -675,6 +679,12 @@ struct shader_s
 
 	bucket_t bucket;
 
+#define MATERIAL_FACTOR_BASE 0
+#define MATERIAL_FACTOR_SPEC 1
+#define MATERIAL_FACTOR_EMIT 2
+#define MATERIAL_FACTOR_COUNT 3
+	vec4_t factors[MATERIAL_FACTOR_COUNT];
+
 	//arranged as a series of vec4s
 /*	struct
 	{
@@ -711,15 +721,17 @@ cin_t *R_ShaderGetCinematic(shader_t *s);
 cin_t *R_ShaderFindCinematic(const char *name);
 shader_t *R_ShaderFind(const char *name);	//does NOT increase the shader refcount.
 
-void Shader_DefaultSkin(const char *shortname, shader_t *s, const void *args);
-void Shader_DefaultSkinShell(const char *shortname, shader_t *s, const void *args);
-void Shader_DefaultBSPLM(const char *shortname, shader_t *s, const void *args);
-void Shader_DefaultBSPQ1(const char *shortname, shader_t *s, const void *args);
-void Shader_DefaultBSPQ2(const char *shortname, shader_t *s, const void *args);
-void Shader_DefaultWaterShader(const char *shortname, shader_t *s, const void *args);
-void Shader_DefaultSkybox(const char *shortname, shader_t *s, const void *args);
-void Shader_DefaultCinematic(const char *shortname, shader_t *s, const void *args);
-void Shader_DefaultScript(const char *shortname, shader_t *s, const void *args);
+void Shader_DefaultSkin			(struct shaderparsestate_s *ps, const char *shortname, const void *args);
+void Shader_DefaultSkinShell	(struct shaderparsestate_s *ps, const char *shortname, const void *args);
+void Shader_Default2D			(struct shaderparsestate_s *ps, const char *shortname, const void *args);
+void Shader_DefaultBSPLM		(struct shaderparsestate_s *ps, const char *shortname, const void *args);
+void Shader_DefaultBSPQ1		(struct shaderparsestate_s *ps, const char *shortname, const void *args);
+void Shader_DefaultBSPQ2		(struct shaderparsestate_s *ps, const char *shortname, const void *args);
+void Shader_DefaultWaterShader	(struct shaderparsestate_s *ps, const char *shortname, const void *args);
+void Shader_DefaultSkybox		(struct shaderparsestate_s *ps, const char *shortname, const void *args);
+void Shader_DefaultCinematic	(struct shaderparsestate_s *ps, const char *shortname, const void *args);
+void Shader_DefaultScript		(struct shaderparsestate_s *ps, const char *shortname, const void *args);
+void Shader_PolygonShader		(struct shaderparsestate_s *ps, const char *shortname, const void *args);
 
 void Shader_ResetRemaps(void);	//called on map changes to reset remapped shaders.
 void Shader_DoReload(void);		//called when the shader system dies.
@@ -737,20 +749,21 @@ void Shader_ReleaseGeneric(program_t *prog);
 image_t *Mod_CubemapForOrigin(model_t *wmodel, vec3_t org);
 mfog_t *Mod_FogForOrigin(model_t *wmodel, vec3_t org);
 
-#define BEF_FORCEDEPTHWRITE		1
-#define BEF_FORCEDEPTHTEST		2
-#define BEF_FORCEADDITIVE		4	//blend dest = GL_ONE
-#define BEF_FORCETRANSPARENT	8	//texenv replace -> modulate
-#define BEF_FORCENODEPTH		16	//disables any and all depth.
+#define BEF_FORCEDEPTHWRITE		(1u<<0)
+#define BEF_FORCEDEPTHTEST		(1u<<1)
+#define BEF_FORCEADDITIVE		(1u<<2)	//blend dest = GL_ONE
+#define BEF_FORCETRANSPARENT	(1u<<3)	//texenv replace -> modulate
+#define BEF_FORCENODEPTH		(1u<<4)	//disables any and all depth.
 #ifndef NOLEGACY
-#define BEF_PUSHDEPTH			32	//additional polygon offset
+#define BEF_PUSHDEPTH			(1u<<5)	//additional polygon offset
 #endif
 //FIXME: the above should really be legacy-only
-#define BEF_NODLIGHT			64  //don't use a dlight pass
-#define BEF_NOSHADOWS			128 //don't appear in shadows
-#define BEF_FORCECOLOURMOD		256 //q3 shaders default to 'rgbgen identity', and ignore ent colours. this forces ent colours to be considered
-#define BEF_LINES				512	//draw line pairs instead of triangles.
-#define BEF_FORCETWOSIDED		1024 //more evilness.
+#define BEF_NODLIGHT			(1u<<6)  //don't use a dlight pass
+#define BEF_NOSHADOWS			(1u<<7) //don't appear in shadows
+#define BEF_FORCECOLOURMOD		(1u<<8) //q3 shaders default to 'rgbgen identity', and ignore ent colours. this forces ent colours to be considered
+#define BEF_LINES				(1u<<9)	//draw line pairs instead of triangles.
+#define BEF_FORCETWOSIDED		(1u<<10) //more evilness.s
+//#define	BEFF_POLYHASNORMALS		(1u<<31) //false flag - for cl_scenetries and not actually used by the backend.
 
 typedef struct
 {
@@ -793,7 +806,8 @@ typedef struct
 	qboolean tex_env_combine;
 	qboolean nv_tex_env_combine4;
 	qboolean env_add;
-	qboolean can_mipcap;		//
+	qboolean can_mipcap;		//gl1.2+
+	qboolean can_mipbias;		//gl1.4+
 	qboolean havecubemaps;	//since gl1.3, so pretty much everyone will have this... should probably only be set if we also have seamless or clamp-to-edge.
 
 	void	 (*pDeleteProg)		(program_t *prog);

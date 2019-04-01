@@ -106,6 +106,7 @@ extern cvar_t	pm_ktjump;
 extern cvar_t	pm_slidefix;
 extern cvar_t	pm_slidyslopes;
 extern cvar_t	pm_airstep;
+extern cvar_t	pm_pground;
 extern cvar_t	pm_stepdown;
 extern cvar_t	pm_walljump;
 extern cvar_t	pm_watersinkspeed;
@@ -275,16 +276,14 @@ void SV_New_f (void)
 		return;
 	}
 
-/*	splitt delay
-	host_client->state = cs_connected;
-	host_client->connection_started = realtime;
-#ifdef SVRANKING
-	host_client->stats_started = realtime;
-#endif*/
-
-	// send the info about the new client to all connected clients
-//	SV_FullClientUpdate (host_client, &sv.reliable_datagram);
-//	host_client->sendinfo = true;
+	if (!host_client->pextknown && host_client->zquake_extensions && host_client->netchan.remote_address.type != NA_LOOPBACK)
+	{
+		char *msg = "cmd pext\n";
+		ClientReliableWrite_Begin (host_client, svc_stufftext, 2+strlen(msg));
+		ClientReliableWrite_String (host_client, msg);
+		return;
+	}
+	host_client->pextknown = true;
 
 	gamedir = InfoBuf_ValueForKey (&svs.info, "*gamedir");
 	if (!gamedir[0])
@@ -295,15 +294,6 @@ void SV_New_f (void)
 			gamedir = "";
 	}
 
-//NOTE:  This doesn't go through ClientReliableWrite since it's before the user
-//spawns.  These functions are written to not overflow
-/*	if (host_client->num_backbuf)
-	{
-		Con_Printf("WARNING %s: [SV_New] Back buffered (%d0, clearing)\n", host_client->name, host_client->netchan.message.cursize);
-		host_client->num_backbuf = 0;
-		SZ_Clear(&host_client->netchan.message);
-	}
-*/
 	if (svs.netprim.coordsize > 2 && !(host_client->fteprotocolextensions & PEXT_FLOATCOORDS))
 	{
 		SV_ClientPrintf(host_client, 2, "\n\n\n\nPlease set cl_nopext to 0 and then reconnect.\nIf that doesn't work, please update your engine - "ENGINEWEBSITE"\n");
@@ -316,7 +306,6 @@ void SV_New_f (void)
 
 	// send the serverdata
 	ClientReliableWrite_Byte (host_client, ISQ2CLIENT(host_client)?svcq2_serverdata:svc_serverdata);
-#ifdef PROTOCOL_VERSION_FTE
 	if (host_client->fteprotocolextensions)//let the client know
 	{
 		ClientReliableWrite_Long (host_client, PROTOCOL_VERSION_FTE);
@@ -330,7 +319,6 @@ void SV_New_f (void)
 		ClientReliableWrite_Long (host_client, PROTOCOL_VERSION_FTE2);
 		ClientReliableWrite_Long (host_client, host_client->fteprotocolextensions2);
 	}
-#endif
 	ClientReliableWrite_Long (host_client, ISQ2CLIENT(host_client)?PROTOCOL_VERSION_Q2:PROTOCOL_VERSION_QW);
 	ClientReliableWrite_Long (host_client, svs.spawncount);
 	if (ISQ2CLIENT(host_client))
@@ -2248,6 +2236,8 @@ void SV_Begin_f (void)
 // and it won't happen if the game was just loaded, so you wind up
 // with a permanent head tilt
 		MSG_WriteByte (&host_client->netchan.message, svc_setangle);
+		if (host_client->ezprotocolextensions1 & EZPEXT1_SETANGLEREASON)
+			MSG_WriteByte (&host_client->netchan.message, 0);
 		MSG_WriteAngle (&host_client->netchan.message, 0 );
 		MSG_WriteAngle (&host_client->netchan.message, host_client->edict->v->angles[1] );
 		MSG_WriteAngle (&host_client->netchan.message, 0 );
@@ -2471,6 +2461,10 @@ static void SV_NextChunkedDownload(unsigned int chunknum, int ezpercent, int ezf
 
 
 		host_client->downloadstarted = false;
+
+#ifndef NOLEGACY
+		SV_DownloadQueueNext(host_client);
+#endif
 	}
 }
 
@@ -2550,6 +2544,9 @@ void SV_NextDownload_f (void)
 	VFS_CLOSE (host_client->download);
 	host_client->download = NULL;
 
+#ifndef NOLEGACY
+	SV_DownloadQueueNext(host_client);
+#endif
 }
 
 void VARGS OutofBandPrintf(netadr_t *where, char *fmt, ...)
@@ -2995,6 +2992,8 @@ qboolean SV_AllowDownload (const char *name)
 		return false;
 	if (*name == '/')	//no absolute.
 		return false;
+	if (strchr(name, ':'))	//no drives, alternative resources, etc. the filesystem should refuse such a file so this should just be paranoia.
+		return false;
 	if (strchr(name, '\\'))	//no windows paths - grow up you lame windows users.
 		return false;
 
@@ -3022,7 +3021,9 @@ qboolean SV_AllowDownload (const char *name)
 		return false;
 	}
 
-	if (Q_strncasecmp(name,	"maps/", 5) == 0)
+	if ((Q_strncasecmp(name,	"maps/", 5) == 0) ||
+		(Q_strncasecmp(name,	"levelshots/", 11) == 0) ||
+		(Q_strncasecmp(name,	"overviews/", 10) == 0))
 		return !!allow_download_maps.value;
 
 	//skins?
@@ -3030,13 +3031,14 @@ qboolean SV_AllowDownload (const char *name)
 		return !!allow_download_skins.value;
 	//models
 	if ((Q_strncasecmp(name,	"progs/", 6) == 0) ||
-		(Q_strncasecmp(name,	"models/", 7) == 0))
+		(Q_strncasecmp(name,	"models/", 7) == 0) ||
+		(Q_strncasecmp(name,	"sprites/", 8) == 0))
 		return !!allow_download_models.value;
 	//sound
 	if (Q_strncasecmp(name,	"sound/", 6) == 0)
 		return !!allow_download_sounds.value;
 	//particles
-	if (Q_strncasecmp(name,	"particles/", 6) == 0)
+	if (Q_strncasecmp(name,	"particles/", 10) == 0)
 		return !!allow_download_particles.value;
 	//demos
 	if (Q_strncasecmp(name,	"demos/", 6) == 0)
@@ -3120,11 +3122,20 @@ static int SV_LocateDownload(const char *name, flocation_t *loc, char **replacem
 
 #ifdef MVD_RECORDING
 	//mvdsv demo downloading support. demos/ -> demodir (sets up the server paths)
-	if (!Q_strncasecmp(name, "demos/", 6))
+	if (!Q_strncasecmp(name, "demos/", 6) && *sv_demoDir.string)
 	{
-		Q_snprintfz(tmpname, sizeof(tmpname), "%s/%s", sv_demoDir.string, name+6);
-		name = tmpname;
+		Q_snprintfz(tmpname, sizeof(tmpname), "%s/%s", sv_demoDir.string, name+6);		
+		found = FS_FLocateFile(name, FSLF_IFFOUND, loc);
+
+		if (!found && *sv_demoDirAlt.string)
+		{
+			Q_snprintfz(tmpname, sizeof(tmpname), "%s/%s", sv_demoDirAlt.string, name+6);
+			found = FS_FLocateFile(name, FSLF_IFFOUND, loc);
+		}
+		if (found)
+			name = tmpname;
 	}
+	else
 #endif
 
 	if (!Q_strncasecmp(name, "package/", 8))
@@ -3152,18 +3163,21 @@ static int SV_LocateDownload(const char *name, flocation_t *loc, char **replacem
 	{
 		size_t alt;
 		static const char *alternatives[][4] = {
-			//orig-path, orig-ext, new-path, new-ext
+			//orig-path, new-path, orig-ext, new-ext
 			//nexuiz qc names [sound/]sound/foo.wav but expects sound/foo.ogg and variations of that (the [sound/] is implied, but ignored)
 			{"",		"", ".wav", ".ogg"},	//nexuiz qc names .wav, but the paks use .ogg
 			{"sound/", "",	".wav",	".wav"},	//nexuiz qc names sound/ but that's normally implied, resulting in doubles that don't exist in the filesystem
-			{"sound/", "",	".wav",	".ogg"} 	//both of nexuiz's issues at the same time
+			{"sound/", "",	".wav",	".ogg"}, 	//both of nexuiz's issues at the same time
+
+			//we request wads from textures/*.wad but they could also be simply *.wad
+			{"textures/","",".wad",	".wad"}
 		};
 
 		for (alt = 0; alt < countof(alternatives); alt++)
 		{
 			char tryalt[MAX_QPATH];
 			char ext[8];
-			if (Q_strncasecmp(name, alternatives[alt][0], strlen(alternatives[alt][0])))
+			if (!Q_strncasecmp(name, alternatives[alt][0], strlen(alternatives[alt][0])))
 			{
 				if (*alternatives[alt][2])
 				{
@@ -3210,7 +3224,7 @@ static int SV_LocateDownload(const char *name, flocation_t *loc, char **replacem
 			if (pakname && strchr(pakname, '/'))
 			{
 				extern cvar_t allow_download_packages,allow_download_copyrighted;	//non authoritive, but should normally match.
-				if (allow_download_packages.ival)
+				if (allow_download_packages.ival && !(loc->search && (loc->search->flags&SPF_BASEPATH)))
 				{
 					if (allow_download_copyrighted.ival || !protectedpak)
 					{
@@ -3289,6 +3303,50 @@ void SV_DownloadSize_f(void)
 }
 
 #ifdef MVD_RECORDING
+
+#ifndef NOLEGACY
+void SV_DownloadQueueAdd(client_t *client, const char *name)
+{
+	if (!client->dlqueue)
+	{
+		client->dlqueue = Z_StrDup(name);
+		SV_ClientPrintf (client, PRINT_HIGH, "Using legacy serverside download queue. This is subject to race conditions, be careful.\n");
+	}
+	else
+	{
+		Z_StrCat(&client->dlqueue, "\\");
+		Z_StrCat(&client->dlqueue, name);
+	}
+}
+void SV_DownloadQueueNext(client_t *client)
+{
+	char buf[MAX_QPATH*2];
+	char *name = client->dlqueue;
+	char *next;
+	if (!name)
+		return;
+	next = strchr(name, '\\');
+	if (next)
+	{
+		host_client->dlqueue = Z_StrDup(next+1);
+		*next = 0;
+	}
+	else
+		client->dlqueue = NULL;
+
+	next = va("download \"%s\"\n", COM_QuotedString(name, buf, sizeof(buf), true));
+	ClientReliableWrite_Begin (client, svc_stufftext, 2+strlen(next));
+	ClientReliableWrite_String (client, next);
+	Z_Free(name);
+}
+void SV_DownloadQueueClear(client_t *client)
+{
+	if (client->dlqueue)
+		Z_Free(client->dlqueue);
+	client->dlqueue = NULL;
+}
+#endif
+
 void SV_DemoDownload_f(void)
 {
 	int arg;
@@ -3305,7 +3363,16 @@ void SV_DemoDownload_f(void)
 		name = Cmd_Argv(1);
 		if (!strcmp(name, "\\") || !Q_strcasecmp(name, "stop") || !Q_strcasecmp(name, "cancel"))
 		{
-			//fte servers don't do download queues, as it is impossible to avoid race conditions with vanilla clients anyway.
+			if (strcmp(name, "\\"))
+			{	//cancel/stop kill any current download too. which is annoying
+				if (host_client->download)
+					VFS_CLOSE (host_client->download);
+				host_client->download = NULL;
+				host_client->downloadstarted = false;
+			}
+#ifndef NOLEGACY
+			SV_DownloadQueueClear(host_client);
+#endif
 			return;
 		}
 	}
@@ -3338,6 +3405,14 @@ void SV_DemoDownload_f(void)
 
 		if (!mvdname)
 			SV_ClientPrintf (host_client, PRINT_HIGH, "%s is an invalid MVD demonum.\n", name);
+#ifndef NOLEGACY
+		else if (!(host_client->protocol & PEXT_CHUNKEDDOWNLOADS) || !strncmp(InfoBuf_ValueForKey(&host_client->userinfo, "*client"), "ezQuake", 7))
+		{	//chunked downloads was built around the client being in control (because only it knows which files are needed)
+			//but ezquake never implemented that part
+			SV_DownloadQueueAdd(host_client, va("demos/%s", mvdname));
+			continue;
+		}
+#endif
 		else
 		{
 			const char *s = va("download \"demos/%s\"\n", mvdname);
@@ -3345,6 +3420,10 @@ void SV_DemoDownload_f(void)
 			ClientReliableWrite_String (host_client, s);
 		}
 	}
+#ifndef NOLEGACY
+	if (!host_client->download)
+		SV_DownloadQueueNext(host_client);
+#endif
 }
 #endif
 
@@ -3457,7 +3536,7 @@ void SV_BeginDownload_f(void)
 		}
 	}
 
-	if (!host_client->download)
+	if (!host_client->download && !result)
 		result = -1;	//this isn't likely, but hey.
 
 	//handle errors
@@ -3513,6 +3592,9 @@ void SV_BeginDownload_f(void)
 		}
 		if (ISNQCLIENT(host_client))
 			host_client->send_message = true;
+#ifndef NOLEGACY
+		SV_DownloadQueueNext(host_client);
+#endif
 		return;
 	}
 
@@ -3587,6 +3669,11 @@ void SV_StopDownload_f(void)
 		SV_ClientPrintf(host_client, PRINT_HIGH, "Can't stop download - not downloading anything\n");
 
 	host_client->downloadstarted = false;
+
+#ifndef NOLEGACY
+	SV_DownloadQueueNext(host_client);
+//	SV_DownloadQueueClear(host_client);
+#endif
 }
 
 //=============================================================================
@@ -4329,15 +4416,6 @@ qboolean SV_UserInfoIsBasic(const char *infoname)
 	return false;
 }
 
-
-static void SV_SetInfo_PrintCB (void *ctx, const char *key, const char *value)
-{
-	client_t *cl = ctx;
-	if (cl->num_backbuf > MAX_BACK_BUFFERS/2)
-		return;	//stop printing if there's too many...
-	SV_ClientPrintf(cl, PRINT_HIGH, "\t%-20s%s\n", key, value);
-}
-
 /*
 ==================
 SV_SetInfo_f
@@ -4349,13 +4427,28 @@ void SV_SetInfo_f (void)
 {
 	char oldval[MAX_INFO_KEY];
 	char *key, *val, *t;
-	size_t offset, keysize, valsize, k;
+	size_t offset, keysize, valsize, cursize, k;
 	qboolean final;
 
 	if (Cmd_Argc() == 1)
 	{
 		SV_ClientPrintf(host_client, PRINT_HIGH, "User info settings:\n");
-		InfoBuf_Enumerate(&host_client->userinfo, (void*)host_client, SV_SetInfo_PrintCB);
+
+		for (k = 0; k < host_client->userinfo.numkeys; k++)
+		{
+			char *partial = key = host_client->userinfo.keys[k].partial?"<PARTIAL>":"";
+			if (host_client->num_backbuf > MAX_BACK_BUFFERS/2)
+				break;	//stop printing if there's too many...
+			key = host_client->userinfo.keys[k].name;
+			val = host_client->userinfo.keys[k].value;
+
+			if (host_client->userinfo.keys[k].size != strlen(host_client->userinfo.keys[k].value))
+				SV_ClientPrintf(host_client, PRINT_HIGH, "\t%-20s%s<BINARY %u BYTES>\n", key, partial, (unsigned int)host_client->userinfo.keys[k].size);
+			else if (host_client->userinfo.keys[k].size > 64 || strchr(val, '\n') || strchr(val, '\r') || strchr(val, '\t'))
+				SV_ClientPrintf(host_client, PRINT_HIGH, "\t%-20s%s<%u BYTES>\n", key, partial, (unsigned int)host_client->userinfo.keys[k].size);
+			else
+				SV_ClientPrintf(host_client, PRINT_HIGH, "\t%-20s%s%s\n", key, partial, val);
+		}
 		SV_ClientPrintf(host_client, PRINT_HIGH, "[%u/%i, %u/%i]\n", (unsigned int)host_client->userinfo.numkeys, sv_userinfo_keylimit.ival, (unsigned int)host_client->userinfo.totalsize, sv_userinfo_bytelimit.ival);
 		return;
 	}
@@ -4398,12 +4491,16 @@ void SV_SetInfo_f (void)
 		val = Z_StrDup(val);
 	}
 
+	if (InfoBuf_FindKey(&host_client->userinfo, key, &k))
+		cursize = strlen(host_client->userinfo.keys[k].name)+2+host_client->userinfo.keys[k].size;
+	else
+		cursize = 0;
 
 	if (key[0] == '*' && !(ISNQCLIENT(host_client) && !host_client->spawned && !strcmp(key, "*ver")))	//nq clients are allowed to set some * keys if ClientConnect wasn't called yet. FIXME: saved games may still be an issue.
 		SV_ClientPrintf(host_client, PRINT_HIGH, "setinfo: %s may not be changed mid-game\n", key);
 	else if (sv_userinfo_keylimit.ival >= 0 && host_client->userinfo.numkeys >= sv_userinfo_keylimit.ival && !offset && *val && !InfoBuf_FindKey(&host_client->userinfo, key, &k))	//when the limit is hit, allow people to freely change existing keys, but not new ones. they can also silently remove any that don't exist yet, too.
 		SV_ClientPrintf(host_client, PRINT_MEDIUM, "setinfo: userinfo is limited to %i keys. Ignoring setting %s\n", sv_userinfo_keylimit.ival, key);
-	else if (sv_userinfo_bytelimit.ival >= 0 && host_client->userinfo.totalsize >= sv_userinfo_bytelimit.ival && *val)
+	else if (valsize && sv_userinfo_bytelimit.ival >= 0 && host_client->userinfo.totalsize-cursize+(keysize+2+valsize) >= sv_userinfo_bytelimit.ival)
 	{
 		SV_ClientPrintf(host_client, PRINT_MEDIUM, "setinfo: userinfo is limited to %i bytes. Ignoring setting %s\n", sv_userinfo_bytelimit.ival, key);
 		if (offset)	//kill it if they're part way through sending one, so that they're not penalised by the presence of partials that will never complete.
@@ -5889,46 +5986,6 @@ static void SVNQ_Protocols_f(void)
 	}
 }
 
-void SV_Pext_f(void)
-{
-	int i;
-	char *tag;
-	char *val;
-
-	if (host_client->pextknown)
-		return;
-	host_client->pextknown = true;
-
-	host_client->fteprotocolextensions = 0;
-	host_client->fteprotocolextensions2 = 0;
-	for (i = 1; i < Cmd_Argc(); )
-	{
-		tag = Cmd_Argv(i++);
-		val = Cmd_Argv(i++);
-		switch(strtoul(tag, NULL, 0))
-		{
-		case PROTOCOL_VERSION_FTE:
-			host_client->fteprotocolextensions = strtoul(val, NULL, 0) & Net_PextMask(1, ISNQCLIENT(host_client));
-			break;
-		case PROTOCOL_VERSION_FTE2:
-			host_client->fteprotocolextensions2 = strtoul(val, NULL, 0) & Net_PextMask(2, ISNQCLIENT(host_client));
-			break;
-		}
-	}
-
-	Con_DPrintf("%s now using pext: %x, %x\n", host_client->name, host_client->fteprotocolextensions, host_client->fteprotocolextensions2);
-
-	if (!host_client->supportedprotocols && Cmd_Argc() == 1)
-		Con_DPrintf("%s has a shitty client.\n", host_client->name);
-
-	SV_ClientProtocolExtensionsChanged(host_client);
-
-	if (ISNQCLIENT(host_client))
-		SVNQ_New_f();
-	else
-		SV_New_f();
-}
-
 /*
 void SVNQ_ExecuteUserCommand (char *s)
 {
@@ -5975,6 +6032,54 @@ void SVNQ_ExecuteUserCommand (char *s)
 */
 #endif
 
+//used when we can't use our getchallenge handshake for some reason.
+//this is both nq (where there's no challenge at all) and qw-via-qwfwd (where the proxy handshakes before talking to the actual server)
+void SV_Pext_f(void)
+{
+	int i;
+	char *tag;
+	char *val;
+
+	if (host_client->pextknown)
+		return;
+	host_client->pextknown = true;
+
+	host_client->fteprotocolextensions = 0;
+	host_client->fteprotocolextensions2 = 0;
+	for (i = 1; i < Cmd_Argc(); )
+	{
+		tag = Cmd_Argv(i++);
+		val = Cmd_Argv(i++);
+		switch(strtoul(tag, NULL, 0))
+		{
+		case PROTOCOL_VERSION_FTE:
+			host_client->fteprotocolextensions = strtoul(val, NULL, 0) & Net_PextMask(1, ISNQCLIENT(host_client));
+			break;
+		case PROTOCOL_VERSION_FTE2:
+			host_client->fteprotocolextensions2 = strtoul(val, NULL, 0) & Net_PextMask(2, ISNQCLIENT(host_client));
+			break;
+		case PROTOCOL_VERSION_EZQUAKE1:
+			host_client->ezprotocolextensions1 = strtoul(val, NULL, 0) & Net_PextMask(3, ISNQCLIENT(host_client)) & EZPEXT1_SERVERADVERTISE;
+			break;
+		}
+	}
+
+	if (!host_client->supportedprotocols && Cmd_Argc() == 1)
+		Con_DPrintf("%s reports no extended capabilities.\n", host_client->name);
+	else
+		Con_DPrintf("%s now using pext: %x, %x, %x\n", host_client->name, host_client->fteprotocolextensions, host_client->fteprotocolextensions2, host_client->ezprotocolextensions1);
+
+	SV_ClientProtocolExtensionsChanged(host_client);
+
+#ifdef NQPROT
+	if (ISNQCLIENT(host_client))
+		SVNQ_New_f();
+	else
+#endif
+		SV_New_f();
+}
+
+
 
 void SV_MVDList_f (void);
 void SV_MVDInfo_f (void);
@@ -5988,71 +6093,72 @@ typedef struct
 ucmd_t ucmds[] =
 {
 	/*connection process*/
-	{"new", SV_New_f, true},
-	{"modellist", SVQW_Modellist_f, true},
-	{"soundlist", SVQW_Soundlist_f, true},
-	{"prespawn", SVQW_PreSpawn_f, true},
-	{"spawn", SVQW_Spawn_f, true},
-	{"begin", SV_Begin_f, true},
+	{"new",			SV_New_f, true},
+	{"pext",		SV_Pext_f, true},
+	{"modellist",	SVQW_Modellist_f, true},
+	{"soundlist",	SVQW_Soundlist_f, true},
+	{"prespawn",	SVQW_PreSpawn_f, true},
+	{"spawn",		SVQW_Spawn_f, true},
+	{"begin",		SV_Begin_f, true},
 
-	{"drop", SV_Drop_f},
-	{"disconnect", SV_Drop_f},
-	{"pings", SV_Pings_f},
+	{"drop",		SV_Drop_f},
+	{"disconnect",	SV_Drop_f},
+	{"pings",		SV_Pings_f},
+	{"enablecsqc",	SV_EnableClientsCSQC, 2},
+	{"disablecsqc",	SV_DisableClientsCSQC, 2},
 
-// issued by hand at client consoles
-	{"rate", SV_Rate_f},
-	{"kill", SV_Kill_f},
-	{"pause", SV_Pause_f},
-	{"msg", SV_Msg_f},
+	/* issued by hand at client console*/
+	{"rate",		SV_Rate_f},
+	{"kill",		SV_Kill_f},
+	{"pause",		SV_Pause_f},
+	{"msg",			SV_Msg_f},
+	{"efpslist",	Cmd_FPSList_f},	//don't conflict with the ktpro one
+	{"vote",		SV_Vote_f},
 
-	{"sayone", SV_SayOne_f},
-	{"say", SV_Say_f},
-	{"say_team", SV_Say_Team_f},
-
-	{"setinfo", SV_SetInfo_f},
-	{"serverinfo", SV_ShowServerinfo_f},
-
-#ifdef MVD_RECORDING
-	/*demo/download commands*/
-	{"demolist", SV_UserCmdMVDList_f},
-	{"dlist", SV_UserCmdMVDList_f},	//apparently people are too lazy to type.
-	{"demoinfo", SV_MVDInfo_f},
-	{"dl", SV_DemoDownload_f},
+	/*user interactions*/
+	{"sayone",		SV_SayOne_f},
+	{"say",			SV_Say_f},
+	{"say_team",	SV_Say_Team_f},
+#ifdef SVRANKING
+	{"topten",		Rank_ListTop10_f},
 #endif
 
-	{"stopdownload", SV_StopDownload_f},
-	{"dlsize", SV_DownloadSize_f},
-	{"download", SV_BeginDownload_f},
-	{"nextdl", SV_NextDownload_f, true},
+	{"setinfo",		SV_SetInfo_f},
+	{"serverinfo",	SV_ShowServerinfo_f},
+
+	/*download/demo commands*/
+#ifdef MVD_RECORDING
+	{"demolist",	SV_UserCmdMVDList_f},
+	{"dlist",		SV_UserCmdMVDList_f},	//apparently people are too lazy to type.
+									//mvdsv has 4 more variants, for 6 total doing the same thing.
+	{"demoinfo",	SV_MVDInfo_f},
+	{"dl",			SV_DemoDownload_f},
+#endif
+	{"stopdownload",SV_StopDownload_f},
+	{"stopdl",		SV_StopDownload_f},	//mvdsv compat
+	{"dlsize",		SV_DownloadSize_f},
+	{"download",	SV_BeginDownload_f},
+	{"nextdl",		SV_NextDownload_f, true},
 
 	/*quakeworld specific things*/
-	{"addseat", Cmd_AddSeat_f},	//splitscreen
-	{"join", Cmd_Join_f},
-	{"observe", Cmd_Observe_f},
-	{"ptrack", SV_PTrack_f}, //ZOID - used with autocam
-	{"snap", SV_NoSnap_f},	//cheat detection
+	{"addseat",		Cmd_AddSeat_f},	//splitscreen
+	{"join",		Cmd_Join_f},
+	{"observe",		Cmd_Observe_f},
+	{"ptrack",		SV_PTrack_f}, //ZOID - used with autocam
+	{"snap",		SV_NoSnap_f},	//cheat detection
 
-	{"enablecsqc", SV_EnableClientsCSQC, 2},
-	{"disablecsqc", SV_DisableClientsCSQC, 2},
-
-	{"vote", SV_Vote_f},
-
-#ifdef SVRANKING
-	{"topten", Rank_ListTop10_f},
-#endif
-
-	{"efpslist", Cmd_FPSList_f},	//don't conflict with the ktpro one
-	{"god", Cmd_God_f},
-	{"give", Cmd_Give_f},
-	{"noclip", Cmd_Noclip_f},
-	{"spiderpig", Cmd_Spiderpig_f},
-	{"6dof", Cmd_6dof_f},
-	{"fly", Cmd_Fly_f},
-	{"notarget", Cmd_Notarget_f},
-	{"setpos", Cmd_SetPos_f},
+	/*cheats*/
+	{"god",			Cmd_God_f},
+	{"give",		Cmd_Give_f},
+	{"noclip",		Cmd_Noclip_f},
+	{"spiderpig",	Cmd_Spiderpig_f},
+	{"6dof",		Cmd_6dof_f},
+	{"fly",			Cmd_Fly_f},
+	{"notarget",	Cmd_Notarget_f},
+	{"setpos",		Cmd_SetPos_f},
 #ifdef SUBSERVERS
 	{"ssvtransfer", Cmd_SSV_Transfer_f},//transfer the player to a different map/server
-	{"ssvsay",		Cmd_SSV_AllSay_f},	//transfer the player to a different map/server
+	{"ssvsay",		Cmd_SSV_AllSay_f},	//says realm-wide
 	{"ssvjoin",		Cmd_SSV_Join_f},	//transfer the player to a different map/server
 #endif
 
@@ -6061,10 +6167,10 @@ ucmd_t ucmds[] =
 #endif
 
 #ifdef VOICECHAT
-	{"voicetarg", SV_Voice_Target_f},
-	{"vignore", SV_Voice_Ignore_f},	/*ignore/mute specific player*/
-	{"muteall", SV_Voice_MuteAll_f},	/*disables*/
-	{"unmuteall", SV_Voice_UnmuteAll_f}, /*reenables*/
+	{"voicetarg",	SV_Voice_Target_f},
+	{"vignore",		SV_Voice_Ignore_f},	/*ignore/mute specific player*/
+	{"muteall",		SV_Voice_MuteAll_f},	/*disables*/
+	{"unmuteall",	SV_Voice_UnmuteAll_f}, /*reenables*/
 #endif
 
 	{NULL, NULL}
@@ -6981,6 +7087,7 @@ void SV_RunCmd (usercmd_t *ucmd, qboolean recurse)
 		movevars.ktjump = pm_ktjump.value;
 		movevars.slidefix = (pm_slidefix.value != 0);
 		movevars.airstep = (pm_airstep.value != 0);
+		movevars.pground = (pm_pground.value != 0);
 		movevars.stepdown = (pm_stepdown.value != 0);
 		movevars.walljump = (pm_walljump.value);
 		movevars.slidyslopes = (pm_slidyslopes.value!=0);
@@ -6988,6 +7095,7 @@ void SV_RunCmd (usercmd_t *ucmd, qboolean recurse)
 		movevars.flyfriction = *pm_flyfriction.string?pm_flyfriction.value:4;
 		movevars.edgefriction = *pm_edgefriction.string?pm_edgefriction.value:2;
 		movevars.coordsize = host_client->netchan.netprim.coordsize;
+		movevars.flags				= MOVEFLAG_VALID|MOVEFLAG_NOGRAVITYONGROUND|(*pm_edgefriction.string?0:MOVEFLAG_QWEDGEBOX);
 
 		for (i=0 ; i<3 ; i++)
 		{
@@ -7153,7 +7261,12 @@ void SV_RunCmd (usercmd_t *ucmd, qboolean recurse)
 				sv_player->v->velocity[2] -= 270;
 		}
 
-		WPhys_RunThink (&sv.world, (wedict_t*)sv_player);
+		{
+			double ptime = sv.world.physicstime;
+			sv.world.physicstime = sv.time;	//urgh, WPhys_RunThink uses the wrong time base
+			WPhys_RunThink (&sv.world, (wedict_t*)sv_player);
+			sv.world.physicstime = ptime;
+		}
 
 		if (host_client->state && host_client->protocol == SCP_BAD)
 		{
@@ -7201,6 +7314,7 @@ void SV_RunCmd (usercmd_t *ucmd, qboolean recurse)
 	VectorCopy (sv_player->v->v_angle, pmove.angles);
 
 	pmove.pm_type = SV_PMTypeForClient (host_client, sv_player);
+	pmove.onground = ((int)sv_player->v->flags & FL_ONGROUND) != 0;
 	pmove.jump_held = host_client->jump_held;
 	pmove.jump_msec = 0;
 	if (progstype != PROG_QW)	//this is just annoying.
@@ -7219,6 +7333,7 @@ void SV_RunCmd (usercmd_t *ucmd, qboolean recurse)
 	movevars.ktjump = pm_ktjump.value;
 	movevars.slidefix = (pm_slidefix.value != 0);
 	movevars.airstep = (pm_airstep.value != 0);
+	movevars.pground = (pm_pground.value != 0);
 	movevars.stepdown = (pm_stepdown.value != 0);
 	movevars.walljump = (pm_walljump.value);
 	movevars.slidyslopes = (pm_slidyslopes.value!=0);
@@ -7226,6 +7341,7 @@ void SV_RunCmd (usercmd_t *ucmd, qboolean recurse)
 	movevars.flyfriction = *pm_flyfriction.string?pm_flyfriction.value:4;
 	movevars.edgefriction = *pm_edgefriction.string?pm_edgefriction.value:2;
 	movevars.coordsize = host_client->netchan.netprim.coordsize;
+	movevars.flags				= MOVEFLAG_VALID|MOVEFLAG_NOGRAVITYONGROUND|(*pm_edgefriction.string?0:MOVEFLAG_QWEDGEBOX);
 
 // should already be folded into host_client->maxspeed
 //	if (sv_player->xv->hasted)
@@ -8657,7 +8773,7 @@ static void SV_UserFriction (void)
 	trace = World_Move (&sv.world, start, vec3_origin, vec3_origin, stop, true, (wedict_t*)sv_player);
 
 	if (trace.fraction == 1.0)
-		friction = sv_friction.value*pm_edgefriction.value;
+		friction = sv_friction.value*(*pm_edgefriction.string?pm_edgefriction.value:2);
 	else
 		friction = sv_friction.value;
 

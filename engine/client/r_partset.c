@@ -1522,6 +1522,22 @@ char *particle_set_high =
 "assoc gunshotsmoke\n"
 "}\n"
 
+//simple slight trail, to show movement more than anything else.
+"r_part tr_spike\n"
+"{\n"
+"texture \"particles/fteparticlefont.tga\"\n"
+"step 1.1\n"
+"scale 4\n"
+"die .4\n"
+"rgb 20 20 20\n"
+"alpha 1\n"
+"blend add\n"
+"spawnmode spiral 512\n"
+"spawnvel 10\n"
+"}\n"
+"r_trail \"progs/spike.mdl\" tr_spike\n"
+"r_trail \"progs/s_spike.mdl\" tr_spike\n"
+
 ////////////////////////////////////////////////
 //explosion
 
@@ -3370,6 +3386,24 @@ char *particle_set_h2part =
 "flurry 32\n"
 "}\n"
 
+//eidolon's arena
+"r_part ce_rain\n"
+"{\n"
+"texture \"particles/fteparticlefont.tga\"\n"
+"tcoords 1 1 63 63 256 2 64\n"
+"type texturedspark\n"
+"count   1\n"
+"scale 2\n"
+"scalefactor 1\n"
+"die 1\n"
+"alpha 0.2\n"
+"alphadelta 0\n"
+"rgb 255 255 255\n"
+"friction 0\n"
+"blend add\n"
+"veladd 1\n"
+"gravity 0\n"
+"}\n"
 
 //this teleport effect is nothing like hexen2's. hopefully it'll be acceptable :s
 //the down ring
@@ -3406,7 +3440,6 @@ char *particle_set_h2part =
 "}\n"
 
 
-//h2part.ce_rain was not loaded
 //h2part.ce_quake was not loaded
 //h2part.ce_ghost was not loaded
 //h2part.ce_teleporterbody_1 was not loaded

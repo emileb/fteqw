@@ -171,6 +171,8 @@ struct {
 #endif
 	func_t AddDebugPolygons;
 	func_t CheckRejectConnection;
+
+	func_t ZQ_ClientCommand;
 } gfuncs;
 func_t SpectatorConnect;	//QW
 func_t SpectatorThink;	//QW
@@ -1095,6 +1097,7 @@ void PR_LoadGlabalStruct(qboolean muted)
 	gfuncs.ChatMessage = PR_FindFunction(svprogfuncs, "ChatMessage", PR_ANY);
 	gfuncs.UserCmd = PR_FindFunction(svprogfuncs, "UserCmd", PR_ANY);
 	gfuncs.ConsoleCmd = PR_FindFunction(svprogfuncs, "ConsoleCmd", PR_ANY);
+	gfuncs.ZQ_ClientCommand = PR_FindFunction(svprogfuncs, "GE_ClientCommand", PR_ANY);
 
 	gfuncs.PausedTic = PR_FindFunction(svprogfuncs, "SV_PausedTic", PR_ANY);
 	gfuncs.ShouldPause = PR_FindFunction(svprogfuncs, "SV_ShouldPause", PR_ANY);
@@ -2416,6 +2419,20 @@ qboolean PR_UserCmd(const char *s)
 	if (!svprogfuncs)
 		return false;
 
+	if (gfuncs.ZQ_ClientCommand)
+	{
+		pr_globals = PR_globals(svprogfuncs, PR_CURRENT);
+		tokenizeqc(s, true);	//I don't know the spec, I'm making assumptions here. Of course, not having the original string means the tokens will be reordered if they tokenize parm1. sucks to be them if they do that.
+
+		pr_global_struct->time = sv.world.physicstime;
+		pr_global_struct->self = EDICT_TO_PROG(svprogfuncs, sv_player);
+		//originally, UserCmd took no arguments. ezquake passes only the arg (the command's name). We pass the entire argument string.
+		G_INT(OFS_PARM0) = PR_TempString(svprogfuncs, Cmd_Argv(0));
+		G_INT(OFS_PARM1) = PR_TempString(svprogfuncs, Cmd_Args());
+		PR_ExecuteProgram (svprogfuncs, gfuncs.ZQ_ClientCommand);
+		return !!G_FLOAT(OFS_RETURN);
+	}
+
 	if (gfuncs.ParseClientCommand)
 	{	//the QC is expected to send it back to use via a builtin.
 
@@ -2423,7 +2440,7 @@ qboolean PR_UserCmd(const char *s)
 		pr_global_struct->time = sv.world.physicstime;
 		pr_global_struct->self = EDICT_TO_PROG(svprogfuncs, sv_player);
 
-		G_INT(OFS_PARM0) = (int)PR_TempString(svprogfuncs, s);
+		G_INT(OFS_PARM0) = PR_TempString(svprogfuncs, s);
 		PR_ExecuteProgram (svprogfuncs, gfuncs.ParseClientCommand);
 		return true;
 	}
@@ -2437,30 +2454,33 @@ qboolean PR_UserCmd(const char *s)
 	}
 #endif
 
-	if (gfuncs.UserCmd && pr_imitatemvdsv.value >= 0)
+	if (gfuncs.UserCmd && progstype == PROG_QW)
 	{	//we didn't recognise it. see if the mod does.
-		const char *arg0;
-		//ktpro bug warning:
-		//admin + judge. I don't know the exact rules behind this bug, so I just ban the entire command
-		//I can't be arsed detecting ktpro specifically, so assume we're always running ktpro
-
 		pr_globals = PR_globals(svprogfuncs, PR_CURRENT);
-		pr_global_struct->time = sv.world.physicstime;
-		pr_global_struct->self = EDICT_TO_PROG(svprogfuncs, sv_player);
 
 		tokenizeqc(s, true);
 
-		//make sure we use the same logic that the qc will use. specifically that we check for " and leading spaces etc
-		G_FLOAT(OFS_PARM0) = 0;
-		PF_ArgV(svprogfuncs, pr_globals);
-		arg0 = PR_GetStringOfs(svprogfuncs, OFS_RETURN);
-		if (!strcmp(arg0, "admin") || !strcmp(arg0, "judge"))
-		{
-			Con_Printf("Blocking potentially unsafe ktpro command: %s\n", s);
-			return true;
+		{	//ktpro bug warning:
+			//admin + judge. I don't know the exact rules behind this bug, so I just ban the entire command
+			//I can't be arsed detecting ktpro specifically, so assume we're always running ktpro
+
+			const char *arg0;
+
+			//make sure we use the same logic that the qc will use. specifically that we check for " and leading spaces etc
+			G_FLOAT(OFS_PARM0) = 0;
+			PF_ArgV(svprogfuncs, pr_globals);
+			arg0 = PR_GetStringOfs(svprogfuncs, OFS_RETURN);
+			if (!strcmp(arg0, "admin") || !strcmp(arg0, "judge"))
+			{
+				Con_Printf("Blocking potentially unsafe ktpro command: %s\n", s);
+				return true;
+			}
 		}
 
-		G_INT(OFS_PARM0) = (int)PR_TempString(svprogfuncs, s);
+		pr_global_struct->time = sv.world.physicstime;
+		pr_global_struct->self = EDICT_TO_PROG(svprogfuncs, sv_player);
+		//originally, UserCmd took no arguments. ezquake passes only the arg (the command's name). We pass the entire argument string.
+		G_INT(OFS_PARM0) = PR_TempString(svprogfuncs, s);
 		PR_ExecuteProgram (svprogfuncs, gfuncs.UserCmd);
 		return !!G_FLOAT(OFS_RETURN);
 	}
@@ -3210,6 +3230,20 @@ void PF_centerprint_Internal (int entnum, qboolean plaque, const char *s)
 		cl->centerprintstring[1] = 'P';
 		strcpy(cl->centerprintstring+2, s);
 	}
+#ifdef HEXEN2
+	else if (progstype == PROG_H2)
+	{
+		char *at;
+		cl->centerprintstring = Z_Malloc(slen+2);
+		cl->centerprintstring[0] = 2;	//hexen2's centerprints use the alternate charset.
+		strcpy(cl->centerprintstring+1, s);
+
+		//and @ chars are used for new-lines.
+		for (at = cl->centerprintstring+1; *at; at++)
+			if (*at == '@')
+				*at = '\n';
+	}
+#endif
 	else
 	{
 		cl->centerprintstring = Z_Malloc(slen+1);
@@ -6228,7 +6262,7 @@ static void QCBUILTIN PF_sv_serverkeyblob (pubprogfuncs_t *prinst, struct global
 {
 	size_t blobsize = 0;
 	const char	*key = PR_GetStringOfs(prinst, OFS_PARM0);
-	const char	*blobvalue = InfoBuf_BlobForKey(&svs.info, key, &blobsize);
+	const char	*blobvalue = InfoBuf_BlobForKey(&svs.info, key, &blobsize, NULL);
 
 	if ((prinst->callargc<2) || G_INT(OFS_PARM1) == 0)
 		G_INT(OFS_RETURN) = blobsize;	//no pointer to write to, just return the length.
@@ -6268,7 +6302,7 @@ static void QCBUILTIN PF_getlocalinfo (pubprogfuncs_t *prinst, struct globalvars
 {
 	size_t blobsize = 0;
 	const char	*key = PR_GetStringOfs(prinst, OFS_PARM0);
-	const char	*blobvalue = InfoBuf_BlobForKey(&svs.localinfo, key, &blobsize);
+	const char	*blobvalue = InfoBuf_BlobForKey(&svs.localinfo, key, &blobsize, NULL);
 
 	if ((prinst->callargc<2) || G_INT(OFS_PARM1) == 0)
 		G_INT(OFS_RETURN) = blobsize;	//no pointer to write to, just return the length.
@@ -8188,7 +8222,7 @@ void SV_RegisterH2CustomTents(void)
 }
 static void QCBUILTIN PF_h2starteffect(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
-	float *min, *max, *size;
+	float *min, *max;//, *size;
 //	float *angle;
 	float colour;
 //	float wait, radius, frame, framelength, duration;
@@ -8205,18 +8239,29 @@ static void QCBUILTIN PF_h2starteffect(pubprogfuncs_t *prinst, struct globalvars
 		/*this effect is meant to be persistant (endeffect is never used)*/
 		min = G_VECTOR(OFS_PARM1);
 		max = G_VECTOR(OFS_PARM2);
-		size = G_VECTOR(OFS_PARM3);
-		dir = G_VECTOR(OFS_PARM4);
-		colour = G_FLOAT(OFS_PARM5);
-		count = G_FLOAT(OFS_PARM6);
-		//wait = G_FLOAT(OFS_PARM7);
+		//size = G_VECTOR(OFS_PARM3);	/*maxs-min, so useless*/
+		dir = G_VECTOR(OFS_PARM4);		/*[125,100] or [0,0]*/
+		colour = G_FLOAT(OFS_PARM5);	/*414 default*/
+		count = G_FLOAT(OFS_PARM6);		/*300 default*/
+		count *= /*wait =*/ G_FLOAT(OFS_PARM7);	/*0.1 default*/
 
 		/*FIXME: not spawned - this persistant effect is created by a map object, all attributes are custom.*/
 
-		if (colour == 0 && size == 0)
-			SV_CustomTEnt_Spawn(h2customtents[efnum], min, max, count, dir);
+		if (colour == 414)
+			efnum = h2customtents[efnum];
 		else
-			Con_Printf("FTE-H2 FIXME: ce_rain not supported!\n");
+			efnum = SV_CustomTEnt_Register(va("h2part.ce_rain_%i", (int)colour),				CTE_PERSISTANT|CTE_CUSTOMVELOCITY|CTE_ISBEAM|CTE_CUSTOMCOUNT, NULL, 0, NULL, 0, 0, NULL);
+
+		{	//align to the top of the rain volume
+			//particles should be removed once they reach the bottom
+			vec3_t nmin;
+			vec3_t ndir;
+			nmin[0] = min[0];
+			nmin[1] = min[1];
+			nmin[2] = max[2];
+			VectorSet(ndir, dir[0], dir[1], (min[2]-max[2])/1);	//divide by expected lifetime.
+			SV_CustomTEnt_Spawn(efnum, nmin, max, count, ndir);
+		}
 		return;
 	case ce_snow:
 		/*this effect is meant to be persistant (endeffect is never used)*/
@@ -9853,7 +9898,7 @@ static void QCBUILTIN PF_runclientphys(pubprogfuncs_t *prinst, struct globalvars
 	pmove.physents[0].model = sv.world.worldmodel;
 
 	pmove.onladder = false;
-	pmove.onground = false;
+	pmove.onground = ((int)ent->v->flags & FL_ONGROUND) != 0;
 	pmove.groundent = 0;
 	pmove.waterlevel = 0;
 	pmove.watertype = 0;
@@ -10520,7 +10565,7 @@ BuiltinList_t BuiltinList[] = {				//nq	qw		h2		ebfs
 #ifndef QUAKETC
 //mvdsv (don't require ebfs usage in qw)
 	{"executecommand",	PF_ExecuteCommand,	0,		0,		0,		83, D("void()","Attempt to flush the localcmd buffer NOW. This is unsafe, as many events might cause the map to be purged while still executing qc code."),				true},
-	{"mvdtokenize",		PF_Tokenize, 		0,		0,		0,		84, D("void(string str)",NULL),		true},
+	{"mvdtokenize",		PF_tokenize_console,0,		0,		0,		84, D("void(string str)",NULL),		true},
 	{"mvdargc",			PF_ArgC,			0,		0,		0,		85, D("float()",NULL),				true},
 	{"mvdargv",			PF_ArgV,			0,		0,		0,		86, D("string(float num)",NULL),	true},
 
@@ -11214,6 +11259,7 @@ BuiltinList_t BuiltinList[] = {				//nq	qw		h2		ebfs
 	{"log",				PF_Logarithm,		0,		0,		0,		532,	D("float(float v, optional float base)", "Determines the logarithm of the input value according to the specified base. This can be used to calculate how much something was shifted by.")},
 	{"soundupdate",		PF_Fixme,			0,		0,		0,		0,		D("float(entity e, float channel, string newsample, float volume, float attenuation, float pitchpct, float flags, float timeoffset)", "Changes the properties of the current sound being played on the given entity channel. newsample may be empty, and will be ignored in this case. timeoffset is relative to the current position (subtract the result of getsoundtime for absolute positions). Negative volume can be used to stop the sound. Return value is a fractional value based upon the number of audio devices that could be updated - test against TRUE rather than non-zero.")},
 	{"getsoundtime",	PF_Ignore,			0,		0,		0,		533,	D("float(entity e, float channel)", "Returns the current playback time of the sample on the given entity's channel. Beware CHAN_AUTO (in csqc, channels are not limited by network protocol).")},
+	{"getchannellevel",	PF_Ignore,			0,		0,		0,		0,		D("float(entity e, float channel)", "")},
 	{"soundlength",		PF_Ignore,			0,		0,		0,		534,	D("float(string sample)", "Provides a way to query the duration of a sound sample, allowing you to set up a timer to chain samples.")},
 	{"buf_loadfile",	PF_buf_loadfile,	0,		0,		0,		535,	D("float(string filename, strbuf bufhandle)", "Appends the named file into a string buffer (which must have been created in advance). The return value merely says whether the file was readable.")},
 	{"buf_writefile",	PF_buf_writefile,	0,		0,		0,		536,	D("float(filestream filehandle, strbuf bufhandle, optional float startpos, optional float numstrings)", "Writes the contents of a string buffer onto the end of the supplied filehandle (you must have already used fopen). Additional optional arguments permit you to constrain the writes to a subsection of the stringbuffer.")},
@@ -11819,7 +11865,7 @@ void PR_DumpPlatform_f(void)
 		{"total_monsters",		"float", QW|NQ},
 		{"found_secrets",		"float", QW|NQ},
 		{"killed_monsters",		"float", QW|NQ},
-		{"parm1, parm2, parm3, parm4, parm5, parm6, parm7, parm8, parm9, parm10, parm11, parm12, parm13, parm14, parm15, parm16", "float", QW|NQ},
+		{"parm1, parm2, parm3, parm4, parm5, parm6, parm7, parm8, parm9, parm10, parm11, parm12, parm13, parm14, parm15, parm16", "float", QW|NQ, "Player specific mod-defined values that are transferred from one map to the next. These are set by the qc inside calls to SetNewParms and SetChangeParms, and can then be read on a per-player basis after a call to the setspawnparms builtin. They are not otherwise valid."},
 		{"intermission",		"float", CS},
 		{"v_forward, v_up, v_right",	"vector", QW|NQ|CS},
 		{"view_angles",			"vector", CS,		D("+x=DOWN")},
@@ -12056,9 +12102,11 @@ void PR_DumpPlatform_f(void)
 		{"m_toggle",				"void(float wantmode)", MENU},
 		{"m_consolecommand",		"float(string cmd)", MENU},
 
-		{"parm17, parm18, parm19, parm20, parm21, parm22, parm23, parm24, parm25, parm26, parm27, parm28, parm29, parm30, parm31, parm32", "float", QW|NQ},
+		{"parm17, parm18, parm19, parm20, parm21, parm22, parm23, parm24, parm25, parm26, parm27, parm28, parm29, parm30, parm31, parm32", "float", QW|NQ, "Additional spawn parms, following the same parmN theme."},
 		{"parm33, parm34, parm35, parm36, parm37, parm38, parm39, parm40, parm41, parm42, parm43, parm44, parm45, parm46, parm47, parm48", "float", QW|NQ},
 		{"parm49, parm50, parm51, parm52, parm53, parm54, parm55, parm56, parm57, parm58, parm59, parm60, parm61, parm62, parm63, parm64", "float", QW|NQ},
+		{"parm_string",				"string", QW|NQ, "Like the regular parmN globals, but preserves string contents."},
+		{"startspot",				"string", QW|NQ, "Receives the value of the second argument to changelevel from the previous map."},
 		{"dimension_send",			"var float", QW|NQ, "Used by multicast functionality. Multicasts (and related builtins that multicast internally) will only be sent to players where (player.dimension_see & dimension_send) is non-zero."},
 		{"dimension_default",		"//var float", QW|NQ, "Default dimension bitmask", 255},
 		{"physics_mode",			"__used var float", QW|NQ|CS, "0: original csqc - physics are not run\n1: DP-compat. Thinks occur, but not true movetypes.\n2: movetypes occur just as they do in ssqc.", 2},
@@ -13190,7 +13238,7 @@ void PR_DumpPlatform_f(void)
 		"accessor infostring : string\n{\n"
 			"\tget string[string] = infoget;\n"
 #ifdef QCGC
-			"\tinline seti& string[string fld] = {this = infoadd(this, fld, value);};\n"
+			"\tinline set& string[string fld] = {this = infoadd(this, fld, value);};\n"
 #endif
 		"};\n");
 	VFS_PRINTF(f,

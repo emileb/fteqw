@@ -532,6 +532,8 @@ qbyte *W_GetTexture(const char *name, int *width, int *height, uploadfmt_t *form
 				}
 				return data;
 			}
+			else if (lumptype == TYP_HLFONT)
+				; //FIXME... gah
 			else
 				Con_Printf("W_GetTexture: unknown lump type\n");
 		}
@@ -838,6 +840,8 @@ void Mod_ParseInfoFromEntityLump(model_t *wmodel)	//actually, this should be in 
 			Q_strncatz(wads, token, sizeof(wads));	//cache it for later (so that we don't play with any temp memory yet)
 #endif
 		}
+		else if (!strcmp("skyfog", key)) //override cvars so mappers don't end up hacking cvars and fucking over configs (at least in other engines).
+			Cvar_LockFromServer(&r_skyfog, token);
 		else if (!strcmp("fog", key) || !strcmp("airfog", key))	//q1 extension. FIXME: should be made temporary.
 		{
 			key[0] = 'f';

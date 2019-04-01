@@ -97,8 +97,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifdef _MSC_VER
 	#if _MSC_VER >= 1310
 		#define strtoull _strtoui64
+		#define strtoll _strtoi64
 	#else
 		#define strtoull strtoul	//hopefully this won't cause too many issues
+		#define strtoll strtol	//hopefully this won't cause too many issues
 		#define DWORD_PTR DWORD		//32bit only
 		#define ULONG_PTR ULONG
 	#endif
@@ -691,6 +693,7 @@ qboolean PM_CanInstall(const char *packagename);
 
 void COM_InitFilesystem (void);	//does not set up any gamedirs.
 qboolean FS_DownloadingPackage(void);
+void FS_CreateBasedir(const char *path);
 qboolean FS_ChangeGame(ftemanifest_t *newgame, qboolean allowreloadconfigs, qboolean allowbasedirchange);
 void FS_Shutdown(void);
 struct gamepacks
@@ -783,7 +786,7 @@ extern const char *basicuserinfos[];	//note: has a leading *
 extern const char *privateuserinfos[];	//key names that are not broadcast from the server
 qboolean InfoBuf_FindKey (infobuf_t *info, const char *key, size_t *idx);
 const char *InfoBuf_KeyForNumber (infobuf_t *info, int num);
-const char *InfoBuf_BlobForKey (infobuf_t *info, const char *key, size_t *blobsize);
+const char *InfoBuf_BlobForKey (infobuf_t *info, const char *key, size_t *blobsize, qboolean *large);
 char *InfoBuf_ReadKey (infobuf_t *info, const char *key, char *outbuf, size_t outsize);
 char *InfoBuf_ValueForKey (infobuf_t *info, const char *key);
 qboolean InfoBuf_RemoveKey (infobuf_t *info, const char *key);

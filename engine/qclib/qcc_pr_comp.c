@@ -3871,10 +3871,10 @@ QCC_sref_t QCC_PR_StatementFlags ( QCC_opcode_t *op, QCC_sref_t var_a, QCC_sref_
 
 		case OP_LSHIFT_IF:
 			var_b = QCC_PR_StatementFlags(&pr_opcodes[OP_CONV_FTOI], var_b, nullsref, NULL, (flags&STFL_PRESERVEB)?STFL_PRESERVEA:0);
-			return QCC_PR_StatementFlags(&pr_opcodes[OP_RSHIFT_I], var_a, var_b, NULL, flags&STFL_PRESERVEA);
+			return QCC_PR_StatementFlags(&pr_opcodes[OP_LSHIFT_I], var_a, var_b, NULL, flags&STFL_PRESERVEA);
 		case OP_LSHIFT_FI:
 			var_a = QCC_PR_StatementFlags(&pr_opcodes[OP_CONV_FTOI], var_a, nullsref, NULL, flags&STFL_PRESERVEA);
-			return QCC_PR_StatementFlags(&pr_opcodes[OP_RSHIFT_I], var_a, var_b, NULL, flags&STFL_PRESERVEB);
+			return QCC_PR_StatementFlags(&pr_opcodes[OP_LSHIFT_I], var_a, var_b, NULL, flags&STFL_PRESERVEB);
 		case OP_RSHIFT_IF:
 			var_b = QCC_PR_StatementFlags(&pr_opcodes[OP_CONV_FTOI], var_b, nullsref, NULL, (flags&STFL_PRESERVEB)?STFL_PRESERVEA:0);
 			return QCC_PR_StatementFlags(&pr_opcodes[OP_RSHIFT_I], var_a, var_b, NULL, flags&STFL_PRESERVEA);
@@ -4267,6 +4267,70 @@ QCC_statement_t *QCC_PR_SimpleStatement ( QCC_opcode_t *op, QCC_sref_t var_a, QC
 	statement->linenum = pr_token_line_last;
 
 	return statement;
+}
+
+/*
+	Removes trailing statements, rewinding back to a known-safe position.
+*/
+void QCC_UngenerateStatements(int newstatementcount)
+{
+	int i;
+
+	//forget any indexes to statements if those statements are going to go away...
+	for (i = 0; i < num_gotos; )
+	{
+		if (pr_gotos[i].statementno >= newstatementcount)
+		{
+			memmove(&pr_gotos[i], &pr_gotos[i+1], sizeof(*pr_gotos)*(num_gotos-(i+1)));
+			num_gotos--;
+		}
+		else
+			i++;
+	}
+	for (i = 0; i < num_labels; )
+	{	//FIXME: stripping a label? erk?
+		if (pr_labels[i].statementno >= newstatementcount)
+		{
+			memmove(&pr_labels[i], &pr_labels[i+1], sizeof(*pr_labels)*(num_labels-(i+1)));
+			num_labels--;
+		}
+		else
+			i++;
+	}
+	for (i = 0; i < num_breaks; )
+	{
+		if (pr_breaks[i] >= newstatementcount)
+		{
+			memmove(&pr_breaks[i], &pr_breaks[i+1], sizeof(*pr_breaks)*(num_breaks-(i+1)));
+			num_breaks--;
+		}
+		else
+			i++;
+	}
+	for (i = 0; i < num_continues; )
+	{
+		if (pr_continues[i] >= newstatementcount)
+		{
+			memmove(&pr_continues[i], &pr_continues[i+1], sizeof(*pr_continues)*(num_continues-(i+1)));
+			num_continues--;
+		}
+		else
+			i++;
+	}
+	for (i = 0; i < num_cases; )
+	{
+		if (pr_cases[i] >= newstatementcount)
+		{
+			memmove(&pr_cases[i], &pr_cases[i+1], sizeof(*pr_cases)*(num_cases-(i+1)));
+			memmove(&pr_casesref[i], &pr_casesref[i+1], sizeof(*pr_casesref)*(num_cases-(i+1)));
+			memmove(&pr_casesref2[i], &pr_casesref2[i+1], sizeof(*pr_casesref2)*(num_cases-(i+1)));
+			num_cases--;
+		}
+		else
+			i++;
+	}
+
+	numstatements = newstatementcount;
 }
 
 /*
@@ -4873,7 +4937,7 @@ static void QCC_VerifyArgs_setviewprop (const char *funcname, QCC_ref_t **arglis
 		{"VF_CL_VIEWANGLES_X",	36, ev_float},
 		{"VF_PERSPECTIVE",		200, ev_float},
 		//201
-		{"VF_ACTIVESEAT",		202, ev_float},
+		{"VF_ACTIVESEAT",		202, ev_float, ev_float},
 		{"VF_AFOV",				203, ev_float},
 //		{"VF_SCREENVSIZE",		204, ev_vector},
 //		{"VF_SCREENPSIZE",		205, ev_vector},
@@ -5363,7 +5427,7 @@ static QCC_sref_t QCC_PR_Inline(QCC_sref_t fdef, QCC_ref_t **arglist, unsigned i
 	}
 
 	if (!ctx.result.cast)
-		numstatements = statements;	//on failure, remove the extra statements
+		QCC_UngenerateStatements(statements);
 	else
 	{	//on success, make sure the args were freed
 		while (argcount-->0)
@@ -6454,17 +6518,6 @@ static QCC_sref_t QCC_PR_ParseFunctionCall (QCC_ref_t *funcref)	//warning, the f
 
 			if (arg >= MAX_PARMS+MAX_EXTRA_PARMS)
 				QCC_PR_ParseErrorPrintSRef (ERR_TOOMANYTOTALPARAMETERS, func, "More than %i parameters", MAX_PARMS+MAX_EXTRA_PARMS);
-			else if (extraparms && arg >= MAX_PARMS && !t->vargcount)
-			{
-				//vararg builtins cannot accept more than 8 args. they can't tell if they got more, and wouldn't know where to read them.
-				QCC_PR_ParseWarning (WARN_TOOMANYPARAMETERSVARARGS, "More than %i parameters on varargs function", MAX_PARMS);
-				QCC_PR_ParsePrintSRef(WARN_TOOMANYPARAMETERSVARARGS, func);
-			}
-			else if (!extraparms && arg >= t->num_parms && !p)
-			{
-				QCC_PR_ParseWarning (WARN_TOOMANYPARAMETERSFORFUNC, "too many parameters on call to %s", funcname);
-				QCC_PR_ParsePrintSRef(WARN_TOOMANYPARAMETERSFORFUNC, func);
-			}
 
 			if (QCC_PR_CheckToken("#"))
 			{
@@ -6481,8 +6534,20 @@ static QCC_sref_t QCC_PR_ParseFunctionCall (QCC_ref_t *funcref)	//warning, the f
 				e = QCC_DefToRef(&parambuf[arg], func.cast->params[arg].defltvalue);
 			}
 			else
+				e = QCC_PR_RefExpression(&parambuf[arg], TOP_PRIORITY, EXPR_DISALLOW_COMMA);
 
-			e = QCC_PR_RefExpression(&parambuf[arg], TOP_PRIORITY, EXPR_DISALLOW_COMMA);
+			if (extraparms && arg >= MAX_PARMS && !t->vargcount)
+			{
+				//vararg builtins cannot accept more than 8 args. they can't tell if they got more, and wouldn't know where to read them.
+				QCC_PR_ParseWarning (WARN_TOOMANYPARAMETERSVARARGS, "More than %i parameters on varargs function", MAX_PARMS);
+				QCC_PR_ParsePrintSRef(WARN_TOOMANYPARAMETERSVARARGS, func);
+			}
+			else if (!extraparms && arg >= t->num_parms && !p)
+			{
+				char buf[256];
+				QCC_PR_ParseWarning (WARN_TOOMANYPARAMETERSFORFUNC, "too many parameters on call to %s, argument %s will be ignored", funcname, QCC_GetRefName(e, buf, sizeof(buf)));
+				QCC_PR_ParsePrintSRef(WARN_TOOMANYPARAMETERSFORFUNC, func);
+			}
 
 			//with vectorcalls, we store the vector into the args as individual floats
 			//this allows better reuse of vector constants.
@@ -6600,7 +6665,10 @@ static QCC_sref_t QCC_PR_ParseFunctionCall (QCC_ref_t *funcref)	//warning, the f
 		}
 		else*/
 		{
-			QCC_PR_ParseWarning (WARN_TOOFEWPARAMS, "too few parameters on call to %s", QCC_GetSRefName(func));
+			if (func.cast->params[arg].paramname)
+				QCC_PR_ParseWarning (WARN_TOOFEWPARAMS, "too few parameters on call to %s, %s will be UNDEFINED", QCC_GetSRefName(func), func.cast->params[arg].paramname);
+			else
+				QCC_PR_ParseWarning (WARN_TOOFEWPARAMS, "too few parameters on call to %s", QCC_GetSRefName(func));
 			QCC_PR_ParsePrintSRef (WARN_TOOFEWPARAMS, func);
 		}
 	}
@@ -11067,7 +11135,7 @@ void QCC_PR_ParseStatement (void)
 		QCC_PR_ParseStatement ();
 		if (striptruth && oldlab == num_labels)
 		{
-			numstatements = oldnumst;
+			QCC_UngenerateStatements(oldnumst);
 			patch1 = NULL;
 		}
 		else
@@ -11092,7 +11160,7 @@ void QCC_PR_ParseStatement (void)
 				if (stripfalse && oldlab == num_labels)
 				{
 					patch2 = NULL;
-					numstatements = oldnumst;
+					QCC_UngenerateStatements(oldnumst);
 
 					if (patch1)
 						patch1->b.ofs = &statements[numstatements] - patch1;
@@ -11114,7 +11182,7 @@ void QCC_PR_ParseStatement (void)
 				if (stripfalse && oldlab == num_labels)
 				{
 					patch2 = NULL;
-					numstatements = oldnumst;
+					QCC_UngenerateStatements(oldnumst);
 
 					if (patch1)
 						patch1->b.ofs = &statements[numstatements] - patch1;
@@ -13227,7 +13295,7 @@ QCC_function_t *QCC_PR_ParseImmediateStatements (QCC_def_t *def, QCC_type_t *typ
 	{	//FIXME: should probably always take this path, but kinda pointless until we have relocs for defs
 		QCC_RemapLockedTemps(f->code, numstatements);
 		QCC_Marshal_Locals(f->code, numstatements);
-		QCC_WriteAsmFunction(f, f->code, f->firstlocal);	//FIXME: this will print the entire function, not just the part that we added. and we'll print it all again later, too. should probably make it a function attribute that we check at the end.
+//		QCC_WriteAsmFunction(f, f->code, f->firstlocal);	//FIXME: this will print the entire function, not just the part that we added. and we'll print it all again later, too. should probably make it a function attribute that we check at the end.
 
 		f->numstatements = numstatements - f->code;
 		f->statements = qccHunkAlloc(sizeof(*statements)*f->numstatements);
@@ -14098,7 +14166,7 @@ QCC_def_t *QCC_PR_GetDef (QCC_type_t *type, const char *name, struct QCC_functio
 					{
 						//this is a hack. droptofloor was wrongly declared in vanilla qc, which causes problems with replacement extensions.qc.
 						//yes, this is a selfish lazy hack for this, there's probably a better way, but at least we spit out a warning still.
-						QCC_PR_ParseWarning (WARN_COMPATIBILITYHACK, "%s builtin was wrongly defined as %s. ignoring later definition",name, TypeName(type, typebuf1, sizeof(typebuf1)));
+						QCC_PR_ParseWarning (WARN_COMPATIBILITYHACK, "%s builtin was wrongly redefined as %s. ignoring later definition",name, TypeName(type, typebuf1, sizeof(typebuf1)));
 						QCC_PR_ParsePrintDef(WARN_COMPATIBILITYHACK, def);
 					}
 					else

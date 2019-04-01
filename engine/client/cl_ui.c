@@ -467,12 +467,7 @@ void VQ3_AddPoly(shader_t *s, int num, q3polyvert_t *verts)
 	}
 
 	if (cl_maxstrisvert < cl_numstrisvert+num)
-	{
-		cl_maxstrisvert = cl_numstrisvert+num + 64;
-		cl_strisvertv = BZ_Realloc(cl_strisvertv, sizeof(*cl_strisvertv)*cl_maxstrisvert);
-		cl_strisvertt = BZ_Realloc(cl_strisvertt, sizeof(vec2_t)*cl_maxstrisvert);
-		cl_strisvertc = BZ_Realloc(cl_strisvertc, sizeof(vec4_t)*cl_maxstrisvert);
-	}
+		cl_stris_ExpandVerts(cl_numstrisvert+num + 64);
 	if (cl_maxstrisidx < cl_numstrisidx+(num-2)*3)
 	{
 		cl_maxstrisidx = cl_numstrisidx+(num-2)*3 + 64;
@@ -701,7 +696,53 @@ void UI_RegisterFont(char *fontName, int pointSize, fontInfo_t *font)
 	}
 }
 
-
+static cvar_t *Cvar_Q3FindVar (const char *var_name)
+{
+	struct {
+		const char *q3;
+		const char *fte;
+	} cvarremaps[] =
+	{
+		{"s_musicvolume",	"bgmvolume"},
+		{"r_gamma",			"gamma"},
+		{"s_sdlSpeed",		"s_khz"},
+		{"r_fullscreen",	"vid_fullscreen"},
+		{"r_picmip",		"gl_picmip"},
+		{"r_textureMode",	"gl_texturemode"},
+		{"r_lodBias",		"d_lodbias"},
+		{"r_colorbits",		"vid_bpp"},
+		{"r_dynamiclight",	"r_dynamic"},
+		{"r_finish",		"gl_finish"},
+//		{"r_glDriver",		NULL},
+//		{"r_depthbits",		NULL},
+//		{"r_stencilbits",	NULL},
+//		{"s_compression",	NULL},
+//		{"r_texturebits",	NULL},
+//		{"r_allowExtensions",NULL},
+//		{"s_useOpenAL",		NULL},
+//		{"sv_running",		NULL},
+//		{"sv_killserver",	NULL},
+//		{"color1",			NULL},
+//		{"in_joystick",		NULL},
+//		{"joy_threshold",	NULL},
+//		{"cl_freelook",		NULL},
+//		{"color1",			NULL},
+//		{"r_availableModes",NULL},
+//		{"r_mode",			NULL},
+	};
+	cvar_t *v;
+	size_t i;
+	v = Cvar_FindVar(var_name);
+	if (v)
+		return v;
+	for (i = 0; i < countof(cvarremaps); i++)
+	{
+		if (!strcmp(cvarremaps[i].q3, var_name))
+			return Cvar_FindVar(cvarremaps[i].fte);
+	}
+//	Con_Printf("Q3 Cvar %s is not known\n", var_name);
+	return NULL;
+}
 
 #define VALIDATEPOINTER(o,l) if ((quintptr_t)o + l >= mask || VM_POINTER(o) < offset) Host_EndGame("Call to ui trap %i passes invalid pointer\n", (int)fn);	//out of bounds.
 
@@ -757,7 +798,7 @@ static qintptr_t UI_SystemCalls(void *offset, quintptr_t mask, qintptr_t fn, con
 			}
 			else
 			{
-				var = Cvar_FindVar(vname);
+				var = Cvar_Q3FindVar(vname);
 				if (var)
 					Cvar_Set(var, vval);	//set it
 				else
@@ -769,7 +810,7 @@ static qintptr_t UI_SystemCalls(void *offset, quintptr_t mask, qintptr_t fn, con
 		{
 			cvar_t *var;
 			char *vname = VM_POINTER(arg[0]);
-			var = Cvar_FindVar(vname);
+			var = Cvar_Q3FindVar(vname);
 			if (var)
 				VM_FLOAT(ret) = var->value;
 			else
@@ -780,7 +821,7 @@ static qintptr_t UI_SystemCalls(void *offset, quintptr_t mask, qintptr_t fn, con
 		{
 			cvar_t *var;
 			char *vname = VM_POINTER(arg[0]);
-			var = Cvar_FindVar(vname);
+			var = Cvar_Q3FindVar(vname);
 			if (!VM_LONG(arg[2]))
 				VM_LONG(ret) = 0;
 			else if (!var)
@@ -799,14 +840,14 @@ static qintptr_t UI_SystemCalls(void *offset, quintptr_t mask, qintptr_t fn, con
 		break;
 
 	case UI_CVAR_SETVALUE:
-		Cvar_SetValue(Cvar_FindVar(VM_POINTER(arg[0])), VM_FLOAT(arg[1]));
+		Cvar_SetValue(Cvar_Q3FindVar(VM_POINTER(arg[0])), VM_FLOAT(arg[1]));
 		break;
 
 	case UI_CVAR_RESET:	//cvar reset
 		{
 			cvar_t *var;
 			char *vname = VM_POINTER(arg[0]);
-			var = Cvar_FindVar(vname);
+			var = Cvar_Q3FindVar(vname);
 			if (var)
 				Cvar_Set(var, var->defaultstr);
 		}
@@ -1641,7 +1682,7 @@ void UI_Start (void)
 
 	ui_width = vid.width;
 	ui_height = vid.height;
-	uivm = VM_Create("vm/ui", com_nogamedirnativecode.ival?NULL:UI_SystemCallsNative, UI_SystemCallsVM);
+	uivm = VM_Create("ui", com_nogamedirnativecode.ival?NULL:UI_SystemCallsNative, "vm/ui", UI_SystemCallsVM);
 	if (uivm)
 	{
 		apiversion = VM_Call(uivm, UI_GETAPIVERSION, 6);

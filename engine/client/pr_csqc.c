@@ -1544,13 +1544,25 @@ static void CSQC_PolyFlush(void)
 	csqc_poly_shader = NULL;
 }
 
+static shader_t *PR_R_PolygonShader(const char *shadername, qboolean twod)
+{
+	extern shader_t *shader_draw_fill_trans;
+	shader_t *shader;
+	if (!*shadername)
+		shader = shader_draw_fill_trans;	//dp compat...
+	else if (twod)
+		shader = R_RegisterPic(shadername, NULL);
+	else
+		shader = R_RegisterCustom(shadername, 0, Shader_PolygonShader, NULL);
+	return shader;
+}
+
 // #306 void(string texturename) R_BeginPolygon (EXT_CSQC_???)
 void QCBUILTIN PF_R_PolygonBegin(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	const char *shadername = PR_GetStringOfs(prinst, OFS_PARM0);
 	int qcflags = (prinst->callargc > 1)?G_FLOAT(OFS_PARM1):0;
 	shader_t *shader;
-	extern shader_t *shader_draw_fill_trans;
 	int beflags;
 	qboolean twod;
 
@@ -1571,16 +1583,7 @@ void QCBUILTIN PF_R_PolygonBegin(pubprogfuncs_t *prinst, struct globalvars_s *pr
 	if (csqc_isdarkplaces || (qcflags & DRAWFLAG_TWOSIDED))
 		beflags |= BEF_FORCETWOSIDED;
 
-	if (!*shadername)
-		shader = shader_draw_fill_trans;	//dp compat...
-	else if (twod)
-		shader = R_RegisterPic(shadername, NULL);
-	else
-	{
-		shader = R_RegisterSkin(shadername, NULL);
-		if (!shader->defaulttextures->base && (shader->flags & SHADER_HASDIFFUSE))
-			R_BuildDefaultTexnums(NULL, shader, 0);
-	}
+	shader = PR_R_PolygonShader(shadername, twod);
 
 	if (R2D_Flush && (R2D_Flush != CSQC_PolyFlush || csqc_poly_shader != shader || csqc_poly_flags != beflags || csqc_poly_2d != twod))
 		R2D_Flush();
@@ -1603,12 +1606,7 @@ void QCBUILTIN PF_R_PolygonBegin(pubprogfuncs_t *prinst, struct globalvars_s *pr
 void QCBUILTIN PF_R_PolygonVertex(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	if (cl_numstrisvert == cl_maxstrisvert)
-	{
-		cl_maxstrisvert+=64;
-		cl_strisvertv = BZ_Realloc(cl_strisvertv, sizeof(*cl_strisvertv)*cl_maxstrisvert);
-		cl_strisvertt = BZ_Realloc(cl_strisvertt, sizeof(*cl_strisvertt)*cl_maxstrisvert);
-		cl_strisvertc = BZ_Realloc(cl_strisvertc, sizeof(*cl_strisvertc)*cl_maxstrisvert);
-	}
+		cl_stris_ExpandVerts(cl_numstrisvert+64);
 
 	VectorCopy(G_VECTOR(OFS_PARM0), cl_strisvertv[cl_numstrisvert]);
 	Vector2Copy(G_VECTOR(OFS_PARM1), cl_strisvertt[cl_numstrisvert]);
@@ -1706,6 +1704,7 @@ typedef struct
 void QCBUILTIN PF_R_AddTrisoup_Simple(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	shader_t *shader;		//parm 0
+	const char *shadername = PR_GetStringOfs(prinst, OFS_PARM0);
 	unsigned int qcflags	= G_INT(OFS_PARM1);
 	unsigned int vertsptr	= G_INT(OFS_PARM2);
 	unsigned int indexesptr	= G_INT(OFS_PARM3);
@@ -1713,8 +1712,8 @@ void QCBUILTIN PF_R_AddTrisoup_Simple(pubprogfuncs_t *prinst, struct globalvars_
 	qboolean twod = qcflags & DRAWFLAG_2D;
 	unsigned int beflags;
 	unsigned int numverts;
-	qcvertex_t *vert;
-	unsigned int *idx;
+	const qcvertex_t *fte_restrict vert;
+	const unsigned int *fte_restrict idx;
 	unsigned int i, j, first;
 
 	if ((qcflags & 3) == DRAWFLAG_ADD)
@@ -1728,10 +1727,7 @@ void QCBUILTIN PF_R_AddTrisoup_Simple(pubprogfuncs_t *prinst, struct globalvars_
 	if (qcflags & DRAWFLAG_LINES)
 		beflags |= BEF_LINES;
 
-	if (twod)
-		shader = R_RegisterPic(PR_GetStringOfs(prinst, OFS_PARM0), NULL);
-	else
-		shader = R_RegisterSkin(PR_GetStringOfs(prinst, OFS_PARM0), NULL);
+	shader = PR_R_PolygonShader(shadername, twod);
 
 	if (R2D_Flush && (R2D_Flush != CSQC_PolyFlush || csqc_poly_shader != shader || csqc_poly_flags != beflags || csqc_poly_2d != twod))
 		R2D_Flush();
@@ -1748,13 +1744,13 @@ void QCBUILTIN PF_R_AddTrisoup_Simple(pubprogfuncs_t *prinst, struct globalvars_
 		PR_BIError(prinst, "PF_R_AddTrisoup: invalid vertexes pointer\n");
 		return;
 	}
-	vert = (qcvertex_t*)(prinst->stringtable + vertsptr);
+	vert = (const qcvertex_t*)(prinst->stringtable + vertsptr);
 	if (indexesptr <= 0 || indexesptr+numindexes*sizeof(int) > prinst->stringtablesize)
 	{
 		PR_BIError(prinst, "PF_R_AddTrisoup: invalid indexes pointer\n");
 		return;
 	}
-	idx = (int*)(prinst->stringtable + indexesptr);
+	idx = (const int*)(prinst->stringtable + indexesptr);
 
 	first = cl_numstrisvert - csqc_poly_origvert;
 	if (first + numindexes > MAX_INDICIES)
@@ -1784,12 +1780,7 @@ void QCBUILTIN PF_R_AddTrisoup_Simple(pubprogfuncs_t *prinst, struct globalvars_
 		cl_strisidx = BZ_Realloc(cl_strisidx, sizeof(*cl_strisidx)*cl_maxstrisidx);
 	}
 	if (cl_numstrisvert+numindexes > cl_maxstrisvert)
-	{
-		cl_maxstrisvert=cl_numstrisvert+numindexes;
-		cl_strisvertv = BZ_Realloc(cl_strisvertv, sizeof(*cl_strisvertv)*cl_maxstrisvert);
-		cl_strisvertt = BZ_Realloc(cl_strisvertt, sizeof(*cl_strisvertt)*cl_maxstrisvert);
-		cl_strisvertc = BZ_Realloc(cl_strisvertc, sizeof(*cl_strisvertc)*cl_maxstrisvert);
-	}
+		cl_stris_ExpandVerts(cl_numstrisvert+numindexes);
 	for (i = 0; i < numindexes; i++)
 	{
 		j = *idx++;
@@ -3563,6 +3554,14 @@ static void QCBUILTIN PF_cs_runplayerphysics (pubprogfuncs_t *prinst, struct glo
 	pmove.safeorigin_known = false;
 	pmove.capsule = false;	//FIXME
 
+	movevars.coordsize = cls.netchan.message.prim.coordsize;
+	if (ent->xv->gravity)
+		movevars.entgravity = ent->xv->gravity;
+	else if (csqc_playerseat >= 0 && cl.playerview[csqc_playerseat].playernum+1 == ent->xv->entnum)
+		movevars.entgravity = cl.playerview[csqc_playerseat].entgravity;
+	else
+		movevars.entgravity = 1;
+
 	if (ent->xv->entnum)
 		pmove.skipent = ent->xv->entnum;
 	else
@@ -3938,7 +3937,7 @@ static void QCBUILTIN PF_cs_serverkeyblob (pubprogfuncs_t *prinst, struct global
 	}
 	ptr = (struct reverbproperties_s*)(prinst->stringtable + qcptr);
 
-	blob = InfoBuf_BlobForKey(&cl.serverinfo, keyname, &blobsize);
+	blob = InfoBuf_BlobForKey(&cl.serverinfo, keyname, &blobsize, NULL);
 
 	if (qcptr)
 	{
@@ -4031,7 +4030,7 @@ static void QCBUILTIN PF_cs_getplayerkeyblob (pubprogfuncs_t *prinst, struct glo
 	else
 	{
 		size_t blobsize = 0;
-		const char *blob = InfoBuf_BlobForKey(&cl.players[pnum].userinfo, keyname, &blobsize);
+		const char *blob = InfoBuf_BlobForKey(&cl.players[pnum].userinfo, keyname, &blobsize, NULL);
 
 		if (qcptr)
 		{
@@ -4131,6 +4130,13 @@ void QCBUILTIN PF_getsoundtime (pubprogfuncs_t *prinst, struct globalvars_s *pr_
 	int			channel	= G_FLOAT(OFS_PARM1);
 
 	G_FLOAT(OFS_RETURN) = S_GetSoundTime(-entity->entnum, channel);
+}
+void QCBUILTIN PF_getchannellevel (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	wedict_t	*entity	= G_WEDICT(prinst, OFS_PARM0);
+	int			channel	= G_FLOAT(OFS_PARM1);
+
+	G_FLOAT(OFS_RETURN) = S_GetChannelLevel(-entity->entnum, channel);
 }
 static void QCBUILTIN PF_cs_sound(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
@@ -6741,6 +6747,7 @@ static struct {
 	{"stopsound",				PF_stopsound,				0},
 	{"soundupdate",				PF_soundupdate,				0},
 	{"getsoundtime",			PF_getsoundtime,			533},
+	{"getchannellevel",			PF_getchannellevel,			0},
 	{"soundlength",				PF_soundlength,				534},
 	{"buf_loadfile",			PF_buf_loadfile,			535},
 	{"buf_writefile",			PF_buf_writefile,			536},
@@ -7406,6 +7413,7 @@ qboolean CSQC_Init (qboolean anycsqc, const char *csprogsname, unsigned int chec
 		movevars.ktjump = false;//pm_ktjump.value;
 		movevars.slidefix = true;//(pm_slidefix.value != 0);
 		movevars.airstep = true;//(pm_airstep.value != 0);
+		movevars.pground = true;
 		movevars.stepdown = true;
 		movevars.walljump = false;//(pm_walljump.value);
 		movevars.slidyslopes = false;//(pm_slidyslopes.value!=0);
@@ -7414,6 +7422,7 @@ qboolean CSQC_Init (qboolean anycsqc, const char *csprogsname, unsigned int chec
 		movevars.edgefriction = 2;//*pm_edgefriction.string?pm_edgefriction.value:2;
 		movevars.stepheight = PM_DEFAULTSTEPHEIGHT;
 		movevars.coordsize = 4;
+		movevars.flags = MOVEFLAG_NOGRAVITYONGROUND;
 	}
 
 	for (i = 0; i < sizeof(csqc_builtin)/sizeof(csqc_builtin[0]); i++)

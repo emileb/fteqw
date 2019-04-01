@@ -45,8 +45,6 @@ void QTV_DefaultMovevars(movevars_t *vars)
 }
 
 
-void Menu_Enter(cluster_t *cluster, viewer_t *viewer, int buttonnum);
-
 const usercmd_t nullcmd = {0};
 
 #define	CM_ANGLE1 	(1<<0)
@@ -160,6 +158,16 @@ void BuildServerData(sv_t *tv, netmsg_t *msg, int servercount, viewer_t *viewer)
 {
 	movevars_t movevars;
 	WriteByte(msg, svc_serverdata);
+	if (viewer->pext1)
+	{
+		WriteLong(msg, PROTOCOL_VERSION_FTE);
+		WriteLong(msg, viewer->pext1);
+	}
+	if (viewer->pext2)
+	{
+		WriteLong(msg, PROTOCOL_VERSION_FTE2);
+		WriteLong(msg, viewer->pext2);
+	}
 	WriteLong(msg, PROTOCOL_VERSION);
 	WriteLong(msg, servercount);
 
@@ -321,6 +329,14 @@ void SendServerData(sv_t *tv, viewer_t *viewer)
 
 	InitNetMsg(&msg, buffer, viewer->netchan.maxreliablelen);
 
+	if (tv)
+	{
+		viewer->pext1 = tv->pext1;
+		viewer->pext2 = tv->pext2;
+	}
+	else
+		viewer->pext1 = viewer->pext2 = 0;
+
 	if (tv && (tv->controller == viewer || !tv->controller))
 		viewer->thisplayer = tv->map.thisplayer;
 	else
@@ -392,7 +408,7 @@ void SendNQSpawnInfoToViewer(cluster_t *cluster, viewer_t *viewer, netmsg_t *msg
 
 int SendCurrentUserinfos(sv_t *tv, int cursize, netmsg_t *msg, int i, int thisplayer)
 {
-	char name[MAX_QPATH];
+	char name[1024];
 
 	if (i < 0)
 		return i;
@@ -2303,7 +2319,7 @@ void UpdateStats(sv_t *qtv, viewer_t *v)
 	netmsg_t msg;
 	char buf[6];
 	int i;
-	const static unsigned int nullstats[MAX_STATS] = {1000};
+	static const unsigned int nullstats[MAX_STATS] = {1000};
 
 	const unsigned int *stats;
 
@@ -2467,6 +2483,7 @@ void QTV_SayCommand(cluster_t *cluster, sv_t *qtv, viewer_t *v, char *fullcomman
 	while(*args && *args <= ' ')
 		args++;
 
+#pragma message("fixme: These all need testing")
 	if (!strcmp(command, "help"))
 	{
 		QW_PrintfToViewer(v,	"Website: "PROXYWEBSITE"\n"
@@ -2643,7 +2660,7 @@ I've removed the following from this function as it covered the menu (~Moodles):
 
 			"conmenu menucallback\n"
 
-			"menuedit 48 36 \"Óåòöåòº\" \"_server\"\n"
+			"menuedit 48 36 \"^aServer:\" \"_server\"\n"
 
 			"menutext 48 52 \"Demos\" DEMOS\n"
 
@@ -2673,7 +2690,8 @@ I've removed the following from this function as it covered the menu (~Moodles):
 			if (!shownheader)
 			{
 				shownheader = true;
-				QW_StuffcmdToViewer(v, "menutext 72 %i \"Áãôéöå Çáíåóº\"\n", y);
+
+				QW_StuffcmdToViewer(v, "menutext 72 %i \"^aActive Games:\"\n", y);
 				y+=8;
 			}
 			QW_StuffcmdToViewer(v, "menutext 32 %i \"%30s\" \"stream %i\"\n", y, *sv->map.hostname?sv->map.hostname:sv->server, sv->streamid);
@@ -2902,7 +2920,7 @@ tuiadmin:
 	{
 		char buf[256];
 
-		snprintf(buf, sizeof(buf), "[QuakeTV] %s\n", qtv->serveraddress);
+		snprintf(buf, sizeof(buf), "[QuakeTV] %s\n", qtv->server);
 		// Print a short line with info about the server
 		QW_PrintfToViewer(v, buf);
 	}
@@ -4042,9 +4060,9 @@ void ParseQWC(cluster_t *cluster, sv_t *qtv, viewer_t *v, netmsg_t *m)
 			}
 			break;
 		case clc_tmove:
-			v->origin[0] = ((signed short)ReadShort(m))/8.0f;
-			v->origin[1] = ((signed short)ReadShort(m))/8.0f;
-			v->origin[2] = ((signed short)ReadShort(m))/8.0f;
+			v->origin[0] = ReadCoord(m, v->pext1);
+			v->origin[1] = ReadCoord(m, v->pext1);
+			v->origin[2] = ReadCoord(m, v->pext1);
 			break;
 
 		case clc_upload:
@@ -4206,7 +4224,6 @@ void SendViewerPackets(cluster_t *cluster, viewer_t *v)
 void QW_ProcessUDPPacket(cluster_t *cluster, netmsg_t *m, netadr_t from)
 {
 	char tempbuffer[256];
-	int fromsize = sizeof(from);
 	int qport;
 
 	viewer_t *v;
@@ -4331,10 +4348,10 @@ void QW_ProcessUDPPacket(cluster_t *cluster, netmsg_t *m, netadr_t from)
 					if (ReadByte(m) == NQ_NETCHAN_VERSION)
 					{
 						//proquake extensions
-						int mod = ReadByte(m);
-						int modver = ReadByte(m);
-						int flags = ReadByte(m);
-						int passwd = ReadLong(m);
+						/*int mod =*/ ReadByte(m);
+						/*int modver =*/ ReadByte(m);
+						/*int flags =*/ ReadByte(m);
+						/*int passwd =*/ ReadLong(m);
 
 						//fte extension, sent so that dual-protocol servers will not create connections for dual-protocol clients
 						//the nqconnect command disables this (as well as the qw hand shake) if you really want to use nq protocols with fte clients
@@ -4462,7 +4479,7 @@ void QW_UpdateUDPStuff(cluster_t *cluster)
 			tc->inbuffersize += read;
 		if (read == 0 || read < 0)
 		{
-			if (read == 0 || qerrno != EWOULDBLOCK)
+			if (read == 0 || qerrno != NET_EWOULDBLOCK)
 			{
 				*l = tc->next;
 				closesocket(tc->sock);

@@ -58,6 +58,7 @@ const GLubyte * (APIENTRY *qglGetString) (GLenum name);
 void (APIENTRY *qglHint) (GLenum target, GLenum mode);
 GLboolean (APIENTRY *qglIsEnabled) (GLenum cap);
 void (APIENTRY *qglPolygonOffset) (GLfloat factor, GLfloat units);
+void (APIENTRY *qglLineWidth) (GLfloat width);
 void (APIENTRY *qglReadPixels) (GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid *pixels);
 void (APIENTRY *qglTexImage2D) (GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const GLvoid *pixels);
 void (APIENTRY *qglTexSubImage2D) (GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid *pixels);
@@ -1085,6 +1086,15 @@ void GL_CheckExtensions (void *(*getglfunction) (char *name))
 		Con_DPrintf("GLSL available\n");
 	}
 
+	if (Cvar_Get("gl_blacklist_invariant", "0", CVAR_VIDEOLATCH, "gl blacklists")->ival)
+		gl_config.blacklist_invariant = true;
+	else if (gl_config.arb_shader_objects && !gl_config_nofixedfunc &&
+		(strstr(gl_renderer, " Mesa ") || strstr(gl_version, " Mesa ")) && Cvar_Get("gl_blacklist_mesa_invariant", "1", CVAR_VIDEOLATCH, "gl blacklists")->ival)
+	{
+		gl_config.blacklist_invariant = true;
+		Con_Printf(CON_NOTICE "Mesa detected, disabling the use of glsl's invariant keyword. This will result in z-fighting. Use '+set gl_blacklist_mesa_invariant 0' on the commandline to reenable it (but you will probably get glsl compilation errors from your driver).\n");
+	}
+
 	if (gl_config.arb_shader_objects)
 		qglGetIntegerv(GL_MAX_VERTEX_ATTRIBS_ARB, &gl_config.maxattribs);
 #endif
@@ -1394,6 +1404,16 @@ static const char *glsl_hdrs[] =
 //			"#define s_deluxmap3 s_deluxemap3\n"
 #endif
 #endif
+			"#if defined(ORM) || defined(SG)\n"
+				"uniform vec4 factors[3];\n"
+				"#define factor_base factors[0]\n"
+				"#define factor_spec factors[1]\n"
+				"#define factor_emit factors[2]\n"
+			"#else\n"
+				"#define factor_base vec4(1.0)\n"
+				"#define factor_spec vec4(1.0)\n"
+				"#define factor_emit vec4(1.0)\n"
+			"#endif\n"
 			"#ifdef USEUBOS\n"
 				"layout(std140) uniform u_lightinfo\n"
 				"{"
@@ -1583,6 +1603,25 @@ static const char *glsl_hdrs[] =
 						"w = (vec4(v_position.xyz, 1.0) * wmat).xyz;"
 						"return m_modelviewprojection * (vec4(v_position.xyz, 1.0) * wmat);"
 					"}\n"
+					"vec4 skeletaltransform_wnst(out vec3 w)"
+					"{"
+						"mat4 wmat;"
+						"wmat[0]  = m_bones_packed[0+3*int(v_bone.x)] * v_weight.x;"
+						"wmat[0] += m_bones_packed[0+3*int(v_bone.y)] * v_weight.y;"
+						"wmat[0] += m_bones_packed[0+3*int(v_bone.z)] * v_weight.z;"
+						"wmat[0] += m_bones_packed[0+3*int(v_bone.w)] * v_weight.w;"
+						"wmat[1]  = m_bones_packed[1+3*int(v_bone.x)] * v_weight.x;"
+						"wmat[1] += m_bones_packed[1+3*int(v_bone.y)] * v_weight.y;"
+						"wmat[1] += m_bones_packed[1+3*int(v_bone.z)] * v_weight.z;"
+						"wmat[1] += m_bones_packed[1+3*int(v_bone.w)] * v_weight.w;"
+						"wmat[2]  = m_bones_packed[2+3*int(v_bone.x)] * v_weight.x;"
+						"wmat[2] += m_bones_packed[2+3*int(v_bone.y)] * v_weight.y;"
+						"wmat[2] += m_bones_packed[2+3*int(v_bone.z)] * v_weight.z;"
+						"wmat[2] += m_bones_packed[2+3*int(v_bone.w)] * v_weight.w;"
+						"wmat[3] = vec4(0.0,0.0,0.0,1.0);"
+						"w = (vec4(v_position.xyz, 1.0) * wmat).xyz;"
+						"return m_modelviewprojection * (vec4(v_position.xyz, 1.0) * wmat);"
+					"}\n"
 					"vec4 skeletaltransform_n(out vec3 n)"
 					"{"
 						"mat4 wmat;"
@@ -1637,6 +1676,16 @@ static const char *glsl_hdrs[] =
 						"w = vec4(v_position.xyz, 1.0) * wmat;"
 						"return m_modelviewprojection * vec4(w, 1.0);"
 					"}\n"
+					"vec4 skeletaltransform_w(out vec3 w)"
+					"{"
+						"mat3x4 wmat;"
+						"wmat = m_bones_mat3x4[int(v_bone.x)] * v_weight.x;"
+						"wmat += m_bones_mat3x4[int(v_bone.y)] * v_weight.y;"
+						"wmat += m_bones_mat3x4[int(v_bone.z)] * v_weight.z;"
+						"wmat += m_bones_mat3x4[int(v_bone.w)] * v_weight.w;"
+						"w = vec4(v_position.xyz, 1.0) * wmat;"
+						"return m_modelviewprojection * vec4(w, 1.0);"
+					"}\n"
 					"vec4 skeletaltransform_n(out vec3 n)"
 					"{"
 						"mat3x4 wmat;"
@@ -1655,6 +1704,11 @@ static const char *glsl_hdrs[] =
 					"n = v_normal;"
 					"t = v_svector;"
 					"b = v_tvector;"
+					"w = v_position.xyz;"
+					"return ftetransform();"
+				"}\n"
+				"vec4 skeletaltransform_w(out vec3 w)"
+				"{"
 					"w = v_position.xyz;"
 					"return ftetransform();"
 				"}\n"
@@ -1774,6 +1828,67 @@ static const char *glsl_hdrs[] =
 				"return base;\n"
 			"#endif\n"
 			"}\n"
+		,
+
+	"sys/pbr.h",
+			//ripped from the gltf webgl demo.
+			//https://github.com/KhronosGroup/glTF-WebGL-PBR/blob/master/shaders/pbr-frag.glsl
+			//because most of this maths is gibberish, especially the odd magic number.
+			"#ifdef PBR\n"
+			"const float PI = 3.141592653589793;\n"
+			"vec3 diffuse(vec3 diffuseColor)\n" //Basic Lambertian diffuse
+			"{\n"
+				"return diffuseColor / PI;\n"
+			"}\n"
+			"vec3 specularReflection(vec3 reflectance0, vec3 reflectance90, float VdotH)\n"
+			"{\n"
+				"return reflectance0 + (reflectance90 - reflectance0) * pow(clamp(1.0 - VdotH, 0.0, 1.0), 5.0);\n"
+			"}\n"
+			"float geometricOcclusion(float NdotL, float NdotV, float r)\n"
+			"{\n"
+				"float attenuationL = 2.0 * NdotL / (NdotL + sqrt(r * r + (1.0 - r * r) * (NdotL * NdotL)));\n"
+				"float attenuationV = 2.0 * NdotV / (NdotV + sqrt(r * r + (1.0 - r * r) * (NdotV * NdotV)));\n"
+				"return attenuationL * attenuationV;\n"
+			"}\n"
+			"float microfacetDistribution(float alphaRoughness, float NdotH)\n" //Trowbridge-Reitz
+			"{\n"
+				"float roughnessSq = alphaRoughness * alphaRoughness;\n"
+				"float f = (NdotH * roughnessSq - NdotH) * NdotH + 1.0;\n"
+				"return roughnessSq / (PI * f * f);\n"
+			"}\n"
+			"vec3 DoPBR(vec3 n, vec3 v, vec3 l, float perceptualRoughness, vec3 diffuseColor, vec3 specularColor, vec3 scales)\n"
+			"{\n"
+				// Compute reflectance.
+				"float reflectance = max(max(specularColor.r, specularColor.g), specularColor.b);\n"
+				"float alphaRoughness = perceptualRoughness * perceptualRoughness;\n"
+
+				// For typical incident reflectance range (between 4% to 100%) set the grazing reflectance to 100% for typical fresnel effect.
+				// For very low reflectance range on highly diffuse objects (below 4%), incrementally reduce grazing reflecance to 0%.
+				"float reflectance90 = clamp(reflectance * 25.0, 0.0, 1.0);\n"
+				"vec3 specularEnvironmentR0 = specularColor.rgb;\n"
+				"vec3 specularEnvironmentR90 = vec3(1.0, 1.0, 1.0) * reflectance90;\n"
+
+				"vec3 h = normalize(l+v);\n"                          // Half vector between both l and v
+				"vec3 reflection = -normalize(reflect(v, n));\n"
+
+				"float NdotL = clamp(dot(n, l), 0.001, 1.0);\n"
+				"float NdotV = clamp(abs(dot(n, v)), 0.001, 1.0);\n"
+				"float NdotH = clamp(dot(n, h), 0.0, 1.0);\n"
+				"float LdotH = clamp(dot(l, h), 0.0, 1.0);\n"
+				"float VdotH = clamp(dot(v, h), 0.0, 1.0);\n"
+
+				// Calculate the shading terms for the microfacet specular shading model
+				"vec3 F = specularReflection(specularEnvironmentR0, specularEnvironmentR90, VdotH);\n"
+				"float G = geometricOcclusion(NdotL, NdotV, alphaRoughness);\n"
+				"float D = microfacetDistribution(alphaRoughness, NdotH);\n"
+
+				// Calculation of analytical lighting contribution
+				"vec3 diffuseContrib = (1.0 - F) * diffuse(diffuseColor) * scales.y;\n"
+				"vec3 specContrib = F * G * D / (4.0 * NdotL * NdotV) * scales.z;\n"
+				// Obtain final intensity as reflectance (BRDF) scaled by the energy of the light (cosine law)
+				"return NdotL * (diffuseContrib + specContrib);\n"
+			"}\n"
+			"#endif\n"
 		,
 	"sys/pcf.h",
 			//!!cvardf r_glsl_pcf
@@ -2217,12 +2332,8 @@ static GLhandleARB GLSlang_CreateShader (program_t *prog, const char *name, int 
 		break;
 	case GL_VERTEX_SHADER_ARB:
 		GLSlang_GenerateInternal(&glsl, "#define VERTEX_SHADER\n");
-#ifdef RTLIGHTS
-		if (!r_shadow_shadowmapping.ival && ver >= 120)
-		{
+		if ((ver >= 120 || gl_config_gles) && !gl_config.blacklist_invariant)	//invariant appeared in glsl 120, or glessl 100. rtlights, stencil shadows, multipass materials, fog volumes, blend-depth-masking all need invariant depth.
 			GLSlang_GenerateInternal(&glsl, "invariant gl_Position;\n");
-		}
-#endif
 		if (gl_config.gles)
 		{
 			GLSlang_GenerateInternal(&glsl,
@@ -2752,6 +2863,8 @@ static void GLSlang_ProgAutoFields(program_t *prog, struct programpermu_s *pp, c
 	pp->numparms = 0;
 	pp->parm = NULL;
 
+	pp->factorsuniform = qglGetUniformLocationARB(pp->h.glsl.handle, "factors");
+
 	for (i = 0; shader_unif_names[i].name; i++)
 	{
 		uniformloc = qglGetUniformLocationARB(pp->h.glsl.handle, shader_unif_names[i].name);
@@ -3161,6 +3274,7 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 	qglStencilFunc		= (void *)getglcore("glStencilFunc");
 	qglScissor			= (void *)getglcore("glScissor");
 	qglPolygonOffset	= (void *)getglext("glPolygonOffset");
+	qglLineWidth		= (void *)getglcore("glLineWidth");
 #endif
 #ifndef FTE_TARGET_WEB
 	qglAlphaFunc		= (void *)getglcore("glAlphaFunc");
@@ -3348,14 +3462,16 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 		sh_config.shadernamefmt = "%s_gles";
 
 		sh_config.can_mipcap = gl_config.glversion >= 3.0;
+		sh_config.can_mipbias = false;
 
 		sh_config.havecubemaps = gl_config.glversion >= 2.0;
 	}
 	else
 	{
 		sh_config.can_mipcap = gl_config.glversion >= 1.2;
+		sh_config.can_mipbias = gl_config.glversion >= 1.4;//||GL_CheckExtension("GL_EXT_texture_lod_bias");
 
-		sh_config.havecubemaps = gl_config.glversion >= 1.3||GL_CheckExtension("GL_ARB_texture_cube_map");;	//cubemaps AND clamp-to-edge.
+		sh_config.havecubemaps = gl_config.glversion >= 1.3||GL_CheckExtension("GL_ARB_texture_cube_map");	//cubemaps AND clamp-to-edge.
 
 		if (gl_config.nofixedfunc)
 		{	//core contexts don't normally support glsl < 140 (such glsl versions have lots of compat syntax still, which will not function on core. drivers might accept it anyway, but yeah, lots of crap that shouldn't work)

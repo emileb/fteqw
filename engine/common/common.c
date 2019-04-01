@@ -122,12 +122,12 @@ cvar_t	registered = CVARD("registered","0","Set if quake's pak1.pak is available
 cvar_t	gameversion = CVARFD("gameversion","", CVAR_SERVERINFO, "gamecode version for server browsers");
 cvar_t	gameversion_min = CVARD("gameversion_min","", "gamecode version for server browsers");
 cvar_t	gameversion_max = CVARD("gameversion_max","", "gamecode version for server browsers");
-cvar_t	fs_gamename = CVARAFD("com_fullgamename", NULL, "fs_gamename", CVAR_NOSET, "The filesystem is trying to run this game");
+cvar_t	fs_gamename = CVARAD("com_fullgamename", NULL, "fs_gamename", "The filesystem is trying to run this game");
 cvar_t	com_protocolname = CVARAD("com_protocolname", NULL, "com_gamename", "The protocol game name used for dpmaster queries. For compatibility with DP, you can set this to 'DarkPlaces-Quake' in order to be listed in DP's master server, and to list DP servers.");
 cvar_t	com_protocolversion = CVARAD("com_protocolversion", "3", NULL, "The protocol version used for dpmaster queries.");	//3 by default, for compat with DP/NQ, even if our QW protocol uses different versions entirely. really it only matters for master servers.
 cvar_t	com_parseutf8 = CVARD("com_parseutf8", "1", "Interpret console messages/playernames/etc as UTF-8. Requires special fonts. -1=iso 8859-1. 0=quakeascii(chat uses high chars). 1=utf8, revert to ascii on decode errors. 2=utf8 ignoring errors");	//1 parse. 2 parse, but stop parsing that string if a char was malformed.
-#if !defined(NOLEGACY) && defined(HAVE_CLIENT)
-cvar_t	com_parseezquake = CVARD("com_parseezquake", "0", "Treat chevron chars from configs as a per-character flag. You should use this only for compat with nquake's configs.");
+#if !defined(NOLEGACY)
+cvar_t	ezcompat_markup = CVARD("ezcompat_markup", "1", "Attempt compatibility with ezquake's text markup.0: disabled.\n1: Handle markup ampersand markup.\n2: Handle chevron markup (only in echo commands, for config compat, because its just too unreliable otherwise).");
 #endif
 cvar_t	com_highlightcolor = CVARD("com_highlightcolor", STRINGIFY(COLOR_RED), "ANSI colour to be used for highlighted text, used when com_parseutf8 is active.");
 cvar_t	com_nogamedirnativecode =  CVARFD("com_nogamedirnativecode", "1", CVAR_NOTFROMSERVER, FULLENGINENAME" blocks all downloads of files with a .dll or .so extension, however other engines (eg: ezquake and fodquake) do not - this omission can be used to trigger delayed eremote exploits in any engine (including "DISTRIBUTION") which is later run from the same gamedir.\nQuake2, Quake3(when debugging), and KTX typically run native gamecode from within gamedirs, so if you wish to run any of these games you will need to ensure this cvar is changed to 0, as well as ensure that you don't run unsafe clients.");
@@ -3251,6 +3251,7 @@ conchar_t *COM_ParseFunString(conchar_t defaultflags, const char *str, conchar_t
 	conchar_t *oldout = out;
 #ifndef NOLEGACY
 	extern cvar_t dpcompat_console;
+	extern cvar_t ezcompat_markup;
 
 	if (flags & PFS_EZQUAKEMARKUP)
 	{
@@ -3577,7 +3578,7 @@ conchar_t *COM_ParseFunString(conchar_t defaultflags, const char *str, conchar_t
 			}
 		}
 #ifndef NOLEGACY
-		else if (*str == '&' && str[1] == 'c' && !(flags & PFS_NOMARKUP))
+		else if (*str == '&' && str[1] == 'c' && !(flags & PFS_NOMARKUP) && ezcompat_markup.ival)
 		{
 			// ezQuake color codes
 
@@ -3600,7 +3601,7 @@ conchar_t *COM_ParseFunString(conchar_t defaultflags, const char *str, conchar_t
 				}
 			}
 		}
-		else if (*str == '&' && str[1] == 'r' && !(flags & PFS_NOMARKUP))
+		else if (*str == '&' && str[1] == 'r' && !(flags & PFS_NOMARKUP) && ezcompat_markup.ival)
 		{
 			//ezquake revert
 			ext = (COLOR_WHITE << CON_FGSHIFT) | (ext&~(CON_RICHFOREMASK|CON_RICHFORECOLOUR));
@@ -3610,7 +3611,7 @@ conchar_t *COM_ParseFunString(conchar_t defaultflags, const char *str, conchar_t
 				continue;
 			}
 		}
-		else if (str[0] == '=' && str[1] == '`' && str[2] == 'k' && str[3] == '8' && str[4] == ':' && !keepmarkup)
+		else if (str[0] == '=' && str[1] == '`' && str[2] == 'k' && str[3] == '8' && str[4] == ':' && !keepmarkup && ezcompat_markup.ival)
 		{
 			//ezquake compat: koi8 compat for crazy russian people.
 			//we parse for compat but don't generate (they'll see utf-8 from us).
@@ -3995,9 +3996,6 @@ char *COM_StringParse (const char *data, char *token, unsigned int tokenlen, qbo
 	len = 0;
 	token[0] = 0;
 
-	if (token == com_token)
-		COM_AssertMainThread("COM_ParseOut: com_token");
-
 	if (!data)
 		return NULL;
 
@@ -4298,7 +4296,7 @@ skipwhite:
 		data++;
 		while (1)
 		{
-			if (len >= TOKENSIZE-1)
+			if (len >= tokenlen-1)
 			{
 				token[len] = '\0';
 				return (char*)data;
@@ -4328,7 +4326,7 @@ skipwhite:
 // parse a regular word
 	do
 	{
-		if (len >= TOKENSIZE-1)
+		if (len >= tokenlen-1)
 			break;
 		token[len] = c;
 		data++;
@@ -5208,6 +5206,40 @@ qboolean COM_HasWork(void)
 	}
 	return false;
 }
+void COM_InsertWork(wgroup_t tg, void(*func)(void *ctx, void *data, size_t a, size_t b), void *ctx, void *data, size_t a, size_t b)
+{
+	struct com_work_s *work;
+
+	if (tg >= WG_COUNT)
+		return;
+
+	//no worker there, just do it immediately on this thread instead of pushing it to the worker.
+	if (!com_liveworkers[tg] || (tg!=WG_MAIN && com_workererror))
+	{
+		func(ctx, data, a, b);
+		return;
+	}
+
+	//build the work
+	work = Z_Malloc(sizeof(*work));
+	work->func = func;
+	work->ctx = ctx;
+	work->data = data;
+	work->a = a;
+	work->b = b;
+
+	//queue it (fifo)
+	Sys_LockConditional(com_workercondition[tg]);
+	work->next = com_work_head[tg];
+	if (!com_work_tail[tg])
+		com_work_tail[tg] = work;
+	com_work_head[tg] = work;
+
+//	Sys_Printf("%x: Queued work %p (%s)\n", thread, work->ctx, work->ctx?(char*)work->ctx:"?");
+
+	Sys_ConditionSignal(com_workercondition[tg]);
+	Sys_UnlockConditional(com_workercondition[tg]);
+}
 void COM_AddWork(wgroup_t tg, void(*func)(void *ctx, void *data, size_t a, size_t b), void *ctx, void *data, size_t a, size_t b)
 {
 	struct com_work_s *work;
@@ -5758,8 +5790,8 @@ void COM_Init (void)
 	Cvar_Register (&gameversion_max, "Gamecode");
 	Cvar_Register (&com_nogamedirnativecode, "Gamecode");
 	Cvar_Register (&com_parseutf8, "Internationalisation");
-#if !defined(NOLEGACY) && defined(HAVE_CLIENT)
-	Cvar_Register (&com_parseezquake, NULL);
+#if !defined(NOLEGACY)
+	Cvar_Register (&ezcompat_markup, NULL);
 #endif
 	Cvar_Register (&com_highlightcolor, "Internationalisation");
 	com_parseutf8.ival = 1;
@@ -6067,6 +6099,26 @@ void InfoSync_Add(infosync_t *sync, void *context, const char *name)
 	sync->keys[k].syncpos = 0;
 }
 
+static qboolean InfoBuf_NeedsEncoding(const char *str, size_t size)
+{
+	const char *c, *e = str+size;
+	for (c = str; c < e; c++)
+	{
+		switch((unsigned char)*c)
+		{
+		case 255:	//invalid for vanilla qw, and also used for special encoding
+		case '\\':	//abiguity with end-of-token
+		case '\"':	//parsing often sends these enclosed in quotes
+		case '\n':	//REALLY screws up parsing
+		case '\r':	//generally bad form
+		case 0:		//are we really doing this?
+		case '$':	//a number of engines like expanding things inside quotes. make sure that cannot ever happen.
+		case ';':	//in case someone manages to break out of quotes
+			return true;
+		}
+	}
+	return false;
+}
 qboolean InfoBuf_FindKey (infobuf_t *info, const char *key, size_t *idx)
 {
 	size_t k;
@@ -6105,14 +6157,18 @@ char *InfoBuf_ValueForKey (infobuf_t *info, const char *key)	//not to be used wi
 	valueindex = (valueindex+1)&3;
 	return InfoBuf_ReadKey(info, key, value[valueindex], sizeof(value[valueindex]));
 }
-const char *InfoBuf_BlobForKey (infobuf_t *info, const char *key, size_t *blobsize)	//obtains a direct pointer to temp memory
+const char *InfoBuf_BlobForKey (infobuf_t *info, const char *key, size_t *blobsize, qboolean *large)	//obtains a direct pointer to temp memory
 {
 	size_t k;
 	if (InfoBuf_FindKey(info, key, &k) && !info->keys[k].partial)
 	{
+		if (large)
+			*large = info->keys[k].large;
 		*blobsize = info->keys[k].size;
 		return info->keys[k].value;
 	}
+	if (large)
+		*large = InfoBuf_NeedsEncoding(key, strlen(key));
 	*blobsize = 0;
 	return NULL;
 }
@@ -6168,26 +6224,25 @@ char *InfoBuf_DecodeString(const char *instart, const char *inend, size_t *sz)
 	}
 	return ret;
 }
+
 static qboolean InfoBuf_IsLarge(struct infokey_s *key)
 {
+	size_t namesize;
 	if (key->partial)
-		return true;
-		//detect invalid keys/values
-	//\\ makes parsing really really messy and isn't supported by most clients (although we could do it anyway)
-	//\" requires string escapes, again compat issues.
-	//0xff bugs out vanilla.
-	//nulls are bad, too...
-	if (strchr(key->name, '\\') || strchr(key->name, '\"') || strchr(key->name, 0xff))
-		return true;
-	if (strchr(key->value, '\\') || strchr(key->value, '\"') || strchr(key->value, 0xff) || strlen(key->value) != key->size)
 		return true;
 
 	if (key->size >= 64)
-		return true;	//key length limits is a thing in vanilla qw.
-	if (strlen(key->name) >= 64)
 		return true;	//value length limits is a thing in vanilla qw.
 						//note that qw reads values up to 512, but only sets them up to 64 bytes...
 						//probably just so that people don't spot buffer overflows so easily.
+	namesize = strlen(key->name);
+	if (namesize >= 64)
+		return true;	//key length limits is a thing in vanilla qw.
+
+	if (InfoBuf_NeedsEncoding(key->name, namesize))
+		return true;
+	if (InfoBuf_NeedsEncoding(key->value, key->size))
+		return true;
 	return false;
 }
 //like InfoBuf_SetStarBlobKey, but understands partials.
@@ -6422,24 +6477,7 @@ static qboolean InfoBuf_EncodeString_Internal(const char *n, size_t s, char *out
 {
 	size_t r = 0;
 	const char *c;
-	for (c = n; c < n+s; c++)
-	{
-		if (*c == (char)255 && c == n)
-			break;
-		if (*c == '\\')	//abiguity with end-of-token
-			break;
-		if (*c == '\"')	//parsing often sends these enclosed in quotes
-			break;
-		if (*c == '\n' || *c == '\r')	//generally bad form
-			break;
-		if (*c == 0)	//are we really doing this?
-			break;
-		if (*c == '$')	//a number of engines like expanding things inside quotes. make sure that cannot ever happen.
-			break;
-		if (*c == ';')	//in case someone manages to break out of quotes
-			break;
-	}
-	if (c != n+s)
+	if (InfoBuf_NeedsEncoding(n, s))
 	{
 		unsigned int base64_cur = 0;
 		unsigned int base64_bits = 0;

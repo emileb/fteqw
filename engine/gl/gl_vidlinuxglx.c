@@ -709,7 +709,7 @@ static qboolean XRandR_Init(void)
 	xrandr.outputs = NULL;
 
 	//enable by default once this is properly tested, and supports hwgamma.
-	if (!X11_CheckFeature("xrandr", false))
+	if (!X11_CheckFeature("xrandr", true))
 		return false;
 
 	if (!xrandr.lib)
@@ -877,8 +877,14 @@ static void XRandR_Shutdown(void)
 }
 static qboolean XRandR_FindOutput(const char *name)
 {
+	XRROutputInfo *primary = NULL;
 	int i;
-	xrandr.output = NULL;
+	if (!xrandr.canmodechange12)
+		return false;
+	if (!xrandr.res)
+		xrandr.res = xrandr.pGetScreenResources(vid_dpy, DefaultRootWindow(vid_dpy));
+	if (!xrandr.res)
+		return false;
 	if (!xrandr.outputs)
 	{
 		xrandr.outputs = Z_Malloc(sizeof(*xrandr.outputs) * xrandr.res->noutput);
@@ -887,23 +893,29 @@ static qboolean XRandR_FindOutput(const char *name)
 	}
 	xrandr.output = NULL;
 	xrandr.crtc = None;
+	if (xrandr.origgamma)
+	{
+		xrandr.pSetCrtcGamma(vid_dpy, xrandr.crtc, xrandr.origgamma);
+		xrandr.pFreeGamma(xrandr.origgamma);
+		xrandr.origgamma = NULL;
+	}
 	if (xrandr.crtcinfo)
 		xrandr.pFreeCrtcInfo(xrandr.crtcinfo);
 	xrandr.crtcinfo = NULL;
 	for (i = 0; i < xrandr.res->noutput; i++)
 	{
-		if (xrandr.outputs[i]->connection != RR_Connected)
-			continue;
-		if (!xrandr.output || !strncmp(xrandr.outputs[i]->name, name, xrandr.outputs[i]->nameLen))
-		{
-			if (xrandr.outputs[i]->ncrtc)	//should be able to use this one
-			{
-				xrandr.output = xrandr.outputs[i];
-				if (!strncmp(xrandr.outputs[i]->name, name, xrandr.outputs[i]->nameLen))
-					break;
-			}
+		if (xrandr.outputs[i]->connection != RR_Connected || !xrandr.outputs[i]->ncrtc)
+			continue;	//not usable...
+		if (!primary || (xrandr.outputs[i]->npreferred && !primary->npreferred))
+			primary = xrandr.outputs[i];
+		if (*name && !strncmp(xrandr.outputs[i]->name, name, xrandr.outputs[i]->nameLen))
+		{	//this is the one they asked for
+			xrandr.output = xrandr.outputs[i];
+			break;
 		}
 	}
+	if (!xrandr.output)
+		xrandr.output = primary;
 	if (xrandr.output)
 	{
 		xrandr.crtc = xrandr.output->crtcs[0];
@@ -921,19 +933,15 @@ static qboolean XRandR_FindOutput(const char *name)
 //(sets up crtc data 
 static qboolean XRandr_PickScreen(const char *devicename, int *x, int *y, int *width, int *height)
 {
-	if (xrandr.canmodechange12)
+	if (xrandr.crtcinfo || XRandR_FindOutput(devicename))
 	{
-		xrandr.res = xrandr.pGetScreenResources(vid_dpy, DefaultRootWindow(vid_dpy));
-		if (XRandR_FindOutput(devicename))
-		{
-			XRRCrtcInfo *c = xrandr.crtcinfo;
-			*x = c->x;
-			*y = c->y;
-			*width = c->width;
-			*height = c->height;
-			Con_Printf("Found monitor %s %ix%i +%i,%i\n", xrandr.output->name, c->width, c->height, c->x, c->y);
-			return true;
-		}
+		XRRCrtcInfo *c = xrandr.crtcinfo;
+		*x = c->x;
+		*y = c->y;
+		*width = c->width;
+		*height = c->height;
+		Con_Printf("Found monitor %s %ix%i +%i,%i\n", xrandr.output->name, c->width, c->height, c->x, c->y);
+		return true;
 	}
 	return false;
 }
@@ -944,34 +952,27 @@ static void XRandR_SelectMode(const char *devicename, int *x, int *y, int *width
 	if (COM_CheckParm("-current"))
 		return;
 
-	if (xrandr.canmodechange12)
+	if (XRandR_FindOutput(devicename))
 	{
 		XRRCrtcInfo *c;
-		xrandr.res = xrandr.pGetScreenResources(vid_dpy, DefaultRootWindow(vid_dpy));
-		if (xrandr.res)
+		xrandr.crtcmode = XRandR_FindBestMode(*width, *height, rate);
+		c = xrandr.crtcinfo;
+		if (!*width || !*height || c->mode == xrandr.crtcmode->id)
 		{
-			if (XRandR_FindOutput(devicename))
-			{
-				xrandr.crtcmode = XRandR_FindBestMode(*width, *height, rate);
-				c = xrandr.crtcinfo;
-				if (!*width || !*height || c->mode == xrandr.crtcmode->id)
-				{
-					fullscreenflags |= FULLSCREEN_DESKTOP;
-					Con_Printf("XRRSetCrtcConfig not needed\n");
-				}
-				else if (xrandr.crtcmode && Success == xrandr.pSetCrtcConfig(vid_dpy, xrandr.res, xrandr.crtc, c->timestamp, c->x, c->y, xrandr.crtcmode->id, c->rotation, c->outputs, c->noutput))
-				{
-					*x = c->x;
-					*y = c->y;
-					*width = xrandr.crtcmode->width;
-					*height = xrandr.crtcmode->height;
-					fullscreenflags |= FULLSCREEN_XRANDR | FULLSCREEN_XRANDRACTIVE;
-					Con_Printf("XRRSetCrtcConfig succeeded\n");
-				}
-				else
-					Con_Printf("XRRSetCrtcConfig failed\n");
-			}
+			fullscreenflags |= FULLSCREEN_DESKTOP;
+			Con_Printf("XRRSetCrtcConfig not needed\n");
 		}
+		else if (xrandr.crtcmode && Success == xrandr.pSetCrtcConfig(vid_dpy, xrandr.res, xrandr.crtc, c->timestamp, c->x, c->y, xrandr.crtcmode->id, c->rotation, c->outputs, c->noutput))
+		{
+			*x = c->x;
+			*y = c->y;
+			*width = xrandr.crtcmode->width;
+			*height = xrandr.crtcmode->height;
+			fullscreenflags |= FULLSCREEN_XRANDR | FULLSCREEN_XRANDRACTIVE;
+			Con_Printf("XRRSetCrtcConfig succeeded\n");
+		}
+		else
+			Con_Printf("XRRSetCrtcConfig failed\n");
 	}
 	else if (xrandr.canmodechange11)
 	{
@@ -1193,24 +1194,27 @@ static struct xidevinfo *XI2_GetDeviceInfo(int devid)
 			{
 				int devs;
 				XIDeviceInfo *dev = xi2.pXIQueryDevice(vid_dpy, xi2.ndeviceinfos, &devs);
-				if (devs==1)
+				if (dev)
 				{
-					int j;
-					for (j = 0; j < dev->num_classes; j++)
+					if (devs==1)
 					{
-						if (dev->classes[j]->sourceid == xi2.ndeviceinfos && dev->classes[j]->type == XIValuatorClass)
+						int j;
+						for (j = 0; j < dev->num_classes; j++)
 						{
-							XIValuatorClassInfo *v = (XIValuatorClassInfo*)dev->classes[j];
-							if (v->mode == XIModeAbsolute && v->number >= 0 && v->number < countof(xi2.deviceinfo[xi2.ndeviceinfos].axis))
+							if (dev->classes[j]->sourceid == xi2.ndeviceinfos && dev->classes[j]->type == XIValuatorClass)
 							{
-								xi2.deviceinfo[xi2.ndeviceinfos].abs = xi2.deviceinfo[xi2.ndeviceinfos].axis[v->number].abs = true;
-								xi2.deviceinfo[xi2.ndeviceinfos].axis[v->number].min = v->min;
-								xi2.deviceinfo[xi2.ndeviceinfos].axis[v->number].max = v->max;
+								XIValuatorClassInfo *v = (XIValuatorClassInfo*)dev->classes[j];
+								if (v->mode == XIModeAbsolute && v->number >= 0 && v->number < countof(xi2.deviceinfo[xi2.ndeviceinfos].axis))
+								{
+									xi2.deviceinfo[xi2.ndeviceinfos].abs = xi2.deviceinfo[xi2.ndeviceinfos].axis[v->number].abs = true;
+									xi2.deviceinfo[xi2.ndeviceinfos].axis[v->number].min = v->min;
+									xi2.deviceinfo[xi2.ndeviceinfos].axis[v->number].max = v->max;
+								}
 							}
 						}
-					}	
+					}
+					xi2.pXIFreeDeviceInfo(dev);
 				}
-				xi2.pXIFreeDeviceInfo(dev);
 			}
 			
 			xi2.ndeviceinfos++;
@@ -2527,8 +2531,8 @@ static void UpdateGrabs(void)
 	allownullcursor = wantmgrabs;	//this says whether we can possibly want it. if false then we disallow the null cursor. Yes, this might break mods that do their own sw cursors. such mods are flawed in other ways too.
 	if (Key_MouseShouldBeFree())
 		wantmgrabs = false;
-	if (modeswitchpending)
-		wantmgrabs = false;
+//	if (modeswitchpending)
+//		wantmgrabs = false;
 
 	if (wantmgrabs)
 		install_grabs();
@@ -2824,6 +2828,9 @@ static void GetEvent(void)
 		break;
 
 	case FocusIn:
+		//don't care about it if its just someone wiggling the mouse
+		if (event.xfocus.detail == NotifyPointer)
+			break;
 		//activeapp is if the game window is focused
 		vid.activeapp = true;
 		ClearAllStates();	//just in case.
@@ -2833,6 +2840,7 @@ static void GetEvent(void)
 		{
 			modeswitchpending = 1;
 			modeswitchtime = Sys_Milliseconds() + 1500;	/*fairly slow, to make sure*/
+			UpdateGrabs();
 		}
 
 		if (event.xfocus.window == vid_window)
@@ -2843,6 +2851,9 @@ static void GetEvent(void)
 //			x11.pXUnmapWindow(vid_dpy, vid_decoywindow);
 		break;
 	case FocusOut:
+		//don't care about it if its just someone wiggling the mouse
+		if (event.xfocus.detail == NotifyPointer)
+			break;
 		//if we're already active, the decoy window shouldn't be focused anyway.
 		if (event.xfocus.window == vid_window)
 			x11.ime_shown = -1;
@@ -2852,6 +2863,10 @@ static void GetEvent(void)
 			break;
 		}
 
+#ifdef USE_XRANDR
+		if (xrandr.origgamma)
+			xrandr.pSetCrtcGamma(vid_dpy, xrandr.crtc, xrandr.origgamma);
+#endif
 #ifdef USE_VMODE
 		if (vm.originalapplied)
 			vm.pXF86VidModeSetGammaRamp(vid_dpy, scrnum, vm.originalrampsize, vm.originalramps[0], vm.originalramps[1], vm.originalramps[2]);
@@ -3388,6 +3403,33 @@ qboolean GLVID_ApplyGammaRamps(unsigned int rampcount, unsigned short *ramps)
 		}
 	}
 
+#ifdef USE_XRANDR
+	if (xrandr.origgamma)
+	{	//we favour xrandr - xf86 gamma seems to cache old values which screws up gamma after having previously quit ezquake.
+		if (ramps && rampcount == xrandr.origgamma->size)
+		{
+			XRRCrtcGamma g;
+			g.size = rampcount;
+			g.red = &ramps[0];
+			g.green = &ramps[rampcount];
+			g.blue = &ramps[rampcount*2];
+			if (vid.activeapp)
+			{
+				if (gammaworks)
+					xrandr.pSetCrtcGamma(vid_dpy, xrandr.crtc, &g);
+				gammaworks = true;
+				return gammaworks;
+			}
+			return false;
+		}
+		else if (gammaworks)
+		{
+			xrandr.pSetCrtcGamma(vid_dpy, xrandr.crtc, xrandr.origgamma);
+			return true;
+		}
+	}
+#endif
+
 #ifdef USE_VMODE
 	//if we don't know the original ramps yet, don't allow changing them, because we're probably invalid anyway, and even if it worked, it'll break something later.
 	if (vm.originalapplied)
@@ -3652,7 +3694,7 @@ static qboolean X_CheckWMFullscreenAvailable(void)
 	return success;
 }
 
-static Window X_CreateWindow(qboolean override, XVisualInfo *visinfo, int x, int y, unsigned int width, unsigned int height, qboolean fullscreen)
+static Window X_CreateWindow(rendererstate_t *info, qboolean override, XVisualInfo *visinfo, int x, int y, unsigned int width, unsigned int height, qboolean fullscreen)
 {
 	Window wnd, parent;
 	XSetWindowAttributes attr;
@@ -3677,14 +3719,23 @@ static Window X_CreateWindow(qboolean override, XVisualInfo *visinfo, int x, int
 	}
 
 	memset(&szhints, 0, sizeof(szhints));
-	szhints.flags = PMinSize;
+	szhints.flags = PMinSize|PPosition|PSize;
 	szhints.min_width = 320;
 	szhints.min_height = 200;
-	szhints.x = x;
-	szhints.y = y;
-	szhints.width = width;
-	szhints.height = height;
 
+	if (!fullscreen)
+	{
+#ifdef USE_XRANDR
+		int dx, dy, dw, dh;
+		if (*info->devicename && XRandr_PickScreen(info->devicename, &dx, &dy, &dw, &dh))
+		{
+			x += dx + (dw-width)/2;
+			y += dy + (dh-height)/2;
+		}
+		else
+#endif
+			szhints.flags &= ~PPosition;
+	}
 
 	if (sys_parentwindow && !fullscreen)
 	{
@@ -3694,6 +3745,11 @@ static Window X_CreateWindow(qboolean override, XVisualInfo *visinfo, int x, int
 	}
 	else
 		parent = vid_root;
+
+	szhints.x = x;
+	szhints.y = y;
+	szhints.width = width;
+	szhints.height = height;
 
 	wnd = x11.pXCreateWindow(vid_dpy, parent, x, y, width, height,
 						0, visinfo->depth, InputOutput,
@@ -3803,6 +3859,7 @@ static qboolean X11VID_Init (rendererstate_t *info, unsigned char *palette, int 
 	XRandR_Init();
 	if (fullscreen && !(fullscreenflags & FULLSCREEN_ANYMODE))
 		XRandR_SelectMode(info->devicename, &x, &y, &width, &height, rate);
+	XRandR_FindOutput(info->devicename);
 #endif
 
 #ifdef USE_VMODE
@@ -3889,11 +3946,11 @@ static qboolean X11VID_Init (rendererstate_t *info, unsigned char *palette, int 
 	vid.activeapp = false;
 	if (fullscreenflags & FULLSCREEN_LEGACY)
 	{
-		vid_decoywindow = X_CreateWindow(false, visinfo, x, y, 320, 200, false);
-		vid_window = X_CreateWindow(true, visinfo, x, y, width, height, fullscreen);
+		vid_decoywindow = X_CreateWindow(info, false, visinfo, x, y, 320, 200, false);
+		vid_window = X_CreateWindow(info, true, visinfo, x, y, width, height, fullscreen);
 	}
 	else
-		vid_window = X_CreateWindow(false, visinfo, x, y, width, height, fullscreen);
+		vid_window = X_CreateWindow(info, false, visinfo, x, y, width, height, fullscreen);
 
 	vid_x_eventmask |= X_InitUnicode();
 	x11.pXSelectInput(vid_dpy, vid_window, vid_x_eventmask);
@@ -3917,8 +3974,13 @@ static qboolean X11VID_Init (rendererstate_t *info, unsigned char *palette, int 
 
 	x11.pXFlush(vid_dpy);
 
+#ifdef USE_XRANDR
+	if (xrandr.origgamma)
+		vid.gammarampsize = xrandr.origgamma->size;
+	else
+#endif
 #ifdef USE_VMODE
-	if (vm.vmajor >= 2)
+	if (!xrandr.origgamma && vm.pXF86VidModeGetGammaRampSize)
 	{
 		int rampsize = 256;
 		vm.pXF86VidModeGetGammaRampSize(vid_dpy, scrnum, &rampsize);
@@ -3933,7 +3995,9 @@ static qboolean X11VID_Init (rendererstate_t *info, unsigned char *palette, int 
 			vm.originalapplied = vm.pXF86VidModeGetGammaRamp(vid_dpy, scrnum, vm.originalrampsize, vm.originalramps[0], vm.originalramps[1], vm.originalramps[2]);
 		}
 	}
+	else
 #endif
+		vid.gammarampsize = 256;
 
 	switch(currentpsl)
 	{
@@ -4553,22 +4617,25 @@ void INS_EnumerateDevices(void *ctx, void(*callback)(void *ctx, const char *type
 		{
 			int i, devs;
 			XIDeviceInfo *dev = xi2.pXIQueryDevice(vid_dpy, xi2.devicegroup, &devs);
-			for (i = 0; i < devs; i++)
+			if (dev)
 			{
-				if (!dev[i].enabled)
-					continue;
-				if (/*dev[i].use == XIMasterPointer ||*/ dev[i].use == XISlavePointer)
+				for (i = 0; i < devs; i++)
 				{
-					struct xidevinfo *devi = XI2_GetDeviceInfo(dev[i].deviceid);
-					callback(ctx, devi->abs?"tablet":"mouse", dev[i].name, &devi->qdev);
+					if (!dev[i].enabled)
+						continue;
+					if (/*dev[i].use == XIMasterPointer ||*/ dev[i].use == XISlavePointer)
+					{
+						struct xidevinfo *devi = XI2_GetDeviceInfo(dev[i].deviceid);
+						callback(ctx, devi->abs?"tablet":"mouse", dev[i].name, &devi->qdev);
+					}
+//					else if (dev[i].use == XIMasterKeyboard || dev[i].use == XISlaveKeyboard)
+//					{
+//						int qdev = dev[i].deviceid;
+//						callback(ctx, "xi2kb", dev[i].name, &qdev);
+//					}
 				}
-//				else if (dev[i].use == XIMasterKeyboard || dev[i].use == XISlaveKeyboard)
-//				{
-//					int qdev = dev[i].deviceid;
-//					callback(ctx, "xi2kb", dev[i].name, &qdev);
-//				}
+				xi2.pXIFreeDeviceInfo(dev);
 			}
-			xi2.pXIFreeDeviceInfo(dev);
 		}
 		break;
 	}

@@ -310,13 +310,19 @@ typedef struct font_s
 	vec3_t alttint;
 } font_t;
 
+union byte_vec4_u
+{
+	byte_vec4_t rgba;
+	quint32_t c;
+};
+
 //shared between fonts.
 typedef struct {
 	texid_t texnum[FONTIMAGES];
 	texid_t defaultfont;
 	texid_t trackerimage;
 
-	unsigned char plane[PLANEWIDTH*PLANEHEIGHT][4];	//tracks the current plane
+	union byte_vec4_u plane[PLANEWIDTH*PLANEHEIGHT];	//tracks the current plane
 	FIMAGEIDXTYPE activeplane;
 	unsigned short planerowx;
 	unsigned short planerowy;
@@ -329,20 +335,20 @@ typedef struct {
 	shader_t *backshader;
 } fontplanes_t;
 static fontplanes_t fontplanes;
-	
+
 #define FONT_CHAR_BUFFER 512
 static index_t font_indicies[FONT_CHAR_BUFFER*6];
 static vecV_t font_coord[FONT_CHAR_BUFFER*4];
 static vecV_t font_backcoord[FONT_CHAR_BUFFER*4];
 static vec2_t font_texcoord[FONT_CHAR_BUFFER*4];
-static byte_vec4_t font_forecoloura[FONT_CHAR_BUFFER*4];
-static byte_vec4_t font_backcoloura[FONT_CHAR_BUFFER*4];
+static union byte_vec4_u font_forecoloura[FONT_CHAR_BUFFER*4];
+static union byte_vec4_u font_backcoloura[FONT_CHAR_BUFFER*4];
 static mesh_t font_foremesh;
 static mesh_t font_backmesh;
 static texid_t font_texture;
 static int font_colourmask;
-static byte_vec4_t font_forecolour;
-static byte_vec4_t font_backcolour;
+static union byte_vec4_u font_forecolour;
+static union byte_vec4_u font_backcolour;
 static avec4_t	font_foretint;
 
 static struct font_s *curfont;
@@ -381,7 +387,7 @@ static image_t *Font_GetTrackerImage(unsigned int imid)
 	{
 		if (!*trackerimages[imid].name)
 			return NULL;
-		trackerimages[imid].image = Image_GetTexture(trackerimages[imid].name, NULL, 0, NULL, NULL, 0, 0, TF_INVALID);
+		trackerimages[imid].image = Image_GetTexture(trackerimages[imid].name, NULL, IF_PREMULTIPLYALPHA|IF_UIPIC, NULL, NULL, 0, 0, TF_INVALID);
 	}
 	if (!trackerimages[imid].image)
 		return NULL;
@@ -398,7 +404,7 @@ qboolean Font_TrackerValid(unsigned int imid)
 	{
 		if (!*trackerimages[imid].name)
 			return false;
-		trackerimages[imid].image = Image_GetTexture(trackerimages[imid].name, NULL, 0, NULL, NULL, 0, 0, TF_INVALID);
+		trackerimages[imid].image = Image_GetTexture(trackerimages[imid].name, NULL, IF_PREMULTIPLYALPHA|IF_UIPIC, NULL, NULL, 0, 0, TF_INVALID);
 	}
 	if (!trackerimages[imid].image)
 		return false;
@@ -422,12 +428,12 @@ void Font_Init(void)
 	font_foremesh.indexes = font_indicies;
 	font_foremesh.xyz_array = font_coord;
 	font_foremesh.st_array = font_texcoord;
-	font_foremesh.colors4b_array = font_forecoloura;
+	font_foremesh.colors4b_array = &font_forecoloura->rgba;
 
 	font_backmesh.indexes = font_indicies;
 	font_backmesh.xyz_array = font_backcoord;
 	font_backmesh.st_array = font_texcoord;
-	font_backmesh.colors4b_array = font_backcoloura;
+	font_backmesh.colors4b_array = &font_backcoloura->rgba;
 
 	for (i = 0; i < FONT_CHAR_BUFFER; i++)
 	{
@@ -622,7 +628,7 @@ static struct charcache_s *Font_CopyChar(font_t *f, unsigned int oldcharidx, uns
 static struct charcache_s *Font_LoadGlyphData(font_t *f, CHARIDXTYPE charidx, FT_Pixel_Mode pixelmode, void *data, unsigned int bmw, unsigned int bmh, unsigned int pitch)
 {
 	int x, y;
-	unsigned char *out;
+	union byte_vec4_u *out;
 	struct charcache_s *c = Font_GetCharStore(f, charidx);
 	int pad = 0;
 #define BORDERCOLOUR 0
@@ -658,31 +664,31 @@ static struct charcache_s *Font_LoadGlyphData(font_t *f, CHARIDXTYPE charidx, FT
 		fontplanes.planerowh = bmh+pad*2;
 	fontplanes.planerowx += bmw+pad*2;
 
-	out = (unsigned char *)&fontplanes.plane[c->bmx+((int)c->bmy-pad)*PLANEHEIGHT];
+	out = &fontplanes.plane[c->bmx+((int)c->bmy-pad)*PLANEHEIGHT];
 	if (pixelmode == FT_PIXEL_MODE_GRAY)
 	{	//8bit font
 		for (y = -pad; y < 0; y++)
 		{
 			for (x = -pad; x < (int)bmw+pad; x++)
-				*(unsigned int *)&out[x*4] = BORDERCOLOUR;
-			out += PLANEWIDTH*4;
+				out[x].c = BORDERCOLOUR;
+			out += PLANEWIDTH;
 		}
 		for (; y < bmh; y++)
 		{
 			for (x = -pad; x < 0; x++)
-				*(unsigned int *)&out[x*4] = BORDERCOLOUR;
+				out[x].c = BORDERCOLOUR;
 			for (; x < bmw; x++)
-				*(unsigned int *)&out[x*4] = 0x01010101 * ((unsigned char*)data)[x];
+				out[x].c = 0x01010101 * ((unsigned char*)data)[x];
 			for (; x < bmw+pad; x++)
-				*(unsigned int *)&out[x*4] = BORDERCOLOUR;
+				out[x].c = BORDERCOLOUR;
 			data = (char*)data + pitch;
-			out += PLANEWIDTH*4;
+			out += PLANEWIDTH;
 		}
 		for (; y < bmh+pad; y++)
 		{
 			for (x = -pad; x < (int)bmw+pad; x++)
-				*(unsigned int *)&out[x*4] = BORDERCOLOUR;
-			out += PLANEWIDTH*4;
+				out[x].c = BORDERCOLOUR;
+			out += PLANEWIDTH;
 		}
 	}
 	else if ((unsigned int)pixelmode == FT_PIXEL_MODE_RGBA_SA)
@@ -691,35 +697,35 @@ static struct charcache_s *Font_LoadGlyphData(font_t *f, CHARIDXTYPE charidx, FT
 		for (y = -pad; y < 0; y++)
 		{
 			for (x = -pad; x < (int)bmw+pad; x++)
-				*(unsigned int *)&out[x*4] = BORDERCOLOUR;
-			out += PLANEWIDTH*4;
+				out[x].c = BORDERCOLOUR;
+			out += PLANEWIDTH;
 		}
 		for (; y < bmh; y++)
 		{
 			for (x = -pad; x < 0; x++)
-				*(unsigned int *)&out[x*4] = BORDERCOLOUR;
+				out[x].c = BORDERCOLOUR;
 			for (; x < bmw; x++)
 			{
 				if (((unsigned char*)data)[x*4+3] == 255)
-					((unsigned int*)out)[x] = ((unsigned int*)data)[x];
+					out[x] = ((union byte_vec4_u*)data)[x];
 				else
 				{
-					out[x*4+0] = (((unsigned char*)data)[x*4+3]*((unsigned char*)data)[x*4+0])<<8;
-					out[x*4+1] = (((unsigned char*)data)[x*4+3]*((unsigned char*)data)[x*4+1])<<8;
-					out[x*4+2] = (((unsigned char*)data)[x*4+3]*((unsigned char*)data)[x*4+2])<<8;
-					out[x*4+3] = ((unsigned char*)data)[x*4+3];
+					out[x].rgba[0] = (((unsigned char*)data)[x*4+3]*((unsigned char*)data)[x*4+0])<<8;
+					out[x].rgba[1] = (((unsigned char*)data)[x*4+3]*((unsigned char*)data)[x*4+1])<<8;
+					out[x].rgba[2] = (((unsigned char*)data)[x*4+3]*((unsigned char*)data)[x*4+2])<<8;
+					out[x].rgba[3] = ((unsigned char*)data)[x*4+3];
 				}
 			}
 			for (; x < bmw+pad; x++)
-				*(unsigned int *)&out[x*4] = BORDERCOLOUR;
+				out[x].c = BORDERCOLOUR;
 			data = (char*)data + pitch;
-			out += PLANEWIDTH*4;
+			out += PLANEWIDTH;
 		}
 		for (; y < (int)bmh+pad; y++)
 		{
 			for (x = -pad; x < (int)bmw+pad; x++)
-				*(unsigned int *)&out[x*4] = BORDERCOLOUR;
-			out += PLANEWIDTH*4;
+				out[x].c = BORDERCOLOUR;
+			out += PLANEWIDTH;
 		}
 	}
 	else if (pixelmode == FT_PIXEL_MODE_BGRA)
@@ -727,30 +733,30 @@ static struct charcache_s *Font_LoadGlyphData(font_t *f, CHARIDXTYPE charidx, FT
 		for (y = -pad; y < 0; y++)
 		{
 			for (x = -pad; x < (int)bmw+pad; x++)
-				*(unsigned int *)&out[x*4] = BORDERCOLOUR;
-			out += PLANEWIDTH*4;
+				out[x].c = BORDERCOLOUR;
+			out += PLANEWIDTH;
 		}
 		for (; y < bmh; y++)
 		{
 			for (x = -pad; x < 0; x++)
-				*(unsigned int *)&out[x*4] = BORDERCOLOUR;
+				out[x].c = BORDERCOLOUR;
 			for (; x < bmw; x++)
 			{
-				out[x*4+0] = ((unsigned char*)data)[x*4+2];
-				out[x*4+1] = ((unsigned char*)data)[x*4+1];
-				out[x*4+2] = ((unsigned char*)data)[x*4+0];
-				out[x*4+3] = ((unsigned char*)data)[x*4+3];
+				out[x].rgba[0] = ((unsigned char*)data)[x*4+2];
+				out[x].rgba[1] = ((unsigned char*)data)[x*4+1];
+				out[x].rgba[2] = ((unsigned char*)data)[x*4+0];
+				out[x].rgba[3] = ((unsigned char*)data)[x*4+3];
 			}
 			for (; x < bmw+pad; x++)
-				*(unsigned int *)&out[x*4] = BORDERCOLOUR;
+				out[x].c = BORDERCOLOUR;
 			data = (char*)data + pitch;
-			out += PLANEWIDTH*4;
+			out += PLANEWIDTH;
 		}
 		for (; y < bmh+pad; y++)
 		{
 			for (x = -pad; x < (int)bmw+pad; x++)
-				*(unsigned int *)&out[x*4] = BORDERCOLOUR;
-			out += PLANEWIDTH*4;
+				out[x].c = BORDERCOLOUR;
+			out += PLANEWIDTH;
 		}
 
 		c->flags = CHARF_FORCEWHITE;	//private glyph colours
@@ -760,25 +766,25 @@ static struct charcache_s *Font_LoadGlyphData(font_t *f, CHARIDXTYPE charidx, FT
 		for (y = -pad; y < 0; y++)
 		{
 			for (x = -pad; x < (int)bmw+pad; x++)
-				*(unsigned int *)&out[x*4] = BORDERCOLOUR;
-			out += PLANEWIDTH*4;
+				out[x].c = BORDERCOLOUR;
+			out += PLANEWIDTH;
 		}
 		for (; y < bmh; y++)
 		{
 			for (x = -pad; x < 0; x++)
-				*(unsigned int *)&out[x*4] = BORDERCOLOUR;
+				out[x].c = BORDERCOLOUR;
 			for (; x < bmw; x++)
-				((unsigned int*)out)[x] = ((unsigned int*)data)[x];
+				out[x].c = ((unsigned int*)data)[x];
 			for (; x < bmw+pad; x++)
-				*(unsigned int *)&out[x*4] = BORDERCOLOUR;
+				out[x].c = BORDERCOLOUR;
 			data = (char*)data + pitch;
-			out += PLANEWIDTH*4;
+			out += PLANEWIDTH;
 		}
 		for (; y < bmh+pad; y++)
 		{
 			for (x = -pad; x < (int)bmw+pad; x++)
-				*(unsigned int *)&out[x*4] = BORDERCOLOUR;
-			out += PLANEWIDTH*4;
+				out[x].c = BORDERCOLOUR;
+			out += PLANEWIDTH;
 		}
 
 		c->flags = CHARF_FORCEWHITE;	//private glyph colours
@@ -2139,9 +2145,12 @@ struct font_s *Font_LoadFont(const char *fontfilename, float vheight)
 		if (f->faces < MAX_FACES)
 		{
 			size_t lumpsize;
-			qbyte lumptype;
-			void *lumpdata;
-			lumpdata = W_GetLumpName("conchars", &lumpsize, &lumptype);
+			qbyte lumptype = 0;
+			void *lumpdata = NULL;
+			if ((!lumpdata || lumptype != TYP_HLFONT) && *fontfilename)
+				lumpdata = W_GetLumpName(fontfilename, &lumpsize, &lumptype);
+			if (!lumpdata || lumptype != TYP_HLFONT)
+				lumpdata = W_GetLumpName("conchars", &lumpsize, &lumptype);
 			if (lumpdata && lumptype == TYP_HLFONT)
 			{
 				fontface_t *fa = Z_Malloc(sizeof(*fa));
@@ -2639,9 +2648,9 @@ void Font_InvalidateColour(vec4_t newcolour)
 
 	VectorScale(newcolour, newcolour[3], font_foretint);
 	font_foretint[3] = newcolour[3];
-	Vector4Scale(font_foretint, 255, font_forecolour);
+	Vector4Scale(font_foretint, 255, font_forecolour.rgba);
 
-	font_backcolour[3] = 0;
+	font_backcolour.rgba[3] = 0;
 
 	/*Any drawchars that are now drawn will get the forced colour*/
 }
@@ -2713,10 +2722,7 @@ int Font_DrawChar(int px, int py, unsigned int charflags, unsigned int codepoint
 			rgba[2] = ((col>>CON_RICHBSHIFT)&0xf)*0x11;
 			rgba[3] = 255;
 
-			font_backcolour[0] = 0;
-			font_backcolour[1] = 0;
-			font_backcolour[2] = 0;
-			font_backcolour[3] = 0;
+			font_backcolour.c = 0;
 			if (charflags & CON_2NDCHARSETTEXT)
 			{
 				rgba[0] *= font->alttint[0];
@@ -2738,10 +2744,10 @@ int Font_DrawChar(int px, int py, unsigned int charflags, unsigned int codepoint
 				float a = (sin(realtime*3)+1)*0.4 + 0.2;
 				Vector4Scale(rgba, a, rgba);
 			}
-			font_forecolour[0] = min(rgba[0], 255);
-			font_forecolour[1] = min(rgba[1], 255);
-			font_forecolour[2] = min(rgba[2], 255);
-			font_forecolour[3] = min(rgba[3], 255);
+			font_forecolour.rgba[0] = min(rgba[0], 255);
+			font_forecolour.rgba[1] = min(rgba[1], 255);
+			font_forecolour.rgba[2] = min(rgba[2], 255);
+			font_forecolour.rgba[3] = min(rgba[3], 255);
 		}
 	}
 	else
@@ -2783,13 +2789,13 @@ int Font_DrawChar(int px, int py, unsigned int charflags, unsigned int codepoint
 			col = (charflags&CON_BGMASK)>>CON_BGSHIFT;
 			if (charflags & CON_NONCLEARBG)
 			{
-				font_backcolour[0] = consolecolours[col].fr*255;
-				font_backcolour[1] = consolecolours[col].fg*255;
-				font_backcolour[2] = consolecolours[col].fb*255;
-				font_backcolour[3] = (charflags & CON_NONCLEARBG)?0xc0:0;
+				font_backcolour.rgba[0] = consolecolours[col].fr*255;
+				font_backcolour.rgba[1] = consolecolours[col].fg*255;
+				font_backcolour.rgba[2] = consolecolours[col].fb*255;
+				font_backcolour.rgba[3] = (charflags & CON_NONCLEARBG)?0xc0:0;
 			}
 			else
-				Vector4Set(font_backcolour, 0, 0, 0, 0);
+				font_backcolour.c = 0;
 
 			if (charflags & CON_2NDCHARSETTEXT)
 			{
@@ -2812,10 +2818,10 @@ int Font_DrawChar(int px, int py, unsigned int charflags, unsigned int codepoint
 				float a = (sin(realtime*3)+1)*0.4 + 0.2;
 				Vector4Scale(rgba, a, rgba);
 			}
-			font_forecolour[0] = min(rgba[0], 255);
-			font_forecolour[1] = min(rgba[1], 255);
-			font_forecolour[2] = min(rgba[2], 255);
-			font_forecolour[3] = min(rgba[3], 255);
+			font_forecolour.rgba[0] = min(rgba[0], 255);
+			font_forecolour.rgba[1] = min(rgba[1], 255);
+			font_forecolour.rgba[2] = min(rgba[2], 255);
+			font_forecolour.rgba[3] = min(rgba[3], 255);
 		}
 	}
 
@@ -2885,17 +2891,17 @@ int Font_DrawChar(int px, int py, unsigned int charflags, unsigned int codepoint
 
 	if (c->flags&CHARF_FORCEWHITE)
 	{
-		*(int*)font_forecoloura[v+0] =
-		*(int*)font_forecoloura[v+1] =
-		*(int*)font_forecoloura[v+2] =
-		*(int*)font_forecoloura[v+3] = 0xffffffff;
+		font_forecoloura[v+0].c =
+		font_forecoloura[v+1].c =
+		font_forecoloura[v+2].c =
+		font_forecoloura[v+3].c = 0xffffffff;
 	}
 	else
 	{
-		*(int*)font_forecoloura[v+0] =
-		*(int*)font_forecoloura[v+1] =
-		*(int*)font_forecoloura[v+2] =
-		*(int*)font_forecoloura[v+3] = *(int*)font_forecolour;
+		font_forecoloura[v+0] =
+		font_forecoloura[v+1] =
+		font_forecoloura[v+2] =
+		font_forecoloura[v+3] = font_forecolour;
 	}
 
 	if (font_colourmask & CON_NONCLEARBG)
@@ -2915,10 +2921,10 @@ int Font_DrawChar(int px, int py, unsigned int charflags, unsigned int codepoint
 		font_backcoord[v+3][0] = sx;
 		font_backcoord[v+3][1] = sh;
 
-		*(int*)font_backcoloura[v+0] = *(int*)font_backcolour;
-		*(int*)font_backcoloura[v+1] = *(int*)font_backcolour;
-		*(int*)font_backcoloura[v+2] = *(int*)font_backcolour;
-		*(int*)font_backcoloura[v+3] = *(int*)font_backcolour;
+		font_backcoloura[v+0] = font_backcolour;
+		font_backcoloura[v+1] = font_backcolour;
+		font_backcoloura[v+2] = font_backcolour;
+		font_backcoloura[v+3] = font_backcolour;
 	}
 
 	return nextx;
@@ -2982,7 +2988,7 @@ float Font_DrawScaleChar(float px, float py, unsigned int charflags, unsigned in
 		if (col != font_colourmask)
 		{
 			vec4_t rgba;
-			if (font_backcolour[3])
+			if (font_backcolour.rgba[3])
 			{
 				Font_Flush();
 				R2D_Flush = Font_Flush;
@@ -2994,10 +3000,7 @@ float Font_DrawScaleChar(float px, float py, unsigned int charflags, unsigned in
 			rgba[2] = ((col>>CON_RICHBSHIFT)&0xf)*0x11;
 			rgba[3] = 255;
 
-			font_backcolour[0] = 0;
-			font_backcolour[1] = 0;
-			font_backcolour[2] = 0;
-			font_backcolour[3] = 0;
+			font_backcolour.c = 0;
 
 			if (charflags & CON_2NDCHARSETTEXT)
 			{
@@ -3015,10 +3018,10 @@ float Font_DrawScaleChar(float px, float py, unsigned int charflags, unsigned in
 			rgba[1] *= font_foretint[1];
 			rgba[2] *= font_foretint[2];
 			rgba[3] *= font_foretint[3];
-			font_forecolour[0] = min(rgba[0], 255);
-			font_forecolour[1] = min(rgba[1], 255);
-			font_forecolour[2] = min(rgba[2], 255);
-			font_forecolour[3] = min(rgba[3], 255);
+			font_forecolour.rgba[0] = min(rgba[0], 255);
+			font_forecolour.rgba[1] = min(rgba[1], 255);
+			font_forecolour.rgba[2] = min(rgba[2], 255);
+			font_forecolour.rgba[3] = min(rgba[3], 255);
 		}
 	}
 	else
@@ -3027,7 +3030,7 @@ float Font_DrawScaleChar(float px, float py, unsigned int charflags, unsigned in
 		if (col != font_colourmask)
 		{
 			vec4_t rgba;
-			if (font_backcolour[3] != ((charflags & CON_NONCLEARBG)?127:0))
+			if (font_backcolour.rgba[3] != ((charflags & CON_NONCLEARBG)?127:0))
 			{
 				Font_Flush();
 				R2D_Flush = Font_Flush;
@@ -3053,13 +3056,13 @@ float Font_DrawScaleChar(float px, float py, unsigned int charflags, unsigned in
 			col = (charflags&CON_BGMASK)>>CON_BGSHIFT;
 			if (charflags & CON_NONCLEARBG)
 			{
-				font_backcolour[0] = consolecolours[col].fr*0xc0;
-				font_backcolour[1] = consolecolours[col].fg*0xc0;
-				font_backcolour[2] = consolecolours[col].fb*0xc0;
-				font_backcolour[3] = 0xc0;
+				font_backcolour.rgba[0] = consolecolours[col].fr*0xc0;
+				font_backcolour.rgba[1] = consolecolours[col].fg*0xc0;
+				font_backcolour.rgba[2] = consolecolours[col].fb*0xc0;
+				font_backcolour.rgba[3] = 0xc0;
 			}
 			else
-				Vector4Set(font_backcolour, 0, 0, 0, 0);
+				font_backcolour.c = 0;
 
 			if (charflags & CON_2NDCHARSETTEXT)
 			{
@@ -3077,10 +3080,10 @@ float Font_DrawScaleChar(float px, float py, unsigned int charflags, unsigned in
 			rgba[1] *= font_foretint[1];
 			rgba[2] *= font_foretint[2];
 			rgba[3] *= font_foretint[3];
-			font_forecolour[0] = min(rgba[0], 255);
-			font_forecolour[1] = min(rgba[1], 255);
-			font_forecolour[2] = min(rgba[2], 255);
-			font_forecolour[3] = min(rgba[3], 255);
+			font_forecolour.rgba[0] = min(rgba[0], 255);
+			font_forecolour.rgba[1] = min(rgba[1], 255);
+			font_forecolour.rgba[2] = min(rgba[2], 255);
+			font_forecolour.rgba[3] = min(rgba[3], 255);
 		}
 	}
 
@@ -3136,10 +3139,10 @@ float Font_DrawScaleChar(float px, float py, unsigned int charflags, unsigned in
 	font_coord[v+3][0] = sx;
 	font_coord[v+3][1] = sy+sh;
 
-	*(int*)font_forecoloura[v+0] = *(int*)font_forecolour;
-	*(int*)font_forecoloura[v+1] = *(int*)font_forecolour;
-	*(int*)font_forecoloura[v+2] = *(int*)font_forecolour;
-	*(int*)font_forecoloura[v+3] = *(int*)font_forecolour;
+	font_forecoloura[v+0] = font_forecolour;
+	font_forecoloura[v+1] = font_forecolour;
+	font_forecoloura[v+2] = font_forecolour;
+	font_forecoloura[v+3] = font_forecolour;
 
 	if (font_colourmask & CON_NONCLEARBG)
 	{
@@ -3163,10 +3166,10 @@ float Font_DrawScaleChar(float px, float py, unsigned int charflags, unsigned in
 		font_backcoord[v+3][0] = sx;
 		font_backcoord[v+3][1] = sh;
 
-		*(int*)font_backcoloura[v+0] = *(int*)font_backcolour;
-		*(int*)font_backcoloura[v+1] = *(int*)font_backcolour;
-		*(int*)font_backcoloura[v+2] = *(int*)font_backcolour;
-		*(int*)font_backcoloura[v+3] = *(int*)font_backcolour;
+		font_backcoloura[v+0] = font_backcolour;
+		font_backcoloura[v+1] = font_backcolour;
+		font_backcoloura[v+2] = font_backcolour;
+		font_backcoloura[v+3] = font_backcolour;
 	}
 
 	return nextx;

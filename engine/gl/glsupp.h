@@ -84,6 +84,9 @@ extern qlpSelTexFUNC	qglClientActiveTextureARB;
 #ifndef GL_HALF_FLOAT_OES
 #define GL_HALF_FLOAT_OES					0x8D61		/*GL_OES_texture_half_float*/
 #endif
+#ifndef GL_UNSIGNED_INT_24_8
+#define GL_UNSIGNED_INT_24_8              0x84FA
+#endif
 
 #ifndef GL_ARB_multitexture
 #define GL_ARB_multitexture 1
@@ -683,6 +686,7 @@ typedef void		(APIENTRYP PFNGLGETSHADERSOURCEARBPROC)		(GLhandleARB obj, GLsizei
 #define GL_RG                             0x8227
 #define GL_RGB9_E5                        0x8C3D	/*opengl 3.0*/
 #define GL_R8                             0x8229	/*opengl 3.0*/
+#define GL_R16                            0x822A	/*opengl 3.0*/
 #define GL_RG8                            0x822B	/*opengl 3.0*/
 #endif
 #ifndef GL_RG8_SNORM
@@ -892,6 +896,13 @@ typedef void (APIENTRY * PFNGLUNLOCKARRAYSEXTPROC) (void);
 #define GL_TEXTURE_MAX_LEVEL 0x813d 
 #endif
 
+#ifndef GL_TEXTURE_LOD_BIAS
+#define GL_TEXTURE_LOD_BIAS               0x8501	//gl1.4
+#endif
+
+#ifndef GL_RGBA16
+#define GL_RGBA16				0x805B	//gl1.1, but not in gles.
+#endif
 #ifndef GL_RGBA16F
 #define GL_RGBA16F                      0x881A
 #define GL_RGBA32F                      0x8814
@@ -921,6 +932,9 @@ typedef void (APIENTRY * PFNGLUNLOCKARRAYSEXTPROC) (void);
 #define GL_LUMINANCE8_ALPHA8				0x8045	//not in gles2, nor gl3core (use gl_red+swizzles for gles3)
 #endif
 
+#ifndef GL_LINE
+#define GL_LINE     0x1B01
+#endif
 
 #ifndef GL_SAMPLES_PASSED_ARB
 #define GL_SAMPLES_PASSED_ARB                             0x8914

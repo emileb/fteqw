@@ -115,6 +115,9 @@ typedef struct
 #define CF_SV_SENDVELOCITY	512	// serverside hint that velocity is important
 #define CF_CLI_AUTOSOUND	1024	// generated from q2 entities, which avoids breaking regular sounds, using it outside the sound system will probably break things.
 #define CF_CLI_INACTIVE		2048	// try to play even when inactive
+#ifdef Q3CLIENT
+#define CF_CLI_NODUPES		4096	// block multiple identical sounds being started on the same entity within rapid succession. required by quake3.
+#endif
 #define CF_NETWORKED (CF_NOSPACIALISE|CF_NOREVERB|CF_FORCELOOP|CF_FOLLOW/*|CF_RESERVEDN*/)
 
 typedef struct
@@ -130,6 +133,9 @@ typedef struct
 	vec3_t	velocity;		// velocity of sound effect
 	vec_t	dist_mult;		// distance multiplier (attenuation/clipK)
 	int		master_vol;		// 0-255 master volume
+#ifdef Q3CLIENT
+	unsigned int starttime;	// start time, to replicate q3's 50ms embargo on duped sounds.
+#endif
 } channel_t;
 
 struct soundcardinfo_s;
@@ -181,6 +187,7 @@ void S_Startup (void);
 void S_EnumerateDevices(void);
 void S_Shutdown (qboolean final);
 float S_GetSoundTime(int entnum, int entchannel);
+float S_GetChannelLevel(int entnum, int entchannel);
 void S_StartSound (int entnum, int entchannel, sfx_t *sfx, vec3_t origin, vec3_t velocity, float fvol, float attenuation, float timeofs, float pitchadj, unsigned int flags);
 float S_UpdateSound(int entnum, int entchannel, sfx_t *sfx, vec3_t origin, vec3_t velocity, float fvol, float attenuation, float timeofs, float pitchadj, unsigned int flags);
 void S_StaticSound (sfx_t *sfx, vec3_t origin, float vol, float attenuation);
@@ -370,6 +377,7 @@ struct soundcardinfo_s { //windows has one defined AFTER directsound
 	void (*Restore) (soundcardinfo_t *sc);							//called before lock/unlock/lock/unlock/submit. optional
 	void (*ChannelUpdate) (soundcardinfo_t *sc, channel_t *channel, unsigned int schanged);	//properties of a sound effect changed. this is to notify hardware mixers. optional.
 	void (*ListenerUpdate) (soundcardinfo_t *sc, int entnum, vec3_t origin, vec3_t forward, vec3_t right, vec3_t up, vec3_t velocity);	//player moved or something. this is to notify hardware mixers. optional.
+	ssamplepos_t (*GetChannelPos) (soundcardinfo_t *sc, channel_t *channel);	//queries a hardware mixer's channel position (essentially returns channel->pos, except more up to date)
 
 //driver-specific - if you need more stuff, you should just shove it in the handle pointer
 	void *thread;

@@ -143,6 +143,22 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#include <alloca.h>
 #endif
 
+#ifdef FTE_TARGET_WEB //emscripten's filesystem is throwing all sorts of exceptions and making it hard to debug real bugs.
+	#define NOSTDIO
+#endif
+#ifdef NOSTDIO
+	#define stat stat_nolink
+	#define fopen fopen_nolink
+	#define fread fread_nolink
+	#define fwrite fwrite_nolink
+	#define fclose fclose_nolink
+	#define fseek fseek_nolink
+	#define open open_nolink
+	#define read read_nolink
+	#define write write_nolink
+	#define close close_nolink
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -296,7 +312,7 @@ extern	cvar_t		com_protocolversion;
 extern	cvar_t		com_nogamedirnativecode;
 extern	cvar_t		com_parseutf8;
 #ifndef NOLEGACY
-extern	cvar_t		com_parseezquake;
+extern	cvar_t		ezcompat_markup;
 #endif
 extern	cvar_t		sys_ticrate;
 extern	cvar_t		sys_nostdout;
@@ -339,6 +355,7 @@ typedef enum
 	WG_COUNT	= 2 //main and loaders
 } wgroup_t;
 void COM_AddWork(wgroup_t thread, void(*func)(void *ctx, void *data, size_t a, size_t b), void *ctx, void *data, size_t a, size_t b);
+void COM_InsertWork(wgroup_t tg, void(*func)(void *ctx, void *data, size_t a, size_t b), void *ctx, void *data, size_t a, size_t b);
 qboolean COM_HasWork(void);
 void COM_WorkerFullSync(void);
 void COM_DestroyWorkerThread(void);
@@ -353,6 +370,7 @@ void COM_AssertMainThread(const char *msg);
 #else
 #define com_workererror false
 #define COM_AddWork(t,f,a,b,c,d) (f)((a),(b),(c),(d))
+#define COM_InsertWork(t,f,a,b,c,d) (f)((a),(b),(c),(d))
 #define COM_WorkerPartialSync(c,a,v)
 #define COM_WorkerFullSync()
 #define COM_HasWork() false

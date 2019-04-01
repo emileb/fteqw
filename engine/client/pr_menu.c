@@ -2226,6 +2226,7 @@ static struct {
 	{"con_printf",				PF_SubConPrintf,			392},
 	{"con_draw",				PF_SubConDraw,				393},
 	{"con_input",				PF_SubConInput,				394},
+	{"setwindowcaption",		PF_cl_setwindowcaption,		0},
 	{"cvars_haveunsaved",		PF_cvars_haveunsaved,		0},
 															//gap
 	{"buf_create",				PF_buf_create,				440},
@@ -2551,7 +2552,11 @@ static void *PDECL MP_PRReadFile (const char *path, qbyte *(PDECL *buf_get)(void
 		return buffer;
 	}
 	else
+	{
+		if (FS_FLocateFile(path, FSLF_IFFOUND, &loc))
+			Con_Printf("Not loading %s because it comes from an untrusted source\n", path);
 		return NULL;
+	}
 }
 static int PDECL MP_PRFileSize (const char *path)
 {

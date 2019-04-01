@@ -48,7 +48,8 @@ extern int			r_framecount;		// used for dlight push checking
 
 extern cvar_t	gl_part_flame;
 extern cvar_t	r_bloom;
-extern cvar_t	r_wireframe_smooth;
+extern cvar_t	r_wireframe, r_wireframe_smooth;
+extern cvar_t	r_outline;
 
 cvar_t	gl_affinemodels = CVAR("gl_affinemodels","0");
 cvar_t	gl_finish = CVAR("gl_finish","0");
@@ -629,7 +630,7 @@ void R_SetupGL (float stereooffset, int i)
 	if (!gl_config.gles && r_wireframe_smooth.modified)
 	{
 		r_wireframe_smooth.modified = false;
-		if (r_wireframe_smooth.ival)
+		if (r_wireframe_smooth.ival || (r_outline.ival && !r_wireframe.ival))
 		{
 			qglEnable(GL_LINE_SMOOTH);
 			if (qglHint)
@@ -756,6 +757,7 @@ void R_RenderScene (void)
 		{
 			GL_ForceDepthWritable();
 			qglClear (GL_DEPTH_BUFFER_BIT);
+			r_framecount++;
 		}
 
 		TRACE(("dbg: calling R_SetupGL\n"));
@@ -1367,7 +1369,7 @@ void R_Clear (qboolean fbo)
 			//for performance, we clear the depth at the same time we clear colour, so we can skip clearing depth here the first time around each frame.
 			//but for multiple scenes, we do need to clear depth still.
 			//fbos always get cleared depth, just in case (colour fbos may contain junk, but hey).
-			if (fbo && r_clear.ival)
+			if ((fbo && r_clear.ival) || r_refdef.stereomethod==STEREO_RED_BLUE||r_refdef.stereomethod==STEREO_RED_GREEN)
 				qglClear (GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
 			else
 				qglClear (GL_DEPTH_BUFFER_BIT);
@@ -1744,6 +1746,8 @@ qboolean R_RenderScene_Cubemap(void)
 			GL_MTBind(0, GL_TEXTURE_CUBE_MAP_ARB, scenepp_postproc_cube);
 			qglCopyTexSubImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X_ARB + i, 0, 0, 0, 0, vid.fbpheight - (prect.y + cmapsize), cmapsize, cmapsize);
 		}
+
+		r_framecount++;
 	}
 
 	if (usefbo)
@@ -2044,7 +2048,13 @@ void GLR_RenderView (void)
 		vid.fbvheight = vid.fbpheight;
 
 		fmt = PTI_RGBA8;
-		if ((r_refdef.flags&RDF_SCENEGAMMA)||(vid.flags&(VID_SRGBAWARE|VID_FP16))||r_hdr_framebuffer.ival)
+		if (r_hdr_framebuffer.ival < 0)
+		{
+			fmt = -r_hdr_framebuffer.ival;
+			if (!sh_config.texfmt[fmt])
+				fmt = PTI_RGB565;
+		}
+		else if ((r_refdef.flags&RDF_SCENEGAMMA)||(vid.flags&(VID_SRGBAWARE|VID_FP16))||r_hdr_framebuffer.ival)
 		{	//gamma ramps really need higher colour precision, otherwise the entire thing looks terrible.
 			if (sh_config.texfmt[PTI_RGBA16F])
 				fmt = PTI_RGBA16F;

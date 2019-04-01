@@ -23,9 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define PEXT_SCALE				0x00000002
 #define PEXT_LIGHTSTYLECOL		0x00000004
 #define PEXT_TRANS				0x00000008
-#ifdef SIDEVIEWS
-	#define PEXT_VIEW2			0x00000010
-#endif
+#define PEXT_VIEW2_				0x00000010
 //#define PEXT_BULLETENS			0x00000020 //obsolete
 #define PEXT_ACCURATETIMINGS	0x00000040
 #define PEXT_SOUNDDBL			0x00000080	//revised startsound protocol
@@ -55,18 +53,21 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define PEXT_CHUNKEDDOWNLOADS	0x20000000	//alternate file download method. Hopefully it'll give quadroupled download speed, especially on higher pings.
 #define PEXT_CSQC				0x40000000	//csqc additions
 #define PEXT_DPFLAGS			0x80000000	//extra flags for viewmodel/externalmodel and possible other persistant style flags.
+#define PEXT_CLIENTSUPPORT		(PEXT_SETVIEW|PEXT_SCALE|PEXT_LIGHTSTYLECOL|PEXT_TRANS|PEXT_VIEW2_|PEXT_ACCURATETIMINGS|PEXT_SOUNDDBL|PEXT_FATNESS|PEXT_HLBSP|PEXT_TE_BULLET|PEXT_HULLSIZE|PEXT_MODELDBL|PEXT_ENTITYDBL|PEXT_ENTITYDBL2|PEXT_FLOATCOORDS|PEXT_Q2BSP_|PEXT_Q3BSP_|PEXT_COLOURMOD|PEXT_SPLITSCREEN|PEXT_HEXEN2|PEXT_SPAWNSTATIC2|PEXT_CUSTOMTEMPEFFECTS|PEXT_256PACKETENTITIES|PEXT_SHOWPIC|PEXT_SETATTACHMENT|PEXT_CHUNKEDDOWNLOADS|PEXT_CSQC|PEXT_DPFLAGS)
 
 #ifdef CSQC_DAT
-#define PEXT_BIGUSERINFOS	PEXT_CSQC	//FIXME: while useful for csqc, we should include something else that isn't so often stripped, or is available in ezquake, or something.
+	#define PEXT_BIGUSERINFOS	PEXT_CSQC	//FIXME: while useful for csqc, we should include something else that isn't so often stripped, or is available in ezquake, or something.
 #else
-#define PEXT_BIGUSERINFOS	0xffffffff
+	#define PEXT_BIGUSERINFOS	0xffffffff
 #endif
-
+#ifdef SIDEVIEWS
+	#define PEXT_VIEW2			PEXT_VIEW2_
+#endif
 #ifdef Q2BSPS
-#define PEXT_Q2BSP				PEXT_Q2BSP_
+	#define PEXT_Q2BSP			PEXT_Q2BSP_
 #endif
 #ifdef Q3BSPS
-#define PEXT_Q3BSP				PEXT_Q3BSP_
+	#define PEXT_Q3BSP			PEXT_Q3BSP_
 #endif
 #define PEXT1_HIDEPROTOCOLS		(PEXT_Q3BSP_|PEXT_Q2BSP_|PEXT_HLBSP)	//These are hints for the server, and not useful to the client (they can figure stuff out themselves)
 
@@ -78,10 +79,14 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define PEXT2_PREDINFO				0x00000020	//movevar stats, NQ input sequences+acks.
 #define PEXT2_NEWSIZEENCODING		0x00000040	//richer size encoding.
 #define PEXT2_INFOBLOBS				0x00000080	//serverinfo+userinfo lengths can be MUCH higher (protocol is unbounded, but expect low sanity limits on userinfo), and contain nulls etc.
+#define PEXT2_CLIENTSUPPORT			(PEXT2_PRYDONCURSOR|PEXT2_VOICECHAT|PEXT2_SETANGLEDELTA|PEXT2_REPLACEMENTDELTAS|PEXT2_MAXPLAYERS|PEXT2_PREDINFO|PEXT2_NEWSIZEENCODING|PEXT2_INFOBLOBS)
 
 //EzQuake/Mvdsv extensions
 #define EZPEXT1_FLOATENTCOORDS		0x00000001	//quirky - doesn't apply to broadcasts, just players+ents. this gives more precision, but will bug out if you try using it to increase map bounds in ways that may not be immediately apparent. iiuc this was added instead of fixing some inconsistent rounding...
 #define EZPEXT1_SETANGLEREASON		0x00000002	//specifies the reason for an svc_setangles call. the mvdsv implementation will fuck over any mods that writebyte them. we'd need to modify our preparse stuff to work around the issue.
+#define EZPEXT1_SERVERADVERTISE		0
+#define EZPEXT1_CLIENTADVERTISE		0			//
+#define EZPEXT1_CLIENTSUPPORT		(EZPEXT1_FLOATENTCOORDS|EZPEXT1_SETANGLEREASON)	//ones we can support in demos. warning if other bits.
 
 //ZQuake transparent protocol extensions.
 #define Z_EXT_PM_TYPE		(1<<0)	// basic PM_TYPE functionality (reliable jump_held)
@@ -92,15 +97,16 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define Z_EXT_JOIN_OBSERVE	(1<<5)	// server: "join" and "observe" commands are supported
 									// client: on-the-fly spectator <-> player switching supported
 
-//#define Z_EXT_PF_ONGROUND	(1<<6)	// server: PF_ONGROUND is valid for all svc_playerinfo
+#define Z_EXT_PF_ONGROUND	(1<<6)	// server: PF_ONGROUND is valid for all svc_playerinfo
 #define Z_EXT_VWEP			(1<<7)
-//#define Z_EXT_PF_SOLID		(1<<8)	//conflicts with many FTE extensions.
+#define Z_EXT_PF_SOLID		(1<<8)	//conflicts with many FTE extensions.
 
 #ifdef QUAKESTATS
-#define SUPPORTED_Z_EXTENSIONS (Z_EXT_PM_TYPE|Z_EXT_PM_TYPE_NEW|Z_EXT_VIEWHEIGHT|Z_EXT_SERVERTIME|Z_EXT_PITCHLIMITS|Z_EXT_JOIN_OBSERVE|Z_EXT_VWEP)
+#define SERVER_SUPPORTED_Z_EXTENSIONS (Z_EXT_PM_TYPE|Z_EXT_PM_TYPE_NEW|Z_EXT_VIEWHEIGHT|Z_EXT_SERVERTIME|Z_EXT_PITCHLIMITS|Z_EXT_JOIN_OBSERVE/*|Z_EXT_PF_ONGROUND*/|Z_EXT_VWEP/*|Z_EXT_PF_SOLID*/)
 #else
-#define SUPPORTED_Z_EXTENSIONS (Z_EXT_PM_TYPE|Z_EXT_PM_TYPE_NEW|Z_EXT_PITCHLIMITS|Z_EXT_JOIN_OBSERVE|Z_EXT_VWEP)
+#define SERVER_SUPPORTED_Z_EXTENSIONS (Z_EXT_PM_TYPE|Z_EXT_PM_TYPE_NEW|Z_EXT_PITCHLIMITS|Z_EXT_JOIN_OBSERVE/*|Z_EXT_PF_ONGROUND*/|Z_EXT_VWEP/*|Z_EXT_PF_SOLID*/)
 #endif
+#define CLIENT_SUPPORTED_Z_EXTENSIONS (SERVER_SUPPORTED_Z_EXTENSIONS|Z_EXT_PF_ONGROUND|Z_EXT_PF_SOLID)
 
 
 #define PROTOCOL_VERSION_VARLENGTH		(('v'<<0) + ('l'<<8) + ('e'<<16) + ('n' << 24))	//variable length handshake
@@ -313,6 +319,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define svcfte_updateentities		86
 #define svcfte_brushedit			87	// networked brush editing, paired with clcfte_brushedit.
 #define	svcfte_updateseats			88	// byte count, byte playernum[count]
+#define svcfte_setinfoblob			89	// [8] 1-based index [string] key [32] isfinal<<31|offset [16] chunksize [chunksize] data
 
 
 //fitz svcs
@@ -519,29 +526,30 @@ enum {
 #define	PF_GIB			(1<<10)		// offset the view height differently
 
 //ZQuake.
-#define	PF_PMC_MASK		((1<<11)	+\
-						 (1<<12)	+\
+#define	PF_PMC_MASK		((1<<11) | \
+						 (1<<12) | \
 						 (1<<13))
-
-
 #ifdef PEXT_HULLSIZE
-#define	PF_HULLSIZE_Z		(1<<14)
+#define	PF_HULLSIZE_Z	(1<<14)
 #endif
 #define PF_EXTRA_PFS	(1<<15)
 
 #ifdef PEXT_SCALE
-#define	PF_SCALE			(1<<16)
+#define	PF_SCALE		(1<<16)
 #endif
 #ifdef PEXT_TRANS
-#define	PF_TRANS			(1<<17)
+#define	PF_TRANS		(1<<17)
 #endif
 #ifdef PEXT_FATNESS
 #define	PF_FATNESS		(1<<18)
 #endif
 
-#define	PF_COLOURMOD		(1<<19)
+#define	PF_COLOURMOD	(1<<19)
+//#define	PF_UNUSED	(1<<20)	//remember to faff with zext
+//#define	PF_UNUSED	(1<<21)	//remember to faff with zext
 //note that if you add any more, you may need to change the check in the client so more can be parsed
-
+#define PF_ONGROUND		(1<<22)	//or 14, depending on extensions... messy.
+#define PF_SOLID		(1<<23) //or 15, depending on extensions... messy.
 
 
 #define PF_PMC_SHIFT	11
@@ -1087,7 +1095,7 @@ typedef struct entity_state_s
 		struct
 		{
 			/*info to predict other players, so I don't get yelled at if fte were to stop supporting it*/
-			qbyte pmovetype;
+			qbyte pmovetype;	//&128 means onground.
 			qbyte msec;
 			short vangle[3];
 
