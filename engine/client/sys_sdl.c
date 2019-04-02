@@ -779,3 +779,9 @@ qboolean Sys_EngineWasUpdated(char *newbinary)
 	return false;	//sorry
 }
 #endif
+#ifdef WEBCLIENT
+qboolean Sys_RunInstaller(void)
+{
+	return false;
+}
+#endif
