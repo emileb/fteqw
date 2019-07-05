@@ -234,6 +234,9 @@ static qboolean QDECL SDL_InitCard(soundcardinfo_t *sc, const char *devicename)
 	desired.freq = sc->sn.speed;
 	desired.channels = sc->sn.numchannels;	//fixme!
 	desired.samples = 0x0200;	//'Good values seem to range between 512 and 8192 inclusive, depending on the application and CPU speed.'
+#ifdef __ANDROID__
+	desired.samples = 2048;
+#endif
 	desired.callback = (void*)SSDL_Paint;
 	desired.userdata = sc;
 	memcpy(&obtained, &desired, sizeof(obtained));
