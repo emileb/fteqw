@@ -143,7 +143,7 @@ static const char *svc_qwstrings[] =
 	"svcfte_movepic",
 	"svcfte_updatepic",
 
-	"???",
+	"NEW PROTOCOL(73)",
 
 	"svcfte_effect",
 	"svcfte_effect2",
@@ -165,26 +165,26 @@ static const char *svc_qwstrings[] =
 	"svcfte_updateentities",
 	"svcfte_brushedit",
 	"svcfte_updateseats",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
+	"svcfte_setinfoblob",	//89
+	"NEW PROTOCOL(90)",
+	"NEW PROTOCOL(91)",
+	"NEW PROTOCOL(92)",
+	"NEW PROTOCOL(93)",
+	"NEW PROTOCOL(94)",
+	"NEW PROTOCOL(95)",
+	"NEW PROTOCOL(96)",
+	"NEW PROTOCOL(97)",
+	"NEW PROTOCOL(98)",
+	"NEW PROTOCOL(99)",
+	"NEW PROTOCOL(100)",
+	"NEW PROTOCOL(101)",
+	"NEW PROTOCOL(102)",
+	"NEW PROTOCOL(103)",
+	"NEW PROTOCOL(104)",
+	"NEW PROTOCOL(105)",
+	"NEW PROTOCOL(106)",
+	"NEW PROTOCOL(107)",
+	"NEW PROTOCOL(108)",
 };
 
 #ifdef NQPROT
@@ -286,7 +286,8 @@ static const char *svc_nqstrings[] =
 	"nqsvcfte_setangledelta(85)",	//85
 	"nqsvcfte_updateentities",	//86
 	"NEW PROTOCOL(87)",	//87
-	"NEW PROTOCOL(88)"	//88
+	"NEW PROTOCOL(88)",	//88
+	"svcfte_setinfoblob"//89
 };
 #endif
 
@@ -848,7 +849,7 @@ void CL_DownloadFinished(qdownload_t *dl)
 					break;
 				}
 			}
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 			for (i = 0; i < MAX_VWEP_MODELS; i++)
 			{
 				if (!strcmp(cl.model_name_vwep[i], filename))
@@ -942,6 +943,10 @@ qboolean	CL_CheckOrEnqueDownloadFile (const char *filename, const char *localnam
 	if (cls.demorecording)
 	{
 		Con_TPrintf ("Unable to download %s in record mode.\n", filename);
+#if defined(MVD_RECORDING) && defined(HAVE_SERVER)
+		if (sv_demoAutoRecord.ival)
+			Con_TPrintf ("Note that ^[%s\\cmd\\%s 0\\^] is enabled.\n", sv_demoAutoRecord.name, sv_demoAutoRecord.name);
+#endif
 		return true;
 	}
 	//ZOID - can't download when playback
@@ -1186,7 +1191,7 @@ static void Model_CheckDownloads (void)
 		CL_CheckModelResources(s);
 	}
 
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 	for (i = 0; i < MAX_VWEP_MODELS; i++)
 	{
 		s = cl.model_name_vwep[i];
@@ -1339,7 +1344,7 @@ static int CL_LoadModels(int stage, qboolean dontactuallyload)
 				endstage();
 			}
 		}
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 		for (i = 0; i < MAX_VWEP_MODELS; i++)
 		{
 			if (!cl.model_name_vwep[i][0])
@@ -3099,7 +3104,7 @@ static void CLQW_ParseServerData (void)
 	for(;;)
 	{
 		protover = MSG_ReadLong ();
-		if (protover == PROTOCOL_VERSION_FTE)
+		if (protover == PROTOCOL_VERSION_FTE1)
 		{
 			cls.fteprotocolextensions = MSG_ReadLong();
 			continue;
@@ -3417,7 +3422,7 @@ static void CLQ2_ParseServerData (void)
 // parse protocol version number
 	i = MSG_ReadLong ();
 
-	if (i == PROTOCOL_VERSION_FTE)
+	if (i == PROTOCOL_VERSION_FTE1)
 	{
 		cls.fteprotocolextensions = i = MSG_ReadLong();
 //		if (i & PEXT_FLOATCOORDS)
@@ -3577,7 +3582,7 @@ static void CLNQ_ParseProtoVersion(void)
 		protover = MSG_ReadLong ();
 		switch(protover)
 		{
-		case PROTOCOL_VERSION_FTE:
+		case PROTOCOL_VERSION_FTE1:
 			cls.fteprotocolextensions = MSG_ReadLong();
 			continue;
 		case PROTOCOL_VERSION_FTE2:
@@ -3595,7 +3600,7 @@ static void CLNQ_ParseProtoVersion(void)
 	cls.protocol_nq = CPNQ_ID;
 	cls.z_ext = 0;
 
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 	if (protover == PROTOCOL_VERSION_NQ && cls.demoplayback)
 	{
 		if (!Q_strcasecmp(FS_GetGamedir(true), "nehahra"))
@@ -3880,10 +3885,7 @@ static void CLNQ_ParseServerData(void)		//Doesn't change gamedir - use with caut
 }
 static void CLNQ_SendInitialUserInfo(void *ctx, const char *key, const char *value)
 {
-	char keybuf[2048];
-	char valbuf[4096];
-	#warning FIXME: use CL_SendUserinfoUpdate or something
-	CL_SendClientCommand(true, "setinfo %s %s\n", COM_QuotedString(key, keybuf, sizeof(keybuf), false), COM_QuotedString(value, valbuf, sizeof(valbuf), false));
+	InfoSync_Add(&cls.userinfosync, ctx, key);
 }
 void CLNQ_SignonReply (void)
 {
@@ -3907,7 +3909,7 @@ Con_DPrintf ("CL_SignonReply: %i\n", cls.signon);
 		CL_SendClientCommand(true, "name \"%s\"\n", name.string);
 		CL_SendClientCommand(true, "color %i %i\n", topcolor.ival, bottomcolor.ival);
 		if (cl.haveserverinfo)
-			InfoBuf_Enumerate(&cls.userinfo[0], NULL, CLNQ_SendInitialUserInfo);
+			InfoBuf_Enumerate(&cls.userinfo[0], &cls.userinfo[0], CLNQ_SendInitialUserInfo);
 		else if (CPNQ_IS_DP)
 		{	//dp needs a couple of extras to work properly in certain cases. don't send them on other servers because that generally results in error messages.
 			CL_SendClientCommand(true, "rate %s", rate.string);
@@ -4191,7 +4193,7 @@ static void CL_ParseModellist (qboolean lots)
 			cl_spikeindex = nummodels;
 		if (!strcmp(cl.model_name[nummodels],"progs/player.mdl"))
 			cl_playerindex = nummodels;
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 		if (*cl.model_name_vwep[0] && !strcmp(cl.model_name[nummodels],cl.model_name_vwep[0]) && cl_playerindex == -1)
 			cl_playerindex = nummodels;
 #endif
@@ -4593,7 +4595,7 @@ static void CL_ParseStaticProt (int baselinetype)
 	cl_static_entities[i].state = es;
 	ent = &cl_static_entities[i].ent;
 	V_ClearEntity(ent);
-	memset(&cl_static_entities[i].pvscache, 0, sizeof(cl_static_entities[i].pvscache));
+	memset(&cl_static_entities[i].ent.pvscache, 0, sizeof(cl_static_entities[i].ent.pvscache));
 
 	ent->keynum = es.number;
 
@@ -4662,7 +4664,7 @@ static void CL_ParseStaticProt (int baselinetype)
 		VectorCopy(es.origin, mins);
 		VectorCopy(es.origin, maxs);
 	}
-	cl.worldmodel->funcs.FindTouchedLeafs(cl.worldmodel, &cl_static_entities[i].pvscache, mins, maxs);
+	cl.worldmodel->funcs.FindTouchedLeafs(cl.worldmodel, &cl_static_entities[i].ent.pvscache, mins, maxs);
 
 #ifdef RTLIGHTS
 	//and now handle any rtlight fields on it
@@ -5239,6 +5241,8 @@ static void CL_ProcessUserInfo (int slot, player_info_t *player)
 	CL_NewTranslation (slot);
 #endif
 	Sbar_Changed ();
+
+	CSQC_PlayerInfoChanged(slot);
 }
 
 /*
@@ -5287,7 +5291,11 @@ static void CL_ParseSetInfoBlob (void)
 	key = InfoBuf_DecodeString(key, key+strlen(key), &keysize);
 
 	if (slot-- == 0)
+	{
 		InfoBuf_SyncReceive(&cl.serverinfo, key, keysize, val, valsize, offset, final);
+		if (final)
+			CL_CheckServerInfo();
+	}
 	else if (slot >= MAX_CLIENTS)
 		Con_Printf("INVALID SETINFO %i: %s=%s\n", slot, key, val);
 	else
@@ -6384,7 +6392,7 @@ static void CL_ParseStuffCmd(char *msg, int destsplit)	//this protects stuffcmds
 			cl.serverpakschanged = true;
 			CL_CheckServerPacks();
 		}
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 		else if (!strncmp(stufftext, "//vwep ", 7))			//list of vwep model indexes, because using the normal model precaches wasn't cool enough
 		{													//(from zquake/ezquake)
 			int i;
@@ -6653,11 +6661,14 @@ static void CL_ParsePortalState(void)
 			a1 = MSG_ReadShort();
 		else
 			a1 = MSG_ReadByte();
+		if (cl.worldmodel && cl.worldmodel->loadstate==MLS_LOADED && cl.worldmodel->fromgame == fg_quake2)
+		{
 #ifdef Q2BSPS
-		CMQ2_SetAreaPortalState(cl.worldmodel, a1, !!(mode&1));
+			CMQ2_SetAreaPortalState(cl.worldmodel, a1, !!(mode&1));
 #else
-		(void)a1;
+			(void)a1;
 #endif
+		}
 		break;
 	case 0xc0:
 		if (mode&2)
@@ -6670,20 +6681,26 @@ static void CL_ParsePortalState(void)
 			a1 = MSG_ReadByte();
 			a2 = MSG_ReadByte();
 		}
+		if (cl.worldmodel && cl.worldmodel->loadstate==MLS_LOADED && cl.worldmodel->fromgame == fg_quake3)
+		{
 #ifdef Q3BSPS
-		CMQ3_SetAreaPortalState(cl.worldmodel, a1, a2, !!(mode&1));
+			CMQ3_SetAreaPortalState(cl.worldmodel, a1, a2, !!(mode&1));
 #else
-		(void)a1;
-		(void)a2;
+			(void)a1;
+			(void)a2;
 #endif
+		}
 		break;
 
 	default:
 		//to be phased out.
 		mode |= MSG_ReadByte()<<8;
+		if (cl.worldmodel && cl.worldmodel->loadstate==MLS_LOADED && cl.worldmodel->fromgame == fg_quake2)
+		{
 #ifdef Q2BSPS
-		CMQ2_SetAreaPortalState(cl.worldmodel, mode & 0x7fff, !!(mode&0x8000));
+			CMQ2_SetAreaPortalState(cl.worldmodel, mode & 0x7fff, !!(mode&0x8000));
 #endif
+		}
 		break;
 	}
 }

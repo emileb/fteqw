@@ -138,7 +138,7 @@ qboolean World_BoxTrace(struct model_s *model, int hulloverride, int frame, vec3
 	VectorCopy (p2, trace->endpos);
 	return Q1BSP_RecursiveHullCheck (hull, hull->firstclipnode, p1, p2, against, trace);
 }
-qboolean World_CapsuleTrace(struct model_s *model, int hulloverride, framestate_t *framestate, vec3_t axis[3], vec3_t p1, vec3_t p2, vec3_t mins, vec3_t maxs, qboolean capsule, unsigned int against, struct trace_s *trace)
+qboolean World_CapsuleTrace(struct model_s *model, int hulloverride, const framestate_t *framestate, const vec3_t axis[3], const vec3_t p1, const vec3_t p2, const vec3_t mins, const vec3_t maxs, qboolean capsule, unsigned int against, struct trace_s *trace)
 {
 	//bbox vs capsule (NYI)
 	//capsule vs capsule (NYI)
@@ -196,7 +196,7 @@ qboolean World_CapsuleTrace(struct model_s *model, int hulloverride, framestate_
 	}
 	return false;
 }
-model_t *World_CapsuleForBox(vec3_t mins, vec3_t maxs)
+model_t *World_CapsuleForBox(const vec3_t mins, const vec3_t maxs)
 {
 	VectorCopy(mins, mod_capsule.mins);
 	VectorCopy(maxs, mod_capsule.maxs);
@@ -1068,7 +1068,7 @@ void WorldQ2_Q1BSP_LinkEdict(world_t *w, q2edict_t *ent)
 
 
 #if defined(Q2BSPS) || defined(Q3BSPS)
-void Q23BSP_FindTouchedLeafs(model_t *model, struct pvscache_s *ent, float *mins, float *maxs)
+void Q23BSP_FindTouchedLeafs(model_t *model, struct pvscache_s *ent, const float *mins, const float *maxs)
 {
 #define MAX_TOTAL_ENT_LEAFS		128
 	int			leafs[MAX_TOTAL_ENT_LEAFS];
@@ -1536,7 +1536,7 @@ int World_AreaEdicts (world_t *w, vec3_t mins, vec3_t maxs, wedict_t **list, int
 #endif
 
 #ifdef Q2SERVER
-float	*area_mins, *area_maxs;
+const float	*area_mins, *area_maxs;
 q2edict_t	**area_q2list;
 int		area_count, area_maxcount;
 int		area_type;
@@ -1598,7 +1598,7 @@ static void WorldQ2_AreaEdicts_r (areanode_t *node)
 		WorldQ2_AreaEdicts_r ( node->children[1] );
 }
 
-int VARGS WorldQ2_AreaEdicts (world_t *w, vec3_t mins, vec3_t maxs, q2edict_t **list,
+int VARGS WorldQ2_AreaEdicts (world_t *w, const vec3_t mins, const vec3_t maxs, q2edict_t **list,
 	int maxcount, int areatype)
 {
 	area_mins = mins;
@@ -2229,7 +2229,7 @@ static void World_ClipToLinks (world_t *w, areanode_t *node, moveclip_t *clip)
 }
 #endif
 
-#ifdef HAVE_CLIENT
+#if defined(HAVE_CLIENT) && defined(CSQC_DAT)
 //The logic of this function is seriously handicapped vs the other types of trace we could be doing.
 static void World_ClipToNetwork (world_t *w, moveclip_t *clip)
 {
@@ -2510,7 +2510,7 @@ trace_t World_Move (world_t *w, vec3_t start, vec3_t mins, vec3_t maxs, vec3_t e
 
 	if (passedict->xv->hitcontentsmaski)
 		clip.hitcontentsmask = passedict->xv->hitcontentsmaski;
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 	else if (passedict->xv->dphitcontentsmask)
 	{
 		unsigned int nm=0, fl = passedict->xv->dphitcontentsmask;
@@ -2544,7 +2544,7 @@ trace_t World_Move (world_t *w, vec3_t start, vec3_t mins, vec3_t maxs, vec3_t e
 		clip.hitcontentsmask = nm;
 	}
 #endif
-/*#ifndef NOLEGACY
+/*#ifdef HAVE_LEGACY
 	else if (passedict->xv->hitcontentsmask)
 		clip.hitcontentsmask = passedict->xv->hitcontentsmask;
 #endif*/
@@ -2570,7 +2570,7 @@ trace_t World_Move (world_t *w, vec3_t start, vec3_t mins, vec3_t maxs, vec3_t e
 		wedict_t *other = WEDICT_NUM_UB(w->progs, *w->g.other);
 		return World_ClipMoveToEntity (w, other, other->v->origin, other->v->angles, start, mins, maxs, end, hullnum, type & MOVE_HITMODEL, clip.capsule, clip.hitcontentsmask);
 	}
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 	if ((type&MOVE_WORLDONLY) == MOVE_WORLDONLY)
 	{	//for compat with DP
 		wedict_t *other = w->edicts;
@@ -2766,7 +2766,7 @@ trace_t World_Move (world_t *w, vec3_t start, vec3_t mins, vec3_t maxs, vec3_t e
 		World_ClipToLinks(w, &w->portallist, &clip);
 	}
 
-#ifdef HAVE_CLIENT
+#if defined(HAVE_CLIENT) && defined(CSQC_DAT)
 	{
 		extern world_t csqc_world;
 		if (w == &csqc_world)

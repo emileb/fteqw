@@ -29,7 +29,7 @@ static void QDECL r_meshpitch_callback(cvar_t *var, char *oldvalue)
 	else
 		Cvar_ForceSet(var, "1");
 }
-#ifdef NOLEGACY
+#ifndef HAVE_LEGACY
 cvar_t r_meshpitch							= CVARCD	("r_meshpitch", "1", r_meshpitch_callback, "Specifies the direction of the pitch angle on mesh models formats, also affects gamecode, so do not change from its default.");
 #else
 cvar_t r_meshpitch							= CVARCD	("r_meshpitch", "-1", r_meshpitch_callback, "Specifies the direction of the pitch angle on mesh models formats, Quake compatibility requires -1.");
@@ -1010,7 +1010,7 @@ typedef struct
 	float		frac[FRAME_BLENDS*2];	//weight of this animation (1 if lerpcount is 1)
 	float		*pose[FRAME_BLENDS*2];	//pointer to the raw frame data for bone 0.
 } skellerps_t;
-static qboolean Alias_BuildSkelLerps(skellerps_t *lerps, struct framestateregion_s *fs, int numbones, galiasinfo_t *inf)
+static qboolean Alias_BuildSkelLerps(skellerps_t *lerps, const struct framestateregion_s *fs, int numbones, const galiasinfo_t *inf)
 {
 	int frame1;	//signed, because frametime might be negative...
 	int frame2;
@@ -1129,7 +1129,7 @@ static qboolean Alias_BuildSkelLerps(skellerps_t *lerps, struct framestateregion
 /*
 finds the various blend info. returns number of bone blocks used.
 */
-static int Alias_FindRawSkelData(galiasinfo_t *inf, framestate_t *fstate, skellerps_t *lerps, size_t firstbone, size_t lastbone)
+static int Alias_FindRawSkelData(galiasinfo_t *inf, const framestate_t *fstate, skellerps_t *lerps, size_t firstbone, size_t lastbone)
 {
 	int bonegroup;
 	int cbone = 0;
@@ -1220,7 +1220,7 @@ static int Alias_BlendBoneData(galiasinfo_t *inf, framestate_t *fstate, float *r
 only writes targetbuffer if needed. the return value is the only real buffer result.
 assumes that all blended types are the same. probably buggy, but meh.
 */
-static const float *Alias_GetBoneInformation(galiasinfo_t *inf, framestate_t *framestate, skeltype_t targettype, float *targetbuffer, float *targetbufferalt, size_t maxbufferbones)
+static const float *Alias_GetBoneInformation(galiasinfo_t *inf, const framestate_t *framestate, skeltype_t targettype, float *targetbuffer, float *targetbufferalt, size_t maxbufferbones)
 {
 	skellerps_t lerps[FS_COUNT], *lerp;
 	size_t numgroups;
@@ -2215,7 +2215,7 @@ void Mod_AddSingleSurface(entity_t *ent, int surfaceidx, shader_t *shader, qbool
 #endif
 
 
-static float PlaneNearest(vec3_t normal, vec3_t mins, vec3_t maxs)
+static float PlaneNearest(const vec3_t normal, const vec3_t mins, const vec3_t maxs)
 {
 	float result;
 #if 0
@@ -2235,7 +2235,7 @@ static float PlaneNearest(vec3_t normal, vec3_t mins, vec3_t maxs)
 }
 
 void CLQ1_DrawLine(shader_t *shader, vec3_t v1, vec3_t v2, float r, float g, float b, float a);
-static qboolean Mod_Trace_Trisoup(vecV_t *posedata, index_t *indexes, int numindexes, vec3_t start, vec3_t end, vec3_t mins, vec3_t maxs, trace_t *trace)
+static qboolean Mod_Trace_Trisoup(vecV_t *posedata, index_t *indexes, int numindexes, const vec3_t start, const vec3_t end, const vec3_t mins, const vec3_t maxs, trace_t *fte_restrict trace)
 {
 	qboolean impacted = false;
 	int i, j;
@@ -2412,7 +2412,7 @@ static qboolean Mod_Trace_Trisoup(vecV_t *posedata, index_t *indexes, int numind
 }
 
 //The whole reason why model loading is supported in the server.
-static qboolean Mod_Trace(model_t *model, int forcehullnum, framestate_t *framestate, vec3_t axis[3], vec3_t start, vec3_t end, vec3_t mins, vec3_t maxs, qboolean capsule, unsigned int contentsmask, trace_t *trace)
+static qboolean Mod_Trace(model_t *model, int forcehullnum, const framestate_t *framestate, const vec3_t axis[3], const vec3_t start, const vec3_t end, const vec3_t mins, const vec3_t maxs, qboolean capsule, unsigned int contentsmask, trace_t *trace)
 {
 	galiasinfo_t *mod = Mod_Extradata(model);
 
@@ -3362,10 +3362,15 @@ static void *Q1MDL_LoadFrameGroup (galiasinfo_t *galias, dmdl_t *pq1inmodel, mod
 			galias->numanimations++;
 
 			intervals = (daliasinterval_t *)(ingroup+1);
-			sinter = LittleFloat(intervals->interval);
-			if (sinter <= 0)
-				sinter = 0.1;
-			frame->rate = 1/sinter;
+			if (frame->numposes == 0)
+				frame->rate = 10;
+			else
+			{
+				sinter = LittleFloat(intervals->interval);
+				if (sinter <= 0)
+					sinter = 0.1;
+				frame->rate = 1/sinter;
+			}
 
 			pinframe = (dtrivertx_t *)(intervals+frame->numposes);
 			for (k = 0; k < frame->numposes; k++)
@@ -6300,7 +6305,7 @@ static qboolean QDECL Mod_LoadPSKModel(model_t *mod, void *buffer, size_t fsize)
 			}
 			num_animinfo = numgroups;
 		}
-#ifdef NOLEGACY
+#ifndef HAVE_LEGACY
 		else if (dpcompat_psa_ungroup.ival)
 		{
 			/*unpack each frame of each animation to be a separate framegroup*/
@@ -8161,7 +8166,7 @@ static galiasinfo_t *Mod_ParseMD5MeshModel(model_t *mod, char *buffer, char *mod
 		else if (!strcmp(token, "numJoints"))
 		{
 			if (numjoints)
-				MD5ERROR0PARAM("MD5MESH: numMeshes was already declared");
+				MD5ERROR0PARAM("MD5MESH: numJoints was already declared");
 			buffer = COM_ParseOut(buffer, token, sizeof(token));
 			numjoints = atoi(token);
 			if (numjoints <= 0)

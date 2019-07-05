@@ -1335,7 +1335,7 @@ menucombo_t *MC_AddCombo(menu_t *menu, int tx, int cx, int y, const char *captio
 	}
 	newops[i] = NULL;
 
-	if (initialvalue >= n->numoptions)
+	if (initialvalue && initialvalue >= n->numoptions)
 	{
 		Con_Printf("WARNING: Fixed initialvalue for %s\n", caption);
 		initialvalue = n->numoptions-1;
@@ -1583,6 +1583,13 @@ void MC_Slider_Key(menuslider_t *option, int key)
 		}
 		option->current = range;
 	}
+	else if (key == K_DEL || key == K_BACKSPACE)
+	{
+		if (option->var && option->var->defaultstr)
+			option->current = atof(option->var->defaultstr);
+		else
+			option->current = (option->max-option->min)/2;
+	}
 	else
 		return;
 
@@ -1674,7 +1681,7 @@ changed:
 	{
 		combo->selectedoption--;
 		if (combo->selectedoption < 0)
-			combo->selectedoption = combo->numoptions-1;
+			combo->selectedoption = combo->numoptions?combo->numoptions-1:0;
 		goto changed;
 	}
 }
@@ -2119,7 +2126,14 @@ static int M_Main_AddExtraOptions(menu_t *mainm, int y)
 	else if (PM_CanInstall("qi"))
 		{MC_AddConsoleCommandQBigFont(mainm, 72, y,	"Get Quake Injector", "pkg reset; pkg add qi; pkg apply\n");	y += 20;}
 	if (Cmd_Exists("menu_download"))
-		{MC_AddConsoleCommandQBigFont(mainm, 72, y,	"Updates       ", "menu_download\n");	y += 20;}
+	{
+#ifdef WEBCLIENT
+		MC_AddConsoleCommandQBigFont(mainm, 72, y,	"Updates       ", "menu_download\n");	y += 20;
+#else
+		MC_AddConsoleCommandQBigFont(mainm, 72, y,	"Packages      ", "menu_download\n");
+#endif
+		y += 20;
+	}
 
 	return y;
 }

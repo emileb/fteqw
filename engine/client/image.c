@@ -662,12 +662,17 @@ qbyte *ReadTargaFile(qbyte *buf, int length, int *width, int *height, uploadfmt_
 			return NULL;
 
 		mul = tgaheader.bpp/8;
-		*format = (mul==4)?PTI_RGBA8:PTI_RGBX8;;
 //flip +convert to 32 bit
 		if (forceformat==PTI_L8)
+		{
+			*format = forceformat;
 			outrow = &initbuf[(int)(0)*tgaheader.width];
+		}
 		else
+		{
 			outrow = &initbuf[(int)(0)*tgaheader.width*mul];
+			*format = (mul==4)?PTI_RGBA8:PTI_RGBX8;
+		}
 		for (y = 0; y < tgaheader.height; y+=1)
 		{
 			if (flipped)
@@ -786,6 +791,7 @@ qbyte *ReadTargaFile(qbyte *buf, int length, int *width, int *height, uploadfmt_
 
 qboolean WriteTGA(char *filename, enum fs_relative fsroot, const qbyte *fte_restrict rgb_buffer, int bytestride, int width, int height, enum uploadfmt fmt)
 {
+	qboolean success = false;
 	size_t c, i;
 	vfsfile_t *vfs;
 	if (fmt != TF_BGRA32 && fmt != TF_RGB24 && fmt != TF_RGBA32 && fmt != TF_BGR24 && fmt != TF_RGBX32 && fmt != TF_BGRX32)
@@ -877,9 +883,9 @@ qboolean WriteTGA(char *filename, enum fs_relative fsroot, const qbyte *fte_rest
 			free(rgb_out);
 		}
 
-		VFS_CLOSE(vfs);
+		success = VFS_CLOSE(vfs);
 	}
-	return true;
+	return success;
 }
 
 #ifdef AVAIL_PNGLIB
@@ -1411,8 +1417,10 @@ err:
 	qpng_write_end(png_ptr, info_ptr);
 	BZ_Free(row_pointers);
 	qpng_destroy_write_struct(&png_ptr, &info_ptr);
-	fclose(fp);
-	return true;
+	if (0==fclose(fp))
+		return true;
+	Con_Printf("File error writing %s\n", filename);
+	return false;
 }
 #endif
 
@@ -2553,6 +2561,7 @@ qboolean WriteBMPFile(char *filename, enum fs_relative fsroot, qbyte *in, int in
 	int bits = 32;
 	int extraheadersize = sizeof(h4);
 	size_t fsize;
+	qboolean success;
 
 	memset(&h4, 0, sizeof(h4));
 	h4.ColourSpace[0] = 'W';
@@ -2669,10 +2678,10 @@ qboolean WriteBMPFile(char *filename, enum fs_relative fsroot, qbyte *in, int in
 		in += instride;
 	}
 
-	COM_WriteFile(filename, fsroot, data, fsize);
+	success = COM_WriteFile(filename, fsroot, data, fsize);
 	BZ_Free(data);
 
-	return true;
+	return success;
 }
 
 static qbyte *ReadICOFile(const char *fname, qbyte *buf, int length, int *width, int *height, uploadfmt_t *fmt)
@@ -2701,7 +2710,7 @@ static qbyte *ReadICOFile(const char *fname, qbyte *buf, int length, int *width,
 		size_t cc = img->wBitCount;
 		size_t px = (img->bWidth?img->bWidth:256) * (img->bHeight?img->bHeight:256);
 		if (!cc)	//if that was omitted, try and guess it based on raw image size. this is an over estimate.
-			cc = 8 * (bestimg->dwSize_low | (bestimg->dwSize_high<<16)) / px;
+			cc = 8 * (img->dwSize_low | (img->dwSize_high<<16)) / px;
 
 		if (!bestimg || cc > bestdepth || (cc == bestdepth && px > bestpixels))
 		{
@@ -3238,7 +3247,6 @@ void BoostGamma(qbyte *rgba, int width, int height, uploadfmt_t fmt)
 {
 	//note: should not be used where hardware gamma is supported.
 	int i;
-	extern qbyte gammatable[256];
 
 	switch(fmt)
 	{
@@ -4875,7 +4883,7 @@ static struct
 	{"textures/%s/%s%s",3, 1},	/*fuhquake compatibility*/
 	{"%s/%s%s",			3, 1},	/*fuhquake compatibility*/
 	{"textures/%s%s",	2, 1},	/*directly named texture with textures/ prefix*/
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 	{"override/%s%s",	2, 1}	/*tenebrae compatibility*/
 #endif
 };
@@ -5882,6 +5890,32 @@ static void Image_4X16to8888(struct pendingtextureinfo *mips)
 	}
 }
 
+//R8,G8,B8,X8 (aligned) -> R8,G8,B8 (tightly packed)
+static void Image_32To24(struct pendingtextureinfo *mips)
+{
+	int mip;
+	for (mip = 0; mip < mips->mipcount; mip++)
+	{
+		qbyte *in = mips->mip[mip].data;
+		qbyte *out = mips->mip[mip].data;
+		unsigned int w = mips->mip[mip].width;
+		unsigned int h = mips->mip[mip].height;
+		unsigned int p = w*h;
+		if (!mips->mip[mip].needfree && !mips->extrafree)
+		{
+			mips->mip[mip].needfree = true;
+			mips->mip[mip].data = out = BZ_Malloc(sizeof(*out)*p*3);
+		}
+		while(p-->0)
+		{
+			*out++ = *in++;
+			*out++ = *in++;
+			*out++ = *in++;
+			in++;
+		}
+	}
+}
+
 //may operate in place
 static void Image_8_BGR_RGB_Swap(qbyte *data, unsigned int w, unsigned int h)
 {
@@ -6538,12 +6572,12 @@ const char *Image_FormatName(uploadfmt_t fmt)
 	case PTI_ARGB1555:			return "ARGB1555";
 	case PTI_RGBA8:				return "RGBA8";
 	case PTI_RGBX8:				return "RGBX8";
-	case PTI_BGRA8:				return "RGBA8";
-	case PTI_BGRX8:				return "RGBX8";
+	case PTI_BGRA8:				return "BGRA8";
+	case PTI_BGRX8:				return "BGRX8";
 	case PTI_RGBA8_SRGB:		return "RGBA8_SRGB";
 	case PTI_RGBX8_SRGB:		return "RGBX8_SRGB";
-	case PTI_BGRA8_SRGB:		return "RGBA8_SRGB";
-	case PTI_BGRX8_SRGB:		return "RGBX8_SRGB";
+	case PTI_BGRA8_SRGB:		return "BGRA8_SRGB";
+	case PTI_BGRX8_SRGB:		return "BGRX8_SRGB";
 	case PTI_A2BGR10:			return "A2BGR10";
 	case PTI_E5BGR9:			return "E5BGR9";
 	case PTI_R16F:				return "R16F";
@@ -6945,6 +6979,12 @@ static void Image_ChangeFormat(struct pendingtextureinfo *mips, unsigned int fla
 	}
 
 	if ((mips->encoding == PTI_RGBX8 && sh_config.texfmt[PTI_BGRX8]) ||
+		(mips->encoding == PTI_BGRX8 && sh_config.texfmt[PTI_BGRX8]))
+	{
+		Image_32To24(mips);
+		mips->encoding = (mips->encoding == PTI_RGBX8)?PTI_RGB8:PTI_BGR8;
+	}
+	else if ((mips->encoding == PTI_RGBX8 && sh_config.texfmt[PTI_BGRX8]) ||
 		(mips->encoding == PTI_BGRX8 && sh_config.texfmt[PTI_RGBX8]) ||
 		(mips->encoding == PTI_RGBA8 && sh_config.texfmt[PTI_BGRA8]) ||
 		(mips->encoding == PTI_BGRA8 && sh_config.texfmt[PTI_RGBA8]))
@@ -8725,6 +8765,8 @@ image_t *QDECL Image_GetTexture(const char *identifier, const char *subpath, uns
 		case TF_HEIGHT8PAL:	//we don't care about the actual palette.
 			b *= 1;
 			break;
+//		case PTI_LLLX8:
+//		case PTI_LLLA8:
 		case TF_RGBX32:
 		case TF_RGBA32:
 		case TF_BGRX32:
@@ -8989,6 +9031,7 @@ void Image_List_f(void)
 		}
 		if (tex->subpath)
 			Con_Printf("^h(%s)^h", tex->subpath);
+		Con_DLPrintf(1, " %x", tex->flags);
 		
 		if (Image_LocateHighResTexture(tex, &loc, fname, sizeof(fname), &loadflags))
 		{

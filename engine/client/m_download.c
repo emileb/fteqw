@@ -33,10 +33,10 @@
 #else
 #define PHPMIN
 #endif
-#ifdef NOLEGACY
-#define PHPLEG "&leg=0&test=1"
-#else
+#ifdef HAVE_LEGACY
 #define PHPLEG "&leg=1&test=1"
+#else
+#define PHPLEG "&leg=0&test=1"
 #endif
 #if defined(_DEBUG) || defined(DEBUG)
 #define PHPDBG "&dbg=1"
@@ -165,6 +165,7 @@ typedef struct package_s {
 			DEP_FILECONFLICT,	//don't install if this file already exists.
 			DEP_REQUIRE,
 			DEP_RECOMMEND,	//like depend, but uninstalling will not bubble.
+			DEP_SUGGEST,	//like recommend, but will not force install (ie: only prevents auto-uninstall)
 //			DEP_MIRROR,
 //			DEP_FAILEDMIRROR,
 
@@ -213,6 +214,8 @@ static struct
 	struct dl_download *curdl;	//the download context
 } downloadablelist[32];
 static int downloadablessequence;	//bumped any time any package is purged
+
+static void PM_WriteInstalledPackages(void);
 
 static void PM_FreePackage(package_t *p)
 {
@@ -620,7 +623,7 @@ static void PM_RemSubList(const char *url)
 	}
 }
 
-static void PM_ParsePackageList(vfsfile_t *f, int parseflags, const char *url, const char *prefix)
+static qboolean PM_ParsePackageList(vfsfile_t *f, int parseflags, const char *url, const char *prefix)
 {
 	char line[65536];
 	package_t *p;
@@ -633,9 +636,10 @@ static void PM_ParsePackageList(vfsfile_t *f, int parseflags, const char *url, c
 	int nummirrors = 0;
 	qboolean isauto;
 	char *tokstart;
+	qboolean forcewrite = false;
 
 	if (!f)
-		return;
+		return forcewrite;
 
 	Q_strncpyz(defaultgamedir, FS_GetGamedir(false), sizeof(defaultgamedir));
 
@@ -659,13 +663,13 @@ static void PM_ParsePackageList(vfsfile_t *f, int parseflags, const char *url, c
 	} while (!Cmd_Argc());
 
 	if (strcmp(Cmd_Argv(0), "version"))
-		return;	//it's not the right format.
+		return forcewrite;	//it's not the right format.
 
 	version = atoi(Cmd_Argv(1));
 	if (version != 0 && version != 1 && version != 2)
 	{
 		Con_Printf("Packagelist is of a future or incompatible version\n");
-		return;	//it's not the right version.
+		return forcewrite;	//it's not the right version.
 	}
 
 	while(1)
@@ -690,6 +694,16 @@ static void PM_ParsePackageList(vfsfile_t *f, int parseflags, const char *url, c
 					subprefix = va("%s/%s", prefix, com_token);
 				else
 					subprefix = com_token;
+
+#ifdef HAVE_LEGACY
+				//hack. I'm trying to retire the self-signed cert on [fte.]triptohell.info
+				if (!strcmp(url, "https://triptohell.info/downloadables.php") || !strcmp(url, "https://fte.triptohell.info/downloadables.php"))
+				{
+					Q_strncpyz(url, "https://updates.triptohell.info/downloadables.php", sizeof(url));
+					forcewrite = true;
+				}
+#endif
+
 				PM_AddSubList(url, subprefix, (parseflags & DPF_ENABLED)?true:false, (parseflags&DPF_TRUSTED));
 				continue;
 			}
@@ -721,7 +735,7 @@ static void PM_ParsePackageList(vfsfile_t *f, int parseflags, const char *url, c
 				{
 					tokstart = COM_StringParse (tokstart, com_token, sizeof(com_token), false, false);
 					if (parseflags & DPF_ENABLED)	//don't use a downloaded file's version of this, only use the local version of it.
-						Cvar_ForceSet(&pm_autoupdate, com_token);
+						Cvar_ForceSet(&pkg_autoupdate, com_token);
 				}
 				else if (!strcmp(com_token, "declined"))
 				{
@@ -900,6 +914,8 @@ static void PM_ParsePackageList(vfsfile_t *f, int parseflags, const char *url, c
 						PM_AddDep(p, DEP_FILECONFLICT, val);
 					else if (!strcmp(key, "recommend"))
 						PM_AddDep(p, DEP_RECOMMEND, val);
+					else if (!strcmp(key, "suggest"))
+						PM_AddDep(p, DEP_SUGGEST, val);
 					else if (!strcmp(key, "test"))
 						flags |= DPF_TESTING;
 					else if (!strcmp(key, "stale") && version==2)
@@ -1038,6 +1054,8 @@ static void PM_ParsePackageList(vfsfile_t *f, int parseflags, const char *url, c
 			PM_InsertPackage(p);
 		}
 	}
+
+	return forcewrite;
 }
 
 #ifdef PLUGINS
@@ -1053,7 +1071,7 @@ void PM_EnumeratePlugins(void (*callback)(const char *name))
 			{
 				if (d->dtype == DEP_FILE)
 				{
-					if (!Q_strncasecmp(d->name, "fteplug_", 8))
+					if (!Q_strncasecmp(d->name, PLUGINPREFIX, strlen(PLUGINPREFIX)))
 						callback(d->name);
 				}
 			}
@@ -1063,7 +1081,6 @@ void PM_EnumeratePlugins(void (*callback)(const char *name))
 #endif
 
 #ifdef PLUGINS
-static void PM_WriteInstalledPackages(void);
 static package_t *PM_FindPackage(const char *packagename);
 static int QDECL PM_EnumeratedPlugin (const char *name, qofs_t size, time_t mtime, void *param, searchpathfuncs_t *spath)
 {
@@ -1078,8 +1095,8 @@ static int QDECL PM_EnumeratedPlugin (const char *name, qofs_t size, time_t mtim
 	char vmname[MAX_QPATH];
 	int len, l, a;
 	char *dot;
-	if (!strncmp(name, "fteplug_", 8))
-		Q_strncpyz(vmname, name+8, sizeof(vmname));
+	if (!strncmp(name, PLUGINPREFIX, strlen(PLUGINPREFIX)))
+		Q_strncpyz(vmname, name+strlen(PLUGINPREFIX), sizeof(vmname));
 	else
 		Q_strncpyz(vmname, name, sizeof(vmname));
 	len = strlen(vmname);
@@ -1165,7 +1182,8 @@ static void PM_PreparePackageList(void)
 		loadedinstalled = true;
 		if (f)
 		{
-			PM_ParsePackageList(f, DPF_FORGETONUNINSTALL|DPF_ENABLED, NULL, "");
+			if (PM_ParsePackageList(f, DPF_FORGETONUNINSTALL|DPF_ENABLED, NULL, ""))
+				PM_WriteInstalledPackages();
 			VFS_CLOSE(f);
 		}
 
@@ -1175,7 +1193,7 @@ static void PM_PreparePackageList(void)
 			char nat[MAX_OSPATH];
 			FS_NativePath("", FS_BINARYPATH, nat, sizeof(nat));
 			Con_DPrintf("Loading plugins from \"%s\"\n", nat);
-			Sys_EnumerateFiles(nat, "fteplug_*" ARCH_DL_POSTFIX, PM_EnumeratedPlugin, &foundone, NULL);
+			Sys_EnumerateFiles(nat, PLUGINPREFIX"*" ARCH_DL_POSTFIX, PM_EnumeratedPlugin, &foundone, NULL);
 			if (foundone && !pluginpromptshown)
 			{
 				pluginpromptshown = true;
@@ -1229,7 +1247,7 @@ void PM_LoadPackages(searchpath_t **oldpaths, const char *parent_pure, const cha
 void PM_Shutdown(void)
 {
 	//free everything...
-	pm_downloads_url.modified = false;
+	pkg_downloads_url.modified = false;
 
 	downloadablessequence++;
 
@@ -1314,7 +1332,7 @@ static qboolean PM_HasDependant(package_t *package, unsigned int markflag)
 	{
 		if (o->flags & markflag)
 			for (dep = o->deps; dep; dep = dep->next)
-				if (dep->dtype == DEP_REQUIRE || dep->dtype == DEP_RECOMMEND)
+				if (dep->dtype == DEP_REQUIRE || dep->dtype == DEP_RECOMMEND || dep->dtype == DEP_SUGGEST)
 					if (!strcmp(package->name, dep->name))
 						return true;
 	}
@@ -1389,6 +1407,15 @@ static void PM_MarkPackage(package_t *package, unsigned int markflag)
 		package->flags |= markflag;
 		return;	//looks like its already picked. marking it again will do no harm.
 	}
+
+#ifndef WEBCLIENT
+	//can't mark for download if we cannot download.
+	if (!(package->flags & DPF_PRESENT))
+	{	//though we can at least unmark it for deletion...
+		package->flags &= ~DPF_PURGE;
+		return;
+	}
+#endif
 
 	//any file-conflicts prevent the package from being installable.
 	//this is mostly for pak1.pak
@@ -1533,7 +1560,7 @@ unsigned int PM_MarkUpdates (void)
 	{
 		if ((p->flags & DPF_ENGINE) && !(p->flags & DPF_HIDDEN))
 		{
-			if (!(p->flags & DPF_TESTING) || pm_autoupdate.ival >= UPD_TESTING)
+			if (!(p->flags & DPF_TESTING) || pkg_autoupdate.ival >= UPD_TESTING)
 				if (!e || strcmp(e->version, p->version) < 0)	//package must be more recent than the previously found engine
 					if (strcmp(SVNREVISIONSTR, "-") && strcmp(SVNREVISIONSTR, p->version) < 0)	//package must be more recent than the current engine too, there's no point auto-updating to an older revision.
 						e = p;
@@ -1545,7 +1572,7 @@ unsigned int PM_MarkUpdates (void)
 			{
 				if (p == o || (o->flags & DPF_HIDDEN))
 					continue;
-				if (!(o->flags & DPF_TESTING) || pm_autoupdate.ival >= UPD_TESTING)
+				if (!(o->flags & DPF_TESTING) || pkg_autoupdate.ival >= UPD_TESTING)
 					if (!strcmp(o->name, p->name) && !strcmp(o->arch?o->arch:"", p->arch?p->arch:"") && strcmp(o->version, p->version) > 0)
 					{
 						if (!b || strcmp(b->version, o->version) < 0)
@@ -1563,7 +1590,7 @@ unsigned int PM_MarkUpdates (void)
 	}
 	if (e && !(e->flags & DPF_MARKED))
 	{
-		if (pm_autoupdate.ival >= UPD_STABLE)
+		if (pkg_autoupdate.ival >= UPD_STABLE)
 		{
 			changecount++;
 			PM_MarkPackage(e, DPF_AUTOMARKED);
@@ -1751,14 +1778,14 @@ static void PM_UpdatePackageList(qboolean autoupdate, int retry)
 {
 	unsigned int i;
 
-	if (retry>1 || pm_downloads_url.modified)
+	if (retry>1 || pkg_downloads_url.modified)
 		PM_Shutdown();
 
 	PM_PreparePackageList();
 
 	//make sure our sources are okay.
-	if (*pm_downloads_url.string)
-		PM_AddSubList(pm_downloads_url.string, "", false, true);
+	if (*pkg_downloads_url.string)
+		PM_AddSubList(pkg_downloads_url.string, "", false, true);
 
 #ifndef WEBCLIENT
 	for (i = 0; i < numdownloadablelists; i++)
@@ -1841,14 +1868,14 @@ static void PM_WriteInstalledPackages(void)
 	vfsfile_t *f = FS_OpenVFS(INSTALLEDFILES, "wb", FS_ROOT);
 	if (!f)
 	{
-		Con_Printf("menu_download: Can't update installed list\n");
+		Con_Printf("package manager: Can't update installed list\n");
 		return;
 	}
 
 	s = "version 2\n";
 	VFS_WRITE(f, s, strlen(s));
 
-	s = va("set updatemode %s\n", COM_QuotedString(pm_autoupdate.string, buf, sizeof(buf), false));
+	s = va("set updatemode %s\n", COM_QuotedString(pkg_autoupdate.string, buf, sizeof(buf), false));
 	VFS_WRITE(f, s, strlen(s));
 	s = va("set declined %s\n", COM_QuotedString(declinedpackages?declinedpackages:"", buf, sizeof(buf), false));
 	VFS_WRITE(f, s, strlen(s));
@@ -1881,7 +1908,7 @@ static void PM_WriteInstalledPackages(void)
 			if (*p->title && strcmp(p->title, p->name))
 			{
 				Q_strncatz(buf, " ", sizeof(buf));
-				COM_QuotedConcat(va("title=%s", p->version), buf, sizeof(buf));
+				COM_QuotedConcat(va("title=%s", p->title), buf, sizeof(buf));
 			}
 			if (*p->version)
 			{
@@ -2050,7 +2077,7 @@ static void PM_PackageEnabled(package_t *p)
 		if (!stricmp(ext, "pak") || !stricmp(ext, "pk3"))
 			FS_ReloadPackFiles();
 #ifdef PLUGINS
-		if ((p->flags & DPF_PLUGIN) && !Q_strncasecmp(dep->name, "fteplug_", 8))
+		if ((p->flags & DPF_PLUGIN) && !Q_strncasecmp(dep->name, PLUGINPREFIX, strlen(PLUGINPREFIX)))
 			Cmd_ExecuteString(va("plug_load %s\n", dep->name), RESTRICT_LOCAL);
 #endif
 #ifdef MENU_DAT
@@ -2147,7 +2174,7 @@ static void PM_Download_Got(struct dl_download *dl)
 				if (!stricmp(ext, "pak") || !stricmp(ext, "pk3"))
 					FS_UnloadPackFiles();	//we reload them after
 #ifdef PLUGINS
-				if ((!stricmp(ext, "dll") || !stricmp(ext, "so")) && !Q_strncmp(dep->name, "fteplug_", 8))
+				if ((!stricmp(ext, "dll") || !stricmp(ext, "so")) && !Q_strncmp(dep->name, PLUGINPREFIX, strlen(PLUGINPREFIX)))
 					Cmd_ExecuteString(va("plug_close %s\n", dep->name), RESTRICT_LOCAL);	//try to purge plugins so there's no files left open
 #endif
 
@@ -2483,7 +2510,7 @@ void PM_ApplyChanges(void)
 						reloadpacks = true;
 
 #ifdef PLUGINS		//when disabling/purging plugins, be sure to unload them first (unfortunately there might be some latency before this can actually happen).
-					if ((p->flags & DPF_PLUGIN) && !Q_strncasecmp(dep->name, "fteplug_", 8))
+					if ((p->flags & DPF_PLUGIN) && !Q_strncasecmp(dep->name, PLUGINPREFIX, strlen(PLUGINPREFIX)))
 						Cmd_ExecuteString(va("plug_close %s\n", dep->name), RESTRICT_LOCAL);	//try to purge plugins so there's no files left open
 #endif
 
@@ -2745,7 +2772,6 @@ qboolean PM_CanInstall(const char *packagename)
 
 void PM_Command_f(void)
 {
-	size_t i;
 	package_t *p;
 	const char *act = Cmd_Argv(1);
 	const char *key;
@@ -2878,6 +2904,7 @@ void PM_Command_f(void)
 		}
 		Con_Printf("<end of list>\n");
 	}
+#ifdef WEBCLIENT
 	else if (!strcmp(act, "sources") || !strcmp(act, "addsource"))
 	{
 		if (Cmd_Argc() == 2)
@@ -2888,10 +2915,17 @@ void PM_Command_f(void)
 			Con_Printf("<%i sources>\n", numdownloadablelists);
 		}
 		else
+		{
 			PM_AddSubList(Cmd_Argv(2), "", true, true);
+			PM_WriteInstalledPackages();
+		}
 	}
+#endif
 	else if (!strcmp(act, "remsource"))
+	{
 		PM_RemSubList(Cmd_Argv(2));
+		PM_WriteInstalledPackages();
+	}
 	else if (!strcmp(act, "apply"))
 	{
 		Con_Printf("Applying package changes\n");
@@ -2908,8 +2942,10 @@ void PM_Command_f(void)
 	{
 		PM_RevertChanges();
 	}
+#ifdef WEBCLIENT
 	else if (!strcmp(act, "update"))
 	{	//flush package cache, make a new request.
+		int i;
 		for (i = 0; i < numdownloadablelists; i++)
 			downloadablelist[i].received = 0;
 	}
@@ -2924,6 +2960,7 @@ void PM_Command_f(void)
 		else
 			Con_Printf("Already using latest versions of all packages\n");
 	}
+#endif
 	else if (!strcmp(act, "add") || !strcmp(act, "get") || !strcmp(act, "install") || !strcmp(act, "enable"))
 	{	//FIXME: make sure this updates.
 		int arg = 2;
@@ -2938,6 +2975,7 @@ void PM_Command_f(void)
 		}
 		PM_PrintChanges();
 	}
+#ifdef WEBCLIENT
 	else if (!strcmp(act, "reinstall"))
 	{	//fixme: favour the current verson.
 		int arg = 2;
@@ -2955,6 +2993,7 @@ void PM_Command_f(void)
 		}
 		PM_PrintChanges();
 	}
+#endif
 	else if (!strcmp(act, "disable") || !strcmp(act, "rem") || !strcmp(act, "remove"))
 	{
 		int arg = 2;
@@ -3234,9 +3273,11 @@ static qboolean MD_Key (struct menucustom_s *c, struct menu_s *m, int key, unsig
 			case DPF_USERMARKED:
 			case DPF_MARKED:
 				p->flags |= DPF_PURGE;
+#ifdef WEBCLIENT
 				//now: re-get despite already having it.
 				if ((p->flags & DPF_CORRUPT) || ((p->flags & DPF_PRESENT) && !PM_PurgeOnDisable(p)))
 					break;	//only makes sense if we already have a cached copy that we're not going to use.
+#endif
 				//fallthrough
 			case DPF_USERMARKED|DPF_PURGE:
 			case DPF_AUTOMARKED|DPF_PURGE:
@@ -3297,7 +3338,7 @@ static void MD_AutoUpdate_Draw (int x, int y, struct menucustom_s *c, struct men
 		"Test Updates"
 	};
 	char *text;
-	int setting = bound(0, pm_autoupdate.ival, 2);
+	int setting = bound(0, pkg_autoupdate.ival, 2);
 	text = va("Auto Update: ^a%s", settings[setting]);
 //	if (&m->selecteditem->common == &c->common)
 //		Draw_AltFunString (x, y, text);
@@ -3309,9 +3350,9 @@ static qboolean MD_AutoUpdate_Key (struct menucustom_s *c, struct menu_s *m, int
 	if (key == K_ENTER || key == K_KP_ENTER || key == K_GP_START || key == K_MOUSE1)
 	{
 		char nv[8] = "0";
-		if (pm_autoupdate.ival < UPD_TESTING && pm_autoupdate.ival >= 0)
-			Q_snprintfz(nv, sizeof(nv), "%i", pm_autoupdate.ival+1);
-		Cvar_ForceSet(&pm_autoupdate, nv);
+		if (pkg_autoupdate.ival < UPD_TESTING && pkg_autoupdate.ival >= 0)
+			Q_snprintfz(nv, sizeof(nv), "%i", pkg_autoupdate.ival+1);
+		Cvar_ForceSet(&pkg_autoupdate, nv);
 		PM_WriteInstalledPackages();
 
 		PM_UpdatePackageList(true, 0);
@@ -3418,15 +3459,6 @@ static int MD_AddItemsToDownloadMenu(menu_t *m, int y, const char *pathprefix)
 						break;
 			if (!mo)
 			{
-				package_t *s;
-				for (s = availablepackages; s; s = s->next)
-				{
-					if (!strncmp(s->category, pathprefix, slash-path) || s->category[slash-path] != '/')
-						continue;
-					if (!(s->flags & DPF_ENABLED) != !(s->flags & DPF_MARKED))
-						break;
-				}
-
 				y += 8;
 				MC_AddBufferedText(m, 48, 320, y, path+prefixlen, false, true);
 				y += 8;
@@ -3444,10 +3476,13 @@ static void MD_Download_UpdateStatus(struct menu_s *m)
 	dlmenu_t *info = m->data;
 	int i, y;
 	package_t *p;
-	unsigned int totalpackages=0, selectedpackages=0, addpackages=0, rempackages=0, downloads=0;
+	unsigned int totalpackages=0, selectedpackages=0, addpackages=0, rempackages=0;
 	menuoption_t *si;
 	menubutton_t *b, *d;
+#ifdef WEBCLIENT
+	unsigned int downloads=0;
 	menucustom_t *c;
+#endif
 
 	if (info->downloadablessequence != downloadablessequence || !info->populated)
 	{
@@ -3609,7 +3644,7 @@ void Menu_DownloadStuff_f (void)
 //should only be called AFTER the filesystem etc is inited.
 void Menu_Download_Update(void)
 {
-	if (!pm_autoupdate.ival)
+	if (!pkg_autoupdate.ival)
 		return;
 
 	PM_UpdatePackageList(true, 2);

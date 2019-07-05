@@ -43,7 +43,7 @@ static const texid_t r_nulltex = NULL;
 //desktop-gl will generally cope with ints, but expect a performance hit from that with old gpus (so we don't bother)
 //vulkan+dx10 can cope with ints, but might be 24bit
 //either way, all renderers in the same build need to use the same thing.
-#if (defined(GLQUAKE) && !defined(NOLEGACY)) || defined(MINIMAL) || defined(D3D8QUAKE) || defined(D3D9QUAKE) || defined(ANDROID)
+#if (defined(GLQUAKE) && defined(HAVE_LEGACY)) || defined(MINIMAL) || defined(D3D8QUAKE) || defined(D3D9QUAKE) || defined(ANDROID)
 	#define sizeof_index_t 2
 #endif
 #if sizeof_index_t == 2
@@ -145,6 +145,8 @@ typedef struct entity_s
 	float rotation;
 
 	struct shader_s *forcedshader;
+
+	pvscache_t pvscache; //for culling of csqc ents.
 
 #ifdef PEXT_SCALE
 	float scale;
@@ -281,6 +283,7 @@ typedef struct
 	float		m_projection_view[16];	//projection matrix for the viewmodel. because people are weird.
 	float		m_view[16];
 	qbyte		*scenevis;			/*this is the vis that's currently being draw*/
+	int			*sceneareas;		/*this is the area info for the camera (should normally be count+one area, but could be two areas near an opaque water plane)*/
 
 	mplane_t	frustum[MAXFRUSTUMPLANES];
 	int			frustum_numworldplanes;	//all but far, which isn't culled because this wouldn't cover the entire screen.
@@ -289,11 +292,14 @@ typedef struct
 	fogstate_t	globalfog;
 	float		hdr_value;
 
+	vec3_t		skyroom_pos;		/*the camera position for sky rooms*/
+	qboolean	skyroom_enabled;	/*whether a skyroom position is defined*/
+
 	pxrect_t	pxrect;				/*vrect, but in pixels rather than virtual coords*/
 	qboolean	externalview;		/*draw external models and not viewmodels*/
 	int			recurse;			/*in a mirror/portal/half way through drawing something else*/
 	qboolean	forcevis;			/*if true, vis comes from the forcedvis field instead of recalculated*/
-	unsigned int	flipcull;		/*reflected/flipped view, requires inverted culling (should be set to SHADER_CULL_FLIPPED or 0)*/
+	unsigned int	flipcull;		/*reflected/flipped view, requires inverted culling (should be set to SHADER_CULL_FLIPPED or 0 - its implemented as a xor)*/
 	qboolean	useperspective;		/*not orthographic*/
 
 	stereomethod_t stereomethod;
@@ -319,7 +325,7 @@ extern	struct texture_s	*r_notexture_mip;
 
 extern	entity_t	r_worldentity;
 
-void BE_GenModelBatches(struct batch_s **batches, const struct dlight_s *dl, unsigned int bemode);	//if dl, filters based upon the dlight.
+void BE_GenModelBatches(struct batch_s **batches, const struct dlight_s *dl, unsigned int bemode, const qbyte *worldpvs, const int *worldareas);	//if dl, filters based upon the dlight.
 
 //gl_alias.c
 void R_GAliasFlushSkinCache(qboolean final);

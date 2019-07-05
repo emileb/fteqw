@@ -330,7 +330,7 @@ typedef struct dlight_s
 	float	coronascale;
 
 	unsigned int flags;
-	char	cubemapname[64];
+	char	cubemapname[MAX_QPATH];
 	char	*customstyle;
 
 	int coronaocclusionquery;
@@ -345,6 +345,7 @@ typedef struct dlight_s
 	} face [6];
 	int style;	//multiply by style values if > 0
 	float	fov; //spotlight
+	float	nearclip; //for spotlights...
 	struct dlight_s *next;
 } dlight_t;
 
@@ -840,14 +841,10 @@ typedef struct
 	} intermissionmode;	// don't change view angle, full screen, etc
 	float		completed_time;	// latched ffrom time at intermission start
 
-#define Q2MAX_VISIBLE_WEAPONS 32 //q2 has about 20.
-	int		numq2visibleweapons;	//q2 sends out visible-on-model weapons in a wierd gender-nutral way.
-	char	*q2visibleweapons[Q2MAX_VISIBLE_WEAPONS];//model names beginning with a # are considered 'sexed', and are loaded on a per-client basis. yay. :(
-
 //
 // information that is static for the entire time connected to a server
 //
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 	char				model_name_vwep[MAX_VWEP_MODELS][MAX_QPATH];
 	struct model_s		*model_precache_vwep[MAX_VWEP_MODELS];
 #endif
@@ -859,6 +856,10 @@ typedef struct
 	int					particle_ssprecache[MAX_SSPARTICLESPRE];	//these are actually 1-based, so 0 can be used to lazy-init them. I cheat.
 
 #ifdef Q2CLIENT
+#define Q2MAX_VISIBLE_WEAPONS 32 //q2 has about 20.
+	int		numq2visibleweapons;	//q2 sends out visible-on-model weapons in a wierd gender-nutral way.
+	char	*q2visibleweapons[Q2MAX_VISIBLE_WEAPONS];//model names beginning with a # are considered 'sexed', and are loaded on a per-client basis. yay. :(
+
 	char		*configstring_general[Q2MAX_CLIENTS|Q2MAX_GENERAL];
 	char		*image_name[Q2MAX_IMAGES];
 	char		*item_name[Q2MAX_ITEMS];
@@ -1012,8 +1013,6 @@ extern	cvar_t	m_yaw;
 extern	cvar_t	m_forward;
 extern	cvar_t	m_side;
 
-extern cvar_t		_windowed_mouse;
-
 #ifndef SERVERONLY
 extern	cvar_t	name;
 #endif
@@ -1042,7 +1041,6 @@ typedef struct
 	entity_state_t	state;
 	trailstate_t   *emit;
 	int	mdlidx;	/*negative are csqc indexes*/
-	pvscache_t		pvscache;
 } static_entity_t;
 
 // FIXME, allocate dynamically
@@ -1095,6 +1093,7 @@ void CL_ConnectionlessPacket (void);
 qboolean CL_DemoBehind(void);
 void CL_SaveInfo(vfsfile_t *f);
 void CL_SetInfo (int pnum, const char *key, const char *value);
+void CL_SetInfoBlob (int pnum, const char *key, const char *value, size_t valuesize);
 
 void CL_BeginServerConnect(const char *host, int port, qboolean noproxy);
 char *CL_TryingToConnect(void);
@@ -1371,7 +1370,7 @@ void CL_SpawnSpriteEffect(vec3_t org, vec3_t dir, vec3_t orientationup, struct m
 //
 void CL_SetSolidPlayers (void);
 void CL_SetUpPlayerPrediction(qboolean dopred);
-void CL_LinkStaticEntities(void *pvs);
+void CL_LinkStaticEntities(void *pvs, int *areas);
 void CL_TransitionEntities (void); /*call at the start of the frame*/
 void CL_EmitEntities (void);
 void CL_ClearProjectiles (void);
@@ -1435,6 +1434,8 @@ void	 CSQC_MapEntityEdited(int modelindex, int idx, const char *newe);
 qboolean CSQC_ParsePrint(char *message, int printlevel);
 qboolean CSQC_ParseGamePacket(int seat);
 qboolean CSQC_CenterPrint(int seat, const char *cmd);
+void	 CSQC_ServerInfoChanged(void);
+void	 CSQC_PlayerInfoChanged(int player);
 qboolean CSQC_Parse_Damage(int seat, float save, float take, vec3_t source);
 qboolean CSQC_Parse_SetAngles(int seat, vec3_t newangles, qboolean wasdelta);
 void	 CSQC_Input_Frame(int seat, usercmd_t *cmd);
@@ -1462,6 +1463,8 @@ void	 CSQC_CvarChanged(cvar_t *var);
 #define CSQC_UnconnectedInit() false
 #define CSQC_UseGamecodeLoadingScreen() false
 #define CSQC_Parse_SetAngles(seat,newangles,wasdelta) false
+#define CSQC_ServerInfoChanged()
+#define CSQC_PlayerInfoChanged(player)
 #endif
 
 //

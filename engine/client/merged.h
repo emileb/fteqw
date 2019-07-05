@@ -44,10 +44,10 @@ typedef enum
 	#define MAX_BONE_CONTROLLERS 5
 #endif
 
-#ifdef NOLEGACY
-#define FRAME_BLENDS 2
-#else
+#ifdef HAVE_LEGACY
 #define FRAME_BLENDS 4	//for compat with DP (for mods that want 4-way blending yet refuse to use framegroups properly). real mods should be using skeletal objects allowing for N-way blending.
+#else
+#define FRAME_BLENDS 2
 #endif
 
 #define FST_BASE 0	//base frames
@@ -170,6 +170,7 @@ enum mlverbosity_e
 	MLV_ERROR
 };
 
+extern struct model_s *mod_known; //for evil people that want to do evil indexing.
 const char *Mod_GetEntitiesString(struct model_s *mod);
 void Mod_SetEntitiesStringLen(struct model_s *mod, const char *str, size_t strsize);
 void Mod_SetEntitiesString(struct model_s *mod, const char *str, qboolean docopy);

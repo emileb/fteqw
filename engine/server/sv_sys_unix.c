@@ -111,6 +111,24 @@ qboolean Sys_Rename (const char *oldfname, const char *newfname)
 	return !rename(oldfname, newfname);
 }
 
+
+#if _POSIX_C_SOURCE >= 200112L
+	#include <sys/statvfs.h>
+#endif
+qboolean Sys_GetFreeDiskSpace(const char *path, quint64_t *freespace)
+{
+#if _POSIX_C_SOURCE >= 200112L
+	//posix 2001
+	struct statvfs inf;
+	if(0==statvfs(path, &inf))
+	{
+		*freespace = inf.f_bsize*(quint64_t)inf.f_bavail;
+		return true;
+	}
+#endif
+	return false;
+}
+
 int Sys_DebugLog(char *file, char *fmt, ...)
 {
 	va_list argptr;
@@ -340,14 +358,18 @@ void Sys_Printf (char *fmt, ...)
 			wchar_t w;
 			conchar_t *e, *c;
 			conchar_t ctext[MAXPRINTMSG];
+			unsigned int codeflags, codepoint;
 			e = COM_ParseFunString(CON_WHITEMASK, msg, ctext, sizeof(ctext), false);
-			for (c = ctext; c < e; c++)
+			for (c = ctext; c < e; )
 			{
-				if (*c & CON_HIDDEN)
+				c = Font_Decode(c, &codeflags, &codepoint);
+				if (codeflags & CON_HIDDEN)
 					continue;
 
-				ApplyColour(*c);
-				w = *c & 0x0ffff;
+				if ((codeflags&CON_RICHFORECOLOUR) || (codepoint == '\n' && (codeflags&CON_NONCLEARBG)))
+					codeflags = CON_WHITEMASK;	//make sure we don't get annoying backgrounds on other lines.
+				ApplyColour(codeflags);
+				w = codepoint;
 				if (w >= 0xe000 && w < 0xe100)
 				{
 					/*not all quake chars are ascii compatible, so map those control chars to safe ones so we don't mess up anyone's xterm*/
@@ -382,6 +404,7 @@ void Sys_Printf (char *fmt, ...)
 						putc(w, stdout);
 				}
 			}
+			ApplyColour(CON_WHITEMASK);
 		}
 		else
 		{
@@ -624,7 +647,7 @@ void Sys_Shutdown (void)
 {
 }
 
-#ifdef __linux__ /*should probably be GNUC but whatever*/
+#if defined(__linux__) && defined(__GNUC__)
 #include <execinfo.h>
 #ifdef __i386__
 #include <ucontext.h>
@@ -912,7 +935,7 @@ int main(int argc, char *argv[])
 
 
 
-#ifdef __linux__
+#if defined(__linux__) && defined(__GNUC__)
 	if (!COM_CheckParm("-nodumpstack"))
 	{
 		struct sigaction act;
