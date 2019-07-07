@@ -676,7 +676,7 @@ static void Cmd_Exec_f (void)
 		{
 			int cfgdepth = COM_FDepthFile(name, true);
 			int defdepth = COM_FDepthFile("default.cfg", true);
-			Cbuf_InsertText("exec fte.cfg", Cmd_ExecLevel, true);
+			Cbuf_InsertText("exec fte_5441.cfg", Cmd_ExecLevel, true);
 			if (defdepth < cfgdepth && cfgdepth != FDEPTH_MISSING)
 			{
 				if (cl_warncmd.ival)
@@ -691,7 +691,7 @@ static void Cmd_Exec_f (void)
 				return;
 			}
 		}
-		else if (!strcmp(name, "fte.cfg"))
+		else if (!strcmp(name, "fte_5441.cfg"))
 		{
 			int cfgdepth = COM_FDepthFile(name, true);
 			int defdepth = COM_FDepthFile("default.cfg", true);
@@ -756,7 +756,7 @@ static void Cmd_Exec_f (void)
 		s+=3;
 	}
 
-	if (!strcmp(name, "config.cfg") || !strcmp(name, "q3config.cfg") || !strcmp(name, "fte.cfg"))
+	if (!strcmp(name, "config.cfg") || !strcmp(name, "q3config.cfg") || !strcmp(name, "fte_5441.cfg"))
 	{
 		//if the config is from id1 and the default.cfg was from some mod, make sure the default.cfg overrides the config.
 		//we won't just exec the default instead, because we can at least retain things which are not specified (ie: a few binds)
@@ -3945,7 +3945,7 @@ static void Cmd_WriteConfig_f(void)
 #ifdef QUAKETC
 		snprintf(fname, sizeof(fname), "config.cfg");
 #else
-		snprintf(fname, sizeof(fname), "fte.cfg");
+		snprintf(fname, sizeof(fname), "fte_5441.cfg");
 #endif
 
 #if defined(CL_MASTER) && defined(HAVE_CLIENT)
