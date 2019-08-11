@@ -111,7 +111,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include STRINGIFY(CONFIG_FILE_NAME)
 
 
-
 #ifndef MSVCLIBSPATH
 	#ifdef MSVCLIBPATH
 		#define MSVCLIBSPATH STRINGIFY(MSVCLIBPATH)
@@ -150,6 +149,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 		#endif
 	#endif
 #endif
+#ifndef NOLEGACY
+	#define HAVE_LEGACY
+#endif
 
 #ifndef HAVE_SERVER
 	#undef MVD_RECORDING
@@ -180,7 +182,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#define FULLENGINENAME "FTE Quake"	//the posh name for the engine
 #endif
 #ifndef ENGINEWEBSITE
-	#define ENGINEWEBSITE "http://fte.triptohell.info"	//url for program
+	#define ENGINEWEBSITE "^8http://^4fte.triptohell.info"	//url for program
 #endif
 
 #if !defined(_WIN32) || defined(WINRT)
@@ -525,6 +527,11 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#undef SQL
 #endif
 
+#ifndef PLUGINS
+	#undef USE_INTERNAL_BULLET
+	#undef USE_INTERNAL_ODE
+#endif
+
 
 #if (defined(CSQC_DAT) || !defined(CLIENTONLY)) && (defined(PLUGINS)||defined(USE_INTERNAL_BULLET)||defined(USE_INTERNAL_ODE))	//use ode only if we have a constant world state, and the library is enbled in some form.
 	#define USERBE
@@ -551,7 +558,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#undef Q3CLIENT //reconsider this (later)
 	#undef Q3SERVER //reconsider this (later)
 #endif
-#ifdef DEBUG
+#if defined(DEBUG) || defined(_DEBUG)
 	#undef NOQCDESCRIPTIONS	//don't disable writing fteextensions.qc in debug builds, otherwise how would you ever build one? :o
 #endif
 
@@ -700,6 +707,11 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#define NORETURN __attribute__((noreturn))
 #endif
 
+//unreachable marks the path leading to it as unreachable too.
+#if (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 5))
+	#define FTE_UNREACHABLE __builtin_unreachable()
+#endif
+
 //I'm making my own restrict, because msvc's headers can't cope if I #define restrict to __restrict, and quite possibly other platforms too
 #if __STDC_VERSION__ >= 199901L
 	#define fte_restrict restrict
@@ -717,6 +729,15 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#define FTE_ALIGN(a) __attribute__((aligned(a)))
 #else
 	#define FTE_ALIGN(a)
+#endif
+
+#if __STDC_VERSION__ >= 201112L
+	#include <stdalign.h>
+	#define fte_alignof(type) alignof(qintptr_t)
+#elif _MSC_VER
+	#define fte_alignof(type) __alignof(qintptr_t)
+#else
+	#define fte_alignof(type) sizeof(qintptr_t)
 #endif
 
 //fte_inline must only be used in headers, and requires one and ONLY one fte_inlinebody elsewhere.
@@ -748,6 +769,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifndef FTE_DEPRECATED
 #define FTE_DEPRECATED
 #endif
+#ifndef FTE_UNREACHABLE
+#define FTE_UNREACHABLE
+#endif
 #ifndef LIKEPRINTF
 #define LIKEPRINTF(x)
 #endif
@@ -761,6 +785,11 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifdef _WIN32
 #define ZEXPORT VARGS
 #define ZEXPORTVA VARGS
+#endif
+
+#ifdef _DEBUG
+	#undef FTE_UNREACHABLE
+	#define FTE_UNREACHABLE Sys_Error("Unreachable reached: %s %i\n", __FILE__, __LINE__)
 #endif
 
 
@@ -781,6 +810,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #define	MAX_QPATH		128			// max length of a quake game pathname
 #define	MAX_OSPATH		1024		// max length of a filesystem pathname (260 on windows, but needs to be longer for utf8)
+#define OLD_MAX_QPATH	64			// it was baked into various file formats, which is unfortunate.
 
 #define	ON_EPSILON		0.1			// point on plane side epsilon
 

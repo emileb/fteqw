@@ -26,7 +26,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 cvar_t ruleset_allow_in		= CVAR("ruleset_allow_in", "1");
 cvar_t rcon_level			= CVAR("rcon_level", "20");
 cvar_t cmd_maxbuffersize	= CVAR("cmd_maxbuffersize", "65536");
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 cvar_t dpcompat_set         = CVAR("dpcompat_set", "0");
 cvar_t dpcompat_console     = CVARD("dpcompat_console", "0", "Enables hacks to emulate DP's console.");
 #else
@@ -443,7 +443,7 @@ void Cbuf_ExecuteLevel (int level)
 {
 	int		i;
 	char	*text;
-	char	line[65536];
+	char	linebuf[65536], *line;
 	qboolean	comment;
 	int		quotes;
 
@@ -503,8 +503,10 @@ void Cbuf_ExecuteLevel (int level)
 				break;	// don't break if inside a quoted string
 		}
 
-		if (i >= sizeof(line))
-			i = sizeof(line)-1;
+		if (i >= sizeof(linebuf))
+			line = malloc(i+1);	//might leak if the command longjmps. :(
+		else
+			line = linebuf;
 		memcpy (line, text, i);
 		line[i] = 0;
 
@@ -523,6 +525,8 @@ void Cbuf_ExecuteLevel (int level)
 
 // execute the command line
 		Cmd_ExecuteString (line, level);
+		if (line != linebuf)
+			free(line);
 	}
 }
 
@@ -884,7 +888,7 @@ static void Cmd_Echo_f (void)
 	Con_Printf ("%s", t);
 #else
 	t = TP_ParseFunChars(t);
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 	Con_PrintFlags (t, ((ezcompat_markup.ival>=2)?PFS_EZQUAKEMARKUP:0), 0);
 #else
 	Con_PrintFlags (t, 0, 0);
@@ -2623,9 +2627,9 @@ static void Cmd_ForwardToServer_f (void)
 	if (Q_strcasecmp(Cmd_Argv(1), "pext") == 0 && (cls.protocol != CP_NETQUAKE || cls.fteprotocolextensions2 || cls.protocol_nq != CPNQ_ID || cls.proquake_angles_hack || cls.netchan.remote_address.type != NA_LOOPBACK))
 	{	//don't send any extension flags this if we're using cl_loopbackprotocol nqid, purely for a compat test.
 		//if you want to record compat-demos, disable extensions instead.
-		unsigned int	fp1 = Net_PextMask(1, cls.protocol == CP_NETQUAKE),
-						fp2 = Net_PextMask(2, cls.protocol == CP_NETQUAKE),
-						ez1 = Net_PextMask(3, cls.protocol == CP_NETQUAKE) & EZPEXT1_CLIENTADVERTISE;
+		unsigned int	fp1 = Net_PextMask(PROTOCOL_VERSION_FTE1, cls.protocol == CP_NETQUAKE),
+						fp2 = Net_PextMask(PROTOCOL_VERSION_FTE2, cls.protocol == CP_NETQUAKE),
+						ez1 = Net_PextMask(PROTOCOL_VERSION_EZQUAKE1, cls.protocol == CP_NETQUAKE) & EZPEXT1_CLIENTADVERTISE;
 		extern cvar_t cl_nopext;
 		char line[256];
 		if (cl_nopext.ival)
@@ -2635,7 +2639,7 @@ static void Cmd_ForwardToServer_f (void)
 		}
 		Q_strncpyz(line, "pext", sizeof(line));
 		if (fp1)
-			Q_strncatz(line, va(" %#x %#x", PROTOCOL_VERSION_FTE, fp1), sizeof(line));
+			Q_strncatz(line, va(" %#x %#x", PROTOCOL_VERSION_FTE1, fp1), sizeof(line));
 		if (fp2)
 			Q_strncatz(line, va(" %#x %#x", PROTOCOL_VERSION_FTE2, fp2), sizeof(line));
 		if (ez1)
@@ -2682,7 +2686,7 @@ static void	Cmd_ExecuteStringGlobalsAreEvil (const char *text, int level)
 	cmd_function_t	*cmd;
 	cmdalias_t		*a;
 
-	char dest[8192];
+	char dest[65536];
 	Cmd_ExecLevel = level;
 
 	while (*text == ' ' || *text == '\n')
@@ -2926,7 +2930,6 @@ void	Cmd_ExecuteString (const char *text, int level)
 	//a number of things check for seats if nothing else, and security says is safer to do this than to be in doubt.
 	int olev = Cmd_ExecLevel;
 	Cmd_ExecuteStringGlobalsAreEvil(text, level);
-	Cmd_ExecLevel = level;
 	Cmd_ExecLevel = olev;
 }
 
@@ -3613,10 +3616,22 @@ static void Cmd_toggle_f(void)
 	if (!v)
 		return;
 
-	if (v->value)
-		Cvar_Set(v, "0");
+	if (Cmd_Argc() >= 3)
+	{
+		const char *newval = Cmd_Argv(2);
+		const char *defval = (Cmd_Argc()>3)?Cmd_Argv(3):v->defaultstr;
+		if (!strcmp(newval, v->string))
+			Cvar_Set(v, defval);
+		else
+			Cvar_Set(v, newval);
+	}
 	else
-		Cvar_Set(v, "1");
+	{
+		if (v->value)
+			Cvar_Set(v, "0");
+		else
+			Cvar_Set(v, "1");
+	}
 }
 
 static void Cmd_Set_c(int argn, const char *partial, struct xcommandargcompletioncb_s *ctx)
@@ -4217,7 +4232,7 @@ void Cmd_Init (void)
 //	Cmd_AddCommand ("msg_trigger", Cmd_Msg_Trigger_f);
 //	Cmd_AddCommand ("filter", Cmd_Msg_Filter_f);
 
-	Cmd_AddCommand ("toggle", Cmd_toggle_f);
+	Cmd_AddCommandAD ("toggle", Cmd_toggle_f, Cmd_Set_c, "Toggles a cvar between two values\ntoggle CVARNAME [newval [altval]]");
 	Cmd_AddCommandAD ("set", Cmd_set_f, Cmd_Set_c, "Changes the current value of the named cvar, creating it if it doesn't yet exist.");
 	Cmd_AddCommandAD ("setfl", Cmd_set_f, Cmd_Set_c, "Changes the current value of the named cvar, creating it if it doesn't yet exist. The third arg allows setting cvar flags and should be u, s, or a. This command should normally be used only inside default.cfg.");
 	Cmd_AddCommandAD ("set_calc", Cmd_set_f, Cmd_Set_c, "Sets the named cvar to the result of a (complex) expression.");
@@ -4259,7 +4274,7 @@ void Cmd_Init (void)
 	Cvar_Register(&ruleset_allow_in, "Console");
 	Cmd_AddCommandD ("in", Cmd_In_f, "Issues the given command after a time delay. Disabled if ruleset_allow_in is 0.");
 
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 	Cvar_Register(&dpcompat_set, "Darkplaces compatibility");
 	Cvar_Register(&dpcompat_console, "Darkplaces compatibility");
 #endif

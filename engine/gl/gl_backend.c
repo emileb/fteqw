@@ -166,6 +166,7 @@ struct {
 
 		float identitylighting;	//set to how bright world lighting should be (reduced by realtime_world_lightmaps)
 		float identitylightmap;	//set to how bright lightmaps should be (reduced by overbrights+realtime_world_lightmaps)
+		polyoffset_t polyoffset; //mode-specific polygon offsets...
 
 		texid_t temptexture; //$current
 		texid_t fogtexture;
@@ -228,12 +229,8 @@ static void BE_PolyOffset(void)
 		po.unit += r_polygonoffset_submodel_offset.value;
 	}
 #endif
-	if (shaderstate.mode == BEM_DEPTHONLY)
-	{
-		extern cvar_t r_polygonoffset_shadowmap_offset, r_polygonoffset_shadowmap_factor;
-		po.factor += r_polygonoffset_shadowmap_factor.value;
-		po.unit += r_polygonoffset_shadowmap_offset.value;
-	}
+	po.factor += shaderstate.polyoffset.factor;
+	po.unit += shaderstate.polyoffset.unit;
 
 #ifndef FORCESTATE
 	if (shaderstate.curpolyoffset.factor != po.factor || shaderstate.curpolyoffset.unit != po.unit)
@@ -411,10 +408,15 @@ void GL_ForceDepthWritable(void)
 
 void GL_SetShaderState2D(qboolean is2d)
 {
+	shaderstate.depthrange = 0;	//force projection matrix info to get reset
 	shaderstate.updatetime = realtime;
 	shaderstate.force2d = is2d;
 	if (is2d)
+	{
 		memcpy(shaderstate.modelviewmatrix, r_refdef.m_view, sizeof(shaderstate.modelviewmatrix));
+		if (qglLoadMatrixf)
+			qglLoadMatrixf(r_refdef.m_view);
+	}
 	BE_SelectMode(BEM_STANDARD);
 
 
@@ -943,7 +945,7 @@ void GLBE_RenderShadowBuffer(unsigned int numverts, int vbo, vecV_t *verts, unsi
 		shaderstate.lastuniform = shaderstate.allblackshader.glsl.handle;
 
 		GL_SelectEBO(ibo);
-		qglDrawRangeElements(GL_TRIANGLES, 0, numverts, numindicies, GL_INDEX_TYPE, indicies);
+		qglDrawRangeElements(GL_TRIANGLES, 0, numverts - 1, numindicies, GL_INDEX_TYPE, indicies);
 	}
 	else
 	{
@@ -952,7 +954,7 @@ void GLBE_RenderShadowBuffer(unsigned int numverts, int vbo, vecV_t *verts, unsi
 
 		//draw cached world shadow mesh
 		GL_SelectEBO(ibo);
-		qglDrawRangeElements(GL_TRIANGLES, 0, numverts, numindicies, GL_INDEX_TYPE, indicies);
+		qglDrawRangeElements(GL_TRIANGLES, 0, numverts - 1, numindicies, GL_INDEX_TYPE, indicies);
 	}
 	RQuantAdd(RQUANT_DRAWS, 1);
 	RQuantAdd(RQUANT_SHADOWINDICIES, numindicies);
@@ -1069,7 +1071,7 @@ void GLBE_SetupForShadowMap(dlight_t *dl, int texwidth, int texheight, float sha
 {
 	extern cvar_t r_shadow_shadowmapping_bias;
 	extern cvar_t r_shadow_shadowmapping_nearclip;
-	float n = r_shadow_shadowmapping_nearclip.value;
+	float n = dl->nearclip?dl->nearclip:r_shadow_shadowmapping_nearclip.value;
 	float f = dl->radius;
 	float b = r_shadow_shadowmapping_bias.value;
 
@@ -1162,6 +1164,7 @@ static void T_Gen_CurrentRender(int tmu)
 	int vwidth, vheight;
 	int pwidth = vid.fbpwidth;
 	int pheight = vid.fbpheight;
+	GLenum fmt;
 	if (r_refdef.recurse)
 		return;
 
@@ -1183,6 +1186,14 @@ static void T_Gen_CurrentRender(int tmu)
 			vheight *= 2;
 		}
 	}
+
+	if (vid.flags&VID_FP16)
+		fmt = GL_RGBA16F;
+	else if (vid.flags&VID_SRGB_CAPABLE)
+		fmt = GL_SRGB8_EXT;
+	else
+		fmt = GL_RGB;
+
 	// copy the scene to texture
 	if (!TEXVALID(shaderstate.temptexture))
 	{
@@ -1190,12 +1201,7 @@ static void T_Gen_CurrentRender(int tmu)
 		qglGenTextures(1, &shaderstate.temptexture->num);
 	}
 	GL_MTBind(tmu, GL_TEXTURE_2D, shaderstate.temptexture);
-	if (vid.flags&VID_FP16)
-		qglCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, 0, 0, vwidth, vheight, 0);
-	else if (vid.flags&VID_SRGBAWARE)
-		qglCopyTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB_ALPHA_EXT, 0, 0, vwidth, vheight, 0);
-	else
-		qglCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 0, 0, vwidth, vheight, 0);
+	qglCopyTexImage2D(GL_TEXTURE_2D, 0, fmt, 0, 0, vwidth, vheight, 0);
 	qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 	qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 	qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -1313,13 +1319,13 @@ static void Shader_BindTextureForPass(int tmu, const shaderpass_t *pass)
 		GL_LazyBind(tmu, GL_TEXTURE_3D, t);
 		return;
 
-	case T_GEN_VIDEOMAP:
 #ifdef HAVE_MEDIA_DECODER
+	case T_GEN_VIDEOMAP:
 		t = Media_UpdateForShader(pass->cin);
-#else
-		t = shaderstate.curtexnums?shaderstate.curtexnums->base:r_nulltex;
-#endif
+		if (!TEXLOADED(t))
+			t = shaderstate.curtexnums?shaderstate.curtexnums->base:r_nulltex;
 		break;
+#endif
 
 	case T_GEN_CURRENTRENDER:
 		T_Gen_CurrentRender(tmu);
@@ -1697,7 +1703,7 @@ void GLBE_Init(void)
 
 //end tables
 
-#define MAX_ARRAY_VERTS 65535
+#define MAX_ARRAY_VERTS 65536
 static vecV_t		vertexarray[MAX_ARRAY_VERTS];
 #if 1//ndef GLSLONLY
 static avec4_t		coloursarray[MAX_ARRAY_VERTS];
@@ -3109,7 +3115,7 @@ static void BE_SubmitMeshChain(qboolean usetesselation)
 		{
 			GL_SelectEBO(shaderstate.sourcevbo->indicies.gl.vbo);
 			mesh = shaderstate.meshes[0];
-			qglDrawRangeElements(batchtype, mesh->vbofirstvert, mesh->vbofirstvert+mesh->numvertexes, mesh->numindexes, GL_INDEX_TYPE, (index_t*)shaderstate.sourcevbo->indicies.gl.addr + mesh->vbofirstelement);
+			qglDrawRangeElements(batchtype, mesh->vbofirstvert, mesh->vbofirstvert+mesh->numvertexes - 1, mesh->numindexes, GL_INDEX_TYPE, (index_t*)shaderstate.sourcevbo->indicies.gl.addr + mesh->vbofirstelement);
 			RQuantAdd(RQUANT_DRAWS, 1);
 			RQuantAdd(RQUANT_PRIMITIVEINDICIES, mesh->numindexes);
 			return;
@@ -3144,7 +3150,7 @@ static void BE_SubmitMeshChain(qboolean usetesselation)
 				for (starti = 0; starti < mesh->numindexes; )
 					ilst[endi++] = mesh->vbofirstvert + mesh->indexes[starti++];
 			}
-			qglDrawRangeElements(batchtype, startv, endv, endi, GL_INDEX_TYPE, ilst);
+			qglDrawRangeElements(batchtype, startv, endv - 1, endi, GL_INDEX_TYPE, ilst);
 			RQuantAdd(RQUANT_DRAWS, 1);
 			RQuantAdd(RQUANT_PRIMITIVEINDICIES, endi);
 		}
@@ -3267,7 +3273,7 @@ static void BE_SubmitMeshChain(qboolean usetesselation)
 					break;
 				}
 			}
-			qglDrawRangeElements(batchtype, startv, endv, endi-starti, GL_INDEX_TYPE, (index_t*)shaderstate.sourcevbo->indicies.gl.addr + starti);
+			qglDrawRangeElements(batchtype, startv, endv - 1, endi-starti, GL_INDEX_TYPE, (index_t*)shaderstate.sourcevbo->indicies.gl.addr + starti);
 			RQuantAdd(RQUANT_DRAWS, 1);
 			RQuantAdd(RQUANT_PRIMITIVEINDICIES, endi-starti);
  		}
@@ -3999,6 +4005,7 @@ qboolean GLBE_LightCullModel(vec3_t org, model_t *model)
 //Note: Be cautious about using BEM_LIGHT here, as it won't select the light.
 void GLBE_SelectMode(backendmode_t mode)
 {
+	extern cvar_t r_polygonoffset_shadowmap_offset, r_polygonoffset_shadowmap_factor;
 	extern int gldepthfunc;
 
 //	shaderstate.lastuniform = 0;
@@ -4008,6 +4015,8 @@ void GLBE_SelectMode(backendmode_t mode)
 	{
 		shaderstate.mode = mode;
 		shaderstate.flags = 0;
+		shaderstate.polyoffset.factor = 0;
+		shaderstate.polyoffset.unit = 0;
 		switch (mode)
 		{
 		default:
@@ -4024,6 +4033,8 @@ void GLBE_SelectMode(backendmode_t mode)
 				);
 			break;
 		case BEM_DEPTHONLY:
+			shaderstate.polyoffset.factor = r_polygonoffset_shadowmap_factor.value;
+			shaderstate.polyoffset.unit = r_polygonoffset_shadowmap_offset.value;
 #ifndef GLSLONLY
 			if (!gl_config_nofixedfunc)
 			{
@@ -4271,7 +4282,7 @@ qboolean GLBE_SelectDLight(dlight_t *dl, vec3_t colour, vec3_t axis[3], unsigned
 		float view[16];
 		float proj[16];
 		extern cvar_t r_shadow_shadowmapping_nearclip;
-		Matrix4x4_CM_Projection_Far(proj, dl->fov, dl->fov, r_shadow_shadowmapping_nearclip.value, dl->radius, false);
+		Matrix4x4_CM_Projection_Far(proj, dl->fov, dl->fov, dl->nearclip?dl->nearclip:r_shadow_shadowmapping_nearclip.value, dl->radius, false);
 		Matrix4x4_CM_ModelViewMatrixFromAxis(view, axis[0], axis[1], axis[2], dl->origin);
 		Matrix4_Multiply(proj, view, shaderstate.lightprojmatrix);
 	}
@@ -4735,6 +4746,20 @@ static void DrawMeshes(void)
 				int emumode;
 				p = &shaderstate.curshader->passes[passno];
 				passno += p->numMergedPasses;
+
+				if (p->prog)
+				{
+					shaderstate.pendingcolourvbo = shaderstate.sourcevbo->colours[0].gl.vbo;
+					shaderstate.pendingcolourpointer = shaderstate.sourcevbo->colours[0].gl.addr;
+					shaderstate.colourarraytype = shaderstate.sourcevbo->colours_bytes?GL_UNSIGNED_BYTE:GL_FLOAT;
+
+					shaderstate.pendingtexcoordparts[0] = 2;
+					shaderstate.pendingtexcoordvbo[0] = shaderstate.sourcevbo->texcoord.gl.vbo;
+					shaderstate.pendingtexcoordpointer[0] = shaderstate.sourcevbo->texcoord.gl.addr;
+
+					BE_RenderMeshProgram(shaderstate.curshader, p, p->prog);
+					continue;
+				}
 
 				emumode = 0;
 				emumode = (p->shaderbits & SBITS_ATEST_BITS) >> SBITS_ATEST_SHIFT;
@@ -5207,7 +5232,7 @@ static qboolean GLBE_GenerateBatchTextures(batch_t *batch, shader_t *bs)
 	int oldfbo;
 	float oldil;
 	int oldbem;
-	if (r_refdef.recurse == r_portalrecursion.ival || r_refdef.recurse == R_MAX_RECURSE)
+	if (r_refdef.recurse >= r_portalrecursion.ival || r_refdef.recurse == R_MAX_RECURSE)
 		return false;
 	//these flags require rendering some view as an fbo
 	//(BEM_DEPTHDARK is used when lightmap scale is 0, but still shows any emissive stuff)
@@ -5452,8 +5477,13 @@ static void GLBE_SubmitMeshesSortList(batch_t *sortlist)
 		{
 			if (shaderstate.mode == BEM_STANDARD || shaderstate.mode == BEM_DEPTHDARK)// || shaderstate.mode == BEM_WIREFRAME)
 			{
+				float il = shaderstate.identitylighting;	//this stuff sucks!
 				if (R_DrawSkyChain(batch))
+				{
+					shaderstate.identitylighting = il;
 					continue;
+				}
+				shaderstate.identitylighting = il;
 			}
 			else if (/*shaderstate.mode != BEM_FOG &&*/ shaderstate.mode != BEM_CREPUSCULAR && shaderstate.mode != BEM_WIREFRAME)
 				continue;
@@ -5568,12 +5598,12 @@ batch_t *GLBE_GetTempBatch(void)
 
 /*called from shadowmapping code*/
 #ifdef RTLIGHTS
-void GLBE_BaseEntTextures(void)
+void GLBE_BaseEntTextures(const qbyte *worldpvs, const int *worldareas)
 {
 	batch_t *batches[SHADER_SORT_COUNT];
 	batch_t **ob = shaderstate.mbatches;
 	shaderstate.mbatches = batches;
-	BE_GenModelBatches(batches, shaderstate.curdlight, shaderstate.mode);
+	BE_GenModelBatches(batches, shaderstate.curdlight, shaderstate.mode, worldpvs, worldareas);
 	GLBE_SubmitMeshes(NULL, SHADER_SORT_PORTAL, SHADER_SORT_SEETHROUGH+1);
 	GLBE_SelectEntity(&r_worldentity);
 	shaderstate.mbatches = ob;
@@ -6196,6 +6226,8 @@ void GLBE_DrawLightPrePass(void)
 	qglClearColor (1,0,0,1);
 }
 
+qboolean R_DrawSkyroom(shader_t *skyshader);
+
 void GLBE_DrawWorld (batch_t **worldbatches)
 {
 #ifdef RTLIGHTS
@@ -6240,7 +6272,7 @@ void GLBE_DrawWorld (batch_t **worldbatches)
 	}
 
 	//memset(batches, 0, sizeof(batches));
-	BE_GenModelBatches(batches, shaderstate.curdlight, BEM_STANDARD);
+	BE_GenModelBatches(batches, shaderstate.curdlight, BEM_STANDARD, r_refdef.scenevis, r_refdef.sceneareas);
 	R_GenDlightBatches(batches);
 	shaderstate.curentity = &r_worldentity;
 //	if (cl.paused || cls.state < ca_active)
@@ -6253,6 +6285,21 @@ void GLBE_DrawWorld (batch_t **worldbatches)
 	BE_UpdateLightmaps();
 	if (worldbatches)
 	{
+		if (worldbatches[SHADER_SORT_SKY] && r_refdef.skyroom_enabled)
+		{
+			batch_t *b;
+			for (b = worldbatches[SHADER_SORT_SKY]; b; b = b->next)
+				if (R_DrawSkyroom(b->shader))
+				{
+					GL_CullFace(0);//make sure flipcull reversion takes effect
+					currententity = NULL;
+					GLBE_SelectEntity(&r_worldentity);
+					GL_ForceDepthWritable();
+					qglClear(GL_DEPTH_BUFFER_BIT);
+					r_refdef.flags |= RDF_SKIPSKY;
+					break;
+				}
+		}
 		if (gl_overbright.modified)
 		{
 			int i;
@@ -6307,18 +6354,28 @@ void GLBE_DrawWorld (batch_t **worldbatches)
 #endif
 		}
 
+#ifndef GLSLONLY
 		if (r_outline.ival && !r_wireframe.ival && qglPolygonMode && qglLineWidth)
 		{
+			int oc = r_refdef.flipcull;
 			shaderstate.identitylighting = 0;
 			shaderstate.identitylightmap = 0;
-			BE_SelectMode(BEM_DEPTHDARK);
-			qglLineWidth (bound(0.1, r_outline_width.value, 2000.0));
+			r_refdef.flipcull ^= SHADER_CULL_FLIP;
+			GLBE_SelectMode(BEM_DEPTHDARK);
+			shaderstate.polyoffset.unit = 1;
+			shaderstate.polyoffset.factor = 1;
+
+			qglEnable(GL_POLYGON_OFFSET_LINE);
+			qglLineWidth (bound(0.1, r_outline_width.value, 3.0));
 			qglPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-			GLBE_SubmitMeshes(NULL, SHADER_SORT_PORTAL, SHADER_SORT_SEETHROUGH+1);
-			BE_SelectMode(BEM_STANDARD);
+			GLBE_SubmitMeshes(NULL, SHADER_SORT_PORTAL, SHADER_SORT_OPAQUE+1);
+			r_refdef.flipcull = oc;
+			GLBE_SelectMode(BEM_STANDARD);
+			qglDisable(GL_POLYGON_OFFSET_LINE);
 			qglPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 			qglLineWidth (1);
 		}
+#endif
 
 		shaderstate.identitylighting = 1;
 

@@ -5,6 +5,9 @@
 #if !defined(CLIENTONLY) || defined(CSQC_DAT) || defined(MENU_DAT)
 
 #include "pr_common.h"
+#ifdef SQL
+#include "sv_sql.h"
+#endif
 
 #include <ctype.h>
 
@@ -19,7 +22,7 @@ cvar_t sv_gameplayfix_nolinknonsolid = CVARD("sv_gameplayfix_nolinknonsolid", "1
 cvar_t sv_gameplayfix_blowupfallenzombies = CVARD("sv_gameplayfix_blowupfallenzombies", "0", "Allow findradius to find non-solid entities. This may break certain mods. It is better for mods to use FL_FINDABLE_NONSOLID instead.");
 cvar_t sv_gameplayfix_droptofloorstartsolid = CVARD("sv_gameplayfix_droptofloorstartsolid", "0", "When droptofloor fails, this causes a second attemp, but with traceline instead.");
 cvar_t dpcompat_findradiusarealinks = CVARD("dpcompat_findradiusarealinks", "0", "Use the world collision info to accelerate findradius instead of looping through every single entity. May actually be slower for large radiuses, or fail to find entities which have not been linked properly with setorigin.");
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 cvar_t dpcompat_strcat_limit = CVARD("dpcompat_strcat_limit", "", "When set, cripples strcat (and related function) string lengths to the value specified.\nSet to 16383 to replicate DP's limit, otherwise leave as 0 to avoid limits.");
 #endif
 cvar_t pr_autocreatecvars = CVARD("pr_autocreatecvars", "1", "Implicitly create any cvars that don't exist when read.");
@@ -76,7 +79,7 @@ void PF_Common_RegisterCvars(void)
 	Cvar_Register (&sv_gameplayfix_nolinknonsolid, cvargroup_progs);
 	Cvar_Register (&sv_gameplayfix_droptofloorstartsolid, cvargroup_progs);
 	Cvar_Register (&dpcompat_findradiusarealinks, cvargroup_progs);
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 	Cvar_Register (&dpcompat_strcat_limit, cvargroup_progs);
 #endif
 	Cvar_Register (&pr_droptofloorunits, cvargroup_progs);
@@ -202,14 +205,14 @@ void QCLoadBreakpoints(const char *vmname, const char *progsname)
 		debuggerresume = -1;
 		fprintf(stdout, "qcreloaded \"%s\" \"%s\"\n", vmname, progsname);
 		fflush(stdout);
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(FTE_SDL)
 #ifndef SERVERONLY
 		INS_UpdateGrabs(false, false);
 #endif
 #endif
 		while(debuggerresume == -1 && !wantquit)
 		{
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(FTE_SDL)
 			Sleep(10);
 #else
 			usleep(10*1000);
@@ -403,7 +406,7 @@ int QDECL QCEditor (pubprogfuncs_t *prinst, const char *filename, int *line, int
 #endif
 		debuggerresume = -1;
 		debuggerresumeline = *line;
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(FTE_SDL)
 		if (debuggerwnd)
 			SetForegroundWindow((HWND)debuggerwnd);
 #endif
@@ -425,7 +428,7 @@ int QDECL QCEditor (pubprogfuncs_t *prinst, const char *filename, int *line, int
 		}
 		while(debuggerresume == -1 && !wantquit)
 		{
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(FTE_SDL)
 			Sleep(10);
 #else
 			usleep(10*1000);
@@ -433,7 +436,7 @@ int QDECL QCEditor (pubprogfuncs_t *prinst, const char *filename, int *line, int
 			SV_GetConsoleCommands();
 		}
 #else
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(FTE_SDL)
 		INS_UpdateGrabs(false, false);
 #endif
 		if (reason)
@@ -442,7 +445,7 @@ int QDECL QCEditor (pubprogfuncs_t *prinst, const char *filename, int *line, int
 			Con_Footerf(NULL, false, "^bDebugging");
 		while(debuggerresume == -1 && !wantquit)
 		{
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(FTE_SDL)
 			Sleep(10);
 #else
 			usleep(10*1000);
@@ -1122,26 +1125,28 @@ void QCBUILTIN PF_getsurfacepointattribute(pubprogfuncs_t *prinst, struct global
 	}
 }
 
-pvsbuffer_t qcpvs;
 //#240 float(vector viewpos, entity viewee) checkpvs (FTE_QC_CHECKPVS)
 //note: this requires a correctly setorigined entity.
 void QCBUILTIN PF_checkpvs(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	world_t *world = prinst->parms->user;
+	model_t *worldmodel = world->worldmodel;
 	float *viewpos = G_VECTOR(OFS_PARM0);
 	wedict_t *ent = G_WEDICT(prinst, OFS_PARM1);
+	int cluster;
+	int qcpvsarea[2];
+	qbyte *pvs;
 
-	if (!world->worldmodel || world->worldmodel->loadstate != MLS_LOADED)
+	if (!worldmodel || worldmodel->loadstate != MLS_LOADED)
 		G_FLOAT(OFS_RETURN) = false;
-	else if (!world->worldmodel->funcs.FatPVS)
+	else if (!worldmodel->funcs.FatPVS)
 		G_FLOAT(OFS_RETURN) = true;
 	else
 	{
-		//FIXME: Make all alternatives of FatPVS not recalulate the pvs.
-		//and yeah, this is overkill what with the whole fat thing and all.
-		world->worldmodel->funcs.FatPVS(world->worldmodel, viewpos, &qcpvs, false);
-
-		G_FLOAT(OFS_RETURN) = world->worldmodel->funcs.EdictInFatPVS(world->worldmodel, &ent->pvsinfo, qcpvs.buffer);
+		qcpvsarea[0] = 1;
+		cluster = worldmodel->funcs.ClusterForPoint(worldmodel, viewpos, &qcpvsarea[1]);
+		pvs = worldmodel->funcs.ClusterPVS(worldmodel, cluster, NULL, PVM_FAST);
+		G_FLOAT(OFS_RETURN) = worldmodel->funcs.EdictInFatPVS(worldmodel, &ent->pvsinfo, pvs, qcpvsarea);
 	}
 }
 
@@ -3655,7 +3660,7 @@ void QCBUILTIN PF_strcat (pubprogfuncs_t *prinst, struct globalvars_s *pr_global
 		l[i] = strlen(s[i]);
 		len += l[i];
 
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 		if (dpcompat_strcat_limit.ival && len > dpcompat_strcat_limit.ival)
 		{
 			l[i]-= len-dpcompat_strcat_limit.ival;
@@ -5063,6 +5068,14 @@ void QCBUILTIN PF_random (pubprogfuncs_t *prinst, struct globalvars_s *pr_global
 	//don't return 1 (it would break array[random()*array.length];
 	//don't return 0 either, it would break the self.nextthink = time+random()*foo; lines in walkmonster_start, resulting rarely in statue-monsters.
 	G_FLOAT(OFS_RETURN) = (rand ()&0x7fff) / ((float)0x08000) + (0.5/0x08000);
+
+	if (prinst->callargc)
+	{
+		if (prinst->callargc == 1)
+			G_FLOAT(OFS_RETURN) *= G_FLOAT(OFS_PARM0);
+		else
+			G_FLOAT(OFS_RETURN) = G_FLOAT(OFS_PARM0) + G_FLOAT(OFS_RETURN)*(G_FLOAT(OFS_PARM1)-G_FLOAT(OFS_PARM0));
+	}
 }
 
 //float(float number, float quantity) bitshift = #218;
@@ -5255,7 +5268,7 @@ void QCBUILTIN PF_crossproduct (pubprogfuncs_t *prinst, struct globalvars_s *pr_
 //Maths functions
 ////////////////////////////////////////////////////
 
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 unsigned int FTEToDPContents(unsigned int contents)
 {
 	unsigned int r = 0;
@@ -6245,11 +6258,11 @@ void QCBUILTIN PF_getentityfieldstring (pubprogfuncs_t *prinst, struct globalvar
 	G_INT(OFS_RETURN) = 0;
 	if (fidx < count)
 	{
-#if !defined(CLIENTONLY) && !defined(NOLEGACY)
+#if !defined(CLIENTONLY) && defined(HAVE_LEGACY)
 		qboolean isserver = (prinst == sv.world.progs);
 #endif
 		eval = (eval_t *)&((float *)ent->v)[fdef[fidx].ofs];
-#ifndef NOLEGACY	//extra code to be lazy so that xonotic doesn't go crazy and spam the fuck out of e
+#ifdef HAVE_LEGACY	//extra code to be lazy so that xonotic doesn't go crazy and spam the fuck out of e
 		if ((fdef->type & 0xff) == ev_vector)
 		{
 			if (eval->_vector[0]==0&&eval->_vector[1]==0&&eval->_vector[2]==0)
@@ -6415,6 +6428,9 @@ void PR_Common_Shutdown(pubprogfuncs_t *progs, qboolean errored)
 #endif
 #ifdef TEXTEDITOR
 	Editor_ProgsKilled(progs);
+#endif
+#ifdef SQL
+	SQL_KillServers(progs);
 #endif
 	tokenize_flush();
 }
@@ -6746,6 +6762,7 @@ lh_extension_t QSG_Extensions[] = {
 	{"DP_SOLIDCORPSE"},
 	{"DP_SPRITE32"},				//hmm... is it legal to advertise this one?
 	{"DP_SV_BOTCLIENT",					2,	NULL, {"spawnclient", "clienttype"}},
+	{"DP_SV_CLIENTCAMERA",				0,	NULL, {NULL}, "Works like svc_setview except also handles pvs."},
 	{"DP_SV_CLIENTCOLORS",				0,	NULL, {NULL}, "Provided only for compatibility with DP."},
 	{"DP_SV_CLIENTNAME",				0,	NULL, {NULL}, "Provided only for compatibility with DP."},
 	{"DP_SV_DRAWONLYTOCLIENT"},
@@ -6832,7 +6849,7 @@ lh_extension_t QSG_Extensions[] = {
 #ifdef PSET_SCRIPT
 	{"FTE_PART_SCRIPT",					0,	NULL, {NULL}, "Specifies that the r_particledesc cvar can be used to select a list of particle effects to load from particles/*.cfg, the format of which is documented elsewhere."},
 	{"FTE_PART_NAMESPACES",				0,	NULL, {NULL}, "Specifies that the engine can use foo.bar to load effect foo from particle description bar. When used via ssqc, this should cause the client to download whatever effects as needed."},
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 	{"FTE_PART_NAMESPACE_EFFECTINFO",	0,	NULL, {NULL}, "Specifies that effectinfo.bar can load effects from effectinfo.txt for DP compatibility."},
 #endif
 #endif

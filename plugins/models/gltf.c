@@ -6,7 +6,9 @@
 #include "com_mesh.h"
 extern modplugfuncs_t *modfuncs;
 
+#ifdef SKELETALMODELS
 #define GLTFMODELS
+#endif
 
 
 //'The units for all linear distances are meters.'
@@ -1983,9 +1985,10 @@ static qboolean GLTF_LoadModel(struct model_s *mod, char *json, size_t jsonsize,
 					break;
 			}
 			if (j==countof(extensions) || !extensions[j].supported)
+			{
 				Con_Printf(CON_ERROR "%s: Required gltf2 extension \"%s\" not supported\n", mod->name, extname);
-
-			goto abort;
+				goto abort;
+			}
 		}
 
 		for(n = JSON_FindIndexedChild(gltf.r, "extensionsUsed", 0); n; n = n->sibling)

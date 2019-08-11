@@ -429,8 +429,16 @@ void Mod_Think (void)
 				f = FS_OpenVFS(filename, "wb", FS_GAME);
 				if (f)
 				{
-					VFS_WRITE(f, "QLIT\1\0\0\0", 8);
-					VFS_WRITE(f, lightmodel->lightdata, numlightdata*3);
+					if (lightmodel->lightmaps.fmt == LM_E5BGR9)
+					{
+						VFS_WRITE(f, "QLIT\x01\0\x01\0", 8);
+						VFS_WRITE(f, lightmodel->lightdata, numlightdata*4);
+					}
+					else
+					{
+						VFS_WRITE(f, "QLIT\1\0\0\0", 8);
+						VFS_WRITE(f, lightmodel->lightdata, numlightdata*3);
+					}
 					VFS_CLOSE(f);
 				}
 				else
@@ -976,6 +984,21 @@ const char *Mod_FixName(const char *modname, const char *worldname)
 	}
 	return modname;
 }
+
+//Called when the given file was (re)written.
+//
+void Mod_FileWritten (const char *filename)
+{
+	int		i;
+	model_t	*mod;
+	for (i=0 , mod=mod_known ; i<mod_numknown ; i++, mod++)
+		if (!strcmp (mod->publicname, filename) )
+		{
+			if (mod->loadstate != MLS_NOTLOADED)
+				Mod_PurgeModel(mod, MP_RESET);
+		}
+}
+
 /*
 ==================
 Mod_FindName
@@ -1262,6 +1285,7 @@ static void Mod_LoadModelWorker (void *ctx, void *data, size_t a, size_t b)
 //
 // load the file
 //
+	mod->maxlod = 0;
 	// set necessary engine flags for loading purposes
 	if (!strcmp(mod->publicname, "progs/player.mdl"))
 		mod->engineflags |= MDLF_PLAYER | MDLF_DOCRC;
@@ -1873,10 +1897,10 @@ void Mod_LoadLighting (model_t *loadmodel, bspx_header_t *bspx, qbyte *mod_base,
 			litsize = 0;
 		}
 
-		if (litdata && litsize >= 8)
+		if (litdata)
 		{	//validate it, if we loaded one.
 			int litver = LittleLong(*(int *)&litdata[4]);
-			if (litdata[0] != 'Q' || litdata[1] != 'L' || litdata[2] != 'I' || litdata[3] != 'T')
+			if (litsize < 8 || litdata[0] != 'Q' || litdata[1] != 'L' || litdata[2] != 'I' || litdata[3] != 'T')
 			{
 				litdata = NULL;
 				Con_Printf("lit \"%s\" isn't a lit\n", litname);
@@ -1899,7 +1923,7 @@ void Mod_LoadLighting (model_t *loadmodel, bspx_header_t *bspx, qbyte *mod_base,
 					expdata = litdata+8;	//header+version
 				litdata = NULL;
 			}
-			else if (litver == 2 && overrides)
+			else if (litver == 2 && overrides && litsize > sizeof(qlit2_t))
 			{
 				qlit2_t *ql2 = (qlit2_t*)litdata;
 				unsigned int *offsets = (unsigned int*)(ql2+1);
@@ -1915,6 +1939,11 @@ void Mod_LoadLighting (model_t *loadmodel, bspx_header_t *bspx, qbyte *mod_base,
 				{
 					litdata = NULL;
 					Con_Printf("lit \"%s\" doesn't match level. Ignored.\n", litname);
+				}
+				else if (litsize != sizeof(qlit2_t)+ql2->numsurfs*4+ql2->lmsize*6)
+				{
+					litdata = NULL;
+					Con_Printf("lit \"%s\" is truncated. Ignored.\n", litname);
 				}
 				else
 				{
@@ -1942,7 +1971,7 @@ void Mod_LoadLighting (model_t *loadmodel, bspx_header_t *bspx, qbyte *mod_base,
 		}
 
 		exptmp = littmp = false;
-		if (!litdata)
+		if (!litdata && !expdata)
 		{
 			int size;
 			/*FIXME: bspx support for extents+lmscale, may require style+offset lumps too, not sure what to do here*/
@@ -1960,7 +1989,7 @@ void Mod_LoadLighting (model_t *loadmodel, bspx_header_t *bspx, qbyte *mod_base,
 		}
 		else if (!inhibitvalidation)
 		{
-			if (lumdata)
+			if (lumdata && litdata)
 			{
 				float prop;
 				int i;
@@ -2044,7 +2073,7 @@ void Mod_LoadLighting (model_t *loadmodel, bspx_header_t *bspx, qbyte *mod_base,
 		}
 		else
 		{
-			if (luxdata[0] == 'Q' && luxdata[1] == 'L' && luxdata[2] == 'I' && luxdata[3] == 'T')
+			if (luxsz < 8 || (luxdata[0] == 'Q' && luxdata[1] == 'L' && luxdata[2] == 'I' && luxdata[3] == 'T'))
 			{
 				if (LittleLong(*(int *)&luxdata[4]) == 1)
 					luxdata+=8;
@@ -2066,9 +2095,9 @@ void Mod_LoadLighting (model_t *loadmodel, bspx_header_t *bspx, qbyte *mod_base,
 #ifdef RUNTIMELIGHTING
 	if ((loadmodel->type == mod_brush && loadmodel->fromgame == fg_quake) || loadmodel->type == mod_heightmap)
 	{	//we only support a couple of formats. :(
-		if (!lightmodel && r_loadlits.value == 2 && (!litdata || (!luxdata && r_deluxemapping)))
+		if (!lightmodel && r_loadlits.value == 2 && ((!litdata&&!expdata) || (!luxdata && r_deluxemapping)))
 		{
-			writelitfile = !litdata;
+			writelitfile = !litdata&&!expdata;
 			numlightdata = l->filelen;
 			lightmodel = loadmodel;
 			relitsurface = 0;
@@ -2087,20 +2116,37 @@ void Mod_LoadLighting (model_t *loadmodel, bspx_header_t *bspx, qbyte *mod_base,
 	}
 
 	/*if we're relighting, make sure there's the proper lit data to be updated*/
-	if (lightmodel == loadmodel && !litdata)
+	if (lightmodel == loadmodel && !litdata && !expdata)
 	{
 		int i;
-		litdata = ZG_Malloc(&loadmodel->memgroup, samples*3);
-		littmp = false;
-		if (lumdata)
+		unsigned int *ergb;
+
+		if (r_loadlits.ival >= 3)
 		{
-			for (i = 0; i < samples; i++)
+			ergb = ZG_Malloc(&loadmodel->memgroup, samples*4);
+			expdata = (qbyte*)ergb;
+			littmp = false;
+			if (lumdata)
 			{
-				litdata[i*3+0] = lumdata[i];
-				litdata[i*3+1] = lumdata[i];
-				litdata[i*3+2] = lumdata[i];
+				for (i = 0; i < samples; i++)
+					ergb[i] = 15<<27 | lumdata[i]<<18 | lumdata[i]<<9 << lumdata[i]<<0;
+				lumdata = NULL;
 			}
-			lumdata = NULL;
+		}
+		else
+		{
+			litdata = ZG_Malloc(&loadmodel->memgroup, samples*3);
+			littmp = false;
+			if (lumdata)
+			{
+				for (i = 0; i < samples; i++)
+				{
+					litdata[i*3+0] = lumdata[i];
+					litdata[i*3+1] = lumdata[i];
+					litdata[i*3+2] = lumdata[i];
+				}
+				lumdata = NULL;
+			}
 		}
 	}
 	/*if we're relighting, make sure there's the proper lux data to be updated*/
@@ -2293,6 +2339,7 @@ static void Mod_ShowEnt_f(void)
 static void Mod_SaveEntFile_f(void)
 {
 	char fname[MAX_QPATH];
+	char nname[MAX_OSPATH];
 	model_t *mod = NULL;
 	char *n = Cmd_Argv(1);
 	const char *ents;
@@ -2333,6 +2380,8 @@ static void Mod_SaveEntFile_f(void)
 	}
 
 	COM_WriteFile(fname, FS_GAMEONLY, ents, strlen(ents));
+	if (FS_NativePath(fname, FS_GAMEONLY, nname, sizeof(nname)))
+		Con_Printf("Wrote %s\n", nname);
 }
 
 /*
@@ -2430,12 +2479,12 @@ qboolean Mod_LoadVertexes (model_t *loadmodel, qbyte *mod_base, lump_t *l)
 	int			i, count;
 
 	in = (void *)(mod_base + l->fileofs);
-	if (l->filelen % sizeof(*in))
+	count = l->filelen / sizeof(*in);
+	if (l->filelen % sizeof(*in) || count > SANITY_LIMIT(*out))
 	{
 		Con_Printf (CON_ERROR "MOD_LoadBmodel: funny lump size in %s\n", loadmodel->name);
 		return false;
 	}
-	count = l->filelen / sizeof(*in);
 	out = ZG_Malloc(&loadmodel->memgroup, count*sizeof(*out));	
 
 	loadmodel->vertexes = out;
@@ -2460,12 +2509,12 @@ qboolean Mod_LoadVertexNormals (model_t *loadmodel, bspx_header_t *bspx, qbyte *
 	if (l)
 	{
 		in = (void *)(mod_base + l->fileofs);
-		if (l->filelen % sizeof(vec3_t))
+		count = l->filelen / sizeof(vec3_t);
+		if (l->filelen % sizeof(*in) || count > SANITY_LIMIT(vec3_t))
 		{
 			Con_Printf (CON_ERROR "MOD_LoadBmodel: funny lump size in %s\n", loadmodel->name);
 			return false;
 		}
-		count = l->filelen / sizeof(vec3_t);
 	}
 	else
 	{
@@ -3308,12 +3357,12 @@ qboolean Mod_LoadEdges (model_t *loadmodel, qbyte *mod_base, lump_t *l, qboolean
 	if (lm)
 	{
 		dledge_t *in = (void *)(mod_base + l->fileofs);
-		if (l->filelen % sizeof(*in))
+		count = l->filelen / sizeof(*in);
+		if (l->filelen % sizeof(*in) || count > SANITY_LIMIT(*out))
 		{
 			Con_Printf ("MOD_LoadBmodel: funny lump size in %s\n", loadmodel->name);
 			return false;
 		}
-		count = l->filelen / sizeof(*in);
 		out = ZG_Malloc(&loadmodel->memgroup, (count + 1) * sizeof(*out));	
 
 		loadmodel->edges = out;
@@ -3328,12 +3377,12 @@ qboolean Mod_LoadEdges (model_t *loadmodel, qbyte *mod_base, lump_t *l, qboolean
 	else
 	{
 		dsedge_t *in = (void *)(mod_base + l->fileofs);
-		if (l->filelen % sizeof(*in))
+		count = l->filelen / sizeof(*in);
+		if (l->filelen % sizeof(*in) || count > SANITY_LIMIT(*out))
 		{
 			Con_Printf ("MOD_LoadBmodel: funny lump size in %s\n", loadmodel->name);
 			return false;
 		}
-		count = l->filelen / sizeof(*in);
 		out = ZG_Malloc(&loadmodel->memgroup, (count + 1) * sizeof(*out));
 
 		loadmodel->edges = out;
@@ -3363,12 +3412,12 @@ qboolean Mod_LoadMarksurfaces (model_t *loadmodel, qbyte *mod_base, lump_t *l, q
 	{
 		int		*inl;
 		inl = (void *)(mod_base + l->fileofs);
-		if (l->filelen % sizeof(*inl))
+		count = l->filelen / sizeof(*inl);
+		if (l->filelen % sizeof(*inl) || count > SANITY_LIMIT(*out))
 		{
 			Con_Printf (CON_ERROR "MOD_LoadBmodel: funny lump size in %s\n",loadmodel->name);
 			return false;
 		}
-		count = l->filelen / sizeof(*inl);
 		out = ZG_Malloc(&loadmodel->memgroup, count*sizeof(*out));
 
 		loadmodel->marksurfaces = out;
@@ -3389,12 +3438,12 @@ qboolean Mod_LoadMarksurfaces (model_t *loadmodel, qbyte *mod_base, lump_t *l, q
 	{
 		short		*ins;
 		ins = (void *)(mod_base + l->fileofs);
-		if (l->filelen % sizeof(*ins))
+		count = l->filelen / sizeof(*ins);
+		if (l->filelen % sizeof(*ins) || count > SANITY_LIMIT(*out))
 		{
 			Con_Printf (CON_ERROR "MOD_LoadBmodel: funny lump size in %s\n",loadmodel->name);
 			return false;
 		}
-		count = l->filelen / sizeof(*ins);
 		out = ZG_Malloc(&loadmodel->memgroup, count*sizeof(*out));
 
 		loadmodel->marksurfaces = out;
@@ -3426,12 +3475,12 @@ qboolean Mod_LoadSurfedges (model_t *loadmodel, qbyte *mod_base, lump_t *l)
 	int		*in, *out;
 	
 	in = (void *)(mod_base + l->fileofs);
-	if (l->filelen % sizeof(*in))
+	count = l->filelen / sizeof(*in);
+	if (l->filelen % sizeof(*in) || count > SANITY_LIMIT(*out))
 	{
 		Con_Printf (CON_ERROR "MOD_LoadBmodel: funny lump size in %s\n",loadmodel->name);
 		return false;
 	}
-	count = l->filelen / sizeof(*in);
 	out = ZG_Malloc(&loadmodel->memgroup, count*sizeof(*out));
 
 	loadmodel->surfedges = out;
@@ -3711,12 +3760,12 @@ static qboolean Mod_LoadSubmodels (model_t *loadmodel, qbyte *mod_base, lump_t *
 	if (!inq->numfaces)
 	{
 		*hexen2map = true;
-		if (l->filelen % sizeof(*inh))
+		count = l->filelen / sizeof(*inh);
+		if (l->filelen % sizeof(*inh) || count > SANITY_LIMIT(*out))
 		{
 			Con_Printf (CON_ERROR "MOD_LoadBmodel: funny lump size in %s\n",loadmodel->name);
 			return false;
 		}
-		count = l->filelen / sizeof(*inh);
 		out = ZG_Malloc(&loadmodel->memgroup, count*sizeof(*out));
 
 		loadmodel->submodels = out;
@@ -3749,12 +3798,12 @@ static qboolean Mod_LoadSubmodels (model_t *loadmodel, qbyte *mod_base, lump_t *
 	else
 	{
 		*hexen2map = false;
-		if (l->filelen % sizeof(*inq))
+		count = l->filelen / sizeof(*inq);
+		if (l->filelen % sizeof(*inq) || count > SANITY_LIMIT(*out))
 		{
 			Con_Printf (CON_ERROR "MOD_LoadBmodel: funny lump size in %s\n",loadmodel->name);
 			return false;
 		}
-		count = l->filelen / sizeof(*inq);
 		out = ZG_Malloc(&loadmodel->memgroup, count*sizeof(*out));	
 
 		loadmodel->submodels = out;
@@ -3800,12 +3849,12 @@ static qboolean Mod_LoadTexinfo (model_t *loadmodel, qbyte *mod_base, lump_t *l)
 	int		miptex;
 
 	in = (void *)(mod_base + l->fileofs);
-	if (l->filelen % sizeof(*in))
+	count = l->filelen / sizeof(*in);
+	if (l->filelen % sizeof(*in) || count > SANITY_LIMIT(*out))
 	{
 		Con_Printf (CON_ERROR "MOD_LoadBmodel: funny lump size in %s\n",loadmodel->name);
 		return false;
 	}
-	count = l->filelen / sizeof(*in);
 	out = ZG_Malloc(&loadmodel->memgroup, count*sizeof(*out));
 
 	loadmodel->texinfo = out;
@@ -3943,23 +3992,23 @@ static qboolean Mod_LoadFaces (model_t *loadmodel, bspx_header_t *bspx, qbyte *m
 	{
 		ins = NULL;
 		inl = (void *)(mod_base + l->fileofs);
-		if (l->filelen % sizeof(*inl))
+		count = l->filelen / sizeof(*inl);
+		if (l->filelen % sizeof(*inl) || count > SANITY_LIMIT(*out))
 		{
 			Con_Printf (CON_ERROR "MOD_LoadBmodel: funny lump size in %s\n",loadmodel->name);
 			return false;
 		}
-		count = l->filelen / sizeof(*inl);
 	}
 	else
 	{
 		ins = (void *)(mod_base + l->fileofs);
 		inl = NULL;
-		if (l->filelen % sizeof(*ins))
+		count = l->filelen / sizeof(*ins);
+		if (l->filelen % sizeof(*ins) || count > SANITY_LIMIT(*out))
 		{
 			Con_Printf (CON_ERROR "MOD_LoadBmodel: funny lump size in %s\n",loadmodel->name);
 			return false;
 		}
-		count = l->filelen / sizeof(*ins);
 	}
 	out = ZG_Malloc(&loadmodel->memgroup, count*sizeof(*out));
 
@@ -4107,12 +4156,12 @@ static qboolean Mod_LoadNodes (model_t *loadmodel, qbyte *mod_base, lump_t *l, i
 	{
 		dl2node_t		*in;
 		in = (void *)(mod_base + l->fileofs);
-		if (l->filelen % sizeof(*in))
+		count = l->filelen / sizeof(*in);
+		if (l->filelen % sizeof(*in) || count > SANITY_LIMIT(*out))
 		{
 			Con_Printf (CON_ERROR "MOD_LoadBmodel: funny lump size in %s\n",loadmodel->name);
 			return false;
 		}
-		count = l->filelen / sizeof(*in);
 		out = ZG_Malloc(&loadmodel->memgroup, count*sizeof(*out));
 
 		loadmodel->nodes = out;
@@ -4146,12 +4195,12 @@ static qboolean Mod_LoadNodes (model_t *loadmodel, qbyte *mod_base, lump_t *l, i
 	{
 		dl1node_t		*in;
 		in = (void *)(mod_base + l->fileofs);
-		if (l->filelen % sizeof(*in))
+		count = l->filelen / sizeof(*in);
+		if (l->filelen % sizeof(*in) || count > SANITY_LIMIT(*out))
 		{
 			Con_Printf (CON_ERROR "MOD_LoadBmodel: funny lump size in %s\n",loadmodel->name);
 			return false;
 		}
-		count = l->filelen / sizeof(*in);
 		out = ZG_Malloc(&loadmodel->memgroup, count*sizeof(*out));
 
 		loadmodel->nodes = out;
@@ -4185,12 +4234,12 @@ static qboolean Mod_LoadNodes (model_t *loadmodel, qbyte *mod_base, lump_t *l, i
 	{
 		dsnode_t		*in;
 		in = (void *)(mod_base + l->fileofs);
-		if (l->filelen % sizeof(*in))
+		count = l->filelen / sizeof(*in);
+		if (l->filelen % sizeof(*in) || count > SANITY_LIMIT(*out))
 		{
 			Con_Printf (CON_ERROR "MOD_LoadBmodel: funny lump size in %s\n",loadmodel->name);
 			return false;
 		}
-		count = l->filelen / sizeof(*in);
 		out = ZG_Malloc(&loadmodel->memgroup, count*sizeof(*out));
 
 		loadmodel->nodes = out;
@@ -4255,15 +4304,10 @@ static qboolean Mod_LoadLeafs (model_t *loadmodel, qbyte *mod_base, lump_t *l, i
 	{
 		dl2leaf_t 	*in;
 		in = (void *)ptr;
-		if (len % sizeof(*in))
+		count = len / sizeof(*in);
+		if (len % sizeof(*in) || count > SANITY_LIMIT(*out))
 		{
 			Con_Printf (CON_ERROR "MOD_LoadBmodel: funny lump size in %s\n",loadmodel->name);
-			return false;
-		}
-		count = len / sizeof(*in);
-		if (count > SANITY_MAX_MAP_LEAFS)
-		{
-			Con_Printf (CON_ERROR "Mod_LoadLeafs: %s has more than %i leafs\n",loadmodel->name, SANITY_MAX_MAP_LEAFS);
 			return false;
 		}
 		out = ZG_Malloc(&loadmodel->memgroup, count*sizeof(*out));
@@ -4319,15 +4363,10 @@ static qboolean Mod_LoadLeafs (model_t *loadmodel, qbyte *mod_base, lump_t *l, i
 	{
 		dl1leaf_t 	*in;
 		in = (void *)(ptr);
-		if (len % sizeof(*in))
+		count = len / sizeof(*in);
+		if (len % sizeof(*in) || count > SANITY_LIMIT(*out))
 		{
 			Con_Printf (CON_ERROR "MOD_LoadBmodel: funny lump size in %s\n",loadmodel->name);
-			return false;
-		}
-		count = len / sizeof(*in);
-		if (count > SANITY_MAX_MAP_LEAFS)
-		{
-			Con_Printf (CON_ERROR "Mod_LoadLeafs: %s has more than %i leafs\n",loadmodel->name, SANITY_MAX_MAP_LEAFS);
 			return false;
 		}
 		out = ZG_Malloc(&loadmodel->memgroup, count*sizeof(*out));
@@ -4383,15 +4422,10 @@ static qboolean Mod_LoadLeafs (model_t *loadmodel, qbyte *mod_base, lump_t *l, i
 	{
 		dsleaf_t 	*in;
 		in = (void *)(ptr);
-		if (len % sizeof(*in))
+		count = len / sizeof(*in);
+		if (len % sizeof(*in) || count > SANITY_LIMIT(*out))
 		{
 			Con_Printf (CON_ERROR "MOD_LoadBmodel: funny lump size in %s\n",loadmodel->name);
-			return false;
-		}
-		count = len / sizeof(*in);
-		if (count > SANITY_MAX_MAP_LEAFS)
-		{
-			Con_Printf (CON_ERROR "Mod_LoadLeafs: %s has more than %i leafs\n",loadmodel->name, SANITY_MAX_MAP_LEAFS);
 			return false;
 		}
 		out = ZG_Malloc(&loadmodel->memgroup, count*sizeof(*out));
@@ -4539,23 +4573,23 @@ static qboolean Mod_LoadClipnodes (model_t *loadmodel, qbyte *mod_base, lump_t *
 	{
 		ins = NULL;
 		inl = (void *)(mod_base + l->fileofs);
-		if (l->filelen % sizeof(*inl))
+		count = l->filelen / sizeof(*inl);
+		if (l->filelen % sizeof(*inl) || count > SANITY_LIMIT(*out))
 		{
 			Con_Printf (CON_ERROR "MOD_LoadBmodel: funny lump size in %s\n",loadmodel->name);
 			return false;
 		}
-		count = l->filelen / sizeof(*inl);
 	}
 	else
 	{
 		ins = (void *)(mod_base + l->fileofs);
 		inl = NULL;
-		if (l->filelen % sizeof(*ins))
+		count = l->filelen / sizeof(*ins);
+		if (l->filelen % sizeof(*ins) || count > SANITY_LIMIT(*out))
 		{
 			Con_Printf (CON_ERROR "MOD_LoadBmodel: funny lump size in %s\n",loadmodel->name);
 			return false;
 		}
-		count = l->filelen / sizeof(*ins);
 	}
 	out = ZG_Malloc(&loadmodel->memgroup, (count+numsuplementryclipnodes)*sizeof(*out));//space for both
 
@@ -4565,8 +4599,6 @@ static qboolean Mod_LoadClipnodes (model_t *loadmodel, qbyte *mod_base, lump_t *
 
 	if (hexen2map)
 	{	//hexen2.
-		hexen2map=false;
-
 		//compatible with Q1.
 		hull = &loadmodel->hulls[1];
 		hull->clipnodes = out;
@@ -4831,12 +4863,12 @@ static qboolean Mod_LoadPlanes (model_t *loadmodel, qbyte *mod_base, lump_t *l)
 	int			bits;
 	
 	in = (void *)(mod_base + l->fileofs);
-	if (l->filelen % sizeof(*in))
+	count = l->filelen / sizeof(*in);
+	if (l->filelen % sizeof(*in) || count > SANITY_LIMIT(*out))
 	{
 		Con_Printf (CON_ERROR "MOD_LoadBmodel: funny lump size in %s\n",loadmodel->name);
 		return false;
 	}
-	count = l->filelen / sizeof(*in);
 	out = ZG_Malloc(&loadmodel->memgroup, (count+numsuplementryplanes)*2*sizeof(*out));
 	
 	loadmodel->planes = out;
@@ -5616,7 +5648,7 @@ void Mod_LoadSpriteFrameShader(model_t *spr, int frame, int subframe, mspritefra
 
 	if (mod_litsprites_force.ival || strchr(spr->publicname, '!'))
 		litsprite = true;
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 	else
 	{
 		int i;

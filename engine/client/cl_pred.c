@@ -1155,7 +1155,7 @@ void CL_PredictMovePNum (int seat)
 
 	//if our network protocol doesn't have a concept of separate players, make sure our player states are updated from those entities
 	//fixme: use entity states instead of player states to avoid the extra work here
-	if (pv->nolocalplayer || nopred)
+	if (pv->nolocalplayer)
 	{
 		packet_entities_t *pe;
 		pe = &cl.inframes[fromframe & UPDATE_MASK].packet_entities;
@@ -1219,13 +1219,14 @@ void CL_PredictMovePNum (int seat)
 	//just in case we don't run any prediction
 	VectorCopy(tostate->gravitydir, pmove.gravitydir);
 
-	if (nopred)
-	{	//still need the player's size for onground detection and bobbing.
-		VectorCopy(tostate->szmins, pmove.player_mins);
-		VectorCopy(tostate->szmaxs, pmove.player_maxs);
-	}
-	else
-	{
+	//if all else fails...
+	pmove.pm_type = tostate->pm_type;
+	pmove.onground = tostate->onground;
+	VectorCopy(tostate->szmins, pmove.player_mins);
+	VectorCopy(tostate->szmaxs, pmove.player_maxs);
+
+	if (!nopred)
+	{	
 		for (i=1 ; i<UPDATE_BACKUP-1 && cl.ackedmovesequence+i < cl.movesequence; i++)
 		{
 			outframe_t *of = &cl.outframes[(cl.ackedmovesequence+i) & UPDATE_MASK];
@@ -1423,6 +1424,8 @@ void CL_PredictMove (void)
 
 	// Set up prediction for other players
 	CL_SetUpPlayerPrediction(true);
+
+	VALGRIND_MAKE_MEM_UNDEFINED(&pmove.onground, sizeof(pmove.onground));
 }
 
 

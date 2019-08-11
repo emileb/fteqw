@@ -152,7 +152,7 @@ typedef struct
 		};
 #endif
 		struct {
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 			const char	*vw_model_precache[32];
 #endif
 			const char	*model_precache[MAX_PRECACHE_MODELS];	// NULL terminated
@@ -169,6 +169,9 @@ typedef struct
 	char		h2miditrack[MAX_QPATH];
 	qbyte		h2cdtrack;
 #endif
+
+	vec3_t		skyroom_pos;	//parsed from world._skyroom
+	qboolean	skyroom_pos_known;
 
 	int			allocated_client_slots;	//number of slots available. (used mostly to stop single player saved games cacking up)
 	int			spawned_client_slots; //number of PLAYER slots which are active (ie: putclientinserver was called)
@@ -415,7 +418,7 @@ enum
 	PRESPAWN_CSPROGS,			//demos contain a copy of the csprogs.
 #endif
 	PRESPAWN_SOUNDLIST,			//nq skips these
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 	PRESPAWN_VWEPMODELLIST,		//qw ugly extension.
 #endif
 	PRESPAWN_MODELLIST,
@@ -447,6 +450,23 @@ enum
 #define STUFFCMD_DEMOONLY     (   1<<1) // put in mvd demo only
 #define STUFFCMD_BROADCAST    (   1<<2) // everyone sees it.
 #define STUFFCMD_UNRELIABLE   (   1<<3) // someone might not see it. oh well.
+
+enum serverprotocols_e
+{
+	SCP_BAD,	//don't send (a bot)
+	SCP_QUAKEWORLD,
+	SCP_QUAKE2,
+	SCP_QUAKE3,
+	//all the below are considered netquake clients.
+	SCP_NETQUAKE,
+	//bjp1, bjp2
+	SCP_BJP3,		//16bit angles,model+sound indexes. nothing else (assume raised ent limits too).
+	SCP_FITZ666,
+	//dp5
+	SCP_DARKPLACES6,
+	SCP_DARKPLACES7	//extra prediction stuff
+	//note, nq is nq+
+};
 
 typedef struct client_s
 {
@@ -483,7 +503,8 @@ typedef struct client_s
 	float			maxspeed;			// localized maxspeed
 	float			entgravity;			// localized ent gravity
 
-	int viewent;	//fake the entity positioning.
+	int viewent;		//fake the entity positioning.
+	int clientcamera;	//cache for dp_sv_clientcamera.
 
 	edict_t			*edict;				// EDICT_NUM(clientnum+1)
 //additional game modes use additional edict pointers. this ensures that references are crashes.
@@ -503,7 +524,7 @@ typedef struct client_s
 										// extracted from userinfo
 	char			guid[64]; /*+2 for split+pad*/
 	int				messagelevel;		// for filtering printed messages
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 	float			*dp_ping;
 	float			*dp_pl;
 #endif
@@ -562,7 +583,7 @@ typedef struct client_s
 	#define SENDFLAGS_PRESENT 0x80000000u	//this entity is present on that client
 	#define SENDFLAGS_REMOVED 0x40000000u	//to handle remove packetloss
 
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 	char			*dlqueue;			//name\name delimited list of files to ask the client to download.
 #endif
 	char			downloadfn[MAX_QPATH];
@@ -570,8 +591,10 @@ typedef struct client_s
 	qofs_t			downloadsize;		// total bytes
 	qofs_t			downloadcount;		// bytes sent
 
+#ifdef NQPROT
 	qofs_t			downloadacked;		//DP-specific
 	qofs_t			downloadstarted;	//DP-specific
+#endif
 
 	int				spec_track;			// entnum of player tracking
 
@@ -657,21 +680,7 @@ typedef struct client_s
 	unsigned int	max_net_clients; /*max number of player slots supported by the client */
 	unsigned int	maxmodels; /*max models supported by whatever the protocol is*/
 
-	enum {
-		SCP_BAD,	//don't send (a bot)
-		SCP_QUAKEWORLD,
-		SCP_QUAKE2,
-		SCP_QUAKE3,
-		//all the below are considered netquake clients.
-		SCP_NETQUAKE,
-		//bjp1, bjp2
-		SCP_BJP3,		//16bit angles,model+sound indexes. nothing else (assume raised ent limits too).
-		SCP_FITZ666,
-		//dp5
-		SCP_DARKPLACES6,
-		SCP_DARKPLACES7	//extra prediction stuff
-		//note, nq is nq+
-	} protocol;
+	enum serverprotocols_e protocol;
 	unsigned int	supportedprotocols;
 	qboolean proquake_angles_hack;	//expect 16bit client->server angles .
 
@@ -1091,7 +1100,7 @@ extern	vfsfile_t	*sv_fraglogfile;
 //===========================================================
 
 void SV_AddDebugPolygons(void);
-const char *SV_CheckRejectConnection(netadr_t *adr, const char *uinfo, unsigned int protocol, unsigned int pext1, unsigned int pext2, char *guid);
+const char *SV_CheckRejectConnection(netadr_t *adr, const char *uinfo, unsigned int protocol, unsigned int pext1, unsigned int pext2, unsigned int ezpext1, char *guid);
 
 //
 //sv_ccmds.c
@@ -1142,7 +1151,29 @@ char *SV_PlayerPublicAddress(client_t *cl);
 
 qboolean SVC_GetChallenge (qboolean respond_dp);
 int SV_NewChallenge (void);
-client_t *SVC_DirectConnect(void);
+void SVC_DirectConnect(int expectedreliablesequence);
+typedef struct
+{
+	enum serverprotocols_e protocol;		//protocol used to talk to this client.
+#ifdef NQPROT
+	qboolean proquakeanglehack;				//specifies that the client will expect proquake angles if we give a proquake CCREP_ACCEPT response.
+	unsigned int expectedreliablesequence;	//required for nq connection cookies (like tcp's syn cookies).
+	unsigned int supportedprotocols;		//1<<SCP_* bitmask
+#endif
+	unsigned int ftepext1;
+	unsigned int ftepext2;
+	unsigned int ezpext1;
+	int			qport;						//part of the qw protocol to avoid issues with buggy routers that periodically renumber cl2sv ports.
+#ifdef HUFFNETWORK
+	int			huffcrc;					//network compression stuff
+#endif
+	int			challenge;					//the challenge used at connect. remembered to make life harder for proxies.
+	int			mtu;						//allowed fragment size (also signifies that it supports fragmented qw packets)
+	char		userinfo[2048];				//random userinfo data. no blobs, obviously.
+	char		guid[128];					//user's guid data
+	netadr_t	adr;						//the address the connect request came from (so we can check passwords before accepting)
+} svconnectinfo_t;
+void SV_DoDirectConnect(svconnectinfo_t *fte_restrict info);
 
 int SV_ModelIndex (const char *name);
 
@@ -1210,13 +1241,15 @@ void MSV_SubServerCommand_f(void);
 void MSV_SubServerCommand_f(void);
 void MSV_MapCluster_f(void);
 void SSV_Send(const char *dest, const char *src, const char *cmd, const char *msg);
-qboolean MSV_ClusterLogin(char *guid, char *userinfo, size_t userinfosize);
+qboolean MSV_ClusterLogin(svconnectinfo_t *info);
 void MSV_PollSlaves(void);
 void MSV_Status(void);
+void MSV_OpenUserDatabase(void);
 #else
 #define SSV_UpdateAddresses() ((void)0)
-#define MSV_ClusterLogin(guid,info,infosize) false
+#define MSV_ClusterLogin(info) false
 #define SSV_IsSubServer() false
+#define MSV_OpenUserDatabase()
 #endif
 
 //
@@ -1320,7 +1353,7 @@ void SV_UpdateToReliableMessages (void);
 void SV_FlushBroadcasts (void);
 qboolean SV_CanTrack(client_t *client, int entity);
 
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 void SV_DownloadQueueNext(client_t *client);
 void SV_DownloadQueueClear(client_t *client);
 #endif
@@ -1378,6 +1411,7 @@ void SV_ReplaceEntityFrame(client_t *cl, int framenum);
 //
 
 void ClientReliableCheckBlock(client_t *cl, int maxsize);
+sizebuf_t *ClientReliable_StartWrite(client_t *cl, int maxsize);	//MUST be followed by a call to ClientReliable_FinishWrite before the next start
 void ClientReliable_FinishWrite(client_t *cl);
 void ClientReliableWrite_Begin(client_t *cl, int c, int maxsize);
 client_t *ClientReliableWrite_BeginSplit(client_t *cl, int svc, int svclen);
@@ -1535,8 +1569,9 @@ typedef struct mvddest_s {
 
 	vfsfile_t *file;
 
-	char filename[MAX_QPATH];	//demos/foo.mvd
-	char simplename[MAX_QPATH];	//foo.mvd
+	int id;
+	char filename[MAX_QPATH];	//demos/foo.mvd (or a username)
+	char simplename[MAX_QPATH];	//foo.mvd (or a qtv resource)
 
 	int flushing;	//worker has a cache (used as a sync point)
 	char *cache;

@@ -28,6 +28,7 @@ void Sys_mkdir (const char *path);	//not all pre-unix systems have directories (
 qboolean Sys_rmdir (const char *path);
 qboolean Sys_remove (const char *path);
 qboolean Sys_Rename (const char *oldfname, const char *newfname);
+qboolean Sys_GetFreeDiskSpace(const char *path, quint64_t *freespace);	//false for not-implemented or other error. path will be a system path, but may be relative (if basedir isn't properly known). path MAY be a file, or may be a slash-terminated directory.
 qboolean Sys_FindGameData(const char *poshname, const char *gamename, char *basepath, int basepathlen, qboolean allowprompts);
 
 //
@@ -57,6 +58,7 @@ typedef struct {
 	char *name;
 } dllfunction_t;
 typedef void dllhandle_t;	//typically used as void*
+extern qboolean sys_nounload;	//blocks Sys_CloseLibrary. set before stack trace fatal shutdowns.
 dllhandle_t *Sys_LoadLibrary(const char *name, dllfunction_t *funcs);
 void Sys_CloseLibrary(dllhandle_t *lib);
 void *Sys_GetAddressForName(dllhandle_t *module, const char *exportname);

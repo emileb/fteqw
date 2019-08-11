@@ -77,7 +77,7 @@ void R_SetSky(const char *sky)
 			tex.reflectcube = R_LoadHiResTexture(sky, "env:gfx/env", IF_LOADNOW|IF_CUBEMAP|IF_CLAMP);
 			if (tex.reflectcube->width)
 			{
-				forcedsky = R_RegisterShader(va("skybox_%s", sky), 0, "{\nsort sky\nprogram defaultskybox\n{\nmap \"$cube:$reflectcube\"\ntcgen skybox\n}\nsurfaceparm nodlight\nsurfaceparm sky\n}");
+				forcedsky = R_RegisterShader(va("skybox_%s", sky), 0, "{\nsort sky\nprogram defaultskybox\n{\ndepthwrite\nmap \"$cube:$reflectcube\"\ntcgen skybox\n}\nsurfaceparm nodlight\nsurfaceparm sky\n}");
 				R_BuildDefaultTexnums(&tex, forcedsky, IF_WORLDTEX);
 				return;
 			}
@@ -115,6 +115,88 @@ void R_DrawFastSky(batch_t *batch)
 	b.texture = NULL;
 	BE_SubmitBatch(&b);
 }
+
+//annoyingly sky does not always write depth values.
+//this can allow entities to appear beyond it.
+//this can include (massive) entities outside of the skyroom.
+//so, we can only draw entities in skyrooms if:
+//1) either the ents have robust pvs info and we can draw ONLY the ones actually inside the skyroom
+//2) or if r_ignoreentpvs==1 we must mask depth and waste a whole load of batches drawing invisible ents in the sky
+extern cvar_t r_ignoreentpvs;
+
+qboolean R_DrawSkyroom(shader_t *skyshader)
+{
+	float vmat[16];
+	refdef_t oldrefdef;
+//	extern cvar_t r_ignoreentpvs; //legacy value is 1...
+	extern cvar_t v_skyroom_orientation;
+
+	if (r_viewcluster == -1)
+		return false;	//don't draw the skyroom if the camera is outside.
+
+	if (r_fastsky.value)
+		return false;	//skyrooms can be expensive.
+	if (!r_refdef.skyroom_enabled || r_refdef.recurse >= R_MAX_RECURSE-1)
+		return false;
+
+	oldrefdef = r_refdef;
+	r_refdef.recurse+=1;
+
+//	if (r_ignoreentpvs.ival)	//if we're ignoring ent pvs then we're probably drawing lots of ents in the skybox that shouldn't be there
+//		r_refdef.firstvisedict = cl_numvisedicts;
+	r_refdef.externalview = true;	//an out-of-body experience...
+	r_refdef.skyroom_enabled = false;
+	r_refdef.forcevis = false;
+	r_refdef.flags |= RDF_DISABLEPARTICLES;
+	r_refdef.flags &= ~RDF_SKIPSKY;
+	r_refdef.forcedvis = NULL;
+	r_refdef.areabitsknown = false;	//recalculate areas clientside.
+
+	/*work out where the camera should be (use the same angles)*/
+	VectorCopy(r_refdef.skyroom_pos, r_refdef.vieworg);
+	VectorCopy(r_refdef.skyroom_pos, r_refdef.pvsorigin);
+
+	if (developer.ival)
+		if (r_worldentity.model->funcs.PointContents(r_worldentity.model, NULL, r_refdef.skyroom_pos) & FTECONTENTS_SOLID)
+			Con_DPrintf("Skyroom position %.1f %.1f %.1f in solid\n", r_refdef.skyroom_pos[0], r_refdef.skyroom_pos[1], r_refdef.skyroom_pos[2]);
+
+	if (*v_skyroom_orientation.string)
+	{
+		vec3_t axis[3];
+		float ang = v_skyroom_orientation.vec4[3] * cl.time;
+		if (!v_skyroom_orientation.vec4[0]&&!v_skyroom_orientation.vec4[1]&&!v_skyroom_orientation.vec4[2])
+			VectorSet(v_skyroom_orientation.vec4, 0,0,1);
+		VectorNormalize(v_skyroom_orientation.vec4);
+		RotatePointAroundVector(axis[0], v_skyroom_orientation.vec4, vpn, ang);
+		RotatePointAroundVector(axis[1], v_skyroom_orientation.vec4, vright, ang);
+		RotatePointAroundVector(axis[2], v_skyroom_orientation.vec4, vup, ang);
+		Matrix4x4_CM_ModelViewMatrixFromAxis(vmat, axis[0], axis[1], axis[2], r_refdef.vieworg);
+	}
+	else
+		Matrix4x4_CM_ModelViewMatrixFromAxis(vmat, vpn, vright, vup, r_refdef.vieworg);
+	R_SetFrustum (r_refdef.m_projection_std, vmat);
+
+	//now determine the stuff the backend will use.
+	memcpy(r_refdef.m_view, vmat, sizeof(float)*16);
+	VectorAngles(vpn, vup, r_refdef.viewangles, false);
+	VectorCopy(r_refdef.vieworg, r_origin);
+
+	Surf_SetupFrame();
+	Surf_DrawWorld ();
+
+	r_refdef = oldrefdef;
+
+	/*broken stuff*/
+	AngleVectors (r_refdef.viewangles, vpn, vright, vup);
+	VectorCopy (r_refdef.vieworg, r_origin);
+
+	return true;
+}
+
+//q3 mustn't mask sky (breaks q3map2's invisible skyportals), whereas q1 must (or its a cheat). halflife doesn't normally expect masking.
+//we also MUST mask any sky inside skyrooms, or you'll see all the entities outside of the skyroom through the room's own sky (q3map2 skyportals are hopefully irrelevant in this case).
+#define SKYMUSTBEMASKED (r_worldentity.model->fromgame != fg_quake3 || ((r_refdef.flags & RDF_DISABLEPARTICLES) && !r_ignoreentpvs.ival))
+
 /*
 =================
 GL_DrawSkyChain
@@ -135,6 +217,13 @@ qboolean R_DrawSkyChain (batch_t *batch)
 	{
 		skyshader = forcedsky;
 
+		if (r_refdef.flags & RDF_SKIPSKY)
+		{
+			if (r_worldentity.model->fromgame != fg_quake3)
+				GL_SkyForceDepth(batch);
+			return true;
+		}
+
 		if (forcedsky->numpasses && !forcedsky->skydome)
 		{	//cubemap skies!
 			//this is just a simple pass. we use glsl/texgen for any actual work
@@ -150,7 +239,16 @@ qboolean R_DrawSkyChain (batch_t *batch)
 	{
 		skyshader = batch->shader;
 		if (skyshader->prog)	//glsl is expected to do the whole skybox/warpsky thing itself, with no assistance from this legacy code.
-			return false;
+		{
+			if (r_refdef.flags & RDF_SKIPSKY)
+			{
+				if (SKYMUSTBEMASKED)
+					GL_SkyForceDepth(batch);
+				return true;
+			}
+			//if the first pass is transparent in some form, then be prepared to give it a skyroom behind.
+			return false;	//draw as normal...
+		}
 	}
 
 	if (skyshader->skydome)
@@ -158,7 +256,25 @@ qboolean R_DrawSkyChain (batch_t *batch)
 	else
 		skyboxtex = NULL;
 
-	if (skyboxtex && TEXVALID(*skyboxtex))
+	if (r_refdef.flags & RDF_SKIPSKY)
+	{	//don't obscure the skyroom if the sky shader is opaque.
+		qboolean opaque = false;
+		if (skyshader->numpasses)
+		{
+			shaderpass_t *pass = skyshader->passes;
+			if (pass->shaderbits & SBITS_ATEST_BITS)	//alphatests
+				;
+			else if (pass->shaderbits & SBITS_MASK_BITS)	//colormasks
+				;
+			else if ((pass->shaderbits & SBITS_BLEND_BITS) != 0 && (pass->shaderbits & SBITS_BLEND_BITS) != (SBITS_SRCBLEND_ONE|SBITS_DSTBLEND_ZERO))	//blendfunc
+				;
+			else
+				opaque = true;	//that shader looks like its opaque.
+		}
+		if (!opaque)
+			GL_DrawSkySphere(batch, skyshader);
+	}
+	else if (skyboxtex && TEXVALID(*skyboxtex))
 	{	//draw a skybox if we were given the textures
 		R_CalcSkyChainBounds(batch);
 		GL_DrawSkyBox (skyboxtex, batch);
@@ -191,7 +307,7 @@ qboolean R_DrawSkyChain (batch_t *batch)
 	//See: The Edge Of Forever (motef, by sock) for an example of where this needs to be skipped.
 	//See dm3 for an example of where the depth needs to be correct (OMG THERE'S PLAYERS IN MY SKYBOX! WALLHAXX!).
 	//you can't please them all.
-	if (r_worldentity.model->fromgame != fg_quake3)
+	if (SKYMUSTBEMASKED)
 		GL_SkyForceDepth(batch);
 
 	return true;

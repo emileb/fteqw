@@ -300,7 +300,7 @@ void QCBUILTIN PF_CL_loadfont (pubprogfuncs_t *prinst, struct globalvars_s *pr_g
 	G_FLOAT(OFS_RETURN) = slotnum;
 }
 
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 void CL_LoadFont_f(void)
 {
 	//console command for compat with dp/debug.
@@ -521,6 +521,9 @@ void QCBUILTIN PF_CL_stringwidth(pubprogfuncs_t *prinst, struct globalvars_s *pr
 	PR_CL_BeginString(prinst, 0, 0, size?size[0]:8, size?size[1]:8, &px, &py);
 	px = Font_LineScaleWidth(buffer, end);
 	Font_EndString(NULL);
+
+	if (!size)	//for compat with dp, divide by 8 after... because weird.
+		px /= 8;
 
 	G_FLOAT(OFS_RETURN) = (px * vid.width) / vid.rotpixelwidth;
 }
@@ -840,9 +843,14 @@ void QCBUILTIN PF_CL_drawcharacter (pubprogfuncs_t *prinst, struct globalvars_s 
 	}
 
 	//no control chars. use quake ones if so
-	if (!(flag & 4))
-		if (chara < 32 && chara != '\t')
-			chara |= 0xe000;
+	if (!(flag & 4) && !com_parseutf8.ival)
+	{
+		//ugly quake chars...
+		if (chara >= 32 && chara < 128)
+			;	//ascii-comptaible range
+		else
+			chara |= 0xe000;	//use quake glyphs (including for red text, unfortunately)
+	}
 
 	r2d_be_flags = PF_SelectDPDrawFlag(prinst, flag);
 	PR_CL_BeginString(prinst, pos[0], pos[1], size[0], size[1], &x, &y);
@@ -2364,6 +2372,13 @@ static struct {
 	{"digest_hex",				PF_digest_hex,				639},
 	{"digest_ptr",				PF_digest_ptr,				0},
 	{"crypto_getmyidstatus",	PF_crypto_getmyidfp,		641},
+
+
+	{"setlocaluserinfo",		PF_cl_setlocaluserinfo,			0},
+	{"getlocaluserinfo",		PF_cl_getlocaluserinfostring,	0},
+	{"setlocaluserinfoblob",	PF_cl_setlocaluserinfo,			0},
+	{"getlocaluserinfoblob",	PF_cl_getlocaluserinfoblob,		0},
+
 	{NULL}
 };
 static builtin_t menu_builtins[1024];
@@ -2802,7 +2817,7 @@ void MP_RegisterCvarsAndCmds(void)
 	Cmd_AddCommand("coredump_menuqc", MP_CoreDump_f);
 	Cmd_AddCommand("menu_cmd", MP_GameCommand_f);
 	Cmd_AddCommand("breakpoint_menu", MP_Breakpoint_f);
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 	Cmd_AddCommand("loadfont", CL_LoadFont_f);
 #endif
 

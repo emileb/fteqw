@@ -101,7 +101,8 @@ int Script_Read(int handle, struct pc_token_s *token)
 			}
 		}
 		sc->filestack[sc->stackdepth-1] = s;
-		
+		if (com_tokentype == TTP_LINEENDING)
+			continue;	//apparently we shouldn't stop on linebreaks
 
 		if (!strcmp(readstring, "#include"))
 		{
@@ -188,7 +189,7 @@ int Script_Read(int handle, struct pc_token_s *token)
 	}
 
 //	Con_Printf("Found %s (%i, %i)\n", token->string, token->type, token->subtype);
-	return !!*token->string || com_tokentype == TTP_STRING;
+	return com_tokentype != TTP_EOF;
 }
 
 int Script_LoadFile(char *filename)
@@ -1236,8 +1237,8 @@ static qintptr_t UI_SystemCalls(void *offset, quintptr_t mask, qintptr_t fn, con
 		break;
 
 	case UI_REAL_TIME:
-		VM_FLOAT(ret) = realtime;
-		break;
+		VALIDATEPOINTER(arg[0], sizeof(q3time_t));
+		return Q3VM_GetRealtime(VM_POINTER(arg[0]));
 
 #ifdef CL_MASTER
 	case UI_LAN_GETSERVERCOUNT:	//LAN Get server count
@@ -1664,7 +1665,9 @@ void UI_Stop (void)
 		//note that q3 checks every frame. we only check when the ui is closed.
 		if (Cvar_UnsavedArchive())
 			Cmd_ExecuteString("cfg_save", RESTRICT_LOCAL);
+#if defined(CL_MASTER)
 		MasterInfo_WriteServers();
+#endif
 	}
 }
 

@@ -1,16 +1,19 @@
 CC=gcc
 WINDRES=windres
-STRIP?=echo strip
+STRIP?=strip
 
 STRIPFLAGS=--strip-unneeded --remove-section=.comment
 
 CPUOPTIMIZATIONS=
 
+COMPILE_SYS:=$(shell uname -o 2>&1)
+
 #canonicalize the source path. except emscripten warns about that like crazy. *sigh*
 ifeq ($(FTE_TARGET),web)
 	BASE_DIR:=.
 else ifeq ($(FTE_TARGET),droid)
-	BASE_DIR:=.
+	#android tools suck, but plugins need to find the engine directory.
+	BASE_DIR:=../engine
 else
 	BASE_DIR:=$(realpath .)
 endif
@@ -61,7 +64,6 @@ BULLETVER=2.87
 RELEASE_DIR=$(BASE_DIR)/release
 DEBUG_DIR=$(BASE_DIR)/debug
 PROFILE_DIR=$(BASE_DIR)/profile
-COMPILE_SYS:=$(shell uname -o 2>&1)
 NATIVE_ABSBASE_DIR:=$(realpath $(BASE_DIR))
 ifeq ($(COMPILE_SYS),Cygwin)
 	OUT_DIR?=.
@@ -202,7 +204,9 @@ DO_CMAKE=cmake -DCMAKE_C_COMPILER="$(firstword $(CC))" -DCMAKE_C_FLAGS="$(wordli
 
 ifeq ($(DROID_ARCH),)
 	#armeabi armeabi-v7a arm64-v8a x86 x86_64 mips mips64
-	DROID_ARCH=x86 armeabi-v7a
+	DROID_ARCH=armeabi-v7a
+	DROID_ARCH+=x86
+	#DROID_ARCH+=x86_64	#starting with DROID_API_LEVEL 21
 endif
 ifeq ($(FTE_TARGET),droid)
 	#figure out the host system, required to find a usable compiler
@@ -244,9 +248,9 @@ ifeq ($(FTE_TARGET),droid)
 	DROID_ABI_ARCH___x86=x86
 	DROID_ABI_VER____x86?=$(DROID_ABI_VER)
 	DROID_ABI_CFLAGS_x86=-march=i686 -mssse3 -mfpmath=sse -m32 -Os
-	DROID_ABI_NAME___x86_64=$(DROID_ABI_NAME___x86)
-	DROID_ABI_PREFIX_x86_64=$(DROID_ABI_PREFIX_x86)
-	DROID_ABI_ARCH___x86_64=$(DROID_ABI_ARCH___x86)
+	DROID_ABI_NAME___x86_64=x86_64
+	DROID_ABI_PREFIX_x86_64=x86_64-linux-android
+	DROID_ABI_ARCH___x86_64=x86_64
 	DROID_ABI_VER____x86_64=$(DROID_ABI_VER____x86)
 	DROID_ABI_CFLAGS_x86_64=-march=x86-64 -msse4.2 -mpopcnt -m64 -Os
 	#DROID_ABI_NAME___mips=mipsel-linux-android
@@ -271,6 +275,10 @@ ifeq ($(FTE_TARGET),droid)
 		ifeq ($(DROID_ARCH),x86)
 			#google fecked up. anything before api_level 9 will fail to compile on x86
 			DROID_API_LEVEL=9
+		endif
+		ifeq ($(DROID_ARCH),x86_64)
+			#google fecked up. anything before api_level 9 will fail to compile on x86
+			DROID_API_LEVEL=21
 		endif
 		DROID_API_NAME?=android-$(DROID_API_LEVEL)
 		DROID_PLAT_INC=arch-$(DROID_ABI_ARCH___$(DROID_ARCH))
@@ -384,6 +392,7 @@ ifeq ($(FTE_TARGET),dos)
 	#at least from dos.
 	CC=i586-pc-msdosdjgpp-gcc
 	CXX=i586-pc-msdosdjgpp-g++
+	STRIP=i586-pc-msdosdjgpp-strip
 	CFLAGS+=-DNO_ZLIB
 endif
 
@@ -392,6 +401,7 @@ ifeq ($(FTE_TARGET),linux32)
 	FTE_TARGET=linux
 	CC=gcc -m32
 	CXX=g++ -m32
+	STRIP=strip
 	BITS=32
 endif
 ifeq ($(FTE_TARGET),linuxarmhf)
@@ -399,12 +409,14 @@ ifeq ($(FTE_TARGET),linuxarmhf)
 	FTE_TARGET=linux
 	CC=arm-linux-gnueabihf-gcc -marm -march=armv6 -mfpu=vfp -mfloat-abi=hard
 	CXX=arm-linux-gnueabihf-g++ -marm -march=armv6 -mfpu=vfp -mfloat-abi=hard
+	STRIP=arm-linux-gnueabihf-strip
 	BITS=armhf
 endif
 ifeq ($(FTE_TARGET),linuxarm64)
 	FTE_TARGET=linux
 	CC=aarch64-linux-gnu-gcc
 	CXX=aarch64-linux-gnu-g++
+	STRIP=aarch64-linux-gnu-strip
 	BITS=arm64
 	USE_SPEEX=0 #fails to compile due to neon asm, I'm just going to disable it (will still soft-link).
 endif
@@ -416,9 +428,11 @@ ifeq ($(FTE_TARGET),linuxx32)
 ifneq ($(shell which x86_64-linux-gnux32-gcc 2> /dev/null),)
 	CC=x86_64-linux-gnux32-gcc
 	CXX=x86_64-linux-gnux32-g++
+	STRIP=x86_64-linux-gnux32-strip
 else
 	CC=gcc -mx32
 	CXX=g++ -mx32
+	STRIP=strip
 endif
 	BITS=x32
 endif
@@ -426,6 +440,7 @@ ifeq ($(FTE_TARGET),linux64)
 	FTE_TARGET=linux
 	CC=gcc -m64
 	CXX=g++ -m64
+	STRIP=strip
 	BITS=64
 endif
 ifeq ($(FTE_TARGET),cygwin)
@@ -582,7 +597,11 @@ SERVER_ONLY_CFLAGS=-DSERVERONLY
 JOINT_CFLAGS=
 DEBUG_CFLAGS?=-ggdb -g
 DEBUG_CFLAGS+=-DDEBUG
-RELEASE_CFLAGS?=-O3 -ffast-math $(CPUOPTIMIZATIONS)
+RELEASE_CFLAGS?=-O3 $(CPUOPTIMIZATIONS)
+#
+#note: RELEASE_CFLAGS used to contain -ffast-math
+#however, its use resulted in the player getting stuck etc, so be warned if you try re-enabling it.
+#
 
 ifeq ($(FTE_TARGET),vc)
 	#msvc doesn't do -dumpmachine.
@@ -969,7 +988,7 @@ MINGL_EXE_NAME=../$(EXE_NAME)-mingl$(FTE_FULLTARGET)
 MB_DIR=m_$(FTE_FULLTARGET)
 M_EXE_NAME=../$(EXE_NAME)-$(FTE_FULLTARGET)
 MCL_OBJS=$(D3DGL_OBJS) $(GLQUAKE_OBJS) $(SOFTWARE_OBJS) $(BOTLIB_OBJS) gl_vidsdl.o snd_sdl.o cd_sdl.o sys_sdl.o in_sdl.o 
-M_CFLAGS=-DFTE_SDL $(GLCFLAGS) `$(SDLCONFIG) --cflags`
+M_CFLAGS=-DFTE_SDL $(VKCFLAGS) $(GLCFLAGS) `$(SDLCONFIG) --cflags`
 
 QCC_DIR=qcc$(BITS)
 
@@ -998,7 +1017,7 @@ ifeq ($(FTE_TARGET),nacl)
 
 	CC=
 	CXX=
-	STRIP=
+	STRIP=@echo SKIP: strip
 	NACLLIBC=glibc
 	ifeq ($(NARCH),x86_32)
 		CC=$(NACL_SDK_ROOT)/toolchain/$(MYOS)_x86_$(NACLLIBC)/bin/i686-nacl-gcc -DNACL -m32
@@ -1179,7 +1198,7 @@ ifeq ($(FTE_TARGET),vc)
 			JPEGLIB=libs/jpeg.lib
 		endif
 	endif
-	STRIP=@echo strip
+	STRIP=@echo SKIP: strip
 	EXEPOSTFIX=.exe
 
 	CC=PATH="C:\Program Files (x86)\$(MSVCDIR)\Common7\IDE" "$(MSVCPATH)cl" $(SDKINC) $(MSVCINC) -D_CRT_SECURE_NO_WARNINGS
@@ -1345,8 +1364,8 @@ ifeq ($(FTE_TARGET),bsd)
 	MCL_OBJS=$(D3DGL_OBJS) $(GLQUAKE_OBJS) $(SOFTWARE_OBJS) $(BOTLIB_OBJS) gl_vidlinuxglx.o snd_linux.o cd_null.o sys_linux.o sys_linux_threads.o
 	M_EXE_NAME=../$(EXE_NAME)
 	MCL_EXE_NAME=../$(EXE_NAME)-cl
-	M_LDFLAGS=$(GLLDFLAGS) $(XLDFLAGS) -lpthread
-	M_CFLAGS=$(VKCFLAGS) $(GLCFLAGS) -I/usr/X11R6/include -DMULTITHREAD
+	M_LDFLAGS= -L/usr/local/lib -L/usr/X11R6/lib $(GLLDFLAGS) $(XLDFLAGS) -lpthread
+	M_CFLAGS=$(VKCFLAGS) $(GLCFLAGS) -I/usr/local/include -I/usr/X11R6/include -DMULTITHREAD
 	MB_DIR=m_bsd
 	MCL_DIR=mcl_bsd
 
@@ -1584,14 +1603,15 @@ ifeq ($(FTE_TARGET),droid)
 	SV_EXE_NAME=libftedroid.so
 
 	GL_CFLAGS=$(GLCFLAGS)
-	GL_LDFLAGS=$(GLLDFLAGS) -landroid -lEGL
+	GL_LDFLAGS=$(GLLDFLAGS) -landroid
 	GLCL_OBJS=$(GL_OBJS) $(D3DGL_OBJS) $(GLQUAKE_OBJS) $(BOTLIB_OBJS) $(GL_DROID_O) cd_null.o snd_droid.o
 	GLB_DIR=gl_droid-$(DROID_ARCH)
 	GL_EXE_NAME=libftedroid.so	
 
 	M_CFLAGS=$(VKCFLAGS) $(GLCFLAGS) -DMULTITHREAD
-	M_LDFLAGS=$(GLLDFLAGS) -landroid -lEGL
-	MCL_OBJS=$(GL_OBJS) $(D3DGL_OBJS) $(GLQUAKE_OBJS) $(BOTLIB_OBJS) $(GL_DROID_O) cd_null.o snd_droid.o
+	M_LDFLAGS=$(GLLDFLAGS) -landroid -lEGL -lOpenSLES
+	MCL_OBJS=$(GL_OBJS) $(D3DGL_OBJS) $(GLQUAKE_OBJS) $(BOTLIB_OBJS) $(GL_DROID_O) cd_null.o snd_opensl.o
+#snd_droid.o
 	MB_DIR=m_droid-$(DROID_ARCH)
 	M_EXE_NAME=libftedroid.so
 endif
@@ -1631,7 +1651,7 @@ ifeq ($(FTE_TARGET),web)
 
 	#SV_LDFLAGS=
 
-	STRIP=echo
+	STRIP=@echo SKIP: strip
 	#GLCL_OBJS=$(GL_OBJS) $(D3DGL_OBJS) $(GLQUAKE_OBJS) cd_null.o
 	#GL_LDFLAGS=$(GLLDFLAGS)
 	GLB_DIR=gl_web
@@ -1777,9 +1797,21 @@ DO_LD ?= $(DO_ECHO) $(LDCC) -o $@ $(LTO_LD) $(WCFLAGS) $(BRANDFLAGS) $(CFLAGS)
 $(OUT_DIR)/$(EXE_NAME):   $(PRECOMPHEADERS) $(foreach fn, $(CUSTOMOBJS) $(foreach ol, $(OBJS), $($(ol))),$(if $(findstring ltox,$(fn)),,$(OUT_DIR)/$(fn)))
 	$(DO_LD) $(foreach fn, $(CUSTOMOBJS) $(foreach ol, $(OBJS) $(LTO_END), $($(ol))),$(if $(findstring ltox,$(fn)),$(subst ltox,-x ,$(fn)),$(NATIVE_OUT_DIR)/$(fn)) ) $(LDFLAGS)
 
+$(OUT_DIR)/$(EXE_NAME).db: $(PRECOMPHEADERS) $(foreach fn, $(CUSTOMOBJS) $(foreach ol, $(OBJS), $($(ol))),$(if $(findstring ltox,$(fn)),,$(OUT_DIR)/$(fn)))
+	$(DO_LD) $(foreach fn, $(CUSTOMOBJS) $(foreach ol, $(OBJS) $(LTO_END), $($(ol))),$(if $(findstring ltox,$(fn)),$(subst ltox,-x ,$(fn)),$(NATIVE_OUT_DIR)/$(fn)) ) $(LDFLAGS)
+
+ifeq (,$(findstring SKIP,$(STRIP)))
+#link to a .db file
+#then strip its debug data to the non-.db release binary
+_out-rel: $(ARCH_PREDEP)
+	@$(MAKE) $(OUT_DIR)/$(EXE_NAME).db EXE_NAME="$(EXE_NAME)" OUT_DIR="$(OUT_DIR)" WCFLAGS="$(WCFLAGS) $(RELEASE_CFLAGS)" LDFLAGS="$(BASELDFLAGS) $(LDFLAGS) $(RELEASE_LDFLAGS)" OBJS="$(OBJS)"
+	@$(STRIP) $(STRIPFLAGS) $(OUT_DIR)/$(EXE_NAME).db -o $(OUT_DIR)/$(EXE_NAME)
+else
+#STRIP macro won't work, don't do the .db thing and don't expect strip -o to work.
 _out-rel: $(ARCH_PREDEP)
 	@$(MAKE) $(OUT_DIR)/$(EXE_NAME) EXE_NAME="$(EXE_NAME)" OUT_DIR="$(OUT_DIR)" WCFLAGS="$(WCFLAGS) $(RELEASE_CFLAGS)" LDFLAGS="$(BASELDFLAGS) $(LDFLAGS) $(RELEASE_LDFLAGS)" OBJS="$(OBJS)"
-	$(STRIP) $(STRIPFLAGS) $(OUT_DIR)/$(EXE_NAME)
+	@echo not stripping $(OUT_DIR)/$(EXE_NAME)
+endif
 
 _out-dbg: $(ARCH_PREDEP)
 	@$(MAKE) $(OUT_DIR)/$(EXE_NAME) EXE_NAME="$(EXE_NAME)" OUT_DIR="$(OUT_DIR)" WCFLAGS="$(WCFLAGS) $(DEBUG_CFLAGS)" LDFLAGS="$(BASELDFLAGS) $(LDFLAGS) $(DEBUG_LDFLAGS)" OBJS="$(OBJS)"
@@ -2092,7 +2124,7 @@ web-dbg:
 
 #makes an ant project for us
 droid/build.xml:
-	-cd droid && PATH=$$PATH:$(realpath $(ANDROID_HOME)/tools):$(realpath $(ANDROID_NDK_ROOT)) $(ANDROID_SCRIPT) update project -t android-8 -p . -n FTEDroid
+	-cd droid && PATH=$$PATH:$(realpath $(ANDROID_HOME)/tools):$(realpath $(ANDROID_NDK_ROOT)) $(ANDROID_SCRIPT) update project -t android-9 -p . -n FTEDroid
 
 #build FTE as a library, then build the java+package (release)
 droid/ftekeystore:
@@ -2115,9 +2147,10 @@ endif
 
 droid-rel:
 	$(MAKE) FTE_TARGET=droid droid/build.xml droid/ftekeystore
-	$(foreach a, $(DROID_ARCH), $(MAKE) FTE_TARGET=droid m-rel DROID_ARCH=$a; )
+	$(foreach a, $(DROID_ARCH), $(MAKE) FTE_TARGET=droid m-rel plugins-rel DROID_ARCH=$a NATIVE_PLUGINS="$(NATIVE_PLUGINS)"; )
+	-rm -rf droid/libs
 	@$(foreach a, $(DROID_ARCH), mkdir -p droid/libs/$a; )
-	-@$(foreach a, $(DROID_ARCH), cp $(RELEASE_DIR)/m_droid-$a/libftedroid.so droid/libs/$a/libftedroid.so; )
+	-@$(foreach a, $(DROID_ARCH), cp $(RELEASE_DIR)/m_droid-$a/*.so droid/libs/$a/; )
 
 	@cd droid && $(ANT) release
 ifneq ($(DROID_PACKSU),)
@@ -2151,9 +2184,10 @@ droid-opt:
 #build FTE as a library, then build the java+package (release). also installs it onto the 'current' device.
 droid-dbg:
 	$(MAKE) FTE_TARGET=droid droid/build.xml
-	$(foreach a, $(DROID_ARCH), $(MAKE) FTE_TARGET=droid m-dbg DROID_ARCH=$a; )
+	$(foreach a, $(DROID_ARCH), $(MAKE) FTE_TARGET=droid m-dbg plugins-dbg DROID_ARCH=$a NATIVE_PLUGINS="$(NATIVE_PLUGINS)"; )
+	-rm -rf droid/libs
 	@$(foreach a, $(DROID_ARCH), mkdir -p droid/libs/$a; )
-	-@$(foreach a, $(DROID_ARCH), cp $(DEBUG_DIR)/m_droid-$a/libftedroid.so droid/libs/$a/libftedroid.so; )
+	-@$(foreach a, $(DROID_ARCH), cp $(DEBUG_DIR)/m_droid-$a/*.so droid/libs/$a/; )
 	@cd droid && $(ANT) debug #&& $(ANT) debug install
 	cp droid/bin/FTEDroid-debug.apk $(DEBUG_DIR)/FTEDroid.apk
 

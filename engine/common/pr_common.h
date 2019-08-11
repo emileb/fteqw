@@ -477,6 +477,9 @@ void QCBUILTIN PF_cl_bprint (pubprogfuncs_t *prinst, struct globalvars_s *pr_glo
 void QCBUILTIN PF_cl_clientcount (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 void QCBUILTIN PF_cl_localsound(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 void QCBUILTIN PF_cl_SendPacket(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+void QCBUILTIN PF_cl_getlocaluserinfoblob (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+void QCBUILTIN PF_cl_getlocaluserinfostring (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
+void QCBUILTIN PF_cl_setlocaluserinfo (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 
 void search_close_progs(pubprogfuncs_t *prinst, qboolean complain);
 
@@ -552,7 +555,7 @@ void QCBUILTIN PF_ExecuteCommand  (pubprogfuncs_t *prinst, struct globalvars_s *
 void QCBUILTIN PF_setspawnparms (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 void QCBUILTIN PF_precache_vwep_model(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals);
 int PF_checkclient_Internal (pubprogfuncs_t *prinst);
-int PF_precache_sound_Internal (pubprogfuncs_t *prinst, const char *s);
+int PF_precache_sound_Internal (pubprogfuncs_t *prinst, const char *s, qboolean queryonly);
 int PF_precache_model_Internal (pubprogfuncs_t *prinst, const char *s, qboolean queryonly);
 void PF_setmodel_Internal (pubprogfuncs_t *prinst, edict_t *e, const char *m);
 char *PF_infokey_Internal (int entnum, const char *value);
@@ -562,7 +565,7 @@ void PF_WriteString_Internal (int target, const char *str);
 pbool QDECL ED_CanFree (edict_t *ed);
 #endif
 
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 unsigned int FTEToDPContents(unsigned int contents);
 #endif
 
@@ -634,7 +637,7 @@ typedef struct
 	void (QDECL *ReleaseCollisionMesh) (wedict_t *ed);
 	void (QDECL *LinkEdict)(world_t *w, wedict_t *ed, qboolean touchtriggers);
 
-	void (QDECL *VectorAngles)(float *forward, float *up, float *result, qboolean meshpitch);
+	void (QDECL *VectorAngles)(const float *forward, const float *up, float *result, qboolean meshpitch);
 	void (QDECL *AngleVectors)(const vec3_t angles, vec3_t forward, vec3_t right, vec3_t up);
 } rbeplugfuncs_t;
 #define RBEPLUGFUNCS_VERSION 1
@@ -730,6 +733,7 @@ typedef enum
 	VF_RT_DESTCOLOUR7	= 219,
 	VF_ENVMAP			= 220,	//cubemap image for reflectcube
 	VF_USERDATA			= 221,
+	VF_SKYROOM_CAMERA	= 222,
 } viewflags;
 
 /*FIXME: this should be changed*/
@@ -777,8 +781,8 @@ enum lightfield_e
 	lfield_dietime=14,
 	lfield_rgbdecay=15,
 	lfield_radiusdecay=16,
-
-	lfield_stylestring=17
+	lfield_stylestring=17,
+	lfield_nearclip=18
 };
 enum csqc_input_event
 {

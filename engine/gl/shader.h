@@ -217,6 +217,7 @@ typedef struct shaderpass_s {
 	shaderfunc_t rgbgen_func;
 
 	enum {
+		ALPHA_GEN_UNDEFINED,
 		ALPHA_GEN_ENTITY,
 		ALPHA_GEN_WAVE,
 		ALPHA_GEN_PORTAL,
@@ -284,7 +285,9 @@ typedef struct shaderpass_s {
 
 		T_GEN_SOURCECUBE,	//used for render-to-texture targets
 
+#ifdef HAVE_MEDIA_DECODER
 		T_GEN_VIDEOMAP,		//use the media playback as an image source, updating each frame for which it is visible
+#endif
 		T_GEN_CUBEMAP,		//use a cubemap instead, otherwise like T_GEN_SINGLEMAP
 		T_GEN_3DMAP,		//use a 3d texture instead, otherwise T_GEN_SINGLEMAP.
 
@@ -754,7 +757,7 @@ mfog_t *Mod_FogForOrigin(model_t *wmodel, vec3_t org);
 #define BEF_FORCEADDITIVE		(1u<<2)	//blend dest = GL_ONE
 #define BEF_FORCETRANSPARENT	(1u<<3)	//texenv replace -> modulate
 #define BEF_FORCENODEPTH		(1u<<4)	//disables any and all depth.
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 #define BEF_PUSHDEPTH			(1u<<5)	//additional polygon offset
 #endif
 //FIXME: the above should really be legacy-only
@@ -988,9 +991,9 @@ void GLBE_PolyOffsetStencilShadow(qboolean foobar);
 void GLBE_PolyOffsetStencilShadow(void);
 #endif
 //Called from shadowmapping code into backend
-void GLBE_BaseEntTextures(void);
-void D3D9BE_BaseEntTextures(void);
-void D3D11BE_BaseEntTextures(void);
+void GLBE_BaseEntTextures(const qbyte *worldpvs, const int *worldareas);
+void D3D9BE_BaseEntTextures(const qbyte *worldpvs, const int *worldareas);
+void D3D11BE_BaseEntTextures(const qbyte *worldpvs, const int *worldareas);
 //prebuilds shadow volumes
 void Sh_PreGenerateLights(void);
 //Draws lights, called from the backend
@@ -1023,4 +1026,6 @@ void CL_DrawDebugPlane(float *normal, float dist, float r, float g, float b, qbo
 void CLQ1_AddOrientedCylinder(shader_t *shader, float radius, float height, qboolean capsule, float *matrix, float r, float g, float b, float a);
 void CLQ1_AddOrientedSphere(shader_t *shader, float radius, float *matrix, float r, float g, float b, float a);
 void CLQ1_AddOrientedHalfSphere(shader_t *shader, float radius, float gap, float *matrix, float r, float g, float b, float a);
+
+extern cvar_t r_fastturb, r_fastsky, r_skyboxname, r_skybox_orientation;
 #endif

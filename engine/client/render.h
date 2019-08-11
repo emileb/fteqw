@@ -43,7 +43,7 @@ static const texid_t r_nulltex = NULL;
 //desktop-gl will generally cope with ints, but expect a performance hit from that with old gpus (so we don't bother)
 //vulkan+dx10 can cope with ints, but might be 24bit
 //either way, all renderers in the same build need to use the same thing.
-#if (defined(GLQUAKE) && !defined(NOLEGACY)) || defined(MINIMAL) || defined(D3D8QUAKE) || defined(D3D9QUAKE) || defined(ANDROID)
+#if (defined(GLQUAKE) && defined(HAVE_LEGACY)) || defined(MINIMAL) || defined(D3D8QUAKE) || defined(D3D9QUAKE) || defined(ANDROID)
 	#define sizeof_index_t 2
 #endif
 #if sizeof_index_t == 2
@@ -145,6 +145,8 @@ typedef struct entity_s
 	float rotation;
 
 	struct shader_s *forcedshader;
+
+	pvscache_t pvscache; //for culling of csqc ents.
 
 #ifdef PEXT_SCALE
 	float scale;
@@ -281,6 +283,7 @@ typedef struct
 	float		m_projection_view[16];	//projection matrix for the viewmodel. because people are weird.
 	float		m_view[16];
 	qbyte		*scenevis;			/*this is the vis that's currently being draw*/
+	int			*sceneareas;		/*this is the area info for the camera (should normally be count+one area, but could be two areas near an opaque water plane)*/
 
 	mplane_t	frustum[MAXFRUSTUMPLANES];
 	int			frustum_numworldplanes;	//all but far, which isn't culled because this wouldn't cover the entire screen.
@@ -289,11 +292,15 @@ typedef struct
 	fogstate_t	globalfog;
 	float		hdr_value;
 
+	vec3_t		skyroom_pos;		/*the camera position for sky rooms*/
+	qboolean	skyroom_enabled;	/*whether a skyroom position is defined*/
+	int			firstvisedict;		/*so we can skip visedicts in skies*/
+
 	pxrect_t	pxrect;				/*vrect, but in pixels rather than virtual coords*/
 	qboolean	externalview;		/*draw external models and not viewmodels*/
 	int			recurse;			/*in a mirror/portal/half way through drawing something else*/
 	qboolean	forcevis;			/*if true, vis comes from the forcedvis field instead of recalculated*/
-	unsigned int	flipcull;		/*reflected/flipped view, requires inverted culling (should be set to SHADER_CULL_FLIPPED or 0)*/
+	unsigned int	flipcull;		/*reflected/flipped view, requires inverted culling (should be set to SHADER_CULL_FLIPPED or 0 - its implemented as a xor)*/
 	qboolean	useperspective;		/*not orthographic*/
 
 	stereomethod_t stereomethod;
@@ -319,7 +326,7 @@ extern	struct texture_s	*r_notexture_mip;
 
 extern	entity_t	r_worldentity;
 
-void BE_GenModelBatches(struct batch_s **batches, const struct dlight_s *dl, unsigned int bemode);	//if dl, filters based upon the dlight.
+void BE_GenModelBatches(struct batch_s **batches, const struct dlight_s *dl, unsigned int bemode, const qbyte *worldpvs, const int *worldareas);	//if dl, filters based upon the dlight.
 
 //gl_alias.c
 void R_GAliasFlushSkinCache(qboolean final);
@@ -547,7 +554,7 @@ void Mod_ModelLoaded(void *ctx, void *data, size_t a, size_t b);
 struct relight_ctx_s;
 struct llightinfo_s;
 void LightFace (struct relight_ctx_s *ctx, struct llightinfo_s *threadctx, int surfnum);	//version that is aware of bsp trees
-void LightPlane (struct relight_ctx_s *ctx, struct llightinfo_s *threadctx, qbyte surf_styles[4], qbyte *surf_rgbsamples, qbyte *surf_deluxesamples, vec4_t surf_plane, vec4_t surf_texplanes[2], vec2_t exactmins, vec2_t exactmaxs, int texmins[2], int texsize[2], float lmscale);	//special version that doesn't know what a face is or anything.
+void LightPlane (struct relight_ctx_s *ctx, struct llightinfo_s *threadctx, qbyte surf_styles[4], unsigned int *surf_expsamples, qbyte *surf_rgbsamples, qbyte *surf_deluxesamples, vec4_t surf_plane, vec4_t surf_texplanes[2], vec2_t exactmins, vec2_t exactmaxs, int texmins[2], int texsize[2], float lmscale);	//special version that doesn't know what a face is or anything.
 struct relight_ctx_s *LightStartup(struct relight_ctx_s *ctx, struct model_s *model, qboolean shadows, qboolean skiplit);
 void LightReloadEntities(struct relight_ctx_s *ctx, const char *entstring, qboolean ignorestyles);
 void LightShutdown(struct relight_ctx_s *ctx, struct model_s *mod);
@@ -591,8 +598,7 @@ qbyte *ReadTargaFile(qbyte *buf, int length, int *width, int *height, uploadfmt_
 qbyte *ReadJPEGFile(qbyte *infile, int length, int *width, int *height);
 qbyte *ReadPNGFile(const char *fname, qbyte *buf, int length, int *width, int *height, uploadfmt_t *format);
 qbyte *ReadPCXPalette(qbyte *buf, int len, qbyte *out);
-void Image_ResampleTexture (unsigned *in, int inwidth, int inheight, unsigned *out,  int outwidth, int outheight);
-void Image_ResampleTexture8 (unsigned char *in, int inwidth, int inheight, unsigned char *out,  int outwidth, int outheight);
+void *Image_ResampleTexture (uploadfmt_t format, const void *in, int inwidth, int inheight, void *out,  int outwidth, int outheight);
 
 void BoostGamma(qbyte *rgba, int width, int height, uploadfmt_t fmt);
 void SaturateR8G8B8(qbyte *data, int size, float sat);

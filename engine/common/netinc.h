@@ -5,10 +5,10 @@
 #ifndef HAVE_PACKET
 
 #ifndef _XBOX
-	struct sockaddr
-	{
-		short  sa_family;
-	};
+//	struct sockaddr
+//	{
+//		short  sa_family;
+//	};
 
 	#define ntohs BigShort
 	#define htons BigShort
@@ -41,7 +41,7 @@
 		#include <xtl.h>
 		#include <WinSockX.h>
 	#else
-		#if defined(_MSC_VER) && !defined(NOLEGACY)
+		#if defined(_MSC_VER) && defined(HAVE_LEGACY)
 			#define HAVE_IPX
 		#endif
 		#define WIN32_LEAN_AND_MEAN
@@ -113,6 +113,10 @@
 	#ifdef IPPROTO_IPV6
 			#define HAVE_IPV6
 	#endif
+
+	#ifndef SOCK_CLOEXEC
+		#define SOCK_CLOEXEC 0
+	#endif
 #else
 	#include <sys/time.h>
 	#include <sys/types.h>
@@ -153,12 +157,16 @@
 		#define HAVE_IPV6
 	#endif
 
-//	#if defined(AF_IPX) && !defined(NOLEGACY)
+//	#if defined(AF_IPX) && defined(HAVE_LEGACY)
 //		#include <netipx/ipx.h>
 //		#define HAVE_IPX
 //	#endif
 
 	#define SOCKET int
+
+	#ifndef SOCK_CLOEXEC
+		#define SOCK_CLOEXEC 0
+	#endif
 #endif
 
 #if defined(_WIN32)
@@ -380,9 +388,5 @@ int TLS_GetChannelBinding(vfsfile_t *stream, qbyte *data, size_t *datasize);	//d
 vfsfile_t *FS_OpenTCPSocket(SOCKET socket, qboolean conpending, const char *peername);	//conpending allows us to reject any writes until the connection has succeeded
 #endif
 vfsfile_t *FS_OpenTCP(const char *name, int defaultport);
-
-#ifndef SOCK_CLOEXEC
-#define SOCK_CLOEXEC 0
-#endif
 
 #endif //NETINC_INCLUDED

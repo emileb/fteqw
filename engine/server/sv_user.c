@@ -36,12 +36,12 @@ usercmd_t	cmd;
 
 void QDECL SV_NQPhysicsUpdate(cvar_t *var, char *oldvalue)
 {
-	if (!strcmp(var->string, "auto"))
+	if (!strcmp(var->string, "auto") || !strcmp(var->string, ""))
 	{	//prediction requires nq physics, so use it by default in multiplayer.
 		if (progstype == PROG_QW || (!isDedicated &&  sv.allocated_client_slots > 1))
-			var->ival = 1;
-		else
 			var->ival = 0;
+		else
+			var->ival = 1;
 	}
 }
 
@@ -73,13 +73,15 @@ cvar_t	sv_maxpitch		 = CVARAFD("maxpitch", "",	"sv_maxpitch", CVAR_SERVERINFO, "
 
 cvar_t	sv_cmdlikercon	= CVAR("sv_cmdlikercon", "0");	//set to 1 to allow a password of username:password instead of the correct rcon password.
 cvar_t cmd_allowaccess	= CVAR("cmd_allowaccess", "0");	//set to 1 to allow cmd to execute console commands on the server.
-cvar_t cmd_gamecodelevel	= CVAR("cmd_gamecodelevel", STRINGIFY(RESTRICT_LOCAL));	//execution level which gamecode is told about (for unrecognised commands)
+cvar_t cmd_gamecodelevel	= CVARF("cmd_gamecodelevel", STRINGIFY(RESTRICT_LOCAL), CVAR_NOTFROMSERVER);	//execution level which gamecode is told about (for unrecognised commands)
 
 cvar_t	sv_pure	= CVARFD("sv_pure", "", CVAR_SERVERINFO, "The most evil cvar in the world, many clients will ignore this.\n0=standard quake rules.\n1=clients should prefer files within packages present on the server.\n2=clients should use *only* files within packages present on the server.\nDue to quake 1.01/1.06 differences, a setting of 2 only works in total conversions.");
-cvar_t	sv_nqplayerphysics	= CVARAFCD("sv_nqplayerphysics", "0", "sv_nomsec", 0, SV_NQPhysicsUpdate, "Disable player prediction and run NQ-style player physics instead. This can be used for compatibility with mods that expect exact behaviour.");
+cvar_t	sv_nqplayerphysics	= CVARAFCD("sv_nqplayerphysics", "auto", "sv_nomsec", 0, SV_NQPhysicsUpdate, "Disable player prediction and run NQ-style player physics instead. This can be used for compatibility with mods that expect exact behaviour.");
 
-#ifndef NOLEGACY
-cvar_t	sv_brokenmovetypes	= CVARD("sv_brokenmovetypes", "0", "Emulate vanilla quakeworld by forcing MOVETYPE_WALK on all players. Shouldn't be used for any games other than QuakeWorld.");
+#ifdef HAVE_LEGACY
+static cvar_t	sv_brokenmovetypes	= CVARD("sv_brokenmovetypes", "0", "Emulate vanilla quakeworld by forcing MOVETYPE_WALK on all players. Shouldn't be used for any games other than QuakeWorld.");
+static cvar_t pext_ezquake_nochunks	= CVARD("pext_ezquake_nochunks", "0", "Prevents ezquake clients from being able to use the chunked download extension. This sidesteps numerous ezquake issues, and will make downloads slower but more robust.");
+static cvar_t pext_ezquake_verfortrans	= CVARD("pext_ezquake_verfortrans", "999999999", "ezQuake does not implement PEXT_TRANS properly. This is the version of ezquake required for PEXT_TRANS to be allowed. This was still broken when I wrote this description, hence the large value.");
 #endif
 
 cvar_t	sv_chatfilter	= CVAR("sv_chatfilter", "0");
@@ -302,13 +304,49 @@ void SV_New_f (void)
 		return;
 	}
 
+#ifdef HAVE_LEGACY
+	{
+		//be prepared to recognise client versions, in order to block known-buggy extensions.
+		const char *s;
+		int ver;
+		s = InfoBuf_ValueForKey(&host_client->userinfo, "*client");
+		if (!strncmp(s, "ezQuake", 7) || !strncmp(s, "FortressOne", 11))
+		{
+			COM_Parse(s);	//skip name-of-fork
+			COM_Parse(s);	//tokenize the version
+			ver = atoi(com_token);
+
+			//this should actually have been resolved now, but for future use...
+			if ((host_client->fteprotocolextensions & PEXT_CHUNKEDDOWNLOADS) && pext_ezquake_nochunks.ival)
+			{
+				host_client->fteprotocolextensions &= ~PEXT_CHUNKEDDOWNLOADS;
+				SV_PrintToClient(host_client, PRINT_HIGH, "ezQuake's implementation of chunked downloads is blocked on this server.\n");
+			}
+			if ((host_client->zquake_extensions & (Z_EXT_PF_SOLID|Z_EXT_PF_ONGROUND)) && ver < pext_ezquake_verfortrans.ival)
+			{
+				if (host_client->fteprotocolextensions & PEXT_HULLSIZE)
+					SV_PrintToClient(host_client, PRINT_HIGH, "ezQuake's implementation of PEXT_HULLSIZE conflicts with zquake extensions.\n");
+				if (host_client->fteprotocolextensions & PEXT_SCALE)
+					SV_PrintToClient(host_client, PRINT_HIGH, "ezQuake's implementation of PEXT_SCALE conflicts with zquake extensions.\n");
+				if (host_client->fteprotocolextensions & PEXT_FATNESS)
+					SV_PrintToClient(host_client, PRINT_HIGH, "ezQuake's implementation of PEXT_FATNESS conflicts with zquake extensions.\n");
+				if (host_client->fteprotocolextensions & PEXT_TRANS)
+					SV_PrintToClient(host_client, PRINT_HIGH, "ezQuake's implementation of PEXT_TRANS is buggy. Disabling.\n");
+				host_client->fteprotocolextensions &= ~(PEXT_HULLSIZE|PEXT_TRANS|PEXT_SCALE|PEXT_FATNESS);
+			}
+		}
+
+		//its not that I'm singling out ezquake or anything, but it has too many people using outdated versions that its hard to ignore.
+	}
+#endif
+
 	ClientReliableCheckBlock(host_client, 800);	//okay, so it might be longer, but I'm too lazy to work out the real size.
 
 	// send the serverdata
 	ClientReliableWrite_Byte (host_client, ISQ2CLIENT(host_client)?svcq2_serverdata:svc_serverdata);
 	if (host_client->fteprotocolextensions)//let the client know
 	{
-		ClientReliableWrite_Long (host_client, PROTOCOL_VERSION_FTE);
+		ClientReliableWrite_Long (host_client, PROTOCOL_VERSION_FTE1);
 		if (svs.netprim.coordsize == 2)	//we're not using float orgs on this level.
 			ClientReliableWrite_Long (host_client, host_client->fteprotocolextensions&~PEXT_FLOATCOORDS);
 		else
@@ -653,7 +691,7 @@ void SVNQ_New_f (void)
 	if (!gamedir[0])
 	{
 		gamedir = FS_GetGamedir(true);
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 		if (!strcmp(gamedir, "qw"))	//hack: hide the qw dir from nq clients.
 			gamedir = "";
 #endif
@@ -727,7 +765,7 @@ void SVNQ_New_f (void)
 	MSG_WriteByte (&host_client->netchan.message, svc_serverdata);
 	if (protext1)
 	{
-		MSG_WriteLong (&host_client->netchan.message, PROTOCOL_VERSION_FTE);
+		MSG_WriteLong (&host_client->netchan.message, PROTOCOL_VERSION_FTE1);
 		MSG_WriteLong (&host_client->netchan.message, protext1);
 	}
 	if (protext2)
@@ -987,12 +1025,12 @@ void SV_SendClientPrespawnInfo(client_t *client)
 		return;
 	}
 
-	//just because we CAN generate huge messages doesn't meant that we should.
+	//just because we CAN generate huge messages doesn't mean that we should.
 	//try to keep packets within reasonable sizes so that we don't trigger insane burst+packetloss on map changes.
 	maxsize = client->netchan.message.maxsize/2;
-	if (client->netchan.fragmentsize && maxsize > client->netchan.fragmentsize-200)
+	if (client->netchan.mtu && maxsize > client->netchan.mtu-200)
 	{
-		maxsize = client->netchan.fragmentsize-200;
+		maxsize = client->netchan.mtu-200;
 		if (maxsize < 500)
 			maxsize = 500;
 	}
@@ -1243,7 +1281,7 @@ void SV_SendClientPrespawnInfo(client_t *client)
 		}
 	}
 
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 	if (client->prespawn_stage == PRESPAWN_VWEPMODELLIST)
 	{
 		//no indicies. the protocol can't cope with them.
@@ -1933,7 +1971,6 @@ void SVQW_Spawn_f (void)
 	// when that is completed, a begin command will be issued
 	ClientReliableWrite_Begin (host_client, svc_stufftext, 8);
 	ClientReliableWrite_String (host_client, "skins\n" );
-
 }
 
 /*
@@ -2006,7 +2043,7 @@ void SV_Begin_Core(client_t *split)
 	}
 	else
 	{
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 		split->edict->xv->clientcolors = split->playercolor;
 		if (progstype != PROG_QW)
 		{	//some redundant things, purely for dp compat
@@ -2153,7 +2190,7 @@ void SV_Begin_Core(client_t *split)
 		}
 	}
 
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 	split->dp_ping = NULL;
 	split->dp_pl = NULL;
 	if (progstype == PROG_NQ)
@@ -2459,10 +2496,11 @@ static void SV_NextChunkedDownload(unsigned int chunknum, int ezpercent, int ezf
 			ClientReliableWrite_String (host_client, host_client->downloadfn);
 		}
 
-
+#ifdef NQPROT
 		host_client->downloadstarted = false;
+#endif
 
-#ifndef NOLEGACY
+#if defined(HAVE_LEGACY) && defined(MVD_RECORDING)
 		SV_DownloadQueueNext(host_client);
 #endif
 	}
@@ -2544,7 +2582,7 @@ void SV_NextDownload_f (void)
 	VFS_CLOSE (host_client->download);
 	host_client->download = NULL;
 
-#ifndef NOLEGACY
+#if defined(HAVE_LEGACY) && defined(MVD_RECORDING)
 	SV_DownloadQueueNext(host_client);
 #endif
 }
@@ -3220,7 +3258,7 @@ static int SV_LocateDownload(const char *name, flocation_t *loc, char **replacem
 		if (replacementname)
 		{
 #if 1
-			char *pakname = FS_GetPackageDownloadFilename(loc);
+			const char *pakname = FS_GetPackageDownloadFilename(loc);
 			if (pakname && strchr(pakname, '/'))
 			{
 				extern cvar_t allow_download_packages,allow_download_copyrighted;	//non authoritive, but should normally match.
@@ -3304,7 +3342,7 @@ void SV_DownloadSize_f(void)
 
 #ifdef MVD_RECORDING
 
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 void SV_DownloadQueueAdd(client_t *client, const char *name)
 {
 	if (!client->dlqueue)
@@ -3368,9 +3406,11 @@ void SV_DemoDownload_f(void)
 				if (host_client->download)
 					VFS_CLOSE (host_client->download);
 				host_client->download = NULL;
+#ifdef NQPROT
 				host_client->downloadstarted = false;
+#endif
 			}
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 			SV_DownloadQueueClear(host_client);
 #endif
 			return;
@@ -3405,7 +3445,7 @@ void SV_DemoDownload_f(void)
 
 		if (!mvdname)
 			SV_ClientPrintf (host_client, PRINT_HIGH, "%s is an invalid MVD demonum.\n", name);
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 		else if (!(host_client->protocol & PEXT_CHUNKEDDOWNLOADS) || !strncmp(InfoBuf_ValueForKey(&host_client->userinfo, "*client"), "ezQuake", 7))
 		{	//chunked downloads was built around the client being in control (because only it knows which files are needed)
 			//but ezquake never implemented that part
@@ -3420,7 +3460,7 @@ void SV_DemoDownload_f(void)
 			ClientReliableWrite_String (host_client, s);
 		}
 	}
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 	if (!host_client->download)
 		SV_DownloadQueueNext(host_client);
 #endif
@@ -3592,7 +3632,7 @@ void SV_BeginDownload_f(void)
 		}
 		if (ISNQCLIENT(host_client))
 			host_client->send_message = true;
-#ifndef NOLEGACY
+#if defined(HAVE_LEGACY) && defined(MVD_RECORDING)
 		SV_DownloadQueueNext(host_client);
 #endif
 		return;
@@ -3600,6 +3640,9 @@ void SV_BeginDownload_f(void)
 
 	Q_strncpyz(host_client->downloadfn, name, sizeof(host_client->downloadfn));
 	host_client->downloadcount = 0;
+#ifdef NQPROT
+	host_client->downloadstarted = false;
+#endif
 
 	host_client->downloadsize = VFS_GETLEN(host_client->download);
 
@@ -3668,9 +3711,11 @@ void SV_StopDownload_f(void)
 	else
 		SV_ClientPrintf(host_client, PRINT_HIGH, "Can't stop download - not downloading anything\n");
 
+#ifdef NQPROT
 	host_client->downloadstarted = false;
+#endif
 
-#ifndef NOLEGACY
+#if defined(HAVE_LEGACY) && defined(MVD_RECORDING)
 	SV_DownloadQueueNext(host_client);
 //	SV_DownloadQueueClear(host_client);
 #endif
@@ -4500,7 +4545,7 @@ void SV_SetInfo_f (void)
 		SV_ClientPrintf(host_client, PRINT_HIGH, "setinfo: %s may not be changed mid-game\n", key);
 	else if (sv_userinfo_keylimit.ival >= 0 && host_client->userinfo.numkeys >= sv_userinfo_keylimit.ival && !offset && *val && !InfoBuf_FindKey(&host_client->userinfo, key, &k))	//when the limit is hit, allow people to freely change existing keys, but not new ones. they can also silently remove any that don't exist yet, too.
 		SV_ClientPrintf(host_client, PRINT_MEDIUM, "setinfo: userinfo is limited to %i keys. Ignoring setting %s\n", sv_userinfo_keylimit.ival, key);
-	else if (valsize && sv_userinfo_bytelimit.ival >= 0 && host_client->userinfo.totalsize-cursize+(keysize+2+valsize) >= sv_userinfo_bytelimit.ival)
+	else if (offset+valsize > cursize && sv_userinfo_bytelimit.ival >= 0 && host_client->userinfo.totalsize+(keysize+2+valsize) >= sv_userinfo_bytelimit.ival)
 	{
 		SV_ClientPrintf(host_client, PRINT_MEDIUM, "setinfo: userinfo is limited to %i bytes. Ignoring setting %s\n", sv_userinfo_bytelimit.ival, key);
 		if (offset)	//kill it if they're part way through sending one, so that they're not penalised by the presence of partials that will never complete.
@@ -4524,7 +4569,7 @@ void SV_SetInfo_f (void)
 			{	//team fortress has a nasty habit of booting people without this
 				sv_player->v->team = atoi(Cmd_Argv(2))+1;
 			}
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 			if (progstype != PROG_QW && !strcmp(key, "model"))
 			{
 				eval_t *eval = svprogfuncs->GetEdictFieldValue(svprogfuncs, sv_player, "playermodel", ev_string, NULL);
@@ -5129,9 +5174,8 @@ void SV_SetUpClientEdict (client_t *cl, edict_t *ent)
 
 	ent->v->colormap = NUM_FOR_EDICT(svprogfuncs, ent);
 
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 	{
-		extern int pr_teamfield;
 		if (pr_teamfield)
 			((string_t *)ent->v)[pr_teamfield] = (string_t)(cl->team-svprogfuncs->stringtable);
 	}
@@ -6052,14 +6096,14 @@ void SV_Pext_f(void)
 		val = Cmd_Argv(i++);
 		switch(strtoul(tag, NULL, 0))
 		{
-		case PROTOCOL_VERSION_FTE:
-			host_client->fteprotocolextensions = strtoul(val, NULL, 0) & Net_PextMask(1, ISNQCLIENT(host_client));
+		case PROTOCOL_VERSION_FTE1:
+			host_client->fteprotocolextensions = strtoul(val, NULL, 0) & Net_PextMask(PROTOCOL_VERSION_FTE1, ISNQCLIENT(host_client));
 			break;
 		case PROTOCOL_VERSION_FTE2:
-			host_client->fteprotocolextensions2 = strtoul(val, NULL, 0) & Net_PextMask(2, ISNQCLIENT(host_client));
+			host_client->fteprotocolextensions2 = strtoul(val, NULL, 0) & Net_PextMask(PROTOCOL_VERSION_FTE2, ISNQCLIENT(host_client));
 			break;
 		case PROTOCOL_VERSION_EZQUAKE1:
-			host_client->ezprotocolextensions1 = strtoul(val, NULL, 0) & Net_PextMask(3, ISNQCLIENT(host_client)) & EZPEXT1_SERVERADVERTISE;
+			host_client->ezprotocolextensions1 = strtoul(val, NULL, 0) & Net_PextMask(PROTOCOL_VERSION_EZQUAKE1, ISNQCLIENT(host_client)) & EZPEXT1_SERVERADVERTISE;
 			break;
 		}
 	}
@@ -6249,6 +6293,7 @@ ucmd_t nqucmds[] =
 	{"name",		SVNQ_NQInfo_f},
 	{"color",		SVNQ_NQColour_f},
 	{"playermodel",	SVNQ_DPModel_f},
+//	{"pmodel",		SVNQ_DPModel_f},	//nehahra
 	{"playerskin",	SVNQ_DPSkin_f},
 	{"rate",		SV_Rate_f},
 	{"rate_burstsize",	NULL},
@@ -6866,7 +6911,7 @@ int SV_PMTypeForClient (client_t *cl, edict_t *ent)
 	}
 #endif
 
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 	if (sv_brokenmovetypes.value)	//this is to mimic standard qw servers, which don't support movetypes other than MOVETYPE_FLY.
 	{								//it prevents bugs from being visible in unsuspecting mods.
 		if (cl && cl->spectator)
@@ -6904,7 +6949,7 @@ int SV_PMTypeForClient (client_t *cl, edict_t *ent)
 	case MOVETYPE_NONE:
 		return PM_NONE;
 
-#ifdef NOLEGACY
+#ifndef HAVE_LEGACY
 	case MOVETYPE_TOSS:
 	case MOVETYPE_BOUNCE:
 		return PM_DEAD;
@@ -6912,7 +6957,7 @@ int SV_PMTypeForClient (client_t *cl, edict_t *ent)
 
 	case MOVETYPE_WALK:
 	default:
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 		if (cl && ent->v->health <= 0)
 			return PM_DEAD;
 #endif
@@ -7044,6 +7089,8 @@ void SV_RunCmd (usercmd_t *ucmd, qboolean recurse)
 		SV_RunCmd (&cmd, true);
 		return;
 	}
+
+	VALGRIND_MAKE_MEM_UNDEFINED(&pmove, sizeof(pmove));
 
 	host_frametime = ucmd->msec * 0.001;
 	host_frametime *= sv.gamespeed;
@@ -7732,6 +7779,8 @@ void SV_ReadQCRequest(void)
 done:
 	args[i] = 0;
 	rname = MSG_ReadString();
+	//We used to use Cmd_foo_args, but that conflicts with a zquake extension and would cause [e]zquake mods that use it to be remotely exploitable (mostly crashes from uninitialised args though).
+	//Instead, we've switched to some more weird prefix that's much less likly to conflict.
 	if (i)
 		fname = va("CSEv_%s_%s", rname, args);
 	else if (strchr(rname, '_'))	//this is awkward, as not forcing an underscore would allow people to mis-call things with lingering data (the alternative is to block underscores entirely).
@@ -7739,7 +7788,7 @@ done:
 	else
 		fname = va("CSEv_%s", rname);
 	f = PR_FindFunction(svprogfuncs, fname, PR_ANY);
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 	if (!f)
 	{
 		if (i)
@@ -7748,7 +7797,10 @@ done:
 			rname = va("Cmd_%s", rname);
 		f = PR_FindFunction(svprogfuncs, rname, PR_ANY);
 		if (f)
-			SV_ClientPrintf(host_client, PRINT_HIGH, "the name \"%s\" is deprecated\n", rname);
+		{
+			SV_ClientPrintf(host_client, PRINT_HIGH, "\"%s\" is no longer supported.\n", rname);
+			f = 0;
+		}
 	}
 #endif
 	if (host_client->drop)
@@ -8671,8 +8723,10 @@ void SV_UserInit (void)
 	Cvar_Register (&votepercent, sv_votinggroup);
 	Cvar_Register (&votetime, sv_votinggroup);
 
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 	Cvar_Register (&sv_brokenmovetypes, "Backwards compatability");
+	Cvar_Register (&pext_ezquake_nochunks, cvargroup_servercontrol);
+	Cvar_Register (&pext_ezquake_verfortrans, cvargroup_servercontrol);
 #endif
 }
 

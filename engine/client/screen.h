@@ -110,13 +110,13 @@ typedef enum uploadfmt
 	PTI_R8_SNORM,
 	PTI_RG8_SNORM,	//might be useful for normalmaps
 	//big formats
-	PTI_R16,
-	PTI_RGBA16,
+	PTI_R16,		//useful for heightmaps
+	PTI_RGBA16,		//if people use 16bit pngs, people get 16 bits per channel textures. muppets.
 	//floating point formats
 	PTI_R16F,
 	PTI_R32F,
-	PTI_RGBA16F,
-	PTI_RGBA32F,
+	PTI_RGBA16F,	//consider using e5bgr9
+	PTI_RGBA32F,	//usually overkill
 	//packed/misaligned formats: these are specified in native endian order (high bits listed first because that's how things are represented in hex), so may need byte swapping...
 	PTI_A2BGR10,	//mostly for rendertargets, might also be useful for overbight lightmaps.
 	PTI_E5BGR9,		//mostly for fancy lightmaps
@@ -134,7 +134,7 @@ typedef enum uploadfmt
 	PTI_BC2_RGBA_SRGB,
 	PTI_BC3_RGBA,	//maybe add a bc3 normalmapswizzle type for d3d9?
 	PTI_BC3_RGBA_SRGB,
-	PTI_BC4_R8,
+	PTI_BC4_R8,		//greyscale, kinda
 	PTI_BC4_R8_SNORM,
 	PTI_BC5_RG8,	//useful for normalmaps
 	PTI_BC5_RG8_SNORM,	//useful for normalmaps
@@ -150,7 +150,7 @@ typedef enum uploadfmt
 	PTI_ETC2_RGB8_SRGB,
 	PTI_ETC2_RGB8A1_SRGB,
 	PTI_ETC2_RGB8A8_SRGB,
-	PTI_EAC_R11,	//no idea what this might be used for, whatever
+	PTI_EAC_R11,	//might be useful for overlays, with swizzles.
 	PTI_EAC_R11_SNORM,	//no idea what this might be used for, whatever
 	PTI_EAC_RG11,	//useful for normalmaps (calculate blue)
 	PTI_EAC_RG11_SNORM,	//useful for normalmaps (calculate blue)
@@ -220,11 +220,6 @@ typedef enum uploadfmt
 	PTI_MAX,
 
 	TF_INVALID = PTI_INVALID,
-	TF_DEPTH16 = PTI_DEPTH16,
-	TF_DEPTH24 = PTI_DEPTH24,
-	TF_DEPTH32 = PTI_DEPTH32,
-	TF_RGBA16F = PTI_RGBA16F,
-	TF_RGBA32F = PTI_RGBA32F,
 	TF_RGBA32 = PTI_RGBA8,              /*rgba byte order*/
 	TF_BGRA32 = PTI_BGRA8,              /*bgra byte order*/
 	TF_RGBX32 = PTI_RGBX8,              /*rgb byte order, with extra wasted byte after blue*/
@@ -236,7 +231,7 @@ typedef enum uploadfmt
 #define PTI_EMULATED 	TF_INVALID:case TF_BGR24_FLIP:case TF_MIP4_P8:case TF_MIP4_SOLID8:case TF_MIP4_8PAL24:case TF_MIP4_8PAL24_T255:case TF_SOLID8:case TF_TRANS8:case TF_TRANS8_FULLBRIGHT:case TF_HEIGHT8:case TF_HEIGHT8PAL:case TF_H2_T7G1:case TF_H2_TRANS8_0:case TF_H2_T4A4:case TF_8PAL24:case TF_8PAL32:case PTI_LLLX8:case PTI_LLLA8
 } uploadfmt_t;
 
-qboolean SCR_ScreenShot (char *filename, enum fs_relative fsroot, void **buffer, int numbuffers, int bytestride, int width, int height, enum uploadfmt fmt, qboolean writemeta);
+qboolean SCR_ScreenShot (char *filename, enum fs_relative fsroot, void **buffer, int numbuffers, qintptr_t bytestride, int width, int height, enum uploadfmt fmt, qboolean writemeta);
 
 void SCR_DrawTwoDimensional(int uimenu, qboolean nohud);
 
@@ -263,6 +258,7 @@ void Font_BeginScaledString(struct font_s *font, float vx, float vy, float szx, 
 void Font_Transform(float vx, float vy, int *px, int *py);
 int Font_CharHeight(void);
 float Font_CharVHeight(struct font_s *font);
+int Font_CharPHeight(struct font_s *font);
 float Font_CharScaleHeight(void);
 int Font_CharWidth(unsigned int charflags, unsigned int codepoint);
 float Font_CharScaleWidth(unsigned int charflags, unsigned int codepoint);

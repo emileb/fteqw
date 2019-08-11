@@ -18,6 +18,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
 // protocol.h -- communications protocols
+
+#include "bothdefs.h"
+
 #define PEXT_SETVIEW			0x00000001
 
 #define PEXT_SCALE				0x00000002
@@ -79,13 +82,14 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define PEXT2_PREDINFO				0x00000020	//movevar stats, NQ input sequences+acks.
 #define PEXT2_NEWSIZEENCODING		0x00000040	//richer size encoding.
 #define PEXT2_INFOBLOBS				0x00000080	//serverinfo+userinfo lengths can be MUCH higher (protocol is unbounded, but expect low sanity limits on userinfo), and contain nulls etc.
+//#define PEXT2_NEWINTENTS			0x00000100	//clc_move changes, more buttons etc
 #define PEXT2_CLIENTSUPPORT			(PEXT2_PRYDONCURSOR|PEXT2_VOICECHAT|PEXT2_SETANGLEDELTA|PEXT2_REPLACEMENTDELTAS|PEXT2_MAXPLAYERS|PEXT2_PREDINFO|PEXT2_NEWSIZEENCODING|PEXT2_INFOBLOBS)
 
-//EzQuake/Mvdsv extensions
+//EzQuake/Mvdsv extensions. (use ezquake name, to avoid confusion about .mvd format and its protocol differences)
 #define EZPEXT1_FLOATENTCOORDS		0x00000001	//quirky - doesn't apply to broadcasts, just players+ents. this gives more precision, but will bug out if you try using it to increase map bounds in ways that may not be immediately apparent. iiuc this was added instead of fixing some inconsistent rounding...
 #define EZPEXT1_SETANGLEREASON		0x00000002	//specifies the reason for an svc_setangles call. the mvdsv implementation will fuck over any mods that writebyte them. we'd need to modify our preparse stuff to work around the issue.
 #define EZPEXT1_SERVERADVERTISE		0
-#define EZPEXT1_CLIENTADVERTISE		0			//
+#define EZPEXT1_CLIENTADVERTISE		EZPEXT1_FLOATENTCOORDS			//might as well ask for it, as a way around mvdsv's writecoord/PM_NudgePosition rounding difference bug.
 #define EZPEXT1_CLIENTSUPPORT		(EZPEXT1_FLOATENTCOORDS|EZPEXT1_SETANGLEREASON)	//ones we can support in demos. warning if other bits.
 
 //ZQuake transparent protocol extensions.
@@ -102,16 +106,16 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define Z_EXT_PF_SOLID		(1<<8)	//conflicts with many FTE extensions.
 
 #ifdef QUAKESTATS
-#define SERVER_SUPPORTED_Z_EXTENSIONS (Z_EXT_PM_TYPE|Z_EXT_PM_TYPE_NEW|Z_EXT_VIEWHEIGHT|Z_EXT_SERVERTIME|Z_EXT_PITCHLIMITS|Z_EXT_JOIN_OBSERVE/*|Z_EXT_PF_ONGROUND*/|Z_EXT_VWEP/*|Z_EXT_PF_SOLID*/)
+#define SERVER_SUPPORTED_Z_EXTENSIONS (Z_EXT_PM_TYPE|Z_EXT_PM_TYPE_NEW|Z_EXT_VIEWHEIGHT|Z_EXT_SERVERTIME|Z_EXT_PITCHLIMITS|Z_EXT_JOIN_OBSERVE|Z_EXT_PF_ONGROUND|Z_EXT_VWEP|Z_EXT_PF_SOLID)
 #else
-#define SERVER_SUPPORTED_Z_EXTENSIONS (Z_EXT_PM_TYPE|Z_EXT_PM_TYPE_NEW|Z_EXT_PITCHLIMITS|Z_EXT_JOIN_OBSERVE/*|Z_EXT_PF_ONGROUND*/|Z_EXT_VWEP/*|Z_EXT_PF_SOLID*/)
+#define SERVER_SUPPORTED_Z_EXTENSIONS (Z_EXT_PM_TYPE|Z_EXT_PM_TYPE_NEW|Z_EXT_PITCHLIMITS|Z_EXT_JOIN_OBSERVE|Z_EXT_PF_ONGROUND|Z_EXT_VWEP|Z_EXT_PF_SOLID)
 #endif
 #define CLIENT_SUPPORTED_Z_EXTENSIONS (SERVER_SUPPORTED_Z_EXTENSIONS|Z_EXT_PF_ONGROUND|Z_EXT_PF_SOLID)
 
 
 #define PROTOCOL_VERSION_VARLENGTH		(('v'<<0) + ('l'<<8) + ('e'<<16) + ('n' << 24))	//variable length handshake
 
-#define PROTOCOL_VERSION_FTE			(('F'<<0) + ('T'<<8) + ('E'<<16) + ('X' << 24))	//fte extensions.
+#define PROTOCOL_VERSION_FTE1			(('F'<<0) + ('T'<<8) + ('E'<<16) + ('X' << 24))	//fte extensions.
 #define PROTOCOL_VERSION_FTE2			(('F'<<0) + ('T'<<8) + ('E'<<16) + ('2' << 24))	//fte extensions.
 #define PROTOCOL_VERSION_EZQUAKE1		(('M'<<0) + ('V'<<8) + ('D'<<16) + ('1' << 24)) //ezquake/mvdsv extensions
 #define PROTOCOL_VERSION_HUFFMAN		(('H'<<0) + ('U'<<8) + ('F'<<16) + ('F' << 24))	//packet compression
@@ -140,6 +144,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	PORT_QWCLIENT	27001
 #define	PORT_QWMASTER	27000
 #define	PORT_QWSERVER	27500
+#define PORT_H2SERVER	26900
 #define PORT_Q2CLIENT	27901
 #define PORT_Q2SERVER	27910
 #define PORT_Q3MASTER	27950
@@ -150,8 +155,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #else
 	#define PORT_DEFAULTSERVER	PORT_QWSERVER
 #endif
-
-//hexen2: 26900
 
 //=========================================
 
@@ -1359,6 +1362,8 @@ typedef struct q1usercmd_s
 #define RDF_ANTIALIAS			(1u<<20)	//fxaa, or possibly even just fsaa
 #define RDF_RENDERSCALE			(1u<<21)
 #define RDF_SCENEGAMMA			(1u<<22)
+#define RDF_DISABLEPARTICLES	(1u<<23)	//mostly for skyrooms
+#define RDF_SKIPSKY				(1u<<24)	//we have a skyroom, skip drawing sky chains for this scene.
 
 #define RDF_ALLPOSTPROC			(RDF_BLOOM|RDF_FISHEYE|RDF_WATERWARP|RDF_CUSTOMPOSTPROC|RDF_ANTIALIAS|RDF_SCENEGAMMA)	//these flags require rendering to an fbo for the various different post-processing shaders.
 

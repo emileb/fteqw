@@ -199,6 +199,8 @@ static struct
 	int	 (*pXUngrabPointer)(Display *display, Time time);
 	int 	 (*pXWarpPointer)(Display *display, Window src_w, Window dest_w, int src_x, int src_y, unsigned int src_width, unsigned int src_height, int dest_x, int dest_y);
 	Status (*pXMatchVisualInfo)(Display *display, int screen, int depth, int class, XVisualInfo *vinfo_return);
+	XVisualInfo *(*pXGetVisualInfo)(Display *display, long vinfo_mask, XVisualInfo *vinfo_template, int *nitems_return);
+
 
 	qXErrorHandler (*pXSetErrorHandler)(XErrorHandler);
 
@@ -295,6 +297,7 @@ static qboolean x11_initlib(void)
 		{(void**)&x11.pXUngrabPointer,		"XUngrabPointer"},
 		{(void**)&x11.pXWarpPointer,		"XWarpPointer"},
 		{(void**)&x11.pXMatchVisualInfo,		"XMatchVisualInfo"},
+		{(void**)&x11.pXGetVisualInfo,		"XGetVisualInfo"},
 		{NULL, NULL}
 	};
 
@@ -952,7 +955,7 @@ static void XRandR_SelectMode(const char *devicename, int *x, int *y, int *width
 	if (COM_CheckParm("-current"))
 		return;
 
-	if (XRandR_FindOutput(devicename))
+	if (xrandr.crtcinfo)
 	{
 		XRRCrtcInfo *c;
 		xrandr.crtcmode = XRandR_FindBestMode(*width, *height, rate);
@@ -1040,9 +1043,6 @@ static void XRandR_SelectMode(const char *devicename, int *x, int *y, int *width
 }
 #endif
 
-
-
-extern cvar_t	_windowed_mouse;
 
 
 static float mouse_grabbed = 0;
@@ -2525,7 +2525,7 @@ static void UpdateGrabs(void)
 	qboolean wantmgrabs, allownullcursor;
 	Cursor wantcursor;
 
-	wantmgrabs = (fullscreenflags&FULLSCREEN_ACTIVE) || !!_windowed_mouse.value;
+	wantmgrabs = (fullscreenflags&FULLSCREEN_ACTIVE) || !!in_windowed_mouse.value;
 	if (!vid.activeapp)
 		wantmgrabs = false;
 	allownullcursor = wantmgrabs;	//this says whether we can possibly want it. if false then we disallow the null cursor. Yes, this might break mods that do their own sw cursors. such mods are flawed in other ways too.
@@ -2893,6 +2893,7 @@ static void GetEvent(void)
 				char *protname = x11.pXGetAtomName(vid_dpy, event.xclient.data.l[0]);
 				if (!strcmp(protname, "WM_DELETE_WINDOW"))
 				{
+					Key_Dest_Remove(kdm_console);
 					if (Cmd_Exists("menu_quit") || Cmd_AliasExist("menu_quit", RESTRICT_LOCAL))
 						Cmd_ExecuteString("menu_quit prompt", RESTRICT_LOCAL);
 					else if (Cmd_Exists("m_quit") || Cmd_AliasExist("m_quit", RESTRICT_LOCAL))
@@ -3158,6 +3159,7 @@ static void GLVID_Shutdown(void)
 #ifdef USE_EGL
 	case PSL_EGL:
 		EGL_Shutdown();
+		EGL_UnloadLibrary();
 		GL_ForgetPointers();
 		break;
 #endif
@@ -3218,15 +3220,13 @@ static Cursor CreateNullCursor(Display *display, Window root)
 	Pixmap cursormask;
 	XGCValues xgc;
 	GC gc;
-	XColor dummycolour;
+	XColor dummycolour = {0};
 	Cursor cursor;
 
 	cursormask = x11.pXCreatePixmap(display, root, 1, 1, 1/*depth*/);
 	xgc.function = GXclear;
 	gc =  x11.pXCreateGC(display, cursormask, GCFunction, &xgc);
 	x11.pXFillRectangle(display, cursormask, gc, 0, 0, 1, 1);
-	dummycolour.pixel = 0;
-	dummycolour.red = 0;
 	dummycolour.flags = 04;
 	cursor = x11.pXCreatePixmapCursor(display, cursormask, cursormask,
 		&dummycolour,&dummycolour, 0,0);
@@ -3246,7 +3246,7 @@ static struct
 	Cursor (*ImageLoadCursor) (Display *dpy, const XcursorImage *image);
 	void (*ImageDestroy) (XcursorImage *image);
 } xcursor;
-static void *X11VID_CreateCursorRGBA(const qbyte *rgbacursor, size_t w, size_t h, float hotx, float hoty)
+static void *X11VID_CreateCursorRGBA(const qbyte *rgbacursor, uploadfmt_t format, size_t w, size_t h, float hotx, float hoty)
 {
 	Cursor *cursor;
 	size_t x, y;
@@ -3258,9 +3258,27 @@ static void *X11VID_CreateCursorRGBA(const qbyte *rgbacursor, size_t w, size_t h
 	img->yhot = hoty;
 	dest = img->pixels;
 
-	for (y = 0; y < h; y++)
-		for (x = 0; x < w; x++, rgbacursor+=4)
-			*dest++ = (rgbacursor[3]<<24)|(rgbacursor[0]<<16)|(rgbacursor[1]<<8)|(rgbacursor[2]<<0);	//0xARGB
+	switch (format)
+	{
+	case PTI_BGRA8:
+	case PTI_BGRX8:
+		for (y = 0; y < h; y++)
+			for (x = 0; x < w; x++, rgbacursor+=4)
+				*dest++ = (rgbacursor[3]<<24)|(rgbacursor[2]<<16)|(rgbacursor[1]<<8)|(rgbacursor[0]<<0);	//0xARGB
+		break;	//supported...
+	case PTI_RGBA8:
+	case PTI_RGBX8:
+	case PTI_LLLA8:
+	case PTI_LLLX8:
+		for (y = 0; y < h; y++)
+			for (x = 0; x < w; x++, rgbacursor+=4)
+				*dest++ = (rgbacursor[3]<<24)|(rgbacursor[0]<<16)|(rgbacursor[1]<<8)|(rgbacursor[2]<<0);	//0xARGB
+		break;
+	default:
+		//panic... format wasn't supported. I hope we didn't spend ages resampling it...
+		xcursor.ImageDestroy(img);
+		return NULL;
+	}
 
 	cursor = Z_Malloc(sizeof(*cursor));
 	*cursor = xcursor.ImageLoadCursor(vid_dpy, img);
@@ -3284,15 +3302,16 @@ static void *X11VID_CreateCursor(const qbyte *imagedata, int width, int height, 
 		nh = height * scale;
 		if (nw <= 0 || nh <= 0 || nw > 128 || nh > 128) //don't go crazy.
 			return NULL;
-		nd = BZ_Malloc(nw*nh*4);
-		Image_ResampleTexture((unsigned int*)imagedata, width, height, (unsigned int*)nd, nw, nh);
+		nd = Image_ResampleTexture(format, imagedata, width, height, NULL, nw, nh);
+		if (!nd)
+			return NULL;	//resampling of that format didn't work for some reason...
 		width = nw;
 		height = nh;
-		r = X11VID_CreateCursorRGBA(nd, width, height, hotx, hoty);
+		r = X11VID_CreateCursorRGBA(nd, format, width, height, hotx, hoty);
 		BZ_Free(nd);
 	}
 	else
-		r = X11VID_CreateCursorRGBA(imagedata, width, height, hotx, hoty);
+		r = X11VID_CreateCursorRGBA(imagedata, format, width, height, hotx, hoty);
 
 	return r;
 }
@@ -3779,6 +3798,9 @@ static qboolean X11VID_Init (rendererstate_t *info, unsigned char *palette, int 
 	int width = info->width;	//can override these if vmode isn't available
 	int height = info->height;
 	int rate = info->rate;
+#if defined(USE_EGL)
+	EGLConfig eglcfg = 0;
+#endif
 #if defined(USE_EGL) || defined(VKQUAKE)
 	XVisualInfo vinfodef;
 #endif
@@ -3857,9 +3879,9 @@ static qboolean X11VID_Init (rendererstate_t *info, unsigned char *palette, int 
 		fullscreenflags |= FULLSCREEN_DESKTOP;
 #ifdef USE_XRANDR
 	XRandR_Init();
+	XRandR_FindOutput(info->devicename);
 	if (fullscreen && !(fullscreenflags & FULLSCREEN_ANYMODE))
 		XRandR_SelectMode(info->devicename, &x, &y, &width, &height, rate);
-	XRandR_FindOutput(info->devicename);
 #endif
 
 #ifdef USE_VMODE
@@ -3887,7 +3909,7 @@ static qboolean X11VID_Init (rendererstate_t *info, unsigned char *palette, int 
 
 		//window managers fuck up too much if we change the video mode and request the windowmanager make us fullscreen.
 		//we assume that window manages will understand xrandr, as that actually provides notifications that things have changed.
-		if (!(fullscreenflags & FULLSCREEN_VMODE) && X_CheckWMFullscreenAvailable())
+		if (!(fullscreenflags & (FULLSCREEN_VMODE|FULLSCREEN_XRANDR)) && X_CheckWMFullscreenAvailable())
 			fullscreenflags |= FULLSCREEN_WM;
 		else
 			fullscreenflags |= FULLSCREEN_LEGACY;
@@ -3905,10 +3927,21 @@ static qboolean X11VID_Init (rendererstate_t *info, unsigned char *palette, int 
 #ifdef GLQUAKE
 #ifdef USE_EGL
 	case PSL_EGL:
-		visinfo = &vinfodef;
-		if (!x11.pXMatchVisualInfo(vid_dpy, scrnum, info->bpp?info->bpp:DefaultDepth(vid_dpy, scrnum), TrueColor, visinfo))
+		if (!EGL_InitDisplay(info, EGL_PLATFORM_X11_KHR, vid_dpy, (EGLNativeDisplayType)vid_dpy, &eglcfg))
 		{
-			Sys_Error("Couldn't choose visual for EGL\n");
+			Con_Printf("X11VID_Init: Unable to find suitable EGL config\n");
+			GLVID_Shutdown();
+			return false;
+		}
+		{
+			int num_visuals;
+			EGLint id;
+			if (!qeglGetConfigAttrib(egldpy, eglcfg, EGL_NATIVE_VISUAL_ID, &id))
+				Sys_Error("Couldn't choose visual for EGL\n");
+			vinfodef.visualid = id;
+			visinfo = x11.pXGetVisualInfo(vid_dpy, VisualIDMask, &vinfodef, &num_visuals);
+			if (!visinfo)
+				Sys_Error("Couldn't get visual info for EGL\n");
 		}
 		break;
 #endif
@@ -4051,7 +4084,7 @@ static qboolean X11VID_Init (rendererstate_t *info, unsigned char *palette, int 
 		break;
 #ifdef USE_EGL
 	case PSL_EGL:
-		if (!EGL_Init(info, palette, EGL_PLATFORM_X11_KHR, &vid_window, vid_dpy, (EGLNativeWindowType)vid_window, (EGLNativeDisplayType)vid_dpy))
+		if (!EGL_InitWindow(info, EGL_PLATFORM_X11_KHR, &vid_window, (EGLNativeWindowType)vid_window, eglcfg))
 		{
 			Con_Printf("Failed to create EGL context.\n");
 			GLVID_Shutdown();

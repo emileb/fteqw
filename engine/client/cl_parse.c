@@ -143,7 +143,7 @@ static const char *svc_qwstrings[] =
 	"svcfte_movepic",
 	"svcfte_updatepic",
 
-	"???",
+	"NEW PROTOCOL(73)",
 
 	"svcfte_effect",
 	"svcfte_effect2",
@@ -165,26 +165,26 @@ static const char *svc_qwstrings[] =
 	"svcfte_updateentities",
 	"svcfte_brushedit",
 	"svcfte_updateseats",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
-	"???",
+	"svcfte_setinfoblob",	//89
+	"NEW PROTOCOL(90)",
+	"NEW PROTOCOL(91)",
+	"NEW PROTOCOL(92)",
+	"NEW PROTOCOL(93)",
+	"NEW PROTOCOL(94)",
+	"NEW PROTOCOL(95)",
+	"NEW PROTOCOL(96)",
+	"NEW PROTOCOL(97)",
+	"NEW PROTOCOL(98)",
+	"NEW PROTOCOL(99)",
+	"NEW PROTOCOL(100)",
+	"NEW PROTOCOL(101)",
+	"NEW PROTOCOL(102)",
+	"NEW PROTOCOL(103)",
+	"NEW PROTOCOL(104)",
+	"NEW PROTOCOL(105)",
+	"NEW PROTOCOL(106)",
+	"NEW PROTOCOL(107)",
+	"NEW PROTOCOL(108)",
 };
 
 #ifdef NQPROT
@@ -286,7 +286,8 @@ static const char *svc_nqstrings[] =
 	"nqsvcfte_setangledelta(85)",	//85
 	"nqsvcfte_updateentities",	//86
 	"NEW PROTOCOL(87)",	//87
-	"NEW PROTOCOL(88)"	//88
+	"NEW PROTOCOL(88)",	//88
+	"svcfte_setinfoblob"//89
 };
 #endif
 
@@ -563,12 +564,14 @@ qboolean CL_EnqueDownload(const char *filename, const char *localname, unsigned 
 	COM_FileExtension(localname, ext, sizeof(ext));
 	if (!stricmp(ext, "dll") || !stricmp(ext, "so") || strchr(localname, '\\') || strchr(localname, ':') || strstr(localname, ".."))
 	{
+		CL_DownloadFailed(filename, NULL, DLFAIL_UNTRIED);
 		Con_Printf("Denying download of \"%s\"\n", filename);
 		return false;
 	}
 
 	if (!(flags & DLLF_USEREXPLICIT) && !cl_downloads.ival)
 	{
+		CL_DownloadFailed(filename, NULL, DLFAIL_CLIENTCVAR);
 		if (flags & DLLF_VERBOSE)
 			Con_Printf("cl_downloads setting prevents download of \"%s\"\n", filename);
 		return false;
@@ -580,7 +583,10 @@ qboolean CL_EnqueDownload(const char *filename, const char *localname, unsigned 
 #ifdef NQPROT
 		if (!webdl && cls.protocol == CP_NETQUAKE)
 			if (!cl_dp_serverextension_download)
+			{
+				CL_DownloadFailed(filename, NULL, DLFAIL_UNSUPPORTED);
 				return false;
+			}
 #endif
 
 		for (dl = cl.faileddownloads; dl; dl = dl->next)	//yeah, so it failed... Ignore it.
@@ -700,7 +706,10 @@ static void CL_WebDownloadFinished(struct dl_download *dl)
 {
 	if (dl->status == DL_FAILED)
 	{
-		CL_DownloadFailed(dl->url, &dl->qdownload);
+		if (dl->replycode == 404)	//regular file-not-found
+			CL_DownloadFailed(dl->url, &dl->qdownload, DLFAIL_SERVERFILE);
+		else	//other stuff is PROBABLY 403forbidden, but lets blame the server's config if its a tls issue etc.
+			CL_DownloadFailed(dl->url, &dl->qdownload, DLFAIL_SERVERCVAR);
 		if (dl->qdownload.flags & DLLF_ALLOWWEB)	//re-enqueue it if allowed, but this time not from the web server.
 			CL_EnqueDownload(dl->qdownload.localname, dl->qdownload.localname, dl->qdownload.flags & ~DLLF_ALLOWWEB);
 	}
@@ -744,7 +753,7 @@ static void CL_SendDownloadStartRequest(char *filename, char *localname, unsigne
 			cls.download = &wdl->qdownload;
 		}
 		else
-			CL_DownloadFailed(filename, NULL);
+			CL_DownloadFailed(filename, NULL, DLFAIL_CLIENTCVAR);
 		return;
 	}
 #endif
@@ -812,6 +821,8 @@ void CL_DownloadFinished(qdownload_t *dl)
 	else
 	{
 		CL_CheckModelResources(filename);
+
+		Mod_FileWritten(filename);
 		if (!cl.sendprespawn)
 		{
 /*
@@ -826,6 +837,7 @@ void CL_DownloadFinished(qdownload_t *dl)
 				}
 			}
 */
+
 			for (i = 0; i < MAX_PRECACHE_MODELS; i++)	//go and load this model now.
 			{
 				if (!strcmp(cl.model_name[i], filename))
@@ -848,7 +860,7 @@ void CL_DownloadFinished(qdownload_t *dl)
 					break;
 				}
 			}
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 			for (i = 0; i < MAX_VWEP_MODELS; i++)
 			{
 				if (!strcmp(cl.model_name_vwep[i], filename))
@@ -942,6 +954,10 @@ qboolean	CL_CheckOrEnqueDownloadFile (const char *filename, const char *localnam
 	if (cls.demorecording)
 	{
 		Con_TPrintf ("Unable to download %s in record mode.\n", filename);
+#if defined(MVD_RECORDING) && defined(HAVE_SERVER)
+		if (sv_demoAutoRecord.ival)
+			Con_TPrintf ("Note that ^[%s\\cmd\\%s 0\\^] is enabled.\n", sv_demoAutoRecord.name, sv_demoAutoRecord.name);
+#endif
 		return true;
 	}
 	//ZOID - can't download when playback
@@ -1186,7 +1202,7 @@ static void Model_CheckDownloads (void)
 		CL_CheckModelResources(s);
 	}
 
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 	for (i = 0; i < MAX_VWEP_MODELS; i++)
 	{
 		s = cl.model_name_vwep[i];
@@ -1339,7 +1355,7 @@ static int CL_LoadModels(int stage, qboolean dontactuallyload)
 				endstage();
 			}
 		}
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 		for (i = 0; i < MAX_VWEP_MODELS; i++)
 		{
 			if (!cl.model_name_vwep[i][0])
@@ -1702,7 +1718,43 @@ void CL_RequestNextDownload (void)
 
 		if (!cl.worldmodel || cl.worldmodel->loadstate != MLS_LOADED)
 		{
-			Con_Printf("\n\n-------------\n" CON_ERROR "Couldn't download \"%s\" - cannot fully connect\n", cl.worldmodel?cl.worldmodel->name:"unknown");
+			downloadlist_t *dl = NULL;
+			const char *worldname = cl.worldmodel?cl.worldmodel->name:"unknown";
+			if (cl.worldmodel)
+				for (dl = cl.faileddownloads; dl; dl = dl->next)	//yeah, so it failed... Ignore it.
+					if (!strcmp(dl->rname, cl.worldmodel->name))
+						break;
+			Con_Printf("\n\n-------------\n");
+			switch (dl?dl->failreason:DLFAIL_UNTRIED)
+			{
+			case DLFAIL_UNSUPPORTED:
+				Con_Printf(CON_ERROR "Download of \"%s\" not supported on this server - cannot fully connect\n", worldname);
+				break;
+			case DLFAIL_CORRUPTED:
+				Con_Printf(CON_ERROR "Download of \"%s\" corrupt/failed - cannot fully connect\n", worldname);
+				break;
+			case DLFAIL_CLIENTCVAR:
+				Con_Printf(CON_ERROR "Downloading of \"%s\" blocked by clientside cvars - tweak cl_download* before retrying\n", worldname);
+				break;
+			case DLFAIL_CLIENTFILE:
+				Con_Printf(CON_ERROR "Disk error downloading \"%s\" - cannot fully connect\n", worldname);
+				break;
+			case DLFAIL_SERVERCVAR:
+				Con_Printf(CON_ERROR "Download of \"%s\" denied by server - cannot fully connect\n", worldname);
+				break;
+			case DLFAIL_SERVERFILE:
+				Con_Printf(CON_ERROR "Download of \"%s\" unavailable - cannot fully connect\n", worldname);
+				break;
+			case DLFAIL_REDIRECTED:
+				Con_Printf(CON_ERROR "Redirection failure downloading \"%s\" - cannot fully connect\n", worldname);
+				break;
+			case DLFAIL_UNTRIED:
+				if (COM_FCheckExists(worldname))
+					Con_Printf(CON_ERROR "Couldn't load \"%s\" - corrupt? - cannot fully connect\n", worldname);
+				else
+					Con_Printf(CON_ERROR "Couldn't find \"%s\" - cannot fully connect\n", worldname);
+				break;
+			}
 #ifdef HAVE_MEDIA_ENCODER
 			if (cls.demoplayback && Media_Capturing())
 			{
@@ -1833,7 +1885,7 @@ static char *ZLibDownloadDecode(int *messagesize, char *input, int finalsize)
 }
 #endif
 
-downloadlist_t *CL_DownloadFailed(const char *name, qdownload_t *qdl)
+downloadlist_t *CL_DownloadFailed(const char *name, qdownload_t *qdl, enum dlfailreason_e failreason)
 {
 	//add this to our failed list. (so we don't try downloading it again...)
 	downloadlist_t *failed, **link, *dl;
@@ -1841,6 +1893,7 @@ downloadlist_t *CL_DownloadFailed(const char *name, qdownload_t *qdl)
 	failed->next = cl.faileddownloads;
 	cl.faileddownloads = failed;
 	Q_strncpyz(failed->rname, name, sizeof(failed->rname));
+	failed->failreason = failreason;
 
 	//if this is what we're currently downloading, close it up now.
 	//don't do this if we're just marking the file as unavailable for download.
@@ -2143,8 +2196,10 @@ static void CL_ParseChunkedDownload(qdownload_t *dl)
 
 		if (flag < 0)
 		{
+			enum dlfailreason_e failreason;
 			if (flag == DLERR_REDIRECTFILE)
 			{
+				failreason = DLFAIL_REDIRECTED;
 				if (CL_AllowArbitaryDownload(dl->remotename, svname))
 				{
 					Con_Printf("Download of \"%s\" redirected to \"%s\"\n", dl->remotename, svname);
@@ -2177,20 +2232,32 @@ static void CL_ParseChunkedDownload(qdownload_t *dl)
 						}
 					}
 					else if (CL_CheckOrEnqueDownloadFile(svname, NULL, 0))
+					{
 						Con_Printf("However, \"%s\" already exists. You may need to delete it.\n", svname);
+						failreason = DLFAIL_CLIENTFILE;
+					}
 				}
 				svname = dl->remotename;
 			}
 			else if (flag == DLERR_UNKNOWN)
+			{
 				Con_Printf("Server reported an error when downloading file \"%s\"\n", svname);
+				failreason = DLFAIL_CORRUPTED;
+			}
 			else if (flag == DLERR_PERMISSIONS)
+			{
 				Con_Printf("Server permissions deny downloading file \"%s\"\n", svname);
+				failreason = DLFAIL_SERVERCVAR;
+			}
 			else //if (flag == DLERR_FILENOTFOUND)
+			{
 				Con_Printf("Couldn't find file \"%s\" on the server\n", svname);
+				failreason = DLFAIL_SERVERFILE;
+			}
 
 			if (dl)
 			{
-				CL_DownloadFailed(svname, dl);
+				CL_DownloadFailed(svname, dl, failreason);
 
 				CL_RequestNextDownload();
 			}
@@ -2228,7 +2295,7 @@ static void CL_ParseChunkedDownload(qdownload_t *dl)
 
 		if (!DL_Begun(dl))
 		{
-			CL_DownloadFailed(svname, dl);
+			CL_DownloadFailed(svname, dl, DLFAIL_CLIENTFILE);
 			return;
 		}
 
@@ -2573,7 +2640,7 @@ static void CL_ParseDownload (qboolean zlib)
 		Con_DPrintf("Download for %s redirected to %s\n", requestedname, name);
 		/*quakeforge http download redirection*/
 		if (dl)
-			CL_DownloadFailed(dl->remotename, dl);
+			CL_DownloadFailed(dl->remotename, dl, DLFAIL_REDIRECTED);
 		//FIXME: find some safe way to do this and actually test it. we should already know the local name, but we might have gained a .gz or something (this is quakeforge after all).
 //		CL_CheckOrEnqueDownloadFile(name, localname, DLLF_IGNOREFAILED);
 		return;
@@ -2598,7 +2665,7 @@ static void CL_ParseDownload (qboolean zlib)
 		Con_TPrintf ("File not found.\n");
 
 		if (dl)
-			CL_DownloadFailed(dl->remotename, dl);
+			CL_DownloadFailed(dl->remotename, dl, DLFAIL_SERVERFILE);
 		return;
 	}
 
@@ -2610,7 +2677,7 @@ static void CL_ParseDownload (qboolean zlib)
 		{
 			msg_readcount += size;
 			Con_TPrintf ("Failed to open %s\n", dl->tempname);
-			CL_DownloadFailed(dl->remotename, dl);
+			CL_DownloadFailed(dl->remotename, dl, DLFAIL_CLIENTFILE);
 			CL_RequestNextDownload ();
 			return;
 		}
@@ -2830,7 +2897,7 @@ static void CLDP_ParseDownloadBegin(char *s)
 	dl->size = size;
 	if (!DL_Begun(dl))
 	{
-		CL_DownloadFailed(dl->remotename, dl);
+		CL_DownloadFailed(dl->remotename, dl, DLFAIL_CLIENTFILE);
 		return;
 	}
 
@@ -2879,7 +2946,7 @@ static void CLDP_ParseDownloadFinished(char *s)
 	else
 	{
 		Con_Printf("Download failed: unable to check CRC of download\n");
-		CL_DownloadFailed(dl->remotename, dl);
+		CL_DownloadFailed(dl->remotename, dl, DLFAIL_CLIENTFILE);
 		return;
 	}
 
@@ -2887,13 +2954,13 @@ static void CLDP_ParseDownloadFinished(char *s)
 	if (size != atoi(Cmd_Argv(1)))
 	{
 		Con_Printf("Download failed: wrong file size\n");
-		CL_DownloadFailed(dl->remotename, dl);
+		CL_DownloadFailed(dl->remotename, dl, DLFAIL_CORRUPTED);
 		return;
 	}
 	if (runningcrc != atoi(Cmd_Argv(2)))
 	{
 		Con_Printf("Download failed: wrong crc\n");
-		CL_DownloadFailed(dl->remotename, dl);
+		CL_DownloadFailed(dl->remotename, dl, DLFAIL_CORRUPTED);
 		return;
 	}
 
@@ -3080,7 +3147,7 @@ static void CLQW_ParseServerData (void)
 	{
 		//if we didn't actually start downloading it yet, cancel the current download.
 		//this is to avoid qizmo not responding to the download command, resulting in hanging downloads that cause the client to then be unable to connect anywhere simply because someone's skin was set.
-		CL_DownloadFailed(cls.download->remotename, cls.download);
+		CL_DownloadFailed(cls.download->remotename, cls.download, DLFAIL_CORRUPTED);
 	}
 
 	Con_DPrintf ("Serverdata packet %s.\n", cls.demoplayback?"read":"received");
@@ -3099,7 +3166,7 @@ static void CLQW_ParseServerData (void)
 	for(;;)
 	{
 		protover = MSG_ReadLong ();
-		if (protover == PROTOCOL_VERSION_FTE)
+		if (protover == PROTOCOL_VERSION_FTE1)
 		{
 			cls.fteprotocolextensions = MSG_ReadLong();
 			continue;
@@ -3170,7 +3237,7 @@ static void CLQW_ParseServerData (void)
 	str = MSG_ReadString ();
 	Con_DPrintf("Server is using gamedir \"%s\"\n", str);
 	if (!*str)
-		str = "qw";
+		str = "qw";	//FIXME: query active manifest's basegamedir
 
 #ifndef CLIENTONLY
 	if (!sv.state)
@@ -3417,7 +3484,7 @@ static void CLQ2_ParseServerData (void)
 // parse protocol version number
 	i = MSG_ReadLong ();
 
-	if (i == PROTOCOL_VERSION_FTE)
+	if (i == PROTOCOL_VERSION_FTE1)
 	{
 		cls.fteprotocolextensions = i = MSG_ReadLong();
 //		if (i & PEXT_FLOATCOORDS)
@@ -3577,7 +3644,7 @@ static void CLNQ_ParseProtoVersion(void)
 		protover = MSG_ReadLong ();
 		switch(protover)
 		{
-		case PROTOCOL_VERSION_FTE:
+		case PROTOCOL_VERSION_FTE1:
 			cls.fteprotocolextensions = MSG_ReadLong();
 			continue;
 		case PROTOCOL_VERSION_FTE2:
@@ -3595,7 +3662,7 @@ static void CLNQ_ParseProtoVersion(void)
 	cls.protocol_nq = CPNQ_ID;
 	cls.z_ext = 0;
 
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 	if (protover == PROTOCOL_VERSION_NQ && cls.demoplayback)
 	{
 		if (!Q_strcasecmp(FS_GetGamedir(true), "nehahra"))
@@ -3880,10 +3947,7 @@ static void CLNQ_ParseServerData(void)		//Doesn't change gamedir - use with caut
 }
 static void CLNQ_SendInitialUserInfo(void *ctx, const char *key, const char *value)
 {
-	char keybuf[2048];
-	char valbuf[4096];
-	#warning FIXME: use CL_SendUserinfoUpdate or something
-	CL_SendClientCommand(true, "setinfo %s %s\n", COM_QuotedString(key, keybuf, sizeof(keybuf), false), COM_QuotedString(value, valbuf, sizeof(valbuf), false));
+	InfoSync_Add(&cls.userinfosync, ctx, key);
 }
 void CLNQ_SignonReply (void)
 {
@@ -3907,7 +3971,7 @@ Con_DPrintf ("CL_SignonReply: %i\n", cls.signon);
 		CL_SendClientCommand(true, "name \"%s\"\n", name.string);
 		CL_SendClientCommand(true, "color %i %i\n", topcolor.ival, bottomcolor.ival);
 		if (cl.haveserverinfo)
-			InfoBuf_Enumerate(&cls.userinfo[0], NULL, CLNQ_SendInitialUserInfo);
+			InfoBuf_Enumerate(&cls.userinfo[0], &cls.userinfo[0], CLNQ_SendInitialUserInfo);
 		else if (CPNQ_IS_DP)
 		{	//dp needs a couple of extras to work properly in certain cases. don't send them on other servers because that generally results in error messages.
 			CL_SendClientCommand(true, "rate %s", rate.string);
@@ -4191,7 +4255,7 @@ static void CL_ParseModellist (qboolean lots)
 			cl_spikeindex = nummodels;
 		if (!strcmp(cl.model_name[nummodels],"progs/player.mdl"))
 			cl_playerindex = nummodels;
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 		if (*cl.model_name_vwep[0] && !strcmp(cl.model_name[nummodels],cl.model_name_vwep[0]) && cl_playerindex == -1)
 			cl_playerindex = nummodels;
 #endif
@@ -4345,24 +4409,37 @@ static void CLQ2_ParseConfigString (void)
 	}
 	else if (i == Q2CS_SKY)
 		R_SetSky(s);
-	else if (i == Q2CS_SKYAXIS)
+	else if (i == Q2CS_SKYAXIS || i == Q2CS_SKYROTATE)
 	{
-		s = COM_Parse(s);
-		if (s)
+		if (i == Q2CS_SKYROTATE)
+			cl.skyrotate = atof(s);
+		else
 		{
-			cl.skyaxis[0] = atof(com_token);
 			s = COM_Parse(s);
 			if (s)
 			{
-				cl.skyaxis[1] = atof(com_token);
+				cl.skyaxis[0] = atof(com_token);
 				s = COM_Parse(s);
 				if (s)
-					cl.skyaxis[2] = atof(com_token);
+				{
+					cl.skyaxis[1] = atof(com_token);
+					s = COM_Parse(s);
+					if (s)
+						cl.skyaxis[2] = atof(com_token);
+				}
 			}
 		}
+
+		if (cl.skyrotate)
+		{
+			if (cl.skyaxis[0]||cl.skyaxis[1]||cl.skyaxis[2])
+				Cvar_Set(&r_skybox_orientation, va("%g %g %g %g", cl.skyaxis[0], cl.skyaxis[1], cl.skyaxis[2], cl.skyrotate));
+			else
+				Cvar_Set(&r_skybox_orientation, va("0 0 1 %g", cl.skyrotate));
+		}
+		else
+			Cvar_Set(&r_skybox_orientation, "");
 	}
-	else if (i == Q2CS_SKYROTATE)
-		cl.skyrotate = atof(s);
 	else if (i == Q2CS_STATUSBAR)
 	{
 		Q_strncpyz(cl.q2statusbar, s, sizeof(cl.q2statusbar));
@@ -4593,7 +4670,7 @@ static void CL_ParseStaticProt (int baselinetype)
 	cl_static_entities[i].state = es;
 	ent = &cl_static_entities[i].ent;
 	V_ClearEntity(ent);
-	memset(&cl_static_entities[i].pvscache, 0, sizeof(cl_static_entities[i].pvscache));
+	memset(&cl_static_entities[i].ent.pvscache, 0, sizeof(cl_static_entities[i].ent.pvscache));
 
 	ent->keynum = es.number;
 
@@ -4662,7 +4739,7 @@ static void CL_ParseStaticProt (int baselinetype)
 		VectorCopy(es.origin, mins);
 		VectorCopy(es.origin, maxs);
 	}
-	cl.worldmodel->funcs.FindTouchedLeafs(cl.worldmodel, &cl_static_entities[i].pvscache, mins, maxs);
+	cl.worldmodel->funcs.FindTouchedLeafs(cl.worldmodel, &cl_static_entities[i].ent.pvscache, mins, maxs);
 
 #ifdef RTLIGHTS
 	//and now handle any rtlight fields on it
@@ -5239,6 +5316,8 @@ static void CL_ProcessUserInfo (int slot, player_info_t *player)
 	CL_NewTranslation (slot);
 #endif
 	Sbar_Changed ();
+
+	CSQC_PlayerInfoChanged(slot);
 }
 
 /*
@@ -5287,7 +5366,11 @@ static void CL_ParseSetInfoBlob (void)
 	key = InfoBuf_DecodeString(key, key+strlen(key), &keysize);
 
 	if (slot-- == 0)
+	{
 		InfoBuf_SyncReceive(&cl.serverinfo, key, keysize, val, valsize, offset, final);
+		if (final)
+			CL_CheckServerInfo();
+	}
 	else if (slot >= MAX_CLIENTS)
 		Con_Printf("INVALID SETINFO %i: %s=%s\n", slot, key, val);
 	else
@@ -6347,7 +6430,7 @@ static void CL_ParseStuffCmd(char *msg, int destsplit)	//this protects stuffcmds
 		else if (cls.protocol == CP_NETQUAKE && !strcmp(stufftext, "stopdownload"))						//download command reported failure. safe to request the next.
 		{
 			if (cls.download)
-				CL_DownloadFailed(cls.download->remotename, cls.download);
+				CL_DownloadFailed(cls.download->remotename, cls.download, DLFAIL_CORRUPTED);
 		}
 
 		//DP servers use these to report the correct csprogs.dat file+version to use.
@@ -6384,7 +6467,7 @@ static void CL_ParseStuffCmd(char *msg, int destsplit)	//this protects stuffcmds
 			cl.serverpakschanged = true;
 			CL_CheckServerPacks();
 		}
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 		else if (!strncmp(stufftext, "//vwep ", 7))			//list of vwep model indexes, because using the normal model precaches wasn't cool enough
 		{													//(from zquake/ezquake)
 			int i;
@@ -6653,11 +6736,14 @@ static void CL_ParsePortalState(void)
 			a1 = MSG_ReadShort();
 		else
 			a1 = MSG_ReadByte();
+		if (cl.worldmodel && cl.worldmodel->loadstate==MLS_LOADED && cl.worldmodel->fromgame == fg_quake2)
+		{
 #ifdef Q2BSPS
-		CMQ2_SetAreaPortalState(cl.worldmodel, a1, !!(mode&1));
+			CMQ2_SetAreaPortalState(cl.worldmodel, a1, !!(mode&1));
 #else
-		(void)a1;
+			(void)a1;
 #endif
+		}
 		break;
 	case 0xc0:
 		if (mode&2)
@@ -6670,20 +6756,26 @@ static void CL_ParsePortalState(void)
 			a1 = MSG_ReadByte();
 			a2 = MSG_ReadByte();
 		}
+		if (cl.worldmodel && cl.worldmodel->loadstate==MLS_LOADED && cl.worldmodel->fromgame == fg_quake3)
+		{
 #ifdef Q3BSPS
-		CMQ3_SetAreaPortalState(cl.worldmodel, a1, a2, !!(mode&1));
+			CMQ3_SetAreaPortalState(cl.worldmodel, a1, a2, !!(mode&1));
 #else
-		(void)a1;
-		(void)a2;
+			(void)a1;
+			(void)a2;
 #endif
+		}
 		break;
 
 	default:
 		//to be phased out.
 		mode |= MSG_ReadByte()<<8;
+		if (cl.worldmodel && cl.worldmodel->loadstate==MLS_LOADED && cl.worldmodel->fromgame == fg_quake2)
+		{
 #ifdef Q2BSPS
-		CMQ2_SetAreaPortalState(cl.worldmodel, mode & 0x7fff, !!(mode&0x8000));
+			CMQ2_SetAreaPortalState(cl.worldmodel, mode & 0x7fff, !!(mode&0x8000));
 #endif
+		}
 		break;
 	}
 }

@@ -35,7 +35,7 @@ void ClientReliableCheckBlock(client_t *cl, int maxsize)
 			memset(&cl->backbuf, 0, sizeof(cl->backbuf));
 			cl->backbuf.allowoverflow = true;
 			cl->backbuf.data = cl->backbuf_data[0];
-			cl->backbuf.maxsize = sizeof(cl->backbuf_data[0]);
+			cl->backbuf.maxsize = min(cl->netchan.message.maxsize, sizeof(cl->backbuf_data[0]));
 			cl->backbuf_size[0] = 0;
 			cl->num_backbuf++;
 		}
@@ -54,7 +54,7 @@ void ClientReliableCheckBlock(client_t *cl, int maxsize)
 			memset(&cl->backbuf, 0, sizeof(cl->backbuf));
 			cl->backbuf.allowoverflow = true;
 			cl->backbuf.data = cl->backbuf_data[cl->num_backbuf];
-			cl->backbuf.maxsize = sizeof(cl->backbuf_data[cl->num_backbuf]);
+			cl->backbuf.maxsize = min(cl->netchan.message.maxsize, sizeof(cl->backbuf_data[cl->num_backbuf]));
 			cl->backbuf_size[cl->num_backbuf] = 0;
 			cl->num_backbuf++;
 		}
@@ -97,8 +97,39 @@ client_t *ClientReliableWrite_BeginSplit(client_t *cl, int svc, int svclen)
 	}
 }
 
+sizebuf_t *ClientReliable_StartWrite(client_t *cl, int maxsize)
+{
+#ifdef MVD_RECORDING
+	if (cl == &demo.recorder)
+		return MVDWrite_Begin(dem_all, 0, maxsize);
+#endif
+
+	if (cl->controller)
+	{
+		client_t *sp;
+		int pnum = 0;
+		for (sp = cl->controller; sp; sp = sp->controlled)
+		{
+			if (sp == cl)
+				break;
+			pnum++;
+		}
+		cl = cl->controller;
+		ClientReliableWrite_Begin (cl, svcfte_choosesplitclient, 2+maxsize);
+		ClientReliableWrite_Byte (cl, pnum);
+	}
+	else
+		ClientReliableCheckBlock(cl, maxsize);
+
+	if (cl->num_backbuf)
+		return &cl->backbuf;
+	else
+		return &cl->netchan.message;
+}
 void ClientReliable_FinishWrite(client_t *cl)
 {
+	if (cl->controller)
+		cl = cl->controller;
 	if (cl->num_backbuf)
 	{
 		cl->backbuf_size[cl->num_backbuf - 1] = cl->backbuf.cursize;

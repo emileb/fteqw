@@ -33,6 +33,7 @@ typedef struct
 	int numents;
 	edict_t *ent[SV_PVS_CAMERAS];	//ents in this list are always sent, even if the server thinks that they are invisible.
 	vec3_t org[SV_PVS_CAMERAS];
+	int area[1+SV_PVS_CAMERAS];
 
 	pvsbuffer_t pvs;
 } pvscamera_t;
@@ -2695,7 +2696,7 @@ void SV_WritePlayersToClient (client_t *client, client_frame_t *frame, edict_t *
 				continue;
 
 			// ignore if not touching a PV leaf
-			if (cameras && !sv.world.worldmodel->funcs.EdictInFatPVS(sv.world.worldmodel, &ent->pvsinfo, cameras->pvs.buffer))
+			if (cameras && !sv.world.worldmodel->funcs.EdictInFatPVS(sv.world.worldmodel, &ent->pvsinfo, cameras->pvs.buffer, &cameras->numents))
 				continue;
 
 			if (!((int)clent->xv->dimension_see & ((int)ent->xv->dimension_seen | (int)ent->xv->dimension_ghost)))
@@ -3690,13 +3691,13 @@ void SV_Snapshot_BuildQ1(client_t *client, packet_entities_t *pack, pvscamera_t 
 						}
 						else
 						{
-							if (!sv.world.worldmodel->funcs.EdictInFatPVS(sv.world.worldmodel, &((wedict_t*)tracecullent)->pvsinfo, cameras->pvs.buffer))
+							if (!sv.world.worldmodel->funcs.EdictInFatPVS(sv.world.worldmodel, &((wedict_t*)tracecullent)->pvsinfo, cameras->pvs.buffer, cameras->area))
 								continue;
 						}
 					}
 					else
 					{
-						if (!sv.world.worldmodel->funcs.EdictInFatPVS(sv.world.worldmodel, &((wedict_t*)ent)->pvsinfo, cameras->pvs.buffer))
+						if (!sv.world.worldmodel->funcs.EdictInFatPVS(sv.world.worldmodel, &((wedict_t*)ent)->pvsinfo, cameras->pvs.buffer, cameras->area))
 							continue;
 						tracecullent = ent;
 					}
@@ -3710,14 +3711,14 @@ void SV_Snapshot_BuildQ1(client_t *client, packet_entities_t *pack, pvscamera_t 
 					{
 						//FIXME: this lookup should be cachable or something.
 						if (client->edict)
-							cluster = sv.world.worldmodel->funcs.ClusterForPoint(sv.world.worldmodel, client->edict->v->origin);
+							cluster = sv.world.worldmodel->funcs.ClusterForPoint(sv.world.worldmodel, client->edict->v->origin, NULL);	//ignore areas, can hear through doors.
 						else
 							cluster = -1;	//mvd
 						if (cluster >= 0)
 						{
 							mask = phs + cluster * 4*((sv.world.worldmodel->numclusters+31)>>5);
 
-							cluster = sv.world.worldmodel->funcs.ClusterForPoint (sv.world.worldmodel, ent->v->origin);
+							cluster = sv.world.worldmodel->funcs.ClusterForPoint (sv.world.worldmodel, ent->v->origin, NULL);
 							if (cluster >= 0 && !(mask[cluster>>3] & (1<<(cluster&7)) ) )
 							{
 								continue;
@@ -3859,6 +3860,7 @@ void SV_AddCameraEntity(pvscamera_t *cameras, edict_t *ent, vec3_t viewofs)
 {
 	int i;
 	vec3_t org;
+	int area;
 
 	for (i = 0; i < cameras->numents; i++)
 	{
@@ -3866,11 +3868,27 @@ void SV_AddCameraEntity(pvscamera_t *cameras, edict_t *ent, vec3_t viewofs)
 			return;	//don't add the same ent multiple times (.view2 or portals that can see themselves through other portals).
 	}
 
-	if (viewofs)
-		VectorAdd (ent->v->origin, viewofs, org);
+	if (ent)
+	{
+		if (viewofs)
+			VectorAdd (ent->v->origin, viewofs, org);
+		else
+			VectorCopy (ent->v->origin, org);
+	}
 	else
-		VectorCopy (ent->v->origin, org);
+		VectorCopy (viewofs, org);
 
+	sv.world.worldmodel->funcs.ClusterForPoint(sv.world.worldmodel, org, &area);
+	for (i = 1; ; i++)
+	{
+		if (i > cameras->area[0])
+		{	//reached the end of the known count. add it now.
+			cameras->area[++cameras->area[0]] = area;
+			break;
+		}
+		if (cameras->area[i] == area)
+			break;	//already have a camera in this area, don't make stuff slow with dupes.
+	}
 	sv.world.worldmodel->funcs.FatPVS(sv.world.worldmodel, org, &cameras->pvs, cameras->numents!=0);
 	if (cameras->numents < SV_PVS_CAMERAS)
 	{
@@ -3882,6 +3900,7 @@ void SV_AddCameraEntity(pvscamera_t *cameras, edict_t *ent, vec3_t viewofs)
 
 void SV_Snapshot_SetupPVS(client_t *client, pvscamera_t *camera)
 {
+	camera->area[0] = 0;
 	camera->numents = 0;
 	for (; client; client = client->controlled)
 	{
@@ -3898,6 +3917,10 @@ void SV_Snapshot_SetupPVS(client_t *client, pvscamera_t *camera)
 		if (client->edict->xv->view2)
 			SV_AddCameraEntity(camera, PROG_TO_EDICT(svprogfuncs, client->edict->xv->view2), NULL);
 	}
+
+	//hack for skyrooms, open up the pvs.
+	if (sv.skyroom_pos_known)
+		SV_AddCameraEntity(camera, NULL, sv.skyroom_pos);
 }
 
 void SV_Snapshot_Clear(packet_entities_t *pack)
@@ -4142,7 +4165,7 @@ void SV_CleanupEnts(void)
 		ent = EDICT_NUM_PB(svprogfuncs, e);
 		ent->xv->SendFlags = 0;
 
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 		//this is legacy code. we'll just have to live with the slight delay.
 		//FIXME: check if Version exists and do it earlier.
 		if ((int)ent->xv->Version != sv.csqcentversion[ent->entnum])

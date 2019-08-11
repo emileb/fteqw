@@ -182,6 +182,8 @@ int MP_TranslateFTEtoQCCodes(int code)
 	case K_SEARCH:			return -code;
 
 	default:
+		if (code == -1)	//mod bug
+			return code;
 		if (code < 0)	//negative values are 'qc-native' keys, for stuff that the api lacks.
 			return -code;
 		if (code >= 0 && code < 128)	//ascii codes identical
@@ -344,7 +346,9 @@ int MP_TranslateQCtoFTECodes(int code)
 	case 841:		return K_JOY_DOWN;
 	case 842:		return K_JOY_LEFT;
 	case 843:		return K_JOY_RIGHT;
-	default:		
+	default:
+		if (code == -1)	//mod bug
+			return -1;
 		if (code < 0)	//negative values are 'fte-native' keys, for stuff that the api lacks.
 			return -code;
 		if (code >= 0 && code < 128)
@@ -978,6 +982,79 @@ void QCBUILTIN PF_cl_localsound(pubprogfuncs_t *prinst, struct globalvars_s *pr_
 	S_LocalSound2(s, chan, vol);
 }
 
+void QCBUILTIN PF_cl_getlocaluserinfoblob (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	int seat = G_FLOAT(OFS_PARM0);
+	const char *keyname = PR_GetStringOfs(prinst, OFS_PARM1);
+	int qcptr = G_INT(OFS_PARM2);
+	int qcsize = G_INT(OFS_PARM3);
+	void *ptr;
+	const char *blob;
+	size_t blobsize = 0;
+	infobuf_t *info;
+	if (seat < 0 || seat >= MAX_SPLITS)
+	{
+		PR_BIError(prinst, "PF_cs_getlocaluserinfoblob: invalid seat\n");
+		return;
+	}
+	info = &cls.userinfo[seat];
+
+	if (qcptr < 0 || qcptr+qcsize >= prinst->stringtablesize)
+	{
+		PR_BIError(prinst, "PF_cs_getplayerkeyblob: invalid pointer\n");
+		return;
+	}
+	ptr = (struct reverbproperties_s*)(prinst->stringtable + qcptr);
+
+	blob = InfoBuf_BlobForKey(info, keyname, &blobsize, NULL);
+	if (qcptr)
+	{
+		blobsize = min(blobsize, qcsize);
+		memcpy(ptr, blob, blobsize);
+		G_INT(OFS_RETURN) = blobsize;
+	}
+	else
+		G_INT(OFS_RETURN) = blobsize;
+}
+void QCBUILTIN PF_cl_getlocaluserinfostring (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	int seat = G_FLOAT(OFS_PARM0);
+	const char *keyname = PR_GetStringOfs(prinst, OFS_PARM1);
+	infobuf_t *info;
+	if (seat < 0 || seat >= MAX_SPLITS)
+	{
+		PR_BIError(prinst, "PF_cs_getlocaluserinfoblob: invalid seat\n");
+		return;
+	}
+	info = &cls.userinfo[seat];
+	RETURN_TSTRING(InfoBuf_ValueForKey(info, keyname));
+}
+void QCBUILTIN PF_cl_setlocaluserinfo (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	int seat = G_FLOAT(OFS_PARM0);
+	const char *keyname = PR_GetStringOfs(prinst, OFS_PARM1);
+	if (seat < 0 || seat >= MAX_SPLITS)
+	{
+		PR_BIError(prinst, "PF_cs_getlocaluserinfoblob: invalid seat\n");
+		return;
+	}
+
+	if (prinst->callargc < 4)
+		CL_SetInfo(seat, keyname, PR_GetStringOfs(prinst, OFS_PARM2));
+	else
+	{
+		int qcptr = G_INT(OFS_PARM2);
+		int qcsize = G_INT(OFS_PARM3);
+		const void *ptr;
+		if (qcptr < 0 || qcptr+qcsize >= prinst->stringtablesize)
+		{
+			PR_BIError(prinst, "PF_cs_getplayerkeyblob: invalid pointer\n");
+			return;
+		}
+		ptr = (struct reverbproperties_s*)(prinst->stringtable + qcptr);
+		CL_SetInfoBlob(seat, keyname, ptr, qcsize);
+	}
+}
 
 #include "fs.h"
 static struct modlist_s

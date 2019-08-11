@@ -1358,7 +1358,7 @@ static void Surf_BuildLightMap (model_t *currentmodel, msurface_t *surf, int map
 
 		deluxedest = dlm->lightmaps + (surf->light_t[map] * dlm->width + surf->light_s[map]) * dlm->pixbytes;
 
-		Surf_BuildDeluxMap(currentmodel, surf, deluxedest, lm, blocknormals);
+		Surf_BuildDeluxMap(currentmodel, surf, deluxedest, dlm, blocknormals);
 	}
 
 	if (lm->fmt != PTI_L8)
@@ -2648,6 +2648,7 @@ void Surf_SetupFrame(void)
 		R_UpdateHDR(r_refdef.vieworg);
 	}
 
+	r_viewarea = 0;
 	viewcontents = 0;
 	if (r_refdef.flags & RDF_NOWORLDMODEL)
 	{
@@ -2661,6 +2662,7 @@ void Surf_SetupFrame(void)
 	else if (cl.worldmodel->fromgame == fg_quake2 || cl.worldmodel->fromgame == fg_quake3)
 	{
 		leaf = Mod_PointInLeaf (cl.worldmodel, pvsorg);
+		r_viewarea = leaf->area;
 		viewcontents = cl.worldmodel->funcs.PointContents(cl.worldmodel, NULL, pvsorg);
 		r_viewcluster = r_viewcluster2 = leaf->cluster;
 
@@ -3210,6 +3212,7 @@ void Surf_DrawWorld (void)
 {
 	//surfvis vs entvis - the key difference is that surfvis is surfaces while entvis is volume. though surfvis should be frustum culled also for lighting. entvis doesn't care.
 	qbyte *surfvis, *entvis;
+	int areas[2];
 	RSpeedLocals();
 
 	if (r_refdef.flags & RDF_NOWORLDMODEL)
@@ -3351,9 +3354,11 @@ void Surf_DrawWorld (void)
 
 				RSpeedEnd(RSPEED_WORLDNODE);
 
-				CL_LinkStaticEntities(entvis);
+				areas[0] = 1;
+				areas[1] = r_viewarea;
+				CL_LinkStaticEntities(entvis, areas);
 				TRACE(("dbg: calling R_DrawParticles\n"));
-				if (!r_refdef.recurse)
+				if (!r_refdef.recurse && !(r_refdef.flags & RDF_DISABLEPARTICLES))
 					P_DrawParticles ();
 
 				TRACE(("dbg: calling BE_DrawWorld\n"));
@@ -3471,11 +3476,14 @@ void Surf_DrawWorld (void)
 
 		RSpeedEnd(RSPEED_WORLDNODE);
 
+		areas[0] = 1;
+		areas[1] = r_viewarea;
+		r_refdef.sceneareas = areas;
 		if (!(r_refdef.flags & RDF_NOWORLDMODEL))
 		{
-			CL_LinkStaticEntities(entvis);
+			CL_LinkStaticEntities(entvis, r_refdef.sceneareas);
 			TRACE(("dbg: calling R_DrawParticles\n"));
-			if (!r_refdef.recurse)
+			if (!r_refdef.recurse && !(r_refdef.flags & RDF_DISABLEPARTICLES))
 				P_DrawParticles ();
 		}
 
@@ -3702,6 +3710,8 @@ int Surf_NewLightmaps(int count, int width, int height, uploadfmt_t fmt, qboolea
 	int i;
 
 	unsigned int pixbytes, pixw, pixh;
+	unsigned int dpixbytes, dpixw, dpixh;
+	uploadfmt_t dfmt;
 
 	if (!count)
 		return -1;
@@ -3715,6 +3725,12 @@ int Surf_NewLightmaps(int count, int width, int height, uploadfmt_t fmt, qboolea
 	Image_BlockSizeForEncoding(fmt, &pixbytes, &pixw, &pixh);
 	if (pixw != 1 || pixh != 1)
 		return -1;	//compressed formats are unsupported
+	dfmt = PTI_BGRX8;
+	if (!sh_config.texfmt[dfmt])
+		dfmt = PTI_RGBX8;
+	if (!sh_config.texfmt[dfmt])
+		dfmt = PTI_RGB8;
+	Image_BlockSizeForEncoding(dfmt, &dpixbytes, &dpixw, &dpixh);
 
 	Sys_LockMutex(com_resourcemutex);
 
@@ -3726,16 +3742,14 @@ int Surf_NewLightmaps(int count, int width, int height, uploadfmt_t fmt, qboolea
 
 		if (deluxe && ((i - numlightmaps)&1))
 		{	//deluxemaps always use a specific format.
-			int pixbytes = 4;
-			uploadfmt_t fmt = PTI_BGRX8;	//deluxemaps have limited format choices. we should probably use RG textures or something, but mneh.
-			lightmap[i] = Z_Malloc(sizeof(*lightmap[i]) + (sizeof(qbyte)*pixbytes)*width*height);
+			lightmap[i] = Z_Malloc(sizeof(*lightmap[i]) + (sizeof(qbyte)*dpixbytes)*width*height);
 			lightmap[i]->width = width;
 			lightmap[i]->height = height;
 			lightmap[i]->lightmaps = (qbyte*)(lightmap[i]+1);
 			lightmap[i]->stainmaps = NULL;
 			lightmap[i]->hasdeluxe = false;
-			lightmap[i]->pixbytes = pixbytes;
-			lightmap[i]->fmt = fmt;
+			lightmap[i]->pixbytes = dpixbytes;
+			lightmap[i]->fmt = dfmt;
 		}
 		else
 		{
@@ -3990,6 +4004,10 @@ void Surf_BuildModelLightmaps (model_t *m)
 						dst[2] = src[2];
 					}
 					break;
+				case PTI_RGB565:
+					for (; src < stop; dst += 2, src += 3)
+						*(unsigned short*)dst = ((src[0]>>3)<<11)|((src[1]>>2)<<5)|((src[2]>>3)<<0);
+					break;
 				case PTI_L8:
 					for (; src < stop; dst += 1, src += 3)
 					{
@@ -4152,13 +4170,13 @@ void Surf_NewMap (void)
 	CL_RegisterParticles();
 
 	Shader_DoReload();
-
 	if (cl.worldmodel)
 	{
 		if (cl.worldmodel->loadstate == MLS_LOADING)
 			COM_WorkerPartialSync(cl.worldmodel, &cl.worldmodel->loadstate, MLS_LOADING);
 		Mod_ParseInfoFromEntityLump(cl.worldmodel);
 	}
+	Shader_DoReload();
 
 	if (!pe)
 		Cvar_ForceCallback(&r_particlesystem);
@@ -4200,7 +4218,7 @@ TRACE(("dbg: Surf_NewMap: tp\n"));
 			VectorCopy(maxs, cl_static_entities[i].ent.origin);
 		}
 		if (cl.worldmodel->funcs.FindTouchedLeafs)
-			cl.worldmodel->funcs.FindTouchedLeafs(cl.worldmodel, &cl_static_entities[i].pvscache, mins, maxs);
+			cl.worldmodel->funcs.FindTouchedLeafs(cl.worldmodel, &cl_static_entities[i].ent.pvscache, mins, maxs);
 		cl_static_entities[i].emit = NULL;
 	}
 

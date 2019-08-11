@@ -67,7 +67,7 @@ cvar_t	cl_nopext	= CVARF("cl_nopext", "0", CVAR_ARCHIVE);
 cvar_t	cl_pext_mask = CVAR("cl_pext_mask", "0xffffffff");
 cvar_t	cl_nolerp	= CVARD("cl_nolerp", "0", "Disables interpolation. If set, missiles/monsters will be show exactly what was last received, which will be jerky. Does not affect players. A value of 2 means 'interpolate only in single-player/coop'.");
 cvar_t	cl_nolerp_netquake = CVARD("cl_nolerp_netquake", "0", "Disables interpolation when connected to an NQ server. Does affect players, even the local player. You probably don't want to set this.");
-cvar_t	cl_fullpitch_nq = CVARAFD("cl_fullpitch", "0", "pq_fullpitch", CVAR_SEMICHEAT, "When set, attempts to unlimit the default view pitch. Note that some servers will screw over your angles if you use this, resulting in terrible gameplay, while some may merely clamp your angle serverside. This is also considered a cheat in quakeworld, so this will not function there. For the equivelent in quakeworld, use serverinfo minpitch+maxpitch instead, which applies to all players fairly.");
+cvar_t	cl_fullpitch_nq = CVARAFD("cl_fullpitch", "0", "pq_fullpitch", CVAR_SEMICHEAT, "When set, attempts to unlimit the default view pitch. Note that some servers will screw over your angles if you use this, resulting in terrible gameplay, while some may merely clamp your angle serverside. This is also considered a cheat in quakeworld, ^1so this will not function there^7. For the equivelent in quakeworld, use serverinfo minpitch+maxpitch instead, which applies to all players fairly.");
 cvar_t	*hud_tracking_show;
 cvar_t	*hud_miniscores_show;
 extern cvar_t net_compress;
@@ -203,19 +203,20 @@ cvar_t	cl_dlemptyterminate		= CVAR("cl_dlemptyterminate", "1");
 cvar_t	host_mapname			= CVARAF("mapname", "",
 									  "host_mapname", 0);
 
-cvar_t	ruleset_allow_playercount			= CVAR("ruleset_allow_playercount", "1");
-cvar_t	ruleset_allow_frj					= CVAR("ruleset_allow_frj", "1");
-cvar_t	ruleset_allow_semicheats			= CVAR("ruleset_allow_semicheats", "1");
-cvar_t	ruleset_allow_packet				= CVAR("ruleset_allow_packet", "1");
-cvar_t	ruleset_allow_particle_lightning	= CVAR("ruleset_allow_particle_lightning", "1");
-cvar_t	ruleset_allow_overlongsounds		= CVAR("ruleset_allow_overlong_sounds", "1");
-cvar_t	ruleset_allow_larger_models			= CVAR("ruleset_allow_larger_models", "1");
-cvar_t	ruleset_allow_modified_eyes			= CVAR("ruleset_allow_modified_eyes", "0");
-cvar_t	ruleset_allow_sensitive_texture_replacements = CVAR("ruleset_allow_sensitive_texture_replacements", "1");
-cvar_t	ruleset_allow_localvolume			= CVAR("ruleset_allow_localvolume", "1");
-cvar_t  ruleset_allow_shaders				= CVARF("ruleset_allow_shaders", "1", CVAR_SHADERSYSTEM);
-cvar_t  ruleset_allow_watervis				= CVARF("ruleset_allow_watervis", "1", CVAR_SHADERSYSTEM);
-cvar_t  ruleset_allow_fbmodels				= CVARF("ruleset_allow_fbmodels", "0", CVAR_SHADERSYSTEM);
+#define RULESETADVICE " You should not normally change this cvar from its permissive default, instead impose limits on yourself only through the 'ruleset' cvar."
+cvar_t	ruleset_allow_playercount			= CVARD("ruleset_allow_playercount", "1", "Specifies whether teamplay triggers that count nearby players are allowed in the current ruleset."RULESETADVICE);
+cvar_t	ruleset_allow_frj					= CVARD("ruleset_allow_frj", "1", "Specifies whether Forward-Rocket-Jump scripts are allowed in the current ruleset. If 0, limits on yaw speed will be imposed so they cannot be scripted."RULESETADVICE);
+cvar_t	ruleset_allow_semicheats			= CVARD("ruleset_allow_semicheats", "1", "If 0, this blocks a range of cvars that are marked as semi-cheats. Such cvars will be locked to their empty/0 value."RULESETADVICE);
+cvar_t	ruleset_allow_packet				= CVARD("ruleset_allow_packet", "1", "If 0, network packets sent via the 'packet' command will be blocked. This makes scripting timers a little harder."RULESETADVICE);
+cvar_t	ruleset_allow_particle_lightning	= CVARD("ruleset_allow_particle_lightning", "1", "A setting of 0 blocks using the particle system to replace lightning gun trails. This prevents making the trails thinner thus preventing them from obscuring your view of your enemies."RULESETADVICE);
+cvar_t	ruleset_allow_overlongsounds		= CVARD("ruleset_allow_overlong_sounds", "1", "A setting of 0 will block the use of extra-long pickup sounds as item respawn timers."RULESETADVICE);
+cvar_t	ruleset_allow_larger_models			= CVARD("ruleset_allow_larger_models", "1", "Enforces a maximum bounds limit on models, to prevent the use of additional spikes attached to the model from being used as a kind of wallhack."RULESETADVICE);
+cvar_t	ruleset_allow_modified_eyes			= CVARD("ruleset_allow_modified_eyes", "0", "When 0, completely hides progs/eyes.mdl if it is not strictly identical to vanilla quake."RULESETADVICE);
+cvar_t	ruleset_allow_sensitive_texture_replacements = CVARD("ruleset_allow_sensitive_texture_replacements", "1", "Allows the replacement of certain model textures (as well as the models themselves). This prevents adding extra fullbrights to make them blatently obvious."RULESETADVICE);
+cvar_t	ruleset_allow_localvolume			= CVARD("ruleset_allow_localvolume", "1", "Allows the use of the snd_playersoundvolume cvar. Muting your own sounds can make it easier to hear where your opponent is."RULESETADVICE);
+cvar_t  ruleset_allow_shaders				= CVARFD("ruleset_allow_shaders", "1", CVAR_SHADERSYSTEM, "When 0, this completely disables the use of external shader files, preventing custom shaders from being used for wallhacks."RULESETADVICE);
+cvar_t  ruleset_allow_watervis				= CVARFD("ruleset_allow_watervis", "1", CVAR_SHADERSYSTEM, "When 0, this enforces ugly opaque water."RULESETADVICE);
+cvar_t  ruleset_allow_fbmodels				= CVARFD("ruleset_allow_fbmodels", "0", CVAR_SHADERSYSTEM, "When 1, allows all models to be displayed fullbright, completely ignoring the lightmaps. This feature exists only for parity with ezquake's defaults."RULESETADVICE);
 
 extern cvar_t cl_hightrack;
 extern cvar_t	vid_renderer;
@@ -441,6 +442,7 @@ void CL_Quit_f (void)
 	Sys_Quit ();
 }
 
+#ifdef NQPROT
 void CL_ConnectToDarkPlaces(char *challenge, netadr_t *adr)
 {
 	char	data[2048];
@@ -456,16 +458,13 @@ void CL_ConnectToDarkPlaces(char *challenge, netadr_t *adr)
 
 	cl.splitclients = 0;
 }
+#endif
 
 void CL_SupportedFTEExtensions(unsigned int *pext1, unsigned int *pext2, unsigned int *ezpext1)
 {
-	unsigned int fteprotextsupported1 = 0;
-	unsigned int fteprotextsupported2 = 0;
-	unsigned int ezprotextsupported1 = 0;
-
-	fteprotextsupported1 = Net_PextMask(1, false);
-	fteprotextsupported2 = Net_PextMask(2, false);
-	ezprotextsupported1 = Net_PextMask(3, false) & EZPEXT1_CLIENTADVERTISE;
+	unsigned int fteprotextsupported1 = Net_PextMask(PROTOCOL_VERSION_FTE1, false);
+	unsigned int fteprotextsupported2 = Net_PextMask(PROTOCOL_VERSION_FTE2, false);
+	unsigned int ezprotextsupported1 = Net_PextMask(PROTOCOL_VERSION_EZQUAKE1, false) & EZPEXT1_CLIENTADVERTISE;
 
 	fteprotextsupported1 &= strtoul(cl_pext_mask.string, NULL, 16);
 //	fteprotextsupported2 &= strtoul(cl_pext2_mask.string, NULL, 16);
@@ -639,7 +638,8 @@ void CL_SendConnectPacket (netadr_t *to, int mtu,
 
 	//fixme: we shouldn't cycle these so much
 	connectinfo.qport = qport.value;
-	Cvar_SetValue(&qport, (connectinfo.qport+1)&0xffff);
+	if (connectinfo.adr.type != NA_LOOPBACK)
+		Cvar_SetValue(&qport, (connectinfo.qport+1)&0xffff);
 
 	if (connectinfo.protocol == CP_QUAKE2 && (connectinfo.subprotocol == PROTOCOL_VERSION_R1Q2 || connectinfo.subprotocol == PROTOCOL_VERSION_Q2PRO))
 		connectinfo.qport &= 0xff;
@@ -683,7 +683,7 @@ void CL_SendConnectPacket (netadr_t *to, int mtu,
 	Q_strncatz(data, "\n", sizeof(data));
 
 	if (ftepext1)
-		Q_strncatz(data, va("0x%x 0x%x\n", PROTOCOL_VERSION_FTE, fteprotextsupported1), sizeof(data));
+		Q_strncatz(data, va("0x%x 0x%x\n", PROTOCOL_VERSION_FTE1, fteprotextsupported1), sizeof(data));
 	if (ftepext2)
 		Q_strncatz(data, va("0x%x 0x%x\n", PROTOCOL_VERSION_FTE2, fteprotextsupported2), sizeof(data));
 
@@ -761,11 +761,16 @@ void CL_CheckForResend (void)
 		extern cvar_t dpcompat_nopreparse;
 #endif
 		extern cvar_t sv_guidhash;
+
+		if (connectinfo.time && realtime - connectinfo.time < 1.0)
+			return;
 		memset(&connectinfo, 0, sizeof(connectinfo));
+		connectinfo.time = realtime;
 		Q_strncpyz (cls.servername, "internalserver", sizeof(cls.servername));
 		Cvar_ForceSet(&cl_servername, cls.servername);
 		if (!NET_StringToAdr(cls.servername, 0, &connectinfo.adr))
 			return;	//erk?
+
 		if (*cl_disconnectreason.string)
 			Cvar_Set(&cl_disconnectreason, "");
 		connectinfo.trying = true;
@@ -799,9 +804,9 @@ void CL_CheckForResend (void)
 				//for hexen2 we always force fte's native qw protocol. other protocols won't cut it.
 				connectinfo.protocol = CP_QUAKEWORLD;
 				connectinfo.subprotocol = PROTOCOL_VERSION_QW;
-				connectinfo.fteext1 = Net_PextMask(1, false);
-				connectinfo.fteext2 = Net_PextMask(2, false);
-				connectinfo.ezext1 = Net_PextMask(3, false) & EZPEXT1_CLIENTADVERTISE;
+				connectinfo.fteext1 = Net_PextMask(PROTOCOL_VERSION_FTE1, false);
+				connectinfo.fteext2 = Net_PextMask(PROTOCOL_VERSION_FTE2, false);
+				connectinfo.ezext1 = Net_PextMask(PROTOCOL_VERSION_EZQUAKE1, false) & EZPEXT1_CLIENTADVERTISE;
 			}
 			else if (!strcmp(lbp, "qwid") || !strcmp(lbp, "idqw"))
 			{	//for recording .qwd files in any client
@@ -827,9 +832,9 @@ void CL_CheckForResend (void)
 				{
 					connectinfo.protocol = CP_QUAKEWORLD;
 					connectinfo.subprotocol = PROTOCOL_VERSION_QW;
-					connectinfo.fteext1 = Net_PextMask(1, false);
-					connectinfo.fteext2 = Net_PextMask(2, false);
-					connectinfo.ezext1 = Net_PextMask(3, false) & EZPEXT1_CLIENTADVERTISE;
+					connectinfo.fteext1 = Net_PextMask(PROTOCOL_VERSION_FTE1, false);
+					connectinfo.fteext2 = Net_PextMask(PROTOCOL_VERSION_FTE2, false);
+					connectinfo.ezext1 = Net_PextMask(PROTOCOL_VERSION_EZQUAKE1, false) & EZPEXT1_CLIENTADVERTISE;
 				}
 			}
 			else if (!strcmp(lbp, "fitz") || !strcmp(lbp, "rmqe") ||
@@ -877,18 +882,18 @@ void CL_CheckForResend (void)
 			{
 				connectinfo.protocol = CP_NETQUAKE;
 				connectinfo.subprotocol = CPNQ_FITZ666;
-				connectinfo.fteext1 = Net_PextMask(1, true);
-				connectinfo.fteext2 = Net_PextMask(2, true);
-				connectinfo.ezext1 = Net_PextMask(3, false) & EZPEXT1_CLIENTADVERTISE;
+				connectinfo.fteext1 = Net_PextMask(PROTOCOL_VERSION_FTE1, true);
+				connectinfo.fteext2 = Net_PextMask(PROTOCOL_VERSION_FTE2, true);
+				connectinfo.ezext1 = Net_PextMask(PROTOCOL_VERSION_EZQUAKE1, false) & EZPEXT1_CLIENTADVERTISE;
 			}
 #endif
 			else
 			{	//protocol wasn't recognised, and we didn't take the nq fallback, so that must mean we're going for qw.
 				connectinfo.protocol = CP_QUAKEWORLD;
 				connectinfo.subprotocol = PROTOCOL_VERSION_QW;
-				connectinfo.fteext1 = Net_PextMask(1, false);
-				connectinfo.fteext2 = Net_PextMask(2, false);
-				connectinfo.ezext1 = Net_PextMask(3, false) & EZPEXT1_CLIENTADVERTISE;
+				connectinfo.fteext1 = Net_PextMask(PROTOCOL_VERSION_FTE1, false);
+				connectinfo.fteext2 = Net_PextMask(PROTOCOL_VERSION_FTE2, false);
+				connectinfo.ezext1 = Net_PextMask(PROTOCOL_VERSION_EZQUAKE1, false) & EZPEXT1_CLIENTADVERTISE;
 			}
 
 #ifdef NETPREPARSE
@@ -902,9 +907,9 @@ void CL_CheckForResend (void)
 				{
 					connectinfo.protocol = CP_QUAKEWORLD;
 					connectinfo.subprotocol = PROTOCOL_VERSION_QW;
-					connectinfo.fteext1 = Net_PextMask(1, false);
-					connectinfo.fteext2 = Net_PextMask(2, false);
-					connectinfo.ezext1 = Net_PextMask(3, false) & EZPEXT1_CLIENTADVERTISE;
+					connectinfo.fteext1 = Net_PextMask(PROTOCOL_VERSION_FTE1, false);
+					connectinfo.fteext2 = Net_PextMask(PROTOCOL_VERSION_FTE2, false);
+					connectinfo.ezext1 = Net_PextMask(PROTOCOL_VERSION_EZQUAKE1, false) & EZPEXT1_CLIENTADVERTISE;
 				}
 				else if (progstype != PROG_QW && cls.protocol == CP_QUAKEWORLD)
 				{
@@ -918,9 +923,9 @@ void CL_CheckForResend (void)
 			{
 				connectinfo.protocol = CP_QUAKEWORLD;
 				connectinfo.subprotocol = PROTOCOL_VERSION_QW;
-				connectinfo.fteext1 = Net_PextMask(1, false);
-				connectinfo.fteext2 = Net_PextMask(2, false);
-				connectinfo.ezext1 = Net_PextMask(3, false) & EZPEXT1_CLIENTADVERTISE;
+				connectinfo.fteext1 = Net_PextMask(PROTOCOL_VERSION_FTE1, false);
+				connectinfo.fteext2 = Net_PextMask(PROTOCOL_VERSION_FTE2, false);
+				connectinfo.ezext1 = Net_PextMask(PROTOCOL_VERSION_EZQUAKE1, false) & EZPEXT1_CLIENTADVERTISE;
 			}
 #ifdef NQPROT
 			else if (cls.demorecording == DPB_NETQUAKE && cls.protocol != CP_NETQUAKE)
@@ -969,35 +974,35 @@ void CL_CheckForResend (void)
 				net_from = connectinfo.adr;
 				Cmd_TokenizeString (va("connect %i %i %i \"\\name\\unconnected\"", NQ_NETCHAN_VERSION, 0, SV_NewChallenge()), false, false);
 
-				SVC_DirectConnect();
+				SVC_DirectConnect(0);
 			}
 			else if (connectinfo.subprotocol == CPNQ_BJP3)
 			{
 				net_from = connectinfo.adr;
 				Cmd_TokenizeString (va("connect %i %i %i \"\\name\\unconnected\\mod\\%i\"", NQ_NETCHAN_VERSION, 0, SV_NewChallenge(), PROTOCOL_VERSION_BJP3), false, false);
 
-				SVC_DirectConnect();
+				SVC_DirectConnect(0);
 			}
 			else if (connectinfo.subprotocol == CPNQ_FITZ666)
 			{
 				net_from = connectinfo.adr;
 				Cmd_TokenizeString (va("connect %i %i %i \"\\name\\unconnected\\mod\\%i\"", NQ_NETCHAN_VERSION, 0, SV_NewChallenge(), PROTOCOL_VERSION_FITZ), false, false);
 
-				SVC_DirectConnect();
+				SVC_DirectConnect(0);
 			}
 			else if (proquakeangles)
 			{
 				net_from = connectinfo.adr;
 				Cmd_TokenizeString (va("connect %i %i %i \"\\name\\unconnected\\mod\\1\"", NQ_NETCHAN_VERSION, 0, SV_NewChallenge()), false, false);
 
-				SVC_DirectConnect();
+				SVC_DirectConnect(0);
 			}
 			else if (1)
 			{
 				net_from = connectinfo.adr;
 				Q_snprintfz(net_message.data, net_message.maxsize, "xxxxconnect\\protocol\\darkplaces 3\\protocols\\DP7 DP6 DP5 RMQ FITZ NEHAHRABJP2 NEHAHRABJP NEHAHRABJP3 QUAKE\\challenge\\0x%x\\name\\%s", SV_NewChallenge(), name.string);
 				Cmd_TokenizeString (net_message.data+4, false, false);
-				SVC_DirectConnect();
+				SVC_DirectConnect(0);
 			}
 			else
 				CL_ConnectToDarkPlaces("", &connectinfo.adr);
@@ -2389,6 +2394,8 @@ void CL_CheckServerInfo(void)
 
 	if (oldteamplay != cl.teamplay)
 		Skin_FlushPlayers();
+
+	CSQC_ServerInfoChanged();
 }
 
 /*
@@ -2482,6 +2489,8 @@ Allow clients to change userinfo
 */
 void CL_SetInfo_f (void)
 {
+	char *key, *val;
+	size_t keysize, valsize;
 	cvar_t *var;
 	int pnum = CL_TargettedSplit(true);
 	if (Cmd_Argc() == 1)
@@ -2524,7 +2533,17 @@ void CL_SetInfo_f (void)
 		return;
 	}
 
-	CL_SetInfo(pnum, Cmd_Argv(1), Cmd_Argv(2));
+	key = Cmd_Argv(1);
+	val = Cmd_Argv(2);
+
+	key = InfoBuf_DecodeString(key, key+strlen(key), &keysize);
+	val = InfoBuf_DecodeString(val, val+strlen(val), &valsize);
+	if (keysize != strlen(key))
+		Con_Printf ("setinfo: ignoring key name with embedded null\n");
+	else
+		CL_SetInfoBlob(pnum, key, val, valsize);
+	Z_Free(key);
+	Z_Free(val);
 }
 
 #if 1//def _DEBUG
@@ -3028,6 +3047,7 @@ void CL_ConnectionlessPacket (void)
 		int candtls = 0;	//0=no,1=optional,2=mandatory
 #endif
 		char guidhash[256];
+		*guidhash = 0;
 
 		s = MSG_ReadString ();
 		COM_Parse(s);
@@ -3209,7 +3229,7 @@ void CL_ConnectionlessPacket (void)
 				unsigned int l = MSG_ReadLong();
 				switch(cmd)
 				{
-				case PROTOCOL_VERSION_FTE:			ftepext1 = l;		break;
+				case PROTOCOL_VERSION_FTE1:			ftepext1 = l;		break;
 				case PROTOCOL_VERSION_FTE2:			ftepext2 = l;		break;
 				case PROTOCOL_VERSION_EZQUAKE1:		ezpext1 = l;		break;
 				case PROTOCOL_VERSION_FRAGMENT:		mtu = l;		break;
@@ -3495,9 +3515,14 @@ client_connect:	//fixme: make function
 			if (cls.protocol_q2 == PROTOCOL_VERSION_R1Q2 || cls.protocol_q2 == PROTOCOL_VERSION_Q2PRO)
 				cls.netchan.qportsize = 1;
 		}
-		cls.netchan.fragmentsize = connectinfo.mtu;
+		cls.netchan.pext_fragmentation = connectinfo.mtu?true:false;
 		if (connectinfo.mtu >= 64)
+		{
+			cls.netchan.mtu = connectinfo.mtu;
 			cls.netchan.message.maxsize = sizeof(cls.netchan.message_buf);
+		}
+		else
+			cls.netchan.mtu = MAX_QWMSGLEN;
 #ifdef HUFFNETWORK
 		cls.netchan.compresstable = Huff_CompressionCRC(connectinfo.compresscrc);
 #else
@@ -3922,7 +3947,7 @@ qboolean CL_AllowArbitaryDownload(const char *oldname, const char *localfile)
 	return false;
 }
 
-#if defined(NQPROT) && !defined(NOLEGACY)
+#if defined(NQPROT) && defined(HAVE_LEGACY)
 //this is for DP compat.
 static void CL_Curl_f(void)
 {
@@ -4066,6 +4091,8 @@ void CL_Download_f (void)
 	if (!strnicmp(url, "qw://", 5) || !strnicmp(url, "q2://", 5))
 	{
 		url += 5;
+		if (*url == '/')	//a conforming url should always have a host section, an empty one is simply three slashes.
+			url++;
 	}
 
 	if (!*localname)
@@ -4122,14 +4149,14 @@ void CL_DownloadSize_f(void)
 	if (!strcmp(size, "e"))
 	{
 		Con_Printf("Download of \"%s\" failed. Not found.\n", rname);
-		CL_DownloadFailed(rname, NULL);
+		CL_DownloadFailed(rname, NULL, DLFAIL_SERVERFILE);
 	}
 	else if (!strcmp(size, "p"))
 	{
 		if (cls.download && stricmp(cls.download->remotename, rname))
 		{
 			Con_Printf("Download of \"%s\" failed. Not allowed.\n", rname);
-			CL_DownloadFailed(rname, NULL);
+			CL_DownloadFailed(rname, NULL, DLFAIL_SERVERCVAR);
 		}
 	}
 	else if (!strcmp(size, "r"))
@@ -4139,7 +4166,7 @@ void CL_DownloadSize_f(void)
 		if (!CL_AllowArbitaryDownload(rname, redirection))
 			return;
 
-		dl = CL_DownloadFailed(rname, NULL);
+		dl = CL_DownloadFailed(rname, NULL, DLFAIL_REDIRECTED);
 		Con_DPrintf("Download of \"%s\" redirected to \"%s\".\n", rname, redirection);
 		CL_CheckOrEnqueDownloadFile(redirection, NULL, dl->flags);
 	}
@@ -4224,7 +4251,10 @@ void CL_ServerInfo_f(void)
 	if (!sv.state && cls.state && Cmd_Argc() < 2)
 	{
 		if (cl.haveserverinfo)
+		{
 			InfoBuf_Print (&cl.serverinfo, "");
+			Con_Printf("[%u, %s]\n", (unsigned int)cl.serverinfo.totalsize, cls.servername);
+		}
 		else
 			Cmd_ForwardToServer ();
 	}
@@ -4245,11 +4275,16 @@ void CL_FTP_f(void)
 //fixme: make a cvar
 void CL_Fog_f(void)
 {
-	int ftype = Q_strcasecmp(Cmd_Argv(0), "fog");
+	int ftype;
+	if (!Q_strcasecmp(Cmd_Argv(0), "waterfog"))
+		ftype = 1;
+	else //fog
+		ftype = 0;
 	if ((cl.fog_locked && !Cmd_FromGamecode() && !cls.allow_cheats) || Cmd_Argc() <= 1)
 	{
+		static const char *fognames[]={"fog","waterfog"};
 		if (Cmd_ExecLevel != RESTRICT_INSECURE)
-			Con_Printf("Current fog %f (r:%f g:%f b:%f, a:%f bias:%f)\n", cl.fog[ftype].density, cl.fog[ftype].colour[0], cl.fog[ftype].colour[1], cl.fog[ftype].colour[2], cl.fog[ftype].alpha, cl.fog[ftype].depthbias);
+			Con_Printf("Current %s %f (r:%f g:%f b:%f, a:%f bias:%f)\n", fognames[ftype], cl.fog[ftype].density, cl.fog[ftype].colour[0], cl.fog[ftype].colour[1], cl.fog[ftype].colour[2], cl.fog[ftype].alpha, cl.fog[ftype].depthbias);
 	}
 	else
 	{
@@ -4298,9 +4333,36 @@ void CL_Fog_f(void)
 	}
 }
 
+#ifdef _DEBUG
+void CL_FreeSpace_f(void)
+{
+	quint64_t freespace;
+	const char *freepath = Cmd_Argv(1);
+	if (Sys_GetFreeDiskSpace(freepath, &freespace))
+	{
+		if (freespace > 512.0*1024*1024*1024)
+			Con_Printf("%s: %g tb available\n", freepath, freespace/(1024.0*1024*1024*1024));
+		else if (freespace > 512.0*1024*1024)
+			Con_Printf("%s: %g gb available\n", freepath, freespace/(1024.0*1024*1024));
+		else if (freespace > 512.0*1024)
+			Con_Printf("%s: %g mb available\n", freepath, freespace/(1024.0*1024));
+		else if (freespace > 512.0)
+			Con_Printf("%s: %g kb available\n", freepath, freespace/1024.0);
+		else
+			Con_Printf("%s: %"PRIu64" bytes available\n", freepath, freespace);
+	}
+	else
+		Con_Printf("%s: disk free not queryable\n", freepath);
+}
+#endif
+
 void CL_CrashMeEndgame_f(void)
 {
-	Host_EndGame("crashme!");
+	Host_EndGame("crashme! %s", Cmd_Args());
+}
+void CL_CrashMeError_f(void)
+{
+	Sys_Error("crashme! %s", Cmd_Args());
 }
 
 void CL_Status_f(void)
@@ -4659,7 +4721,11 @@ void CL_Init (void)
 	Cmd_AddCommandD ("demo_jump", CL_DemoJump_f, "Jump to a specified time in a demo. Prefix with a + or - for a relative offset. Seeking backwards will restart the demo and the fast forward, which can take some time in long demos.");
 	Cmd_AddCommandD ("demo_nudge", CL_DemoNudge_f, "Nudge the demo by one frame. Argument should be +1 or -1. Nudging backwards is limited.");
 	Cmd_AddCommandAD ("timedemo", CL_TimeDemo_f, CL_DemoList_c, NULL);
+#ifdef _DEBUG
+	Cmd_AddCommand ("freespace", CL_FreeSpace_f);
+#endif
 	Cmd_AddCommand ("crashme_endgame", CL_CrashMeEndgame_f);
+	Cmd_AddCommand ("crashme_error", CL_CrashMeError_f);
 
 	Cmd_AddCommandD ("showpic", SCR_ShowPic_Script_f, 	"showpic <imagename> <placename> <x> <y> <zone> [width] [height] [touchcommand]\nDisplays an image onscreen, that potentially has a key binding attached to it when clicked/touched.\nzone should be one of: TL, TR, BL, BR, MM, TM, BM, ML, MR. This serves as an extra offset to move the image around the screen without any foreknowledge of the screen resolution.");
 	Cmd_AddCommandD ("showpic_removeall", SCR_ShowPic_Remove_f, 	"removes any pictures inserted with the showpic command.");
@@ -4736,7 +4802,7 @@ void CL_Init (void)
 	Cmd_AddCommand ("fullinfo", CL_FullInfo_f);
 
 	Cmd_AddCommand ("color", CL_Color_f);
-#if defined(NQPROT) && !defined(NOLEGACY)
+#if defined(NQPROT) && defined(HAVE_LEGACY)
 	Cmd_AddCommand ("curl",	CL_Curl_f);
 #endif
 	Cmd_AddCommand ("download", CL_Download_f);
@@ -4885,7 +4951,8 @@ void Host_WriteConfiguration (void)
 		f = FS_OpenVFS(savename, "wb", FS_GAMEONLY);
 		if (!f)
 		{
-			Con_TPrintf (CON_ERROR "Couldn't write config.cfg.\n");
+			FS_NativePath(savename, FS_GAMEONLY, sysname, sizeof(sysname));
+			Con_TPrintf (CON_ERROR "Couldn't write %s.\n", sysname);
 			return;
 		}
 
@@ -5900,7 +5967,17 @@ double Host_Frame (double time)
 
 #ifndef CLIENTONLY
 	if (isDedicated)	//someone changed it.
+	{
+		if (sv.state)
+		{
+			float ohft = host_frametime;
+			RSpeedRemark();
+			SV_Frame();
+			RSpeedEnd(RSPEED_SERVER);
+			host_frametime = ohft;
+		}
 		return 0;
+	}
 #endif
 
 	cls.framecount++;
@@ -6175,7 +6252,7 @@ void CL_StartCinematicOrMenu(void)
 		else if (idcin_depth != FDEPTH_MISSING)
 			Media_PlayFilm("video/idlog.cin", true);
 
-#ifndef NOLEGACY
+#ifdef HAVE_LEGACY
 		//and for fun (blame spirit):
 		if (COM_FCheckExists("data/local/video/New_Bliz640x480.bik"))
 			Media_PlayFilm("av:data/local/video/New_Bliz640x480.bik", true);
@@ -6362,7 +6439,12 @@ void Host_FinishLoading(void)
 		FS_ChangeGame(NULL, true, true);
 
 		if (waitingformanifest)
+		{
+#ifdef MULTITHREAD
+			Sys_Sleep(0.1);
+#endif
 			return;
+		}
 
 		Con_History_Load();
 
@@ -6403,7 +6485,12 @@ void Host_FinishLoading(void)
 	}
 
 	if (PM_IsApplying(true))
+	{
+#ifdef MULTITHREAD
+		Sys_Sleep(0.1);
+#endif
 		return;
+	}
 
 	//android may find that it has no renderer at various points.
 	if (r_forceheadless)

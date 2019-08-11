@@ -810,7 +810,7 @@ void CL_GatherButtons (usercmd_t *cmd, int pnum)
 	GATHERBIT(in_button[14-3],	16);
 	GATHERBIT(in_button[15-3],	17);
 	GATHERBIT(in_button[16-3],	18);
-	cmd->buttons = bits;
+	cmd->buttons |= bits;
 }
 
 /*
@@ -1331,6 +1331,7 @@ void CLNQ_SendCmd(sizebuf_t *buf)
 #ifdef CSQC_DAT
 		CSQC_Input_Frame(seat, cmd);
 #endif
+		memset(&cl_pendingcmd[seat], 0, sizeof(cl_pendingcmd[seat]));
 	}
 
 	//inputs are only sent once we receive an entity.
@@ -2293,6 +2294,10 @@ void CL_SendCmd (double frametime, qboolean mainloop)
 	{
 		CL_SendDownloadReq(&buf);
 
+		//only start spamming userinfo blobs once we receive the initial serverinfo.
+		while (cls.userinfosync.numkeys && cls.netchan.message.cursize < 512 && (cl.haveserverinfo || cls.protocol == CP_QUAKE2 || cls.protocol == CP_QUAKE3))
+			CL_SendUserinfoUpdate();
+
 		while (clientcmdlist)
 		{
 			next = clientcmdlist->next;
@@ -2300,6 +2305,8 @@ void CL_SendCmd (double frametime, qboolean mainloop)
 			{
 				if (cls.netchan.message.cursize + 2+strlen(clientcmdlist->command)+100 > cls.netchan.message.maxsize)
 					break;
+				if (!strncmp(clientcmdlist->command, "spawn", 5) && cls.userinfosync.numkeys)
+					break;	//HACK: don't send the spawn until all pending userinfos have been flushed.
 				MSG_WriteByte (&cls.netchan.message, clc_stringcmd);
 				MSG_WriteString (&cls.netchan.message, clientcmdlist->command);
 			}
@@ -2315,10 +2322,6 @@ void CL_SendCmd (double frametime, qboolean mainloop)
 			Z_Free(clientcmdlist);
 			clientcmdlist = next;
 		}
-
-		//only start spamming userinfo blobs once we receive the initial serverinfo.
-		while (cls.userinfosync.numkeys && cls.netchan.message.cursize < 512 && (cl.haveserverinfo || cls.protocol == CP_QUAKE2 || cls.protocol == CP_QUAKE3))
-			CL_SendUserinfoUpdate();
 	}
 
 	// if we're not doing clc_moves and etc, don't continue unless we wrote something previous
