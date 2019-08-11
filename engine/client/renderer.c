@@ -331,7 +331,7 @@ rendererstate_t currentrendererstate;
 #if defined(GLQUAKE)
 cvar_t	gl_workaround_ati_shadersource		= CVARD	 ("gl_workaround_ati_shadersource", "1", "Work around ATI driver bugs in the glShaderSource function. Can safely be enabled with other drivers too.");
 #ifdef __ANDROID__
-cvar_t	vid_gl_context_version				= CVARD  ("vid_gl_context_version", "1", "Specifies the version of OpenGL to try to create.");
+cvar_t	vid_gl_context_version				= CVARD  ("vid_gl_context_version", "2", "Specifies the version of OpenGL to try to create.");
 #else
 cvar_t	vid_gl_context_version				= CVARD  ("vid_gl_context_version", "0", "Specifies the version of OpenGL to try to create.");
 #endif

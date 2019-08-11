@@ -2,7 +2,7 @@ LOCAL_PATH:= $(call my-dir)/../
 
 include $(CLEAR_VARS)
 
-LOCAL_MODULE := fteqw
+LOCAL_MODULE := fteqw_dev
 
 LOCAL_CFLAGS := -DGLQUAKE -DLIBVORBISFILE_STATIC  -Wno-write-strings -DFTEQW -DENGINE_NAME=\"fteqw\"
 LOCAL_CFLAGS += -Wall -Wno-pointer-sign -Wno-unknown-pragmas -Wno-format-zero-length -Wno-strict-aliasing
