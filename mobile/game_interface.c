@@ -383,12 +383,12 @@ void IN_Move_Android (float *movements, int pnum, float frametime)
 
 	cl.playerview[pnum].viewanglechange[PITCH] -= look_pitch_mouse * 150;
 	look_pitch_mouse = 0;
-	cl.playerview[pnum].viewanglechange[PITCH] += look_pitch_joy * 6;
+	cl.playerview[pnum].viewanglechange[PITCH] += look_pitch_joy * 6 * (frametime * 1000.f / 16.f); // Presume was scaled at 60FPS
 
 
 	cl.playerview[pnum].viewanglechange[YAW] += look_yaw_mouse * 300;
 	look_yaw_mouse = 0;
-	cl.playerview[pnum].viewanglechange[YAW] += look_yaw_joy * 6;
+	cl.playerview[pnum].viewanglechange[YAW] += look_yaw_joy * 6 * (frametime * 1000.f / 16.f); // Presume was scaled at 60FPS
 
 
 	if (cl.playerview[pnum].viewanglechange[PITCH] > 80)
