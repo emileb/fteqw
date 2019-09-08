@@ -374,6 +374,10 @@ void IN_Move_Android (float *movements, int pnum, float frametime)
 	if( !movements )
 		return;
 
+    int blockGamepad( void );
+    if( blockGamepad() )
+        return;
+
 	movements[0]  += forwardmove * cl_forwardspeed.value * 2;
 	movements[1]  += sidemove   * cl_forwardspeed.value * 2;
 
