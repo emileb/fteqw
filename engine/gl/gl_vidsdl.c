@@ -470,7 +470,15 @@ void GLVID_SwapBuffers (void)
 			vid_vsync.modified = false;
 		}
 
+
 		SDL_GL_SwapWindow(sdlwindow);
+
+#ifdef __ANDROID__
+       // Reset state due to touch controls changing it
+       void resetGLState();
+       resetGLState();
+#endif
+
 #else
 		SDL_GL_SwapBuffers();
 #endif

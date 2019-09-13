@@ -213,6 +213,16 @@ struct {
 	batch_t *wbatches;
 } shaderstate;
 
+
+
+#ifdef __ANDROID__
+// Reset state due to touch controls changing it
+void resetGLState()
+{
+    GL_SelectProgram(0);
+}
+#endif
+
 static void BE_PolyOffset(void)
 {
 	polyoffset_t po;
@@ -1121,7 +1131,9 @@ qboolean GLBE_BeginShadowMap(int id, int w, int h, int *restorefbo)
 		{
 			qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE_ARB, GL_COMPARE_R_TO_TEXTURE_ARB);
 			qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC_ARB, GL_LEQUAL);
+#ifndef __ANDROID__
 			qglTexParameteri(GL_TEXTURE_2D, GL_DEPTH_TEXTURE_MODE_ARB, GL_LUMINANCE);
+#endif
 		}
 	}
 	shaderstate.curshadowmap = shadowmap[id];
