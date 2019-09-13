@@ -375,25 +375,30 @@ void IN_Move_Android (float *movements, int pnum, float frametime)
 		return;
 
     int blockGamepad( void );
-    if( blockGamepad() )
-        return;
+    int blockMove = blockGamepad() & ANALOGUE_AXIS_FWD;
+    int blockLook = blockGamepad() & ANALOGUE_AXIS_PITCH;
 
-	movements[0]  += forwardmove * cl_forwardspeed.value * 2;
-	movements[1]  += sidemove   * cl_forwardspeed.value * 2;
+
+    if( !blockMove )
+    {
+	    movements[0]  += forwardmove * cl_forwardspeed.value * 2;
+	    movements[1]  += sidemove   * cl_forwardspeed.value * 2;
+    }
 
 	//LOGI("movements[0] = %f, movements[1] = %f",movements[0],movements[1]);
 
 	V_StopPitchDrift (&cl.playerview[pnum]);
+    if( !blockLook )
+    {
+        cl.playerview[pnum].viewanglechange[PITCH] -= look_pitch_mouse * 150;
+        look_pitch_mouse = 0;
+        cl.playerview[pnum].viewanglechange[PITCH] += look_pitch_joy * 6 * (frametime * 1000.f / 16.f); // Presume was scaled at 60FPS;
 
-	cl.playerview[pnum].viewanglechange[PITCH] -= look_pitch_mouse * 150;
-	look_pitch_mouse = 0;
-	cl.playerview[pnum].viewanglechange[PITCH] += look_pitch_joy * 6 * (frametime * 1000.f / 16.f); // Presume was scaled at 60FPS;
 
-
-	cl.playerview[pnum].viewanglechange[YAW] += look_yaw_mouse * 300;
-	look_yaw_mouse = 0;
-	cl.playerview[pnum].viewanglechange[YAW] += look_yaw_joy * 6 * (frametime * 1000.f / 16.f); // Presume was scaled at 60FPS;
-
+        cl.playerview[pnum].viewanglechange[YAW] += look_yaw_mouse * 300;
+        look_yaw_mouse = 0;
+        cl.playerview[pnum].viewanglechange[YAW] += look_yaw_joy * 6 * (frametime * 1000.f / 16.f); // Presume was scaled at 60FPS;
+    }
 
 	if (cl.playerview[pnum].viewanglechange[PITCH] > 80)
 		cl.playerview[pnum].viewanglechange[PITCH] = 80;
