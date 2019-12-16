@@ -219,6 +219,12 @@ static void SSDL_Submit(soundcardinfo_t *sc, int start, int end)
 	//SDL will call SSDL_Paint to paint when it's time, and the sound buffer is always there...
 }
 
+#ifdef __ANDROID__
+extern int AUDIO_OVERRIDE_FREQ;
+extern int AUDIO_OVERRIDE_SAMPLES;
+#endif
+
+
 static qboolean QDECL SDL_InitCard(soundcardinfo_t *sc, const char *devicename)
 {
 	SDL_AudioSpec desired, obtained;
@@ -237,9 +243,18 @@ static qboolean QDECL SDL_InitCard(soundcardinfo_t *sc, const char *devicename)
 #ifdef __ANDROID__
 	desired.samples = 2048;
 #endif
+
 	desired.callback = (void*)SSDL_Paint;
 	desired.userdata = sc;
 	memcpy(&obtained, &desired, sizeof(obtained));
+
+#ifdef __ANDROID__
+    if (AUDIO_OVERRIDE_FREQ != 0)
+        desired.freq = AUDIO_OVERRIDE_FREQ;
+
+    if (AUDIO_OVERRIDE_SAMPLES != 0)
+        desired.samples = AUDIO_OVERRIDE_SAMPLES;
+#endif
 
 #if SDL_MAJOR_VERSION >= 2
 	desired.format = AUDIO_F32SYS;	//most modern audio APIs favour float audio nowadays.
