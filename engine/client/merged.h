@@ -131,6 +131,7 @@ extern void	(*VID_DeInit)							(void);
 extern char *(*VID_GetRGBInfo)						(int *stride, int *truevidwidth, int *truevidheight, enum uploadfmt *fmt); //if stride is negative, then the return value points to the last line intead of the first. this allows it to be freed normally.
 extern void	(*VID_SetWindowCaption)					(const char *msg);
 
+extern void *SCR_ScreenShot_Capture					(int fbwidth, int fbheight, int *stride, enum uploadfmt *fmt, qboolean no2d, qboolean hdr);
 extern void SCR_Init								(void);
 extern void SCR_DeInit								(void);
 extern qboolean (*SCR_UpdateScreen)					(void);
@@ -241,7 +242,7 @@ typedef struct image_s
 	int status;	//TEX_
 	unsigned int flags;
 	struct image_s *next;
-	struct image_s *prev;
+//	struct image_s *prev;
 	struct image_s *aliasof;
 	union
 	{
@@ -294,11 +295,12 @@ struct pendingtextureinfo
 {
 	enum
 	{
-		PTI_2D,
-		PTI_3D,
-		PTI_CUBEMAP,	//mips are packed (to make d3d11 happy)
-		PTI_2D_ARRAY,	//looks like a 3d texture, but depth doesn't change.
-		PTI_CUBEMAP_ARRAY,	//looks like PTI_2D_ARRAY, with depth*6
+		//formats are all w*h*(d||l)
+		PTI_2D,			//w*h*1
+		PTI_3D,			//w*h*d - only format which actually changes mip depths
+		PTI_CUBE,		//w*h*6
+		PTI_2D_ARRAY,	//w*h*layers
+		PTI_CUBE_ARRAY,	//w*h*(layers*6)
 	} type;
 
 	uploadfmt_t encoding;	//0
@@ -371,16 +373,17 @@ typedef struct
 
 typedef struct texnums_s {
 	char	mapname[MAX_QPATH];	//the 'official' name of the diffusemap. used to generate filenames for other textures.
-	texid_t base;			//regular diffuse texture. may have alpha if surface is transparent
+	texid_t base;			//regular diffuse texture. may have alpha if surface is transparent.
 	texid_t bump;			//normalmap. height values packed in alpha.
-	texid_t specular;		//specular lighting values.
-	texid_t upperoverlay;	//diffuse texture for the upper body(shirt colour). no alpha channel. added to base.rgb
-	texid_t loweroverlay;	//diffuse texture for the lower body(trouser colour). no alpha channel. added to base.rgb
+	texid_t specular;		//specular lighting values. alpha contains exponent multiplier
+	texid_t upperoverlay;	//diffuse texture for the upper body(shirt colour). no alpha channel. added to base.rgb. ideally an l8 texture
+	texid_t loweroverlay;	//diffuse texture for the lower body(trouser colour). no alpha channel. added to base.rgb. ideally an l8 texture
 	texid_t paletted;		//8bit paletted data, just because.
-	texid_t fullbright;
-	texid_t reflectcube;
-	texid_t reflectmask;
-	texid_t displacement;
+	texid_t fullbright;		//emissive texture. alpha should be 1.
+	texid_t reflectcube;	//for fake reflections
+	texid_t reflectmask;	//defines how reflective it is (for cubemap reflections)
+	texid_t displacement;	//alternative to bump.a, eg R16[F] for offsetmapping or tessellation
+	texid_t occlusion;		//occlusion map...
 
 	//the material's pushconstants. vulkan guarentees only 128 bytes. so 8 vec4s. note that lmscales should want 4 of them...
 	/*struct
@@ -476,6 +479,7 @@ typedef struct rendererinfo_s {
 
 //FIXME: keep this...
 	int		(*VID_GetPriority)	(void);	//so that eg x11 or wayland can be prioritised depending on environment settings. assumed to be 1.
+	void	(*VID_EnumerateVideoModes) (const char *driver, const char *output, void (*cb) (int w, int h));
 
 //FIXME: add getdestopres
 //FIXME: add clipboard handling

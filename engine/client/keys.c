@@ -49,7 +49,7 @@ int		key_count;			// incremented every key event
 
 int		key_bindmaps[2];
 char	*keybindings[K_MAX][KEY_MODIFIERSTATES];
-qbyte	bindcmdlevel[K_MAX][KEY_MODIFIERSTATES];
+qbyte	bindcmdlevel[K_MAX][KEY_MODIFIERSTATES];	//should be a struct, but not due to 7 bytes wasted per on 64bit machines
 qboolean	consolekeys[K_MAX];	// if true, can't be rebound while in console
 int		keyshift[K_MAX];		// key to map to if shift held down in console
 int		key_repeats[K_MAX];	// if > 1, it is autorepeating
@@ -673,8 +673,38 @@ qboolean Key_GetConsoleSelectionBox(console_t *con, int *sx, int *sy, int *ex, i
 
 	if (con->buttonsdown == CB_SCROLL || con->buttonsdown == CB_SCROLL_R)
 	{
+		float lineheight = Font_CharVHeight(font_console);
 		//left-mouse.
 		//scroll the console with the mouse. trigger links on release.
+		con->displayscroll += (con->mousecursor[1] - con->mousedown[1])/lineheight;
+		con->mousedown[1] = con->mousecursor[1];
+		while (con->displayscroll > con->display->numlines)
+		{
+			if (con->display->older)
+			{
+				con->displayscroll -= con->display->numlines;
+				con->display = con->display->older;
+			}
+			else
+			{
+				con->displayscroll = con->display->numlines;
+				break;
+			}
+		}
+		while (con->displayscroll <= 0)
+		{
+			if (con->display->newer)
+			{
+				con->display = con->display->newer;
+				con->displayscroll += con->display->numlines;
+			}
+			else
+			{
+				con->displayscroll = 0;
+				break;
+			}
+		}
+		/*
 		while (con->mousecursor[1] - con->mousedown[1] > 8 && con->display->older)
 		{
 			con->mousedown[1] += 8;
@@ -685,7 +715,7 @@ qboolean Key_GetConsoleSelectionBox(console_t *con, int *sx, int *sy, int *ex, i
 			con->mousedown[1] -= 8;
 			con->display = con->display->newer;
 		}
-
+*/
 		*sx = con->mousecursor[0];
 		*sy = con->mousecursor[1];
 		*ex = con->mousecursor[0];
@@ -1243,74 +1273,166 @@ void Key_ConsoleRelease(console_t *con, int key, unsigned int unicode)
 #endif
 }
 
-const char *Key_Demoji(char *buffer, size_t buffersize, const char *in)
-{
-	static const struct
-	{
-		const char *pattern;
-		const char *repl;
-	} emoji[] =
-	{
-		//https://www.webpagefx.com/tools/emoji-cheat-sheet/
-//		{":)",				"\xE2\x98\xBA"},
+static qbyte *emojidata = NULL;
+static const qbyte *builtinemojidata =
+//		"\x02\x03" ":)"				"\xE2\x98\xBA"
 
 #ifdef QUAKEHUD
-		{":sg:",			"\xEE\x84\x82"},
-		{":ssg:",			"\xEE\x84\x83"},
-		{":ng:",			"\xEE\x84\x84"},
-		{":sng:",			"\xEE\x84\x85"},
-		{":gl:",			"\xEE\x84\x86"},
-		{":rl:",			"\xEE\x84\x87"},
-		{":lg:",			"\xEE\x84\x88"},
+	"\x04\x03" ":sg:"			"\xEE\x84\x82"
+	"\x05\x03" ":ssg:"			"\xEE\x84\x83"
+	"\x04\x03" ":ng:"			"\xEE\x84\x84"
+	"\x05\x03" ":sng:"			"\xEE\x84\x85"
+	"\x04\x03" ":gl:"			"\xEE\x84\x86"
+	"\x04\x03" ":rl:"			"\xEE\x84\x87"
+	"\x04\x03" ":lg:"			"\xEE\x84\x88"
 
-		{":sg2:",			"\xEE\x84\x92"},
-		{":ssg2:",			"\xEE\x84\x93"},
-		{":ng2:",			"\xEE\x84\x94"},
-		{":sng2:",			"\xEE\x84\x95"},
-		{":gl2:",			"\xEE\x84\x96"},
-		{":rl2:",			"\xEE\x84\x97"},
-		{":lg2:",			"\xEE\x84\x98"},
+	"\x05\x03" ":sg2:"			"\xEE\x84\x92"
+	"\x06\x03" ":ssg2:"			"\xEE\x84\x93"
+	"\x05\x03" ":ng2:"			"\xEE\x84\x94"
+	"\x06\x03" ":sng2:"			"\xEE\x84\x95"
+	"\x05\x03" ":gl2:"			"\xEE\x84\x96"
+	"\x05\x03" ":rl2:"			"\xEE\x84\x97"
+	"\x05\x03" ":lg2:"			"\xEE\x84\x98"
 
-		{":shells:",		"\xEE\x84\xA0"},
-		{":nails:",			"\xEE\x84\xA1"},
-		{":rocket:",		"\xEE\x84\xA2"},
-		{":cells:",			"\xEE\x84\xA3"},
-		{":ga:",			"\xEE\x84\xA4"},
-		{":ya:",			"\xEE\x84\xA5"},
-		{":ra:",			"\xEE\x84\xA6"},
+	"\x08\x03" ":shells:"		"\xEE\x84\xA0"
+	"\x07\x03" ":nails:"		"\xEE\x84\xA1"
+	"\x08\x03" ":rocket:"		"\xEE\x84\xA2"
+	"\x07\x03" ":cells:"		"\xEE\x84\xA3"
+	"\x04\x03" ":ga:"			"\xEE\x84\xA4"
+	"\x04\x03" ":ya:"			"\xEE\x84\xA5"
+	"\x04\x03" ":ra:"			"\xEE\x84\xA6"
 
-		{":key1:",			"\xEE\x84\xB0"},
-		{":key2:",			"\xEE\x84\xB1"},
-		{":ring:",			"\xEE\x84\xB2"},
-		{":pent:",			"\xEE\x84\xB3"},
-		{":suit:",			"\xEE\x84\xB4"},
-		{":quad:",			"\xEE\x84\xB5"},
-		{":sigil1:",		"\xEE\x84\xB6"},
-		{":sigil2:",		"\xEE\x84\xB7"},
-		{":sigil3:",		"\xEE\x84\xB8"},
-		{":sigil4:",		"\xEE\x84\xB9"},
+	"\x06\x03" ":key1:"			"\xEE\x84\xB0"
+	"\x06\x03" ":key2:"			"\xEE\x84\xB1"
+	"\x06\x03" ":ring:"			"\xEE\x84\xB2"
+	"\x06\x03" ":pent:"			"\xEE\x84\xB3"
+	"\x06\x03" ":suit:"			"\xEE\x84\xB4"
+	"\x06\x03" ":quad:"			"\xEE\x84\xB5"
+	"\x08\x03" ":sigil1:"		"\xEE\x84\xB6"
+	"\x08\x03" ":sigil2:"		"\xEE\x84\xB7"
+	"\x08\x03" ":sigil3:"		"\xEE\x84\xB8"
+	"\x08\x03" ":sigil4:"		"\xEE\x84\xB9"
 
-		{":face1:",			"\xEE\x85\x80"},
-		{":face_p1:",		"\xEE\x85\x81"},
-		{":face2:",			"\xEE\x85\x82"},
-		{":face_p2:",		"\xEE\x85\x83"},
-		{":face3:",			"\xEE\x85\x84"},
-		{":face_p3:",		"\xEE\x85\x85"},
-		{":face4:",			"\xEE\x85\x86"},
-		{":face_p4:",		"\xEE\x85\x87"},
-		{":face5:",			"\xEE\x85\x88"},
-		{":face_p5:",		"\xEE\x85\x89"},
-		{":face_invis:",	"\xEE\x85\x8A"},
-		{":face_invul2:",	"\xEE\x85\x8B"},
-		{":face_inv2:",		"\xEE\x85\x8C"},
-		{":face_quad:",		"\xEE\x85\x8D"},
+	"\x07\x03" ":face1:"		"\xEE\x85\x80"
+	"\x09\x03" ":face_p1:"		"\xEE\x85\x81"
+	"\x07\x03" ":face2:"		"\xEE\x85\x82"
+	"\x09\x03" ":face_p2:"		"\xEE\x85\x83"
+	"\x07\x03" ":face3:"		"\xEE\x85\x84"
+	"\x09\x03" ":face_p3:"		"\xEE\x85\x85"
+	"\x07\x03" ":face4:"		"\xEE\x85\x86"
+	"\x09\x03" ":face_p4:"		"\xEE\x85\x87"
+	"\x07\x03" ":face5:"		"\xEE\x85\x88"
+	"\x09\x03" ":face_p5:"		"\xEE\x85\x89"
+	"\x0c\x03" ":face_invis:"	"\xEE\x85\x8A"
+	"\x0d\x03" ":face_invul2:"	"\xEE\x85\x8B"
+	"\x0b\x03" ":face_inv2:"	"\xEE\x85\x8C"
+	"\x0b\x03" ":face_quad:"	"\xEE\x85\x8D"
 #endif
-	};
+	"";
+static void Key_LoadEmojiList(void)
+{
+	qbyte line[1024];
+	char nam[64];
+	char rep[64];
+	vfsfile_t *f;
+	char *json = FS_MallocFile("emoji.json", FS_GAME, NULL);	//https://unicodey.com/emoji-data/emoji.json
+
+	emojidata = Z_StrDup(builtinemojidata);
+	if (json)
+	{
+		char *unified;
+		for (unified = json; (unified = strstr(unified, ",\"unified\":\"")); )
+		{
+			int i = 0;
+			char *t;
+			char *sn;
+			unsigned int u;
+			unified += 12;
+			t = unified;
+			//do
+			//{
+				u = strtol(t, &t, 16);
+				i += utf8_encode(rep+i, u, countof(rep)-i);
+			//} while (i < countof(rep) && *t++ == '-');
+			if (*t!='\"')
+				continue;
+			rep[i] = 0;
+
+			sn = strstr(unified, "\"short_names\":[");
+			if (sn)
+			{
+				sn += 15;
+				while (sn && *sn == '\"')
+				{
+					sn = COM_ParseTokenOut(sn, NULL, nam+1, sizeof(nam)-1, NULL);
+					nam[0] = ':';
+					Q_strncatz(nam, ":", sizeof(nam));
+					line[0] = strlen(nam);
+					line[1] = strlen(rep);
+					strcpy(line+2, nam);
+					strcpy(line+2+line[0], rep);
+					Z_StrCat((char**)&emojidata, line);
+				}
+			}
+		}
+		FS_FreeFile(json);
+	}
+
+	f = FS_OpenVFS("emoji.lst", "rb", FS_GAME);
+	if (f)
+	{
+		qbyte line[1024];
+		char nam[64];
+		char rep[64];
+		while (VFS_GETS(f, line, sizeof(line)))
+		{
+			COM_ParseTokenOut(COM_ParseTokenOut(line, NULL, nam, sizeof(nam), NULL), NULL, rep, sizeof(rep), NULL);
+			if (!*nam || !*rep)
+				continue;	//next line then, I guess.
+			line[0] = strlen(nam);
+			line[1] = strlen(rep);
+			strcpy(line+2, nam);
+			strcpy(line+2+line[0], rep);
+			Z_StrCat((char**)&emojidata, line);
+		}
+		VFS_CLOSE(f);
+	}
+}
+void Key_EmojiCompletion_c(int argn, const char *partial, struct xcommandargcompletioncb_s *ctx)
+{
+	char guess[256];
+	char repl[256];
+	size_t ofs, len;
+	if (!emojidata)
+		Key_LoadEmojiList();
+	len = strlen(partial);
+	for (ofs = 0; emojidata[ofs]; )
+	{
+		if (len <= emojidata[ofs+0])
+			if (!strncmp(partial, &emojidata[ofs+2], len))
+			{
+				memcpy(guess, &emojidata[ofs+2], emojidata[ofs+0]);
+				guess[emojidata[ofs+0]] = 0;
+
+				memcpy(repl, &emojidata[ofs+2]+emojidata[ofs+0], emojidata[ofs+1]);
+				repl[emojidata[ofs+1]] = 0;
+				ctx->cb(guess, NULL, NULL, ctx);
+			}
+		ofs += 2+emojidata[ofs+0]+emojidata[ofs+1];
+	}
+}
+
+const char *Key_Demoji(char *buffer, size_t buffersize, const char *in)
+{
 	char *estart = strchr(in, ':');
-	size_t i;
+	size_t ofs;
 	char *out = buffer, *outend = buffer+buffersize-1;
 	if (!estart)
 		return in;
+
+	if (!emojidata)
+		Key_LoadEmojiList();
+
 	for(; estart; )
 	{
 		if (out + (estart-in) >= outend)
@@ -1319,21 +1441,22 @@ const char *Key_Demoji(char *buffer, size_t buffersize, const char *in)
 		out += estart-in;
 		in = estart;
 
-		for (i = 0; i < countof(emoji); i++)
+		for (ofs = 0; emojidata[ofs]; )
 		{
-			if (!strncmp(in, emoji[i].pattern, strlen(emoji[i].pattern)))
+			if (!strncmp(in, &emojidata[ofs+2], emojidata[ofs+0]))
 				break;	//its this one!
+			ofs += 2+emojidata[ofs+0]+emojidata[ofs+1];
 		}
-		if (i < countof(emoji))
+		if (emojidata[ofs])
 		{
-			if (out + strlen(emoji[i].repl) >= outend)
+			if (out + emojidata[ofs+1] >= outend)
 			{
 				in = "";	//no half-emoji
 				break;
 			}
-			in += strlen(emoji[i].pattern);
-			memcpy(out, emoji[i].repl, strlen(emoji[i].repl));
-			out += strlen(emoji[i].repl);
+			in += emojidata[ofs+0];
+			memcpy(out, &emojidata[ofs+2]+emojidata[ofs+0], emojidata[ofs+1]);
+			out += emojidata[ofs+1];
 			estart = strchr(in, ':');
 		}
 		else
@@ -1585,9 +1708,23 @@ qboolean Key_EntryLine(console_t *con, unsigned char **line, int lineoffset, int
 		Sys_Clipboard_PasteText(CBT_SELECTION, Key_ConsolePaste, line);
 		return true;
 	}
-	if (((unicode=='V' || unicode=='v' || unicode==22) && ctrl) || (shift && key == K_INS))
+	if (((unicode=='V' || unicode=='v' || unicode==22/*sync*/) && ctrl) || (shift && key == K_INS))
 	{	//ctrl+v to paste from the windows-style clipboard.
 		Sys_Clipboard_PasteText(CBT_CLIPBOARD, Key_ConsolePaste, line);
+		return true;
+	}
+
+	if ((unicode=='X' || unicode=='x' || unicode==24/*cancel*/) && ctrl)
+	{	//cut - copy-to-clipboard-and-delete
+		Sys_SaveClipboard(CBT_CLIPBOARD, *line);
+		(*line)[lineoffset] = 0;
+		*linepos = strlen(*line);
+		return true;
+	}
+	if ((unicode=='U' || unicode=='u' || unicode==21/*nak*/) && ctrl)
+	{	//clear line
+		(*line)[lineoffset] = 0;
+		*linepos = strlen(*line);
 		return true;
 	}
 
@@ -1762,6 +1899,13 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 			{
 				if (con->redirect && con->redirect(con, unicode, key))
 					return true;
+#ifdef HAVE_MEDIA_DECODER
+				if (con->backshader && R_ShaderGetCinematic(con->backshader))
+				{
+					Media_Send_KeyEvent(R_ShaderGetCinematic(con->backshader), rkey, unicode, 0);
+					return true;
+				}
+#endif
 				if (Key_IsTouchScreen() || con->mousecursor[0] > ((con->flags & CONF_ISWINDOW)?con->wnd_w-16:vid.width)-8)
 				{	//just scroll the console up/down
 					con->buttonsdown = CB_SCROLL;
@@ -1813,14 +1957,16 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 			i = 8;
 		if (!con->display)
 			return true;
-		if (con->display == con->current)
-			i+=2;	//skip over the blank input line, and extra so we actually move despite the addition of the ^^^^^ line
+//		if (con->display == con->current)
+//			i+=2;	//skip over the blank input line, and extra so we actually move despite the addition of the ^^^^^ line
 		if (con->display->older != NULL)
 		{
-			while (i-->0)
+			con->displayscroll += i;
+			while (con->displayscroll >= con->display->numlines)
 			{
 				if (con->display->older == NULL)
 					break;
+				con->displayscroll -= con->display->numlines;
 				con->display = con->display->older;
 				con->display->time = realtime;
 			}
@@ -1838,15 +1984,20 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 			return true;
 		if (con->display->newer != NULL)
 		{
-			while (i-->0)
+			con->displayscroll -= i;
+			while (con->displayscroll < 0)
 			{
 				if (con->display->newer == NULL)
 					break;
 				con->display = con->display->newer;
 				con->display->time = realtime;
+				con->displayscroll += con->display->numlines;
 			}
 			if (con->display->newer && con->display->newer == con->current)
+			{
 				con->display = con->current;
+				con->displayscroll = 0;
+			}
 			return true;
 		}
 	}
@@ -1855,6 +2006,7 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 	{
 		if (con->display != con->oldest)
 		{
+			con->displayscroll = 0;
 			con->display = con->oldest;
 			return true;
 		}
@@ -1864,6 +2016,7 @@ qboolean Key_Console (console_t *con, int key, unsigned int unicode)
 	{
 		if (con->display != con->current)
 		{
+			con->displayscroll = 0;
 			con->display = con->current;
 			return true;
 		}
@@ -2100,7 +2253,7 @@ void Key_Message (int key, int unicode)
 //============================================================================
 
 //for qc
-char *Key_GetBinding(int keynum, int bindmap, int modifier)
+const char *Key_GetBinding(int keynum, int bindmap, int modifier)
 {
 	char *key = NULL;
 	if (keynum < 0 || keynum >= K_MAX)
@@ -2134,6 +2287,7 @@ the K_* names are matched up.
 */
 int Key_StringToKeynum (const char *str, int *modifier)
 {
+	int k;
 	keyname_t	*kn;
 
 	if (!strnicmp(str, "std_", 4) || !strnicmp(str, "std+", 4))
@@ -2177,21 +2331,27 @@ int Key_StringToKeynum (const char *str, int *modifier)
 #if 0//def _WIN32
 		return VkKeyScan(str[0]);
 #else
-		return str[0];
+		k = str[0];
+//		return str[0];
 #endif
 	}
-
-	if (!strncmp(str, "K_", 2))
-		str+=2;
-
-	for (kn=keynames ; kn->name ; kn++)
+	else
 	{
-		if (!Q_strcasecmp(str,kn->name))
-			return kn->keynum;
+		if (!strncmp(str, "K_", 2))
+			str+=2;
+
+		for (kn=keynames ; kn->name ; kn++)
+		{
+			if (!Q_strcasecmp(str,kn->name))
+				return kn->keynum;
+		}
+		k = atoi(str);
 	}
-	if (atoi(str))	//assume ascii code. (prepend with a 0 if needed)
+	if (k)	//assume ascii code. (prepend with a 0 if needed)
 	{
-		return atoi(str);
+		if (k >= 'A' && k <= 'Z')
+			k += 'a'-'A';
+		return k;
 	}
 	return -1;
 }
@@ -2488,14 +2648,28 @@ void Key_Bind_f (void)
 			char *alias = Cmd_AliasExist(keybindings[b][modifier], RESTRICT_LOCAL);
 			char quotedbind[2048];
 			char quotedalias[2048];
+			char leveldesc[1024];
+			if (bindcmdlevel[b][modifier] != level)
+			{
+				if (Cmd_ExecLevel > RESTRICT_SERVER)
+					Q_snprintfz(leveldesc, sizeof(leveldesc), ", for seat %i", Cmd_ExecLevel - RESTRICT_SERVER-1);
+				else if (Cmd_ExecLevel == RESTRICT_SERVER)
+					Q_snprintfz(leveldesc, sizeof(leveldesc), ", bound by server");
+				else if (bindcmdlevel[b][modifier]>=RESTRICT_INSECURE)
+					Q_snprintfz(leveldesc, sizeof(leveldesc), ", bound by insecure source");
+				else
+					Q_snprintfz(leveldesc, sizeof(leveldesc), ", at level %i", bindcmdlevel[b][modifier]);
+			}
+			else
+				*leveldesc = 0;
 			COM_QuotedString(keybindings[b][modifier], quotedbind, sizeof(quotedbind), false);
 			if (alias)
 			{
 				COM_QuotedString(alias, quotedalias, sizeof(quotedalias), false);
-				Con_Printf ("^[\"%s\"\\type\\bind %s %s^] = ^[\"%s\"\\type\\alias %s %s^]\n", Cmd_Argv(1), Cmd_Argv(1), quotedbind, keybindings[b][modifier], keybindings[b][modifier], quotedalias);
+				Con_Printf ("^[\"%s\"\\type\\bind %s %s^] = ^[\"%s\"\\type\\alias %s %s^]%s\n", Cmd_Argv(1), Cmd_Argv(1), quotedbind, keybindings[b][modifier], keybindings[b][modifier], quotedalias, leveldesc);
 			}
 			else
-				Con_Printf ("^[\"%s\"\\type\\bind %s %s^] = \"%s\"\n", Cmd_Argv(1), keybindings[b][modifier], Cmd_Argv(1), keybindings[b][modifier] );
+				Con_Printf ("^[\"%s\"\\type\\bind %s %s^] = \"%s\"%s\n", Cmd_Argv(1), keybindings[b][modifier], Cmd_Argv(1), keybindings[b][modifier], leveldesc);
 		}
 		else
 			Con_Printf ("\"%s\" is not bound\n", Cmd_Argv(1) );
@@ -2596,8 +2770,8 @@ void Key_Init (void)
 	}
 	key_linepos = 0;
 
-	key_dest_mask = kdm_game;
-	key_dest_absolutemouse = kdm_centerprint | kdm_console | kdm_cwindows | kdm_emenu;
+	Key_Dest_Add(kdm_game);
+	key_dest_absolutemouse = kdm_centerprint | kdm_console | kdm_cwindows | kdm_menu;
 
 //
 // init ascii characters in console mode
@@ -2700,14 +2874,6 @@ qboolean Key_MouseShouldBeFree(void)
 	if (key_dest_absolutemouse & key_dest_mask)
 		return true;
 
-#ifdef VM_UI
-	if (UI_MenuState())
-		return false;
-#endif
-
-	if (Media_PlayingFullScreen())
-		return true;
-
 	if (cl_prydoncursor.ival)
 		return true;
 
@@ -2786,7 +2952,7 @@ void Key_Event (unsigned int devid, int key, unsigned int unicode, qboolean down
 
 	//yes, csqc is allowed to steal the escape key.
 	if (key != '`' && (!down || key != K_ESCAPE || (!Key_Dest_Has(~kdm_game) && !shift_down)) &&
-		!Key_Dest_Has(~kdm_game) && !Media_PlayingFullScreen())
+		!Key_Dest_Has(~kdm_game))
 	{
 #ifdef CSQC_DAT
 		if (CSQC_KeyPress(key, unicode, down, devid))	//give csqc a chance to handle it.
@@ -2810,70 +2976,38 @@ void Key_Event (unsigned int devid, int key, unsigned int unicode, qboolean down
 //
 	if (key == K_ESCAPE)
 	{
-#ifdef VM_UI
-#ifdef TEXTEDITOR
-		if (!Key_Dest_Has(~kdm_game) && !Key_Dest_Has(kdm_console))
-#endif
+		if (!Key_Dest_Has(~kdm_game))
 		{
-			if (down && Media_PlayingFullScreen())
-			{
-				Media_StopFilm(false);
-				return;
-			}
-			if (UI_KeyPress(key, unicode, down))	//Allow the UI to see the escape key. It is possible that a developer may get stuck at a menu.
-				return;
-		}
+#ifdef VM_UI
+//			if (UI_KeyPress(key, unicode, down))	//Allow the UI to see the escape key. It is possible that a developer may get stuck at a menu.
+//				return;
 #endif
+		}
 
 		if (!down)
 		{
-#ifdef MENU_DAT
-			if (Key_Dest_Has(kdm_gmenu) && !Key_Dest_Has(kdm_console|kdm_cwindows))
-				MP_Keyup (key, unicode, devid);
-#endif
-#ifdef MENU_NATIVECODE
-			if (mn_entry)
-			{
-				struct menu_inputevent_args_s ev = {MIE_KEYUP, devid};
-				ev.key.scancode = key;
-				ev.key.charcode = unicode;
-				mn_entry->InputEvent(ev);
-			}
-#endif
+			if (Key_Dest_Has(kdm_prompt) || (Key_Dest_Has(kdm_menu) && !Key_Dest_Has(kdm_console|kdm_cwindows)))
+				Menu_KeyEvent (false, devid, key, unicode);
 			return;
 		}
 
-		if (Key_Dest_Has(kdm_console))
+		if (Key_Dest_Has(kdm_prompt))
+			Menu_KeyEvent (true, devid, key, unicode);
+		else if (Key_Dest_Has(kdm_console))
 		{
 			Key_Dest_Remove(kdm_console);
 			Key_Dest_Remove(kdm_cwindows);
-			if (!cls.state && !Key_Dest_Has(~kdm_game) && !Media_PlayingFullScreen())
+			if (!cls.state && !Key_Dest_Has(~kdm_game))
 				M_ToggleMenu_f ();
 		}
 		else if (Key_Dest_Has(kdm_cwindows))
 		{
 			Key_Dest_Remove(kdm_cwindows);
-			if (!cls.state && !Key_Dest_Has(~kdm_game) && !Media_PlayingFullScreen())
+			if (!cls.state && !Key_Dest_Has(~kdm_game))
 				M_ToggleMenu_f ();
 		}
-		else if (Key_Dest_Has(kdm_emenu))
-			M_Keydown (key, unicode);
-#ifdef MENU_NATIVECODE
-		else if (Key_Dest_Has(kdm_nmenu))
-		{
-			if (mn_entry)
-			{
-				struct menu_inputevent_args_s ev = {MIE_KEYDOWN, devid};
-				ev.key.scancode = key;
-				ev.key.charcode = unicode;
-				mn_entry->InputEvent(ev);
-			}
-		}
-#endif
-#ifdef MENU_DAT
-		else if (Key_Dest_Has(kdm_gmenu))
-			MP_Keydown (key, unicode, devid);
-#endif
+		else if (Key_Dest_Has(kdm_menu))
+			Menu_KeyEvent (true, devid, key, unicode);
 		else if (Key_Dest_Has(kdm_message))
 		{
 			Key_Dest_Remove(kdm_message);
@@ -2882,16 +3016,7 @@ void Key_Event (unsigned int devid, int key, unsigned int unicode, qboolean down
 			chat_bufferpos = 0;
 		}
 		else
-		{
-			if (Media_PlayingFullScreen())
-			{
-				Media_StopFilm(true);
-				if (!cls.state)
-					M_ToggleMenu_f ();
-			}
-			else
-				M_ToggleMenu_f ();
-		}
+			M_ToggleMenu_f ();
 		return;
 	}
 
@@ -2924,25 +3049,8 @@ void Key_Event (unsigned int devid, int key, unsigned int unicode, qboolean down
 				Key_ConsoleRelease(con, key, unicode);
 			}
 		}
-		if (Key_Dest_Has(kdm_emenu))
-			M_Keyup (key, unicode);
-#ifdef MENU_NATIVECODE
-		if (Key_Dest_Has(kdm_nmenu) && mn_entry)
-		{
-			struct menu_inputevent_args_s ev = {MIE_KEYUP, devid};
-			ev.key.scancode = key;
-			ev.key.charcode = unicode;
-			mn_entry->InputEvent(ev);
-		}
-#endif
-#ifdef MENU_DAT
-		if (Key_Dest_Has(kdm_gmenu))
-			MP_Keyup (key, unicode, devid);
-#endif
-#ifdef HAVE_MEDIA_DECODER
-		if (Media_PlayingFullScreen())
-			Media_Send_KeyEvent(NULL, key, unicode, down?0:1);
-#endif
+		if (Key_Dest_Has(kdm_menu|kdm_prompt))
+			Menu_KeyEvent (false, devid, key, unicode);
 
 		uc = releasecommand[key][devid%MAX_INDEVS];
 		if (uc)	//this wasn't down, so don't crash on bad commands.
@@ -2980,6 +3088,16 @@ void Key_Event (unsigned int devid, int key, unsigned int unicode, qboolean down
 		}
 	}
 
+	//prompts get the first chance
+	if (Key_Dest_Has(kdm_prompt))
+	{
+		if (key < K_F1 || key > K_F15)
+		{	//function keys don't get intercepted by the menu...
+			Menu_KeyEvent (true, devid, key, unicode);
+			return;
+		}
+	}
+
 //
 // if not a consolekey, send to the interpreter no matter what mode is
 //
@@ -2999,49 +3117,16 @@ void Key_Event (unsigned int devid, int key, unsigned int unicode, qboolean down
 			Key_Dest_Remove(kdm_cwindows);
 
 	}
-#ifdef HAVE_MEDIA_DECODER
-	if (Media_PlayingFullScreen())
-	{
-		Media_Send_KeyEvent(NULL, key, unicode, down?0:1);
-		return;
-	}
-#endif
-#ifdef VM_UI
-	if (!Key_Dest_Has(~kdm_game) || !down)
-	{
-		if (UI_KeyPress(key, unicode, down) && down)	//UI is allowed to take these keydowns. Keyups are always maintained.
-			return;
-	}
-#endif
 
-	if (Key_Dest_Has(kdm_emenu))
+	//menus after console stuff
+	if (Key_Dest_Has(kdm_menu))
 	{
 		if (key < K_F1 || key > K_F15)
 		{	//function keys don't get intercepted by the menu...
-			M_Keydown (key, unicode);
+			Menu_KeyEvent (true, devid, key, unicode);
 			return;
 		}
 	}
-#ifdef MENU_NATIVECODE
-	if (Key_Dest_Has(kdm_nmenu))
-	{
-		if (mn_entry)
-		{
-			struct menu_inputevent_args_s ev = {down?MIE_KEYDOWN:MIE_KEYUP, devid};
-			ev.key.scancode = key;
-			ev.key.charcode = unicode;
-			if (mn_entry->InputEvent(ev))
-				return;
-		}
-	}
-#endif
-#ifdef MENU_DAT
-	if (Key_Dest_Has(kdm_gmenu))
-	{
-		if (MP_Keydown (key, unicode, devid))
-			return;
-	}
-#endif
 	if (Key_Dest_Has(kdm_message))
 	{
 		Key_Message (key, unicode);

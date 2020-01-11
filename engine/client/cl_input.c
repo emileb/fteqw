@@ -41,7 +41,7 @@ cvar_t	cl_netfps = CVAR("cl_netfps", "150");
 cvar_t	cl_sparemsec = CVARC("cl_sparemsec", "10", CL_SpareMsec_Callback);
 cvar_t  cl_queueimpulses = CVAR("cl_queueimpulses", "0");
 cvar_t	cl_smartjump = CVAR("cl_smartjump", "1");
-static cvar_t	cl_iDrive = CVARFD("cl_iDrive", "1", CVAR_SEMICHEAT, "Effectively releases movement keys when the opposing key is pressed. This avoids dead-time when both keys are pressed. This can be emulated with various scripts, but that's messy.");
+cvar_t	cl_iDrive = CVARFD("cl_iDrive", "1", CVAR_SEMICHEAT, "Effectively releases movement keys when the opposing key is pressed. This avoids dead-time when both keys are pressed. This can be emulated with various scripts, but that's messy.");
 cvar_t	cl_run = CVARD("cl_run", "0", "Enables autorun, inverting the state of the +speed key.");
 cvar_t	cl_fastaccel = CVARD("cl_fastaccel", "1", "Begin moving at full speed instantly, instead of waiting a frame or so.");
 extern cvar_t cl_rollspeed;
@@ -151,7 +151,7 @@ static kbutton_t	in_lookup, in_lookdown, in_moveleft, in_moveright;
 static kbutton_t	in_use, in_jump, in_attack;
 static kbutton_t	in_rollleft, in_rollright, in_up, in_down;
 
-static kbutton_t	in_button[16+1-3];
+static kbutton_t	in_button[19+1];
 
 #define IN_IMPULSECACHE 32
 static int			in_impulse[MAX_SPLITS][IN_IMPULSECACHE];
@@ -359,7 +359,7 @@ static void IN_DoPostSelect(void)
 }
 //The weapon command autoselects a prioritised weapon like multi-arg impulse does.
 //however, it potentially makes the switch only on the next +attack.
-static void IN_Weapon (void)
+void IN_Weapon (void)
 {
 	int newimp;
 	int pnum = CL_TargettedSplit(false);
@@ -412,7 +412,7 @@ static void IN_Weapon (void)
 
 //+fire 8 7 [keycode]
 //does impulse 8 or 7 (according to held weapons) along with a +attack
-static void IN_FireDown(void)
+void IN_FireDown(void)
 {
 	int pnum = CL_TargettedSplit(false);
 	int k;
@@ -460,7 +460,7 @@ static void IN_DoWeaponHide(void)
 	}
 }
 //-fire should trigger an impulse 1 or something.
-static void IN_FireUp(void)
+void IN_FireUp(void)
 {
 	int k;
 	int impulse;
@@ -564,8 +564,8 @@ static void IN_JumpUp (void)
 	KeyUp(&in_jump);
 }
 
-static void IN_ButtonNDown(void) {KeyDown(&in_button[atoi(Cmd_Argv(0)+7)-3], NULL);}
-static void IN_ButtonNUp(void) {KeyUp(&in_button[atoi(Cmd_Argv(0)+7)-3]);}
+static void IN_ButtonNDown(void) {KeyDown(&in_button[atoi(Cmd_Argv(0)+7)], NULL);}
+static void IN_ButtonNUp(void) {KeyUp(&in_button[atoi(Cmd_Argv(0)+7)]);}
 
 float in_rotate;
 static void IN_Rotate_f (void) {in_rotate += atoi(Cmd_Argv(1));}
@@ -613,9 +613,9 @@ void IN_WriteButtons(vfsfile_t *f, qboolean all)
 	for (b = 0; b < countof(in_button); b++)
 	{
 		if ((in_button[b].state[s]&1) && (in_button[b].down[s][0]==-1 || in_button[b].down[s][1]==-1))
-			VFS_PRINTF(f, "+button%i\n", b+3);
+			VFS_PRINTF(f, "+button%i\n", b);
 		else
-			VFS_PRINTF(f, "-button%i\n", b+3);
+			VFS_PRINTF(f, "-button%i\n", b);
 	}
 	for (s = 1; s < MAX_SPLITS; s++)
 	{
@@ -630,9 +630,9 @@ void IN_WriteButtons(vfsfile_t *f, qboolean all)
 		for (b = 0; b < countof(in_button); b++)
 		{
 			if ((in_button[b].state[s]&1) && (in_button[b].down[s][0]==-1 || in_button[b].down[s][1]==-1))
-				VFS_PRINTF(f, "+p%i button%i\n", s, b+3);
+				VFS_PRINTF(f, "+p%i button%i\n", s, b);
 			else
-				VFS_PRINTF(f, "-p%i button%i\n", s, b+3);
+				VFS_PRINTF(f, "-p%i button%i\n", s, b);
 		}
 	}
 
@@ -782,37 +782,69 @@ cvar_t	cl_pitchspeed = CVAR("cl_pitchspeed","150");
 cvar_t	cl_anglespeedkey = CVAR("cl_anglespeedkey","1.5");
 
 
-#define GATHERBIT(bname,bit) if (bname.state[pnum] & 3)	{bits |=   (1u<<(bit));} bname.state[pnum]	&= ~2;
+#define GATHERBIT(bname,bit)	if (bname.state[pnum] & 3)	{bits |=   (1u<<(bit));} bname.state[pnum]	&= ~2;
+#define UNUSEDBUTTON(bnum)		if (in_button[bnum].state[pnum] & 3)	{Con_Printf("+button%i is not supported on this protocol\n", pnum); } in_button[bnum].state[pnum]	&= ~3;
 void CL_GatherButtons (usercmd_t *cmd, int pnum)
 {
 	unsigned int bits = 0;
 	GATHERBIT(in_attack,		0);
-	GATHERBIT(in_jump,			1);
-	GATHERBIT(in_button[3-3],	2);
-	GATHERBIT(in_button[4-3],	3);
-	GATHERBIT(in_button[5-3],	4);
-	GATHERBIT(in_button[6-3],	5);
-	GATHERBIT(in_button[7-3],	6);
-	GATHERBIT(in_button[8-3],	7);
+#ifdef Q3CLIENT
+	if (cls.protocol==CP_QUAKE3)
+	{	//quake3's buttons are nice and simple, buttonN -> bit|=(1<<N)
+		int i;
+		for (i = 0; i < countof(in_button); i++)
+		{
+			GATHERBIT(in_button[i],		i);
+		}
+//		bits |= 1<<1;	//rtcw talking
+//		bits |= 1<<4;	//rtcw walking
+//		bits |= 1<<7;	//rtcw any key
+		cmd->buttons = bits;
+		return;
+	}
+#endif
+
+	//quakec's numbered buttons make no sense and have no sane relation to bit numbers
+	GATHERBIT(in_button[0],		0);
+	UNUSEDBUTTON(1);				//officially, qc's button1 field is unusable (although qw folds button3 over to it)
+	GATHERBIT(in_button[2],		1);	GATHERBIT(in_jump,			1);
+	GATHERBIT(in_button[3],		2);
+	GATHERBIT(in_button[4],		3);
+	GATHERBIT(in_button[5],		4);
+	GATHERBIT(in_button[6],		5);
+	GATHERBIT(in_button[7],		6);
+	GATHERBIT(in_button[8],		7);
 
 	//these are fucked, as required for dpcompat.
 	GATHERBIT(in_use,			(cls.protocol==CP_QUAKEWORLD)?4:8);
-	if (Key_Dest_Has(~kdm_game))	//game is the lowest priority, anything else will take focus away. we consider that to mean 'chat' (although it could be menus).
-		bits |= (1u<<9);
-	if (cursor_active)				//prydon cursor stuff.
-		bits |= (1u<<10);
-	GATHERBIT(in_button[9-3],	11);
-	GATHERBIT(in_button[10-3],	12);
-	GATHERBIT(in_button[11-3],	13);
-	GATHERBIT(in_button[12-3],	14);
-	GATHERBIT(in_button[13-3],	15);
+	bits |= (Key_Dest_Has(~kdm_game))	?(1u<<9):0;		//game is the lowest priority, anything else will take focus away. we consider that to mean 'chat' (although it could be menus).
+	bits |= (cursor_active)				?(1u<<10):0;	//prydon cursor stuff.
+	GATHERBIT(in_button[9],		11);
+	GATHERBIT(in_button[10],	12);
+	GATHERBIT(in_button[11],	13);
+	GATHERBIT(in_button[12],	14);
+	GATHERBIT(in_button[13],	15);
 
-	GATHERBIT(in_button[14-3],	16);
-	GATHERBIT(in_button[15-3],	17);
-	GATHERBIT(in_button[16-3],	18);
+	GATHERBIT(in_button[14],	16);
+	GATHERBIT(in_button[15],	17);
+	GATHERBIT(in_button[16],	18);
+	UNUSEDBUTTON(17);
+	UNUSEDBUTTON(18);
+	UNUSEDBUTTON(19);
+//	UNUSEDBUTTON(20);
 	cmd->buttons |= bits;
 }
 
+void CL_ClearPendingCommands(void)
+{
+	size_t seat, i;
+	memset(&cl_pendingcmd, 0, sizeof(cl_pendingcmd));
+	for (seat = 0; seat < countof(cl_pendingcmd); seat++)
+	{
+		for (i=0 ; i<3 ; i++)
+			cl_pendingcmd[seat].angles[i] = ((int)(cl.playerview[seat].viewangles[i]*65536.0/360)&65535);
+	}
+}
 /*
 ================
 CL_AdjustAngles
@@ -1331,8 +1363,8 @@ void CLNQ_SendCmd(sizebuf_t *buf)
 #ifdef CSQC_DAT
 		CSQC_Input_Frame(seat, cmd);
 #endif
-		memset(&cl_pendingcmd[seat], 0, sizeof(cl_pendingcmd[seat]));
 	}
+	CL_ClearPendingCommands();
 
 	//inputs are only sent once we receive an entity.
 	if (cls.signon == 4)
@@ -1761,7 +1793,6 @@ qboolean CLQ2_SendCmd (sizebuf_t *buf)
 
 		cl.outframes[i].senttime = realtime;
 		cl.outframes[i].latency = -1;
-		memset(&cl_pendingcmd[seat], 0, sizeof(cl_pendingcmd[seat]));
 
 		if (cmd->buttons)
 			cmd->buttons |= 128;	//fixme: this isn't really what's meant by the anykey.
@@ -1776,6 +1807,7 @@ qboolean CLQ2_SendCmd (sizebuf_t *buf)
 				seq_hash);
 		}
 	}
+	CL_ClearPendingCommands();
 
 	if (cl.sendprespawn || !cls.protocol_q2)
 		buf->cursize = 0;	//tastyspleen.net is alergic.
@@ -1843,8 +1875,8 @@ qboolean CLQW_SendCmd (sizebuf_t *buf, qboolean actuallysend)
 		if (!runningindepphys)
 			CSQC_Input_Frame(plnum, cmd);
 #endif
-		memset(&cl_pendingcmd[plnum], 0, sizeof(cl_pendingcmd[plnum]));
 	}
+	CL_ClearPendingCommands();
 
 	cmd = &cl.outframes[curframe].cmd[0];
 	if (cmd->cursor_screen[0] || cmd->cursor_screen[1] || cmd->cursor_entitynumber ||
@@ -1942,9 +1974,12 @@ static void CL_SendUserinfoUpdate(void)
 	if (cls.protocol == CP_QUAKE3)
 	{	//q3 sends it all in one go
 		char userinfo[2048];
-		InfoBuf_ToString(info, userinfo, sizeof(userinfo), NULL, NULL, NULL, NULL, NULL);
-		CLQ3_SendClientCommand("userinfo \"%s\"", userinfo);
 		InfoSync_Strip(&cls.userinfosync, info);	//can't track this stuff. all or nothing.
+		if (info == &cls.userinfo[0])
+		{
+			InfoBuf_ToString(info, userinfo, sizeof(userinfo), NULL, NULL, NULL, NULL, NULL);
+			CLQ3_SendClientCommand("userinfo \"%s\"", userinfo);
+		}
 		return;
 	}
 #endif
@@ -1953,11 +1988,14 @@ static void CL_SendUserinfoUpdate(void)
 	{
 		char userinfo[2048];
 		InfoSync_Strip(&cls.userinfosync, info);	//can't track this stuff. all or nothing.
-		InfoBuf_ToString(info, userinfo, sizeof(userinfo), NULL, NULL, NULL, NULL, NULL);
+		if (info == &cls.userinfo[0])
+		{
+			InfoBuf_ToString(info, userinfo, sizeof(userinfo), NULL, NULL, NULL, NULL, NULL);
 
-		MSG_WriteByte (&cls.netchan.message, clcq2_userinfo);
-		SZ_Write(&cls.netchan.message, pl, strlen(pl));
-		MSG_WriteString (&cls.netchan.message, userinfo);
+			MSG_WriteByte (&cls.netchan.message, clcq2_userinfo);
+			SZ_Write(&cls.netchan.message, pl, strlen(pl));
+			MSG_WriteString (&cls.netchan.message, userinfo);
+		}
 		return;
 	}
 #endif
@@ -2305,7 +2343,7 @@ void CL_SendCmd (double frametime, qboolean mainloop)
 			{
 				if (cls.netchan.message.cursize + 2+strlen(clientcmdlist->command)+100 > cls.netchan.message.maxsize)
 					break;
-				if (!strncmp(clientcmdlist->command, "spawn", 5) && cls.userinfosync.numkeys)
+				if (!strncmp(clientcmdlist->command, "spawn", 5) && cls.userinfosync.numkeys && cl.haveserverinfo)
 					break;	//HACK: don't send the spawn until all pending userinfos have been flushed.
 				MSG_WriteByte (&cls.netchan.message, clc_stringcmd);
 				MSG_WriteString (&cls.netchan.message, clientcmdlist->command);
@@ -2380,7 +2418,7 @@ void CL_SendCmd (double frametime, qboolean mainloop)
 		case CP_QUAKE3:
 			msecs -= (double)msecstouse;
 			CLQ3_SendCmd(&cl_pendingcmd[0]);
-			memset(&cl_pendingcmd[0], 0, sizeof(cl_pendingcmd[0]));
+			CL_ClearPendingCommands();
 
 			//don't bank too much, because that results in banking speedcheats
 			if (msecs > 200)
@@ -2601,13 +2639,6 @@ void CL_InitInput (void)
 	Cmd_AddCommand ("-mlook",		IN_MLookUp);
 
 #ifdef QUAKESTATS
-	//for pseudo-compat with ezquake.
-	//this stuff is kinda hacky and exploits instand weapon switching to basically try to cheat.
-	//for some reason this crap is standard, so not a cheat, despite obviously being a cheat.
-	Cmd_AddCommandD("weapon",		IN_Weapon, "Configures weapon priorities for the next +attack as an alternative for the impulse command");
-	Cmd_AddCommandD("+fire",		IN_FireDown, "'+fire 8 7' will fire lg if you have it and fall back on rl if you don't, and just fire your current weapon if neither are held. Releasing fire will then switch away to exploit a bug in most mods to deny your weapon upgrades to your killer.");
-	Cmd_AddCommand ("-fire",		IN_FireUp);
-
 	Cvar_Register (&cl_weaponhide, inputnetworkcvargroup);
 	Cvar_Register (&cl_weaponhide_preference, inputnetworkcvargroup);
 	Cvar_Register (&cl_weaponpreselect, inputnetworkcvargroup);
@@ -2618,8 +2649,8 @@ void CL_InitInput (void)
 	for (i = 0; i < countof(in_button); i++)
 	{
 		static char bcmd[countof(in_button)][2][10];
-		Q_snprintfz(bcmd[i][0], sizeof(bcmd[sp][0]), "+button%i", i+3);
-		Q_snprintfz(bcmd[i][1], sizeof(bcmd[sp][1]), "-button%i", i+3);
+		Q_snprintfz(bcmd[i][0], sizeof(bcmd[sp][0]), "+button%i", i);
+		Q_snprintfz(bcmd[i][1], sizeof(bcmd[sp][1]), "-button%i", i);
 		Cmd_AddCommandD(bcmd[i][0],		IN_ButtonNDown, "This auxilliary command has mod-specific behaviour (often none).");
 		Cmd_AddCommand (bcmd[i][1],		IN_ButtonNUp);
 	}

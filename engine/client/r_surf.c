@@ -34,25 +34,19 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 qboolean r_pushdepth;
 #endif
 
-extern cvar_t r_ambient;
+extern cvar_t		r_ambient;
 
-static vec3_t			modelorg;	/*set before recursively entering the visible surface finder*/
+static vec3_t		modelorg;	/*set before recursively entering the visible surface finder*/
 
-model_t		*currentmodel;
+model_t				*currentmodel;
 
-size_t			maxblocksize;
-vec3_t			*blocknormals;
-unsigned		*blocklights;
+static size_t		maxblocksize;
+static vec3_t		*blocknormals;
+static unsigned		*blocklights;
 
 lightmapinfo_t **lightmap;
 int numlightmaps;
-static const float rgb9e5tab[32] = {	//multipliers for the 9-bit mantissa, according to the biased mantissa
-	//aka: pow(2, biasedexponent - bias-bits) where bias is 15 and bits is 9
-	1.0/(1<<24),	1.0/(1<<23),	1.0/(1<<22),	1.0/(1<<21),	1.0/(1<<20),	1.0/(1<<19),	1.0/(1<<18),	1.0/(1<<17),
-	1.0/(1<<16),	1.0/(1<<15),	1.0/(1<<14),	1.0/(1<<13),	1.0/(1<<12),	1.0/(1<<11),	1.0/(1<<10),	1.0/(1<<9),
-	1.0/(1<<8),		1.0/(1<<7),		1.0/(1<<6),		1.0/(1<<5),		1.0/(1<<4),		1.0/(1<<3),		1.0/(1<<2),		1.0/(1<<1),
-	1.0,			1.0*(1<<1),		1.0*(1<<2),		1.0*(1<<3),		1.0*(1<<4),		1.0*(1<<5),		1.0*(1<<6),		1.0*(1<<7),
-};
+extern const float rgb9e5tab[32];
 
 extern mleaf_t		*r_vischain;		// linked list of visible leafs
 
@@ -606,7 +600,7 @@ static void Surf_BuildDeluxMap (model_t *wmodel, msurface_t *surf, qbyte *dest, 
 	vec_t		*bnorm;
 	vec3_t temp;
 
-	int stride = lm->width*lm->pixbytes;
+	int stride;
 
 	if (!dest)
 		return;
@@ -643,7 +637,7 @@ static void Surf_BuildDeluxMap (model_t *wmodel, msurface_t *surf, qbyte *dest, 
 		{
 		case LM_E5BGR9:
 			deluxmap = ((surf->samples - wmodel->lightdata)/4)*3 + wmodel->deluxdata;
-			for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != 255 ; maps++)
+			for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
 			{
 				scale = d_lightstylevalue[surf->styles[maps]];
 				for (i=0 ; i<size ; i++)
@@ -660,7 +654,7 @@ static void Surf_BuildDeluxMap (model_t *wmodel, msurface_t *surf, qbyte *dest, 
 			break;
 		case LM_RGB8:
 			deluxmap = surf->samples - wmodel->lightdata + wmodel->deluxdata;
-			for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != 255 ; maps++)
+			for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
 			{
 				scale = d_lightstylevalue[surf->styles[maps]];
 				for (i=0 ; i<size ; i++)
@@ -676,7 +670,7 @@ static void Surf_BuildDeluxMap (model_t *wmodel, msurface_t *surf, qbyte *dest, 
 			break;
 		case LM_L8:
 			deluxmap = (surf->samples - wmodel->lightdata)*3 + wmodel->deluxdata;
-			for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != 255 ; maps++)
+			for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
 			{
 				scale = d_lightstylevalue[surf->styles[maps]];
 				for (i=0 ; i<size ; i++)
@@ -700,24 +694,75 @@ store:
 
 // bound, invert, and shift
 
-	stride -= smax*lm->pixbytes;
-
-	bnorm = blocknormals[0];
-	for (i=0 ; i<tmax ; i++, dest += stride)
+	switch (lm->fmt)
 	{
-		for (j=0 ; j<smax ; j++)
+	default:
+		Sys_Error("Bad deluxemap format\n");
+		break;
+	case PTI_A2BGR10:
 		{
-			temp[0] = bnorm[0];
-			temp[1] = bnorm[1];
-			temp[2] = bnorm[2];	//half the effect? so we emulate light's scalecos of 0.5
-			VectorNormalize(temp);
-			dest[2] = (temp[0]+1)/2*255;
-			dest[1] = (temp[1]+1)/2*255;
-			dest[0] = (temp[2]+1)/2*255;
+			unsigned int *destl = (void*)dest, r;
 
-			dest += lm->pixbytes;
-			bnorm+=3;
+			stride = (lm->width-smax);
+			bnorm = blocknormals[0];
+			for (i=0 ; i<tmax ; i++, destl += stride)
+			{
+				for (j=0 ; j<smax ; j++)
+				{
+					temp[0] = bnorm[0];
+					temp[1] = bnorm[1];
+					temp[2] = bnorm[2];	//half the effect? so we emulate light's scalecos of 0.5
+					bnorm+=3;
+					VectorNormalize(temp);
+					r  = (unsigned int)((temp[0]+1)/2*1023)<<0;
+					r |= (unsigned int)((temp[1]+1)/2*1023)<<10;
+					r |= (unsigned int)((temp[2]+1)/2*1023)<<20;
+					*destl++ = r;
+				}
+			}
 		}
+		break;
+	case PTI_BGRX8:
+		stride = (lm->width-smax)*4;
+		bnorm = blocknormals[0];
+		for (i=0 ; i<tmax ; i++, dest += stride)
+		{
+			for (j=0 ; j<smax ; j++)
+			{
+				temp[0] = bnorm[0];
+				temp[1] = bnorm[1];
+				temp[2] = bnorm[2];	//half the effect? so we emulate light's scalecos of 0.5
+				VectorNormalize(temp);
+				dest[2] = (temp[0]+1)/2*255;
+				dest[1] = (temp[1]+1)/2*255;
+				dest[0] = (temp[2]+1)/2*255;
+
+				dest += 4;
+				bnorm+=3;
+			}
+		}
+		break;
+	case PTI_RGBX8:
+	case PTI_RGB8:
+		stride = (lm->width-smax)*lm->pixbytes;
+		bnorm = blocknormals[0];
+		for (i=0 ; i<tmax ; i++, dest += stride)
+		{
+			for (j=0 ; j<smax ; j++)
+			{
+				temp[0] = bnorm[0];
+				temp[1] = bnorm[1];
+				temp[2] = bnorm[2];	//half the effect? so we emulate light's scalecos of 0.5
+				VectorNormalize(temp);
+				dest[0] = (temp[0]+1)/2*255;
+				dest[1] = (temp[1]+1)/2*255;
+				dest[2] = (temp[2]+1)/2*255;
+
+				dest += lm->pixbytes;
+				bnorm+=3;
+			}
+		}
+		break;
 	}
 }
 
@@ -785,7 +830,7 @@ static void Surf_PackRGB16F(void *result, int r, int g, int b, int one)
 	((unsigned short*)result)[0] = Surf_GenHalf(r / (float)one);
 	((unsigned short*)result)[1] = Surf_GenHalf(g / (float)one);
 	((unsigned short*)result)[2] = Surf_GenHalf(b / (float)one);
-	((unsigned short*)result)[3] = Surf_GenHalf(1.0);//0x0f<<10; //a standard ieee float should have all but the lead bit set of its exponent, and its mantissa 0.
+	((unsigned short*)result)[3] = /*Surf_GenHalf(1.0);*/0x0f<<10; //a standard ieee float should have all but the lead bit set of its exponent, and its mantissa 0.
 #endif
 }
 static void Surf_PackRGB32F(void *result, int r, int g, int b, int one)
@@ -1416,7 +1461,7 @@ static void Surf_BuildLightMap (model_t *currentmodel, msurface_t *surf, int map
 				switch(currentmodel->lightmaps.fmt)
 				{
 				case LM_E5BGR9:
-					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != 255 ; maps++)
+					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
 					{
 						surf->cached_light[maps] = scale = d_lightstylevalue[surf->styles[maps]];	// 8.8 fraction
 						surf->cached_colour[maps] = cl_lightstyle[surf->styles[maps]].colourkey;
@@ -1436,7 +1481,7 @@ static void Surf_BuildLightMap (model_t *currentmodel, msurface_t *surf, int map
 					}
 					break;
 				case LM_RGB8:
-					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != 255 ; maps++)
+					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
 					{
 						surf->cached_light[maps] = scale = d_lightstylevalue[surf->styles[maps]];
 						surf->cached_colour[maps] = cl_lightstyle[surf->styles[maps]].colourkey;
@@ -1457,7 +1502,7 @@ static void Surf_BuildLightMap (model_t *currentmodel, msurface_t *surf, int map
 					break;
 
 				case LM_L8:
-					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != 255 ;
+					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ;
 						 maps++)
 					{
 						surf->cached_light[maps] = scale = d_lightstylevalue[surf->styles[maps]];	// 8.8 fraction
@@ -1536,7 +1581,7 @@ static void Surf_BuildLightMap (model_t *currentmodel, msurface_t *surf, int map
 				switch(currentmodel->lightmaps.fmt)
 				{
 				case LM_E5BGR9:
-					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != 255 ; maps++)
+					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
 					{
 						scale = d_lightstylevalue[surf->styles[maps]];
 						surf->cached_light[maps] = scale;	// 8.8 fraction
@@ -1550,7 +1595,7 @@ static void Surf_BuildLightMap (model_t *currentmodel, msurface_t *surf, int map
 					}
 					break;
 				case LM_RGB8:
-					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != 255 ; maps++)
+					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
 					{
 						scale = d_lightstylevalue[surf->styles[maps]];
 						surf->cached_light[maps] = scale;	// 8.8 fraction
@@ -1561,7 +1606,7 @@ static void Surf_BuildLightMap (model_t *currentmodel, msurface_t *surf, int map
 					}
 					break;
 				case LM_L8:
-					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != 255 ; maps++)
+					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
 					{
 						scale = d_lightstylevalue[surf->styles[maps]];
 						surf->cached_light[maps] = scale;	// 8.8 fraction
@@ -1713,7 +1758,7 @@ static void Surf_BuildLightMap_Worker (model_t *wmodel, msurface_t *surf, int sh
 				else switch(cl.worldmodel->lightmaps.fmt)
 				{
 				case LM_E5BGR9:
-					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != 255 ; maps++)
+					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
 					{
 						surf->cached_light[maps] = scale = d_lightstylevalue[surf->styles[maps]];	// 8.8 fraction
 						surf->cached_colour[maps] = cl_lightstyle[surf->styles[maps]].colourkey;
@@ -1733,7 +1778,7 @@ static void Surf_BuildLightMap_Worker (model_t *wmodel, msurface_t *surf, int sh
 					}
 					break;
 				case LM_RGB8:
-					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != 255 ; maps++)
+					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
 					{
 						surf->cached_light[maps] = scale = d_lightstylevalue[surf->styles[maps]];
 						surf->cached_colour[maps] = cl_lightstyle[surf->styles[maps]].colourkey;
@@ -1754,7 +1799,7 @@ static void Surf_BuildLightMap_Worker (model_t *wmodel, msurface_t *surf, int sh
 					break;
 
 				case LM_L8:
-					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != 255 ;
+					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ;
 						 maps++)
 					{
 						surf->cached_light[maps] = scale = d_lightstylevalue[surf->styles[maps]];	// 8.8 fraction
@@ -1818,7 +1863,7 @@ static void Surf_BuildLightMap_Worker (model_t *wmodel, msurface_t *surf, int sh
 				switch(cl.worldmodel->lightmaps.fmt)
 				{
 				case LM_E5BGR9:
-					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != 255 ; maps++)
+					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
 					{
 						scale = d_lightstylevalue[surf->styles[maps]];
 						surf->cached_light[maps] = scale;	// 8.8 fraction
@@ -1832,7 +1877,7 @@ static void Surf_BuildLightMap_Worker (model_t *wmodel, msurface_t *surf, int sh
 					}
 					break;
 				case LM_RGB8:
-					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != 255 ; maps++)
+					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
 					{
 						scale = d_lightstylevalue[surf->styles[maps]];
 						surf->cached_light[maps] = scale;	// 8.8 fraction
@@ -1843,7 +1888,7 @@ static void Surf_BuildLightMap_Worker (model_t *wmodel, msurface_t *surf, int sh
 					}
 					break;
 				case LM_L8:
-					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != 255 ; maps++)
+					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
 					{
 						scale = d_lightstylevalue[surf->styles[maps]];
 						surf->cached_light[maps] = scale;	// 8.8 fraction
@@ -1920,7 +1965,7 @@ void Surf_RenderDynamicLightmaps (msurface_t *fa)
 	}
 	else
 	{
-		for (maps = 0 ; maps < MAXQ1LIGHTMAPS && fa->styles[maps] != 255 ;
+		for (maps = 0 ; maps < MAXQ1LIGHTMAPS && fa->styles[maps] != INVALID_LIGHTSTYLE ;
 			 maps++)
 			if (d_lightstylevalue[fa->styles[maps]] != fa->cached_light[maps]
 				|| cl_lightstyle[fa->styles[maps]].colourkey != fa->cached_colour[maps])
@@ -1963,7 +2008,7 @@ static void Surf_RenderDynamicLightmaps_Worker (model_t *wmodel, msurface_t *fa,
 	}
 	else
 	{
-		for (maps = 0 ; maps < MAXQ1LIGHTMAPS && fa->styles[maps] != 255 ;
+		for (maps = 0 ; maps < MAXQ1LIGHTMAPS && fa->styles[maps] != INVALID_LIGHTSTYLE ;
 			 maps++)
 			if (d_lightstylevalue[fa->styles[maps]] != fa->cached_light[maps]
 				|| cl_lightstyle[fa->styles[maps]].colourkey != fa->cached_colour[maps])
@@ -2934,7 +2979,7 @@ struct webostate_s
 	void *ebomem;
 	size_t idxcount;
 	int numbatches;
-	int lightstylevalues[MAX_LIGHTSTYLES];	//when using workers that only reprocessing lighting at 10fps, things get too ugly when things go out of sync
+	int lightstylevalues[MAX_NET_LIGHTSTYLES];	//when using workers that only reprocessing lighting at 10fps, things get too ugly when things go out of sync
 
 	vec3_t lastpos;
 
@@ -3270,14 +3315,14 @@ void Surf_DrawWorld (void)
 #ifdef Q1BSPS
 			else if (currentmodel->fromgame == fg_quake || currentmodel->fromgame == fg_halflife)
 			{
-				int i = MAX_LIGHTSTYLES;
+				int i = cl_max_lightstyles;
 				if (webostate && !webogenerating)
-					for (i = 0; i < MAX_LIGHTSTYLES; i++)
+					for (i = 0; i < cl_max_lightstyles; i++)
 					{
 						if (webostate->lightstylevalues[i] != d_lightstylevalue[i])
 							break;
 					}
-				if (webostate && i == MAX_LIGHTSTYLES)
+				if (webostate && i == cl_max_lightstyles)
 				{
 				}
 				else
@@ -3304,7 +3349,7 @@ void Surf_DrawWorld (void)
 						webogenerating->cluster[1] = r_viewcluster2;
 						webogenerating->pvs.buffer = (qbyte*)(webogenerating+1) + sizeof(webogenerating->batches[0])*(currentmodel->numbatches-1);
 						webogenerating->pvs.buffersize = currentmodel->pvsbytes;
-						for (i = 0; i < MAX_LIGHTSTYLES; i++)
+						for (i = 0; i < cl_max_lightstyles; i++)
 							webogenerating->lightstylevalues[i] = d_lightstylevalue[i];
 						Q_strncpyz(webogenerating->dbgid, "webostate", sizeof(webogenerating->dbgid));
 						COM_AddWork(WG_LOADER, R_GenWorldEBO, webogenerating, NULL, 0, 0);
@@ -3630,7 +3675,7 @@ uploadfmt_t Surf_NameToFormat(const char *nam)
 		return PTI_RGB565;	//boo hiss
 	if (!Q_strcasecmp(nam, "rgba4444") || !Q_strcasecmp(nam, "rgba4"))
 		return PTI_RGBA4444;	//erk
-	if (!Q_strcasecmp(nam, "rgba5551") || !Q_strcasecmp(nam, "rgba51"))
+	if (!Q_strcasecmp(nam, "rgba5551") || !Q_strcasecmp(nam, "rgba51") || !Q_strcasecmp(nam, "rgb5a1"))
 		return PTI_RGBA5551;
 	if (!Q_strcasecmp(nam, "argb4444"))
 		return PTI_ARGB4444;
@@ -3639,7 +3684,7 @@ uploadfmt_t Surf_NameToFormat(const char *nam)
 	if (!Q_strcasecmp(nam, "rgbx8") || !Q_strcasecmp(nam, "bgrx8") || !Q_strcasecmp(nam, "rgba8") || !Q_strcasecmp(nam, "bgra8"))
 		return PTI_BGRX8;	//most common formats...
 	if (!Q_strcasecmp(nam, "rgb8") || !Q_strcasecmp(nam, "bgr8"))
-		return PTI_RGB8;	//generally not recommended
+		return PTI_RGB8;	//generally not recommended (misaligned so the gpu has to compensate)
 	if (!Q_strcasecmp(nam, "l8"))
 		return PTI_L8;
 	if (*nam)
@@ -3686,7 +3731,7 @@ uploadfmt_t Surf_LightmapMode(model_t *model)
 			fmt = PTI_RGBA32F;
 		else if (sh_config.texfmt[PTI_A2BGR10] && rgb)
 			fmt = PTI_A2BGR10;
-		else if (sh_config.texfmt[PTI_L8] && !rgb && !r_deluxemapping)
+		else if (sh_config.texfmt[PTI_L8] && !rgb && !r_deluxemapping && r_dynamic.ival<=0)
 			fmt = PTI_L8;
 		else if (sh_config.texfmt[PTI_BGRX8])
 			fmt = PTI_BGRX8;
@@ -3719,13 +3764,16 @@ int Surf_NewLightmaps(int count, int width, int height, uploadfmt_t fmt, qboolea
 	if (deluxe && (count & 1))
 	{
 		deluxe = false;
+//		count+=1;
 		Con_Print("WARNING: Deluxemapping with odd number of lightmaps\n");
 	}
 
 	Image_BlockSizeForEncoding(fmt, &pixbytes, &pixw, &pixh);
 	if (pixw != 1 || pixh != 1)
 		return -1;	//compressed formats are unsupported
-	dfmt = PTI_BGRX8;
+	dfmt = PTI_A2BGR10;	//favour this one, because it tends to be slightly faster.
+	if (!sh_config.texfmt[dfmt])
+		dfmt = PTI_BGRX8;
 	if (!sh_config.texfmt[dfmt])
 		dfmt = PTI_RGBX8;
 	if (!sh_config.texfmt[dfmt])
@@ -3883,6 +3931,8 @@ void Surf_BuildModelLightmaps (model_t *m)
 	while(webogenerating)
 		COM_WorkerPartialSync(webogenerating, &webogeneratingstate, true);
 #endif
+
+	R_BumpLightstyles(m->lightmaps.maxstyle);	//should only really happen with lazy loading
 
 	if (m->submodelof && m->fromgame == fg_quake3)	//FIXME: should be all bsp formats
 	{
@@ -4083,7 +4133,17 @@ void Surf_BuildLightmaps (void)
 	extern model_t	*mod_known;
 	extern int		mod_numknown;
 
-	//make sure the lightstyle values are correct.
+	int maxstyle;
+
+	//make sure the lightstyle values are correct (and be sure that the sizes cover all models).
+	for (i = 0, maxstyle=0; i < mod_numknown; i++)
+	{
+		m = &mod_known[i];
+		if (m->loadstate == MLS_LOADED)
+			if (maxstyle < m->lightmaps.maxstyle)
+				maxstyle = m->lightmaps.maxstyle;
+	}
+	R_BumpLightstyles(maxstyle);	//should only really happen with lazy loading
 	R_AnimateLight();
 
 	r_framecount = 1;		// no dlightcache
@@ -4130,6 +4190,11 @@ void Surf_NewMap (void)
 	char *s;
 #endif
 	int		i;
+
+	//evil haxx
+	r_dynamic.ival = r_dynamic.value;
+	if (r_dynamic.ival > 0 && cl.worldmodel->fromgame == fg_quake3) //quake3 has no lightmaps, disable r_dynamic
+		r_dynamic.ival = 0;
 
 	memset (&r_worldentity, 0, sizeof(r_worldentity));
 	AngleVectors(r_worldentity.angles, r_worldentity.axis[0], r_worldentity.axis[1], r_worldentity.axis[2]);

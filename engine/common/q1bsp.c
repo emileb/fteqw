@@ -5,6 +5,7 @@
 #include "shader.h"
 
 extern cvar_t r_decal_noperpendicular;
+extern cvar_t mod_loadsurfenvmaps;
 
 /*
 Decal functions
@@ -1338,11 +1339,11 @@ static unsigned int Q1BSP_TranslateContents(int contents)
 	case Q1CONTENTS_LAVA:
 		return FTECONTENTS_LAVA;
 	case Q1CONTENTS_SKY:
-		return FTECONTENTS_SKY;
+		return FTECONTENTS_SKY|FTECONTENTS_PLAYERCLIP|FTECONTENTS_MONSTERCLIP;
 	case Q1CONTENTS_LADDER:
 		return FTECONTENTS_LADDER;
 	case Q1CONTENTS_CLIP:
-		return FTECONTENTS_PLAYERCLIP;
+		return FTECONTENTS_PLAYERCLIP|FTECONTENTS_MONSTERCLIP;
 	case Q1CONTENTS_TRANS:
 		return FTECONTENTS_SOLID;
 
@@ -1573,8 +1574,21 @@ qboolean Q1BSP_Trace(model_t *model, int forcehullnum, const framestate_t *frame
 		traceinfo.trace.allsolid = false;
 		VectorCopy(mins, traceinfo.mins);
 		VectorCopy(maxs, traceinfo.maxs);
-		VectorCopy(start, traceinfo.start);
-		VectorCopy(end, traceinfo.end);
+
+		if (axis)
+		{
+			traceinfo.start[0] = DotProduct(start, axis[0]);
+			traceinfo.start[1] = DotProduct(start, axis[1]);
+			traceinfo.start[2] = DotProduct(start, axis[2]);
+			traceinfo.end[0] = DotProduct(end, axis[0]);
+			traceinfo.end[1] = DotProduct(end, axis[1]);
+			traceinfo.end[2] = DotProduct(end, axis[2]);
+		}
+		else
+		{
+			VectorCopy(start, traceinfo.start);
+			VectorCopy(end, traceinfo.end);
+		}
 		traceinfo.capsule = capsule;
 
 		if (traceinfo.capsule)
@@ -1602,7 +1616,7 @@ qboolean Q1BSP_Trace(model_t *model, int forcehullnum, const framestate_t *frame
 		traceinfo.maxs[2] = traceinfo.radius;
 */
 		traceinfo.solidcontents = hitcontentsmask;
-		Q1BSP_RecursiveBrushCheck(&traceinfo, model->rootnode, 0, 1, start, end);
+		Q1BSP_RecursiveBrushCheck(&traceinfo, model->rootnode, 0, 1, traceinfo.start, traceinfo.end);
 		memcpy(trace, &traceinfo.trace, sizeof(trace_t));
 		if (trace->fraction < 1)
 		{
@@ -1612,6 +1626,17 @@ qboolean Q1BSP_Trace(model_t *model, int forcehullnum, const framestate_t *frame
 			if (f < 0)
 				f = 0;
 			trace->fraction = f;
+
+			if (axis)
+			{
+				vec3_t iaxis[3];
+				vec3_t norm;
+				Matrix3x3_RM_Invert_Simple((const void *)axis, iaxis);
+				VectorCopy(trace->plane.normal, norm);
+				trace->plane.normal[0] = DotProduct(norm, iaxis[0]);
+				trace->plane.normal[1] = DotProduct(norm, iaxis[1]);
+				trace->plane.normal[2] = DotProduct(norm, iaxis[2]);
+			}
 		}
 		VectorInterpolate(start, trace->fraction, end, trace->endpos);
 		return trace->fraction != 1;
@@ -2428,6 +2453,10 @@ void BSPX_LoadEnvmaps(model_t *mod, bspx_header_t *bspx, void *mod_base)
 	menvmap_t *out;
 	int count;
 	denvmap_t *in = BSPX_FindLump(bspx, mod_base, "ENVMAP", &count);
+	mod->envmaps = NULL;
+	mod->numenvmaps = 0;
+	if (!mod_loadsurfenvmaps.ival)
+		return;
 	if (count%sizeof(*in))
 		return;	//erk
 	count /= sizeof(*in);
@@ -2447,7 +2476,7 @@ void BSPX_LoadEnvmaps(model_t *mod, bspx_header_t *bspx, void *mod_base)
 		out[i].cubesize = LittleLong(in[i].cubesize);
 
 		Q_snprintfz(imagename, sizeof(imagename), "textures/env/%s_%i_%i_%i", base, (int)mod->envmaps[i].origin[0], (int)mod->envmaps[i].origin[1], (int)mod->envmaps[i].origin[2]);
-		out[i].image = Image_GetTexture(imagename, NULL, IF_CUBEMAP|IF_NOREPLACE, NULL, NULL, out[i].cubesize, out[i].cubesize, PTI_INVALID);
+		out[i].image = Image_GetTexture(imagename, NULL, IF_TEXTYPE_CUBE|IF_NOREPLACE, NULL, NULL, out[i].cubesize, out[i].cubesize, PTI_INVALID);
 	}
 
 

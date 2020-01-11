@@ -23,7 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 // release version
 #define FTE_VER_MAJOR 1
-#define FTE_VER_MINOR 6
+#define FTE_VER_MINOR 7
 
 #if defined(__APPLE__) && defined(__MACH__)
 	#define MACOSX
@@ -121,7 +121,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#endif
 #endif
 
-#ifdef MASTERONLY
+#ifdef IMGTOOL
+	#undef WEBCLIENT
+	#undef LOADERTHREAD
+#elif defined(MASTERONLY)
 	#define SV_MASTER
 	#undef SUBSERVERS
 	#undef PLUGINS
@@ -182,7 +185,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#define FULLENGINENAME "FTE Quake"	//the posh name for the engine
 #endif
 #ifndef ENGINEWEBSITE
-	#define ENGINEWEBSITE "^8http://^4fte.triptohell.info"	//url for program
+	#define ENGINEWEBSITE "^8http://^4fte^8.^4triptohell^8.^4info"	//url for program
 #endif
 
 #if !defined(_WIN32) || defined(WINRT)
@@ -424,7 +427,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#define SQL
 #endif
 
-#if defined(AVAIL_GZDEC) && (!defined(AVAIL_ZLIB) || defined(NPFTE))
+#if defined(AVAIL_GZDEC) && (!defined(AVAIL_ZLIB) || defined(NPFTE) || defined(NO_ZLIB))
 	//gzip needs zlib to work (pk3s can still contain non-compressed files)
 	#undef AVAIL_GZDEC
 #endif
@@ -571,7 +574,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#define VM_UI
 #endif
 
-#if defined(VM_Q1) || defined(VM_UI) || defined(VM_CG) || defined(Q3SERVER) || defined(PLUGINS)
+#if defined(VM_Q1) || defined(VM_UI) || defined(VM_CG) || defined(Q3SERVER)
 	#define VM_ANY
 #endif
 
@@ -715,7 +718,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 //I'm making my own restrict, because msvc's headers can't cope if I #define restrict to __restrict, and quite possibly other platforms too
 #if __STDC_VERSION__ >= 199901L
 	#define fte_restrict restrict
-#elif defined(_MSC_VER) && _MSC_VER >= 1400
+#elif defined(_MSC_VER) && _MSC_VER >= 1400 || __GNUC__ >= 4
 	#define fte_restrict __restrict
 #else
 	#define fte_restrict
@@ -757,7 +760,11 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	//gcc will generally inline where it can - so long as its static. but that doesn't stop it warning
 	#define fte_inline __attribute__((unused)) static
 	#define fte_inlinebody static
-	#define fte_inlinestatic static
+	#if __GNUC__ > 5
+		#define fte_inlinestatic static inline
+	#else
+		#define fte_inlinestatic static
+	#endif
 #else
 	//make it static so we at least don't get errors (might still get warnings. see above)
 	#define fte_inline static
@@ -790,6 +797,18 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifdef _DEBUG
 	#undef FTE_UNREACHABLE
 	#define FTE_UNREACHABLE Sys_Error("Unreachable reached: %s %i\n", __FILE__, __LINE__)
+#endif
+
+#ifndef stricmp
+	#ifdef _WIN32
+		//Windows-specific...
+		#define stricmp _stricmp
+		#define strnicmp _strnicmp
+	#else
+		//Posix
+		#define stricmp strcasecmp
+		#define strnicmp strncasecmp
+	#endif
 #endif
 
 
@@ -825,6 +844,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #define MAX_BACKBUFLEN	1200
 
+#define lightstyleindex_t unsigned short
+#define INVALID_LIGHTSTYLE ((lightstyleindex_t)(~0u))	//the style that's invalid, signifying to stop adding more.
+
 //
 // per-level limits
 //
@@ -834,7 +856,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 //#define	MAX_EDICTS		((1<<22)-1)			// expandable up to 22 bits
 #define	MAX_EDICTS		((1<<18)-1)			// expandable up to 22 bits
 #endif
-#define	MAX_LIGHTSTYLES	255					// 8bit. 255 = 'invalid', and thus only 0-254 are the valid indexes.
+#define	MAX_NET_LIGHTSTYLES		(INVALID_LIGHTSTYLE+1)		// 16bit. the last index MAY be used to signify an invalid lightmap in the bsp, but is still valid for rtlights.
 #define MAX_STANDARDLIGHTSTYLES 64
 #define	MAX_PRECACHE_MODELS		4096		// 14bit.
 #define	MAX_PRECACHE_SOUNDS		2048		// 14bit.

@@ -110,6 +110,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #else
 #define SERVER_SUPPORTED_Z_EXTENSIONS (Z_EXT_PM_TYPE|Z_EXT_PM_TYPE_NEW|Z_EXT_PITCHLIMITS|Z_EXT_JOIN_OBSERVE|Z_EXT_PF_ONGROUND|Z_EXT_VWEP|Z_EXT_PF_SOLID)
 #endif
+#define BUGGY_EZQUAKE_Z_EXTENSIONS    (Z_EXT_PF_ONGROUND|Z_EXT_PF_SOLID) //ezquake bugs out on these when ANY fteextension is present. hack the serverinfo to hide these.
 #define CLIENT_SUPPORTED_Z_EXTENSIONS (SERVER_SUPPORTED_Z_EXTENSIONS|Z_EXT_PF_ONGROUND|Z_EXT_PF_SOLID)
 
 
@@ -1778,7 +1779,7 @@ typedef struct q1usercmd_s
 // unused
 #define E5_UNUSED30 (1<<30)
 // bits2 > 0
-#define E5_EXTEND4 (1<<31)
+#define E5_EXTEND4 (1u<<31)
 
 #define E5_ALLUNUSED (E5_UNUSED27|E5_UNUSED28|E5_UNUSED29|E5_UNUSED30)
 #define E5_SERVERPRIVATE (E5_EXTEND1|E5_EXTEND2|E5_EXTEND3|E5_EXTEND4)

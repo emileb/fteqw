@@ -647,7 +647,7 @@ void Sys_Shutdown (void)
 {
 }
 
-#if defined(__linux__) && defined(__GNUC__)
+#if defined(__linux__) && defined(__GLIBC__)
 #include <execinfo.h>
 #ifdef __i386__
 #include <ucontext.h>
@@ -699,8 +699,6 @@ static void Friendly_Crash_Handler(int sig, siginfo_t *info, void *vcontext)
 		strftime (buffer, sizeof(buffer), "Time: %Y-%m-%d %H:%M:%S\n",timeinfo);
 		write(fd, buffer, strlen(buffer));
 
-		Q_snprintfz(buffer, sizeof(buffer), "Binary: "__DATE__" "__TIME__"\n");
-		write(fd, buffer, strlen(buffer));
 		Q_snprintfz(buffer, sizeof(buffer), "Ver: %i.%02i%s\n", FTE_VER_MAJOR, FTE_VER_MINOR,
 #ifdef OFFICIAL_RELEASE
 			" (official)");
@@ -708,13 +706,17 @@ static void Friendly_Crash_Handler(int sig, siginfo_t *info, void *vcontext)
 			"");
 #endif
 		write(fd, buffer, strlen(buffer));
-#ifdef SVNREVISION
-		if (strcmp(STRINGIFY(SVNREVISION), "-"))
-		{
-			Q_snprintfz(buffer, sizeof(buffer), "Revision: %s\n", STRINGIFY(SVNREVISION));
-			write(fd, buffer, strlen(buffer));
-		}
+
+#if defined(SVNREVISION) && defined(SVNDATE)
+		Q_snprintfz(buffer, sizeof(buffer), "Revision: %s\nBinary: %s\n", STRINGIFY(SVNREVISION), STRINGIFY(SVNDATE));
+#else
+		Q_snprintfz(buffer, sizeof(buffer),
+		#ifdef SVNREVISION
+			"Revision: "STRINGIFY(SVNREVISION)"\n"
+		#endif
+		"Binary: "__DATE__" "__TIME__"\n");
 #endif
+		write(fd, buffer, strlen(buffer));
 
 		backtrace_symbols_fd(array + firstframe, size - firstframe, fd);
 		write(fd, "\n", 1);
@@ -935,7 +937,7 @@ int main(int argc, char *argv[])
 
 
 
-#if defined(__linux__) && defined(__GNUC__)
+#if defined(__linux__) && defined(__GLIBC__)
 	if (!COM_CheckParm("-nodumpstack"))
 	{
 		struct sigaction act;

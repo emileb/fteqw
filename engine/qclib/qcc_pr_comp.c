@@ -4956,6 +4956,7 @@ static void QCC_VerifyArgs_setviewprop (const char *funcname, QCC_ref_t **arglis
 		{"VF_RT_DESTCOLOUR7",	219, ev_string, ev_float, ev_vector},
 		{"VF_ENVMAP",			220, ev_string},
 		{"VF_USERDATA",			221, ev_pointer, ev_integer},
+		{"VF_SKYROOM_CAMERA",	222, ev_vector}
 	};
 
 	char temp[256];
@@ -5722,7 +5723,11 @@ QCC_sref_t QCC_PR_GenerateFunctionCallRef (QCC_sref_t newself, QCC_sref_t func, 
 							parm++;
 						}
 						else
-							QCC_FreeTemp(QCC_PR_StatementFlags (&pr_opcodes[copyop_v?copyop_v:copyop_i], src, args[parm-1].ref, NULL, STFL_PRESERVEB));
+						{
+							QCC_sref_t t = args[parm-1].ref;
+							t.ofs += ofs%3;
+							QCC_FreeTemp(QCC_PR_StatementFlags (&pr_opcodes[copyop_v?copyop_v:copyop_i], src, t, NULL, STFL_PRESERVEB));
+						}
 					}
 					else
 					{

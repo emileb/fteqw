@@ -10,9 +10,13 @@
 #if defined(MENU_DAT) || defined(CSQC_DAT)
 #include "cl_master.h"
 
-qbyte mpkeysdown[K_MAX/8];
+//MP_MouseMove(mx, my, mouse->qdeviceid)
 
+static qbyte mpkeysdown[K_MAX/8];
 extern qboolean csqc_dp_lastwas3d;
+
+void M_Init_Internal (void);
+void M_DeInit_Internal (void);
 
 extern unsigned int r2d_be_flags;
 #define DRAWFLAG_NORMAL		0
@@ -32,7 +36,9 @@ static unsigned int PF_SelectDPDrawFlag(pubprogfuncs_t *prinst, int flag)
 			PR_RunWarning(prinst, "Detected attempt to draw to framebuffer where framebuffer is not valid\n");
 		}
 	}
+#ifdef CSQC_DAT
 	csqc_dp_lastwas3d = false;	//for compat with dp's stupid beginpolygon
+#endif
 
 	//flags:
 	//0 = blend
@@ -69,7 +75,9 @@ void QCBUILTIN PF_CL_drawsetcliparea (pubprogfuncs_t *prinst, struct globalvars_
 	if (R2D_Flush)
 		R2D_Flush();
 
+#ifdef CSQC_DAT
 	csqc_dp_lastwas3d = false;
+#endif
 
 	srect.x = G_FLOAT(OFS_PARM0) / (float)vid.fbvwidth;
 	srect.y = G_FLOAT(OFS_PARM1) / (float)vid.fbvheight;
@@ -88,7 +96,9 @@ void QCBUILTIN PF_CL_drawresetcliparea (pubprogfuncs_t *prinst, struct globalvar
 	if (R2D_Flush)
 		R2D_Flush();
 
+#ifdef CSQC_DAT
 	csqc_dp_lastwas3d = false;
+#endif
 
 	BE_Scissor(NULL);
 	G_FLOAT(OFS_RETURN) = 1;
@@ -100,6 +110,8 @@ struct {
 	unsigned int owner;	//kdm_foo. whoever has an interest in this font. font is purged when this becomes 0.
 	char slotname[16];
 	char facename[MAX_OSPATH];
+	float scale; //poop
+	int outline; //argh
 	int sizes;
 	int size[FONT_SIZES];
 	struct font_s *font[FONT_SIZES];
@@ -199,6 +211,8 @@ void PR_ReleaseFonts(unsigned int purgeowner)
 		fontslot[i].sizes = 0;
 		fontslot[i].slotname[0] = '\0';
 		fontslot[i].facename[0] = '\0';
+		fontslot[i].scale = 1;
+		fontslot[i].outline = 0;
 	}
 }
 void PR_ReloadFonts(qboolean reload)
@@ -226,7 +240,7 @@ void PR_ReloadFonts(qboolean reload)
 		{	//otherwise load it.
 			for (j = 0; j < fontslot[i].sizes; j++)
 			{
-				fontslot[i].font[j] = Font_LoadFont(fontslot[i].facename, fontslot[i].size[j]);
+				fontslot[i].font[j] = Font_LoadFont(fontslot[i].facename, fontslot[i].size[j], fontslot[i].scale, fontslot[i].outline);
 			}
 		}
 	}
@@ -238,6 +252,7 @@ void QCBUILTIN PF_CL_findfont (pubprogfuncs_t *prinst, struct globalvars_s *pr_g
 }
 void QCBUILTIN PF_CL_loadfont (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
+	extern cvar_t r_font_postprocess_outline;
 	const char *slotname = PR_GetStringOfs(prinst, OFS_PARM0);
 	const char *facename = PR_GetStringOfs(prinst, OFS_PARM1);
 	const char *sizestr = PR_GetStringOfs(prinst, OFS_PARM2);
@@ -262,7 +277,7 @@ void QCBUILTIN PF_CL_loadfont (pubprogfuncs_t *prinst, struct globalvars_s *pr_g
 		return;
 
 	//if its changed, purge it.
-	if (stricmp(fontslot[slotnum].slotname, slotname) || stricmp(fontslot[slotnum].facename, facename))
+	if (stricmp(fontslot[slotnum].slotname, slotname) || stricmp(fontslot[slotnum].facename, facename) || !fontslot[slotnum].sizes)
 	{
 		Q_strncpyz(fontslot[slotnum].slotname, slotname, sizeof(fontslot[slotnum].slotname));
 		Q_strncpyz(fontslot[slotnum].facename, facename, sizeof(fontslot[slotnum].facename));
@@ -272,14 +287,41 @@ void QCBUILTIN PF_CL_loadfont (pubprogfuncs_t *prinst, struct globalvars_s *pr_g
 				Font_Free(fontslot[slotnum].font[i]);
 			fontslot[slotnum].font[i] = NULL;
 		}
+		fontslot[slotnum].sizes = 0;
 		fontslot[slotnum].owner = 0;
+		fontslot[slotnum].scale = 1;
+		fontslot[slotnum].outline = r_font_postprocess_outline.ival;
 	}
 	fontslot[slotnum].owner |= world->keydestmask;
 
 	while(*sizestr)
 	{
 		sizestr = COM_Parse(sizestr);
+		if (!strncmp(com_token, "scale=", 6))
+		{
+			fontslot[slotnum].scale = atof(com_token+6);
+			continue;
+		}
+		if (!strncmp(com_token, "outline=", 8))
+		{
+			fontslot[slotnum].outline = atoi(com_token+8);
+			continue;
+		}
+		if (!strncmp(com_token, "blur=", 5))
+		{
+			//fontslot[slotnum].blur = atoi(com_token+5);
+			continue;
+		}
+		if (!strncmp(com_token, "voffset=", 8))
+		{
+			//com_token+8 unused.
+			continue;
+		}
+
 		sz = atoi(com_token);
+		if (!sz)
+			continue;	//o.O
+
 		for (i = 0; i < fontslot[slotnum].sizes; i++)
 		{
 			if (fontslot[slotnum].size[i] == sz)
@@ -290,33 +332,45 @@ void QCBUILTIN PF_CL_loadfont (pubprogfuncs_t *prinst, struct globalvars_s *pr_g
 			if (i >= FONT_SIZES)
 				break;
 			fontslot[slotnum].size[i] = sz;
-			if (qrenderer == QR_NONE)
-				fontslot[slotnum].font[i] = NULL;
-			else
-				fontslot[slotnum].font[i] = Font_LoadFont(facename, fontslot[slotnum].size[i]);
+			fontslot[slotnum].font[i] = NULL;
 			fontslot[slotnum].sizes++;
 		}
 	}
+
+	if (qrenderer > QR_NONE)
+	{
+		for (i = 0; i < fontslot[slotnum].sizes; i++)
+			fontslot[slotnum].font[i] = Font_LoadFont(facename, fontslot[slotnum].size[i], fontslot[slotnum].scale, fontslot[slotnum].outline);
+	}
+
 	G_FLOAT(OFS_RETURN) = slotnum;
 }
 
 #ifdef HAVE_LEGACY
 void CL_LoadFont_f(void)
 {
+	extern cvar_t r_font_postprocess_outline;
 	//console command for compat with dp/debug.
 	if (Cmd_Argc() == 1)
 	{
 		int i, j;
+		int th;
 		for (i = 0; i < FONT_SLOTS; i++)
 		{
 			if (fontslot[i].sizes)
 			{
-				Con_Printf("%s: %s (", fontslot[i].slotname, fontslot[i].facename);
+				Con_Printf("%s[%i]: %s (", fontslot[i].slotname, i, fontslot[i].facename);
 				for (j = 0; j < fontslot[i].sizes; j++)
 				{
 					if (j)
 						Con_Printf(", ");
 					Con_Printf("%i", fontslot[i].size[j]);
+					if (fontslot[i].font[j])
+					{
+						th = Font_GetTrueHeight(fontslot[i].font[j]);
+						if (th != Font_CharPHeight(fontslot[i].font[j]))
+							Con_Printf("[%g]", ((float)th*vid.height)/vid.pixelheight);
+					}
 				}
 				Con_Printf(")\n");
 			}
@@ -329,7 +383,7 @@ void CL_LoadFont_f(void)
 		char *slotname = Cmd_Argv(1);
 		char *facename = Cmd_Argv(2);
 		int sizenum = 3;
-		extern cvar_t dpcompat_console, gl_font;
+		extern cvar_t dpcompat_console, gl_font, con_textfont;
 
 		//loadfont slot face size1 size2...
 
@@ -368,6 +422,9 @@ void CL_LoadFont_f(void)
 				fontslot[slotnum].font[i] = NULL;
 			}
 			fontslot[slotnum].owner = 0;
+			fontslot[slotnum].scale = 1;
+			fontslot[slotnum].sizes = 0;
+			fontslot[slotnum].outline = r_font_postprocess_outline.ival;	//locked in at definition, so different fonts can have different settings even with vid_reload going on.
 		}
 		if (!*facename)
 			return;
@@ -379,11 +436,23 @@ void CL_LoadFont_f(void)
 			int sz;
 			if (!strcmp(a, "scale"))
 			{
+				fontslot[slotnum].scale = atof(Cmd_Argv(sizenum++));
+				continue;
+			}
+			if (!strcmp(a, "outline"))
+			{
+				fontslot[slotnum].outline = atoi(Cmd_Argv(sizenum++));
+				continue;
+			}
+			if (!strcmp(a, "blur"))
+			{
+				//fontslot[slotnum].blur = atoi(Cmd_Argv(sizenum++));
 				sizenum++;
 				continue;
 			}
 			if (!strcmp(a, "voffset"))
 			{
+//				fontslot[slotnum].voffset = atof(Cmd_Argv(sizenum++));
 				sizenum++;
 				continue;
 			}
@@ -401,16 +470,21 @@ void CL_LoadFont_f(void)
 				if (i >= FONT_SIZES)
 					break;
 				fontslot[slotnum].size[i] = sz;
-				if (qrenderer == QR_NONE)
-					fontslot[slotnum].font[i] = NULL;
-				else
-					fontslot[slotnum].font[i] = Font_LoadFont(facename, fontslot[slotnum].size[i]);
+				fontslot[slotnum].font[i] = NULL;
 				fontslot[slotnum].sizes++;
 			}
 		}
 
+		if (qrenderer > QR_NONE)
+		{
+			for (i = 0; i < fontslot[slotnum].sizes; i++)
+				fontslot[slotnum].font[i] = Font_LoadFont(facename, fontslot[slotnum].size[i], fontslot[slotnum].scale, fontslot[slotnum].outline);
+		}
+
 		//FIXME: slotnum0==default is problematic.
-		if (dpcompat_console.ival && (slotnum == 1 || (slotnum == 0 && !*gl_font.string)))
+		if (dpcompat_console.ival && slotnum == 1)
+			Cvar_Set(&con_textfont, facename);
+		if (dpcompat_console.ival && slotnum == 0)
 			Cvar_Set(&gl_font, facename);
 	}
 }
@@ -679,6 +753,57 @@ void QCBUILTIN PF_CL_drawrotsubpic (pubprogfuncs_t *prinst, struct globalvars_s 
 	G_FLOAT(OFS_RETURN) = 1;
 }
 
+#ifdef HAVE_LEGACY
+/*fuck sake, why does no one give a shit about existing extension?!? seriously this stuff is pissing me off*/
+void QCBUILTIN PF_CL_drawrotpic_dp (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	float *pivot = G_VECTOR(OFS_PARM0);
+	const char *picname = PR_GetStringOfs(prinst, OFS_PARM1);
+	float *size = G_VECTOR(OFS_PARM2);
+	float *mins = G_VECTOR(OFS_PARM3);
+	float angle = (G_FLOAT(OFS_PARM4) * M_PI)/180;
+	float *rgb = G_VECTOR(OFS_PARM5);
+	float alpha = G_FLOAT(OFS_PARM6);
+	int flag = prinst->callargc >= 8?(int) G_FLOAT(OFS_PARM7):0;
+
+	vec3_t maxs;
+
+	vec2_t points[4];
+	vec2_t tcoords[4];
+	vec2_t saxis;
+	vec2_t taxis;
+
+	mpic_t *p;
+
+	VectorSubtract(size, mins, maxs);
+
+	p = R2D_SafeCachePic(picname);
+	if (!p)
+		p = R2D_SafePicFromWad(picname);
+
+	saxis[0] = cos(angle);
+	saxis[1] = sin(angle);
+	taxis[0] = -sin(angle);
+	taxis[1] = cos(angle);
+
+	Vector2MA(pivot, mins[0], saxis, points[0]); Vector2MA(points[0], mins[1], taxis, points[0]);
+	Vector2MA(pivot, maxs[0], saxis, points[1]); Vector2MA(points[1], mins[1], taxis, points[1]);
+	Vector2MA(pivot, maxs[0], saxis, points[2]); Vector2MA(points[2], maxs[1], taxis, points[2]);
+	Vector2MA(pivot, mins[0], saxis, points[3]); Vector2MA(points[3], maxs[1], taxis, points[3]);
+
+	Vector2Set(tcoords[0], 0, 0);
+	Vector2Set(tcoords[1], 1, 0);
+	Vector2Set(tcoords[2], 1, 1);
+	Vector2Set(tcoords[3], 0, 1);
+
+	r2d_be_flags = PF_SelectDPDrawFlag(prinst, flag);
+	R2D_ImageColours(rgb[0], rgb[1], rgb[2], alpha);
+	R2D_Image2dQuad((const vec2_t*)points, (const vec2_t*)tcoords, NULL, p);
+	r2d_be_flags = 0;
+
+	G_FLOAT(OFS_RETURN) = 1;
+}
+#endif
 
 
 void QCBUILTIN PF_CL_is_cached_pic (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
@@ -720,6 +845,7 @@ void QCBUILTIN PF_CL_precache_pic (pubprogfuncs_t *prinst, struct globalvars_s *
 		G_INT(OFS_RETURN) = 0;
 }
 
+#ifdef CSQC_DAT
 //warning: not threaded.
 void QCBUILTIN PF_CL_uploadimage (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
@@ -777,6 +903,7 @@ void QCBUILTIN PF_CL_uploadimage (pubprogfuncs_t *prinst, struct globalvars_s *p
 		}
 	}
 }
+#endif
 
 //warning: not threadable. hopefully noone abuses it.
 void QCBUILTIN PF_CL_readimage (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
@@ -1224,7 +1351,30 @@ static struct
 } menuc_eval;
 static playerview_t menuview;
 
-int menuentsize;
+
+static menu_t menuqc;	//this is how the client forwards events etc.
+static int inmenuprogs;
+static progparms_t menuprogparms;
+static menuedict_t *menu_edicts;
+static int num_menu_edicts;
+world_t menu_world;
+static int menuentsize;
+double  menutime;
+static struct
+{
+	func_t init;
+	func_t shutdown;
+	func_t draw;	qboolean fuckeddrawsizes;
+	func_t drawloading;
+	func_t keydown;
+	func_t keyup;
+	func_t inputevent;
+	func_t toggle;
+	func_t consolecommand;
+	func_t gethostcachecategory;
+} mpfuncs;
+jmp_buf mp_abort;
+
 
 // cvars
 #define MENUPROGSGROUP "Menu progs control"
@@ -1379,10 +1529,18 @@ void QCBUILTIN PF_isdemo (pubprogfuncs_t *prinst, struct globalvars_s *pr_global
 //float	clientstate(void)  = #62;
 void QCBUILTIN PF_clientstate (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
-	if (isDedicated)
-		G_FLOAT(OFS_RETURN) = 0;
+	//menuqc was originally implemented in DP, so these return values follow NQ norms.
+	if (isDedicated)	//unreachable
+		G_FLOAT(OFS_RETURN) = 0/*nq ca_dedicated*/;
+	else if (	cls.state >= ca_connected	//we're on a server
+			||	CL_TryingToConnect()		//or we're trying to connect (avoids bugs with certain menuqc mods)
+#ifndef CLIENTONLY
+			||	sv.state>=ss_loading
+#endif
+				)	//or we're going to connect to ourselves once we get our act together
+		G_FLOAT(OFS_RETURN) = 2/*nq ca_connected*/;
 	else
-		G_FLOAT(OFS_RETURN) = cls.state >= ca_connected ? 2 : 1;	//fit in with netquake	 (we never run a menu.dat dedicated)
+		G_FLOAT(OFS_RETURN) = 1/*nq ca_disconnected*/;
 }
 
 //too specific to the prinst's builtins.
@@ -1406,7 +1564,7 @@ static void QCBUILTIN PF_checkbuiltin (pubprogfuncs_t *prinst, struct globalvars
 	char *funcname = NULL;
 	int args;
 	int builtinno;
-	if (prinst->GetFunctionInfo(prinst, funcref, &args, &builtinno, funcname, sizeof(funcname)))
+	if (prinst->GetFunctionInfo(prinst, funcref, &args, NULL, &builtinno, funcname, sizeof(funcname)))
 	{	//qc defines the function at least. nothing weird there...
 		if (builtinno > 0 && builtinno < prinst->parms->numglobalbuiltins)
 		{
@@ -1450,9 +1608,10 @@ void QCBUILTIN PF_cl_setkeydest (pubprogfuncs_t *prinst, struct globalvars_s *pr
 	{
 	case 0:
 		// key_game
-		if (Key_Dest_Has(kdm_gmenu))
+		if (Key_Dest_Has(kdm_menu))
 		{
-			Key_Dest_Remove(kdm_gmenu);
+			Menu_Unlink(&menuqc);
+			Key_Dest_Remove(kdm_menu);
 //			Key_Dest_Remove(kdm_message);
 //			if (cls.state == ca_disconnected)
 //				Key_Dest_Add(kdm_console);
@@ -1461,9 +1620,9 @@ void QCBUILTIN PF_cl_setkeydest (pubprogfuncs_t *prinst, struct globalvars_s *pr
 	case 2:
 		// key_menu
 		Key_Dest_Remove(kdm_message);
-		if (!Key_Dest_Has(kdm_gmenu))
+		if (!Key_Dest_Has(kdm_menu))
 			Key_Dest_Remove(kdm_console);
-		Key_Dest_Add(kdm_gmenu);
+		Menu_Push(&menuqc, false);
 		break;
 	case 1:
 		// key_message
@@ -1477,9 +1636,7 @@ void QCBUILTIN PF_cl_setkeydest (pubprogfuncs_t *prinst, struct globalvars_s *pr
 //float	getkeydest(void)	= #602;
 void QCBUILTIN PF_cl_getkeydest (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
-	if (Key_Dest_Has(kdm_emenu))
-		G_FLOAT(OFS_RETURN) = 3;
-	else if (Key_Dest_Has(kdm_gmenu))
+	if (Key_Dest_Has(kdm_menu))
 		G_FLOAT(OFS_RETURN) = 2;
 //	else if (Key_Dest_Has(kdm_message))
 //		G_FLOAT(OFS_RETURN) = 1;
@@ -2189,19 +2346,25 @@ static struct {
 	{"argescape",				PF_argescape,				295},
 															//gap
 	{"clearscene",				PF_m_clearscene,			300},
-															//no addentities
+//	{"addentities",				PF_Fixme,					301},
 	{"addentity",				PF_m_addentity,				302},//FIXME: needs setmodel, origin, angles, colormap(eep), frame etc, skin, 
+#ifdef CSQC_DAT
 	{"setproperty",				PF_R_SetViewFlag,			303},//should be okay to share
+#endif
 	{"renderscene",				PF_m_renderscene,			304},//too module-specific
 //	{"dynamiclight_add",		PF_R_DynamicLight_Add,		305},//should be okay to share
 	{"R_BeginPolygon",			PF_R_PolygonBegin,			306},//useful for 2d stuff
 	{"R_PolygonVertex",			PF_R_PolygonVertex,			307},
 	{"R_EndPolygon",			PF_R_PolygonEnd,			308},
+#ifdef CSQC_DAT
 	{"getproperty",				PF_R_GetViewFlag,			309},//should be okay to share
+#endif
 //unproject													310
 //project													311
 
+#ifdef CSQC_DAT
 	{"r_uploadimage",			PF_CL_uploadimage,			0},
+#endif
 	{"r_readimage",				PF_CL_readimage,			0},
 
 
@@ -2211,15 +2374,28 @@ static struct {
 	{"getkeybind",				PF_cl_getkeybind,			342},
 	{"setcursormode",			PF_cl_setcursormode,		343},
 	{"getcursormode",			PF_cl_getcursormode,		0},	
-															//gap
+	{"setmousepos",				PF_cl_setmousepos,			0},
+//	{NULL,						PF_Fixme,					344},
+//	{NULL,						PF_Fixme,					345},
+//	{NULL,						PF_Fixme,					346},
+//	{NULL,						PF_Fixme,					347},
+//	{NULL,						PF_Fixme,					348},
 	{"isdemo",					PF_isdemo,					349},
+//	{NULL,						PF_Fixme,					350},
+//	{NULL,						PF_Fixme,					351},
 	{"registercommand",			PF_menu_registercommand,	352},
-															//gap
+	{"wasfreed",				PF_WasFreed,				353},
+//	{NULL,						PF_Fixme,					354},
+#ifdef HAVE_MEDIA_DECODER
+	{"videoplaying",			PF_cs_media_getstate,		355},
+#endif
 	{"findfont",				PF_CL_findfont,				356},
 	{"loadfont",				PF_CL_loadfont,				357},
 															//gap
 //	{"dynamiclight_get",		PF_R_DynamicLight_Get,		372},
 //	{"dynamiclight_set",		PF_R_DynamicLight_Set,		373},
+//	{NULL,						PF_Fixme,					374},
+//	{NULL,						PF_Fixme,					375},
 	{"setcustomskin",			PF_m_setcustomskin,			376},
 															//gap
 	{"memalloc",				PF_memalloc,				384},
@@ -2237,6 +2413,15 @@ static struct {
 	{"setwindowcaption",		PF_cl_setwindowcaption,		0},
 	{"cvars_haveunsaved",		PF_cvars_haveunsaved,		0},
 															//gap
+//	{"writebyte,				PF_Fixme,					401},
+//	{"writechar,				PF_Fixme,					402},
+//	{"writeshort,				PF_Fixme,					403},
+//	{"writelong,				PF_Fixme,					404},
+//	{"writeangle,				PF_Fixme,					405},
+//	{"writecoord,				PF_Fixme,					406},
+//	{"writestring,				PF_Fixme,					407},
+//	{"writeentity,				PF_Fixme,					408},
+															//gap
 	{"buf_create",				PF_buf_create,				440},
 	{"buf_del",					PF_buf_del,					441},
 	{"buf_getsize",				PF_buf_getsize,				442},
@@ -2247,7 +2432,7 @@ static struct {
 	{"bufstr_set",				PF_bufstr_set,				447},
 	{"bufstr_add",				PF_bufstr_add,				448},
 	{"bufstr_free",				PF_bufstr_free,				449},
-															//450
+//	{NULL,						PF_Fixme,					450},
 	{"iscachedpic",				PF_CL_is_cached_pic,		451},
 	{"precache_pic",			PF_CL_precache_pic,			452},
 	{"free_pic",				PF_CL_free_pic,				453},
@@ -2266,13 +2451,16 @@ static struct {
 	{"cin_getstate",			PF_cs_media_getstate,		464},
 	{"cin_restart",				PF_cs_media_restart, 		465},
 #endif
-	{"drawline",				PF_drawline,				466},
+	{"drawline",				PF_CL_drawline,				466},
 	{"drawstring",				PF_CL_drawcolouredstring,	467},
 	{"stringwidth",				PF_CL_stringwidth,			468},
 	{"drawsubpic",				PF_CL_drawsubpic,			469},
 	{"drawrotsubpic",			PF_CL_drawrotsubpic,		0},
 	{"drawtextfield",			PF_CL_DrawTextField,		0},
-															//470
+
+#ifdef HAVE_LEGACY
+	{"drawrotpic_dp",			PF_CL_drawrotpic_dp,		470},
+#endif
 //MERGES WITH CLIENT+SERVER BUILTIN MAPPINGS BELOW
 	{"asin",					PF_asin,					471},
 	{"acos",					PF_acos,					472},
@@ -2286,10 +2474,10 @@ static struct {
 	{"strtolower",				PF_strtolower,				480},
 	{"strtoupper",				PF_strtoupper,				481},
 	{"cvar_defstring",			PF_cvar_defstring,			482},
-															//483
+//	{NULL,						PF_Fixme,					483},
 	{"strreplace",				PF_strreplace,				484},
 	{"strireplace",				PF_strireplace,				485},
-															//486
+//	{NULL,						PF_Fixme,					486},
 #ifdef HAVE_MEDIA_DECODER
 	{"gecko_create",			PF_cs_media_create,			487},
 	{"gecko_destroy",			PF_cs_media_destroy,		488},
@@ -2298,7 +2486,7 @@ static struct {
 	{"gecko_mousemove",			PF_cs_media_mousemove,		491},
 	{"gecko_resize",			PF_cs_media_resize,			492},
 	{"gecko_get_texture_extent",PF_cs_media_get_texture_extent,493},
-	{"gecko_getproperty",		PF_cs_media_getproperty},
+	{"gecko_getproperty",		PF_cs_media_getproperty,	0},
 #endif
 	{"crc16",					PF_crc16,					494},
 	{"cvar_type",				PF_cvar_type,				495},
@@ -2309,6 +2497,8 @@ static struct {
 	{"entityfieldtype",			PF_entityfieldtype,			498},
 	{"getentityfieldstring",	PF_getentityfieldstring,	499},
 	{"putentityfieldstring",	PF_putentityfieldstring,	500},
+//	{NULL,						PF_Fixme,					501},
+//	{NULL,						PF_Fixme,					502},
 	{"whichpack",				PF_whichpack,				503},
 															//gap
 	{"uri_escape",				PF_uri_escape,				510},
@@ -2323,10 +2513,12 @@ static struct {
 	{"cvar_description",		PF_cvar_description,		518},
 															//gap
 	{"log",						PF_Logarithm,				532},
-															//gap
+//	{"getsoundtime",			PF_Fixme,					533},
 	{"soundlength",				PF_soundlength,				534},
 	{"buf_loadfile",			PF_buf_loadfile,			535},
 	{"buf_writefile",			PF_buf_writefile,			536},
+//	{"bufstr_find",				PF_Fixme,					537},
+//	{"matchpattern",			PF_Fixme,					538},
 															//gap
 	{"setkeydest",				PF_cl_setkeydest,			601},
 	{"getkeydest",				PF_cl_getkeydest,			602},
@@ -2360,8 +2552,9 @@ static struct {
 	{"netaddress_resolve",		PF_netaddress_resolve,		625},
 	{"getgamedirinfo",			PF_cl_getgamedirinfo,		626},
 	{"sprintf",					PF_sprintf,					627},
-															//gap
-	{"setkeybind",				PF_Fixme,					630},
+//	{NULL,						PF_Fixme,					628},
+//	{NULL,						PF_Fixme,					629},
+	{"setkeybind",				PF_cl_setkeybind,			630},
 	{"getbindmaps",				PF_cl_GetBindMap,			631},
 	{"setbindmaps",				PF_cl_SetBindMap,			632},
 	{"crypto_getkeyfp",			PF_crypto_getkeyfp,			633},
@@ -2369,9 +2562,24 @@ static struct {
 	{"crypto_getencryptlevel",	PF_crypto_getencryptlevel,	635},
 	{"crypto_getmykeyfp",		PF_crypto_getmykeyfp,		636},
 	{"crypto_getmyidfp",		PF_crypto_getmyidfp,		637},
+//	{NULL,						PF_Fixme,					638},
 	{"digest_hex",				PF_digest_hex,				639},
 	{"digest_ptr",				PF_digest_ptr,				0},
+//	{NULL,						PF_Fixme,					640},
 	{"crypto_getmyidstatus",	PF_crypto_getmyidfp,		641},
+//	{NULL,						PF_Fixme,					642},
+//	{NULL,						PF_Fixme,					643},
+//	{NULL,						PF_Fixme,					644},
+//	{NULL,						PF_Fixme,					645},
+//	{NULL,						PF_Fixme,					646},
+//	{NULL,						PF_Fixme,					647},
+//	{NULL,						PF_Fixme,					648},
+//	{NULL,						PF_Fixme,					649},
+	{"fcopy",					PF_fcopy,					650},
+	{"frename",					PF_frename,					651},
+	{"fremove",					PF_fremove,					652},
+	{"fexists",					PF_fexists,					653},
+	{"rmtree",					PF_rmtree,					654},
 
 
 	{"setlocaluserinfo",		PF_cl_setlocaluserinfo,			0},
@@ -2437,37 +2645,145 @@ static int PDECL PR_Menu_MapNamedBuiltin(pubprogfuncs_t *progfuncs, int headercr
 	return 0;
 }
 
-void M_Init_Internal (void);
-void M_DeInit_Internal (void);
 
-int inmenuprogs;
-progparms_t menuprogparms;
-menuedict_t *menu_edicts;
-int num_menu_edicts;
-world_t menu_world;
-
-static struct
+static qboolean MP_MouseMove(menu_t *menu, qboolean isabs, unsigned int devid, float xdelta, float ydelta)
 {
-	func_t init;
-	func_t shutdown;
-	func_t draw;
-	func_t drawloading;
-	func_t keydown;
-	func_t keyup;
-	func_t inputevent;
-	func_t toggle;
-	func_t consolecommand;
-	func_t gethostcachecategory;
-} mpfuncs;
+	void *pr_globals;
 
-jmp_buf mp_abort;
+	if (!menu_world.progs || !mpfuncs.inputevent)
+		return false;
 
+	if (setjmp(mp_abort))
+		return false;
+	inmenuprogs++;
+	pr_globals = PR_globals(menu_world.progs, PR_CURRENT);
+	G_FLOAT(OFS_PARM0) = isabs?CSIE_MOUSEABS:CSIE_MOUSEDELTA;
+	G_FLOAT(OFS_PARM1) = (xdelta * vid.width) / vid.pixelwidth;
+	G_FLOAT(OFS_PARM2) = (ydelta * vid.height) / vid.pixelheight;
+	G_FLOAT(OFS_PARM3) = devid;
+	PR_ExecuteProgram (menu_world.progs, mpfuncs.inputevent);
+	if (R2D_Flush)
+		R2D_Flush();
+	inmenuprogs--;
+	return G_FLOAT(OFS_RETURN);
+}
+
+static qboolean MP_JoystickAxis(menu_t *menu, unsigned int devid, int axis, float value)
+{
+	void *pr_globals;
+	if (!menu_world.progs || !mpfuncs.inputevent)
+		return false;
+	if (setjmp(mp_abort))
+		return false;
+	inmenuprogs++;
+	pr_globals = PR_globals(menu_world.progs, PR_CURRENT);
+	G_FLOAT(OFS_PARM0) = CSIE_JOYAXIS;
+	G_FLOAT(OFS_PARM1) = axis;
+	G_FLOAT(OFS_PARM2) = value;
+	G_FLOAT(OFS_PARM3) = devid;
+	PR_ExecuteProgram (menu_world.progs, mpfuncs.inputevent);
+	if (R2D_Flush)
+		R2D_Flush();
+	inmenuprogs--;
+	return G_FLOAT(OFS_RETURN);
+}
+static qboolean MP_KeyEvent(menu_t *menu, qboolean isdown, unsigned int devid, int key, int unicode)
+{
+	qboolean result;
+
+#ifdef TEXTEDITOR
+	if (editormodal)
+		return false;
+#endif
+
+	if (setjmp(mp_abort))
+		return true;
+
+	if (isdown)
+	{
+#ifndef NOBUILTINMENUS
+		if (key == 'c')
+		{
+			extern qboolean	keydown[K_MAX];
+			if (keydown[K_LCTRL] || keydown[K_RCTRL])
+			{
+				MP_Shutdown();
+				M_Init_Internal();
+				return true;
+			}
+		}
+#endif
+
+		mpkeysdown[key>>3] |= (1<<(key&7));
+	}
+	else
+	{	//don't fire up events if it was not actually pressed.
+		if (key && !(mpkeysdown[key>>3] & (1<<(key&7))))
+			return false;
+		mpkeysdown[key>>3] &= ~(1<<(key&7));
+	}
+
+	menutime = Sys_DoubleTime();
+	if (menu_world.g.time)
+		*menu_world.g.time = menutime;
+
+	inmenuprogs++;
+	if (mpfuncs.inputevent)
+	{
+		void *pr_globals = PR_globals(menu_world.progs, PR_CURRENT);
+		G_FLOAT(OFS_PARM0) = isdown?CSIE_KEYDOWN:CSIE_KEYUP;
+		G_FLOAT(OFS_PARM1) = MP_TranslateFTEtoQCCodes(key);
+		G_FLOAT(OFS_PARM2) = unicode;
+		G_FLOAT(OFS_PARM3) = devid;
+		if (isdown)
+		{
+			qcinput_scan = G_FLOAT(OFS_PARM1);
+			qcinput_unicode = G_FLOAT(OFS_PARM2);
+		}
+		PR_ExecuteProgram(menu_world.progs, mpfuncs.inputevent);
+		result = G_FLOAT(OFS_RETURN);
+		qcinput_scan = 0;
+		qcinput_unicode = 0;
+	}
+	else if (isdown && mpfuncs.keydown)
+	{
+		void *pr_globals = PR_globals(menu_world.progs, PR_CURRENT);
+		G_FLOAT(OFS_PARM0) = MP_TranslateFTEtoQCCodes(key);
+		G_FLOAT(OFS_PARM1) = unicode;
+		PR_ExecuteProgram(menu_world.progs, mpfuncs.keydown);
+		result = true;	//doesn't have a return value, so if the menu is set up for key events, all events are considered eaten.
+	}
+	else if (!isdown && mpfuncs.keyup)
+	{
+		void *pr_globals = PR_globals(menu_world.progs, PR_CURRENT);
+		G_FLOAT(OFS_PARM0) = MP_TranslateFTEtoQCCodes(key);
+		G_FLOAT(OFS_PARM1) = unicode;
+		PR_ExecuteProgram(menu_world.progs, mpfuncs.keyup);
+		result = false; // doesn't have a return value, so don't block it
+	}
+	else
+		result = false;
+	inmenuprogs--;
+
+	if (R2D_Flush)	//shouldn't be needed, but in case the mod is buggy.
+		R2D_Flush();
+	return result;
+}
+static void MP_TryRelease(menu_t *m)
+{
+	if (inmenuprogs)
+		return;	//if the qc asked for it, the qc probably already knows about it. don't recurse.
+	MP_Toggle(0);
+}
 
 void MP_Shutdown (void)
 {
 	func_t temp;
 	if (!menu_world.progs)
 		return;
+
+	menuqc.release = NULL; //don't notify
+	Menu_Unlink(&menuqc);
 /*
 	{
 		char *buffer;
@@ -2484,9 +2800,9 @@ void MP_Shutdown (void)
 		PR_ExecuteProgram(menu_world.progs, temp);
 
 	PR_Common_Shutdown(menu_world.progs, false);
-	menu_world.progs->CloseProgs(menu_world.progs);
+	menu_world.progs->Shutdown(menu_world.progs);
 	memset(&menu_world, 0, sizeof(menu_world));
-	PR_ReleaseFonts(kdm_gmenu);
+	PR_ReleaseFonts(kdm_menu);
 
 #ifdef CL_MASTER
 	Master_ClearMasks();
@@ -2494,8 +2810,8 @@ void MP_Shutdown (void)
 
 	Cmd_RemoveCommands(MP_ConsoleCommand_f);
 
-	Key_Dest_Remove(kdm_gmenu);
-	key_dest_absolutemouse &= ~kdm_gmenu;
+	Key_Dest_Remove(kdm_menu);
+	key_dest_absolutemouse &= ~kdm_menu;
 }
 
 void *VARGS PR_CB_Malloc(int size);	//these functions should be tracked by the library reliably, so there should be no need to track them ourselves.
@@ -2541,11 +2857,16 @@ void MP_CvarChanged(cvar_t *var)
 	}
 }
 
-pbool PDECL Menu_CheckHeaderCrc(pubprogfuncs_t *inst, progsnum_t idx, int crc)
+pbool PDECL Menu_CheckHeaderCrc(pubprogfuncs_t *inst, progsnum_t idx, int crc, const char *filename)
 {
 	if (crc == 10020)
 		return true;	//its okay
-	Con_Printf("progs crc is invalid for menuqc\n");
+	Con_Printf("progs crc is invalid for %s\n", filename);
+	if (crc == 12776)
+	{	//whoever wrote wrath fucked up.
+		Con_Printf("(please correct .src include orders)\n");
+		return true;
+	}
 	return false;
 }
 
@@ -2582,10 +2903,9 @@ static int PDECL MP_PRFileSize (const char *path)
 		return -1;
 }
 
-double  menutime;
 qboolean MP_Init (void)
 {
-	struct key_cursor_s *m = &key_customcursor[kc_menu];
+	struct key_cursor_s *m = &key_customcursor[kc_menuqc];
 
 	if (qrenderer == QR_NONE)
 	{
@@ -2639,15 +2959,21 @@ qboolean MP_Init (void)
 
 	menuprogparms.useeditor = QCEditor;//void (*useeditor) (char *filename, int line, int nump, char **parms);
 	menuprogparms.user = &menu_world;
-	menu_world.keydestmask = kdm_gmenu;
+	menu_world.keydestmask = kdm_menu;
 
 	//default to free mouse+hidden cursor, to match dp's default setting, and because its generally the right thing for a menu.
-	key_dest_absolutemouse |= kdm_gmenu;
 	Q_strncpyz(m->name, "none", sizeof(m->name));
 	m->hotspot[0] = 0;
 	m->hotspot[1] = 0;
 	m->scale = 1;
 	m->dirty = true;
+
+	menuqc.cursor = &key_customcursor[kc_menuqc];
+	menuqc.drawmenu = NULL;		//menuqc sucks!
+	menuqc.mousemove = MP_MouseMove;
+	menuqc.keyevent = MP_KeyEvent;
+	menuqc.joyaxis = MP_JoystickAxis;
+	menuqc.release = MP_TryRelease;
 
 	menutime = Sys_DoubleTime();
 	if (!menu_world.progs)
@@ -2703,7 +3029,13 @@ qboolean MP_Init (void)
 
 		mpfuncs.init = PR_FindFunction(menu_world.progs, "m_init", PR_ANY);
 		mpfuncs.shutdown = PR_FindFunction(menu_world.progs, "m_shutdown", PR_ANY);
-		mpfuncs.draw = PR_FindFunction(menu_world.progs, "m_draw", PR_ANY);
+		{
+			int args = 0;
+			qbyte *argsizes = NULL;
+			mpfuncs.draw = PR_FindFunction(menu_world.progs, "m_draw", PR_ANY);
+			menu_world.progs->GetFunctionInfo(menu_world.progs, mpfuncs.draw, &args, &argsizes, NULL, NULL, 0);
+			mpfuncs.fuckeddrawsizes = (args == 2 && argsizes[0] == 1 && argsizes[1] == 1);
+		}
 		mpfuncs.drawloading = PR_FindFunction(menu_world.progs, "m_drawloading", PR_ANY);
 		mpfuncs.inputevent = PR_FindFunction(menu_world.progs, "Menu_InputEvent", PR_ANY);
 		mpfuncs.keydown = PR_FindFunction(menu_world.progs, "m_keydown", PR_ANY);
@@ -2872,184 +3204,37 @@ void MP_Draw(void)
 
 	inmenuprogs++;
 	pr_globals = PR_globals(menu_world.progs, PR_CURRENT);
-	((float *)pr_globals)[OFS_PARM0+0] = vid.width;
-	((float *)pr_globals)[OFS_PARM0+1] = vid.height;
-	((float *)pr_globals)[OFS_PARM0+2] = 0;
-	((float *)pr_globals)[OFS_PARM1+0] = vid.height;	//dp compat, ish
+
 	if (scr_drawloading||scr_disabled_for_loading)
 	{	//don't draw the menu if we're meant to be drawing a loading screen
 		//the menu should provide a special function if it wants to draw custom loading screens. this is for compat with old/dp/lazy/crappy menus.
 		if (mpfuncs.drawloading)
 		{
+			((float *)pr_globals)[OFS_PARM0+0] = vid.width;
+			((float *)pr_globals)[OFS_PARM0+1] = vid.height;
+			((float *)pr_globals)[OFS_PARM0+2] = 0;
+
 			((float *)pr_globals)[OFS_PARM1] = scr_disabled_for_loading;
 			PR_ExecuteProgram(menu_world.progs, mpfuncs.drawloading);
 		}
 	}
 	else if (mpfuncs.draw)
-		PR_ExecuteProgram(menu_world.progs, mpfuncs.draw);
-	inmenuprogs--;
-}
-
-
-qboolean MP_Keydown(int key, int unicode, unsigned int devid)
-{
-	qboolean result = false;
-
-#ifdef TEXTEDITOR
-	if (editormodal)
-		return true;
-#endif
-
-	if (setjmp(mp_abort))
-		return true;
-
-#ifndef NOBUILTINMENUS
-	if (key == 'c')
 	{
-		extern qboolean	keydown[K_MAX];
-		if (keydown[K_LCTRL] || keydown[K_RCTRL])
-		{
-			MP_Shutdown();
-			M_Init_Internal();
-			return true;
+		if (mpfuncs.fuckeddrawsizes)
+		{	//pass useless sizes in two args if its a dp menu
+			((float *)pr_globals)[OFS_PARM0] = vid.pixelwidth;
+			((float *)pr_globals)[OFS_PARM1] = vid.pixelheight;
 		}
+		else
+		{	//pass useful sizes in a 1-arg vector if its an fte menu.
+			((float *)pr_globals)[OFS_PARM0+0] = vid.width;
+			((float *)pr_globals)[OFS_PARM0+1] = vid.height;
+			((float *)pr_globals)[OFS_PARM0+2] = 0;
+		}
+
+		PR_ExecuteProgram(menu_world.progs, mpfuncs.draw);
 	}
-#endif
-
-	mpkeysdown[key>>3] |= (1<<(key&7));
-
-	menutime = Sys_DoubleTime();
-	if (menu_world.g.time)
-		*menu_world.g.time = menutime;
-
-	inmenuprogs++;
-	if (mpfuncs.inputevent)
-	{
-		void *pr_globals = PR_globals(menu_world.progs, PR_CURRENT);
-		G_FLOAT(OFS_PARM0) = CSIE_KEYDOWN;
-		G_FLOAT(OFS_PARM1) = qcinput_scan = MP_TranslateFTEtoQCCodes(key);
-		G_FLOAT(OFS_PARM2) = qcinput_unicode = unicode;
-		G_FLOAT(OFS_PARM3) = devid;
-		PR_ExecuteProgram(menu_world.progs, mpfuncs.inputevent);
-		result = G_FLOAT(OFS_RETURN);
-		qcinput_scan = 0;
-		qcinput_unicode = 0;
-	}
-	else if (mpfuncs.keydown)
-	{
-		void *pr_globals = PR_globals(menu_world.progs, PR_CURRENT);
-		G_FLOAT(OFS_PARM0) = MP_TranslateFTEtoQCCodes(key);
-		G_FLOAT(OFS_PARM1) = unicode;
-		PR_ExecuteProgram(menu_world.progs, mpfuncs.keydown);
-		result = true;	//doesn't have a return value, so if the menu is set up for key events, all events are considered eaten.
-	}
-	if (R2D_Flush)
-		R2D_Flush();
 	inmenuprogs--;
-	return result;
-}
-
-void MP_Keyup(int key, int unicode, unsigned int devid)
-{
-#ifdef TEXTEDITOR
-	if (editormodal)
-		return;
-#endif
-
-	if (setjmp(mp_abort))
-		return;
-
-	if (key && !(mpkeysdown[key>>3] & (1<<(key&7))))
-		return;
-	mpkeysdown[key>>3] &= ~(1<<(key&7));
-
-	menutime = Sys_DoubleTime();
-	if (menu_world.g.time)
-		*menu_world.g.time = menutime;
-
-	inmenuprogs++;
-	if (mpfuncs.inputevent)
-	{
-		void *pr_globals = PR_globals(menu_world.progs, PR_CURRENT);
-		G_FLOAT(OFS_PARM0) = CSIE_KEYUP;
-		G_FLOAT(OFS_PARM1) = MP_TranslateFTEtoQCCodes(key);
-		G_FLOAT(OFS_PARM2) = unicode;
-		G_FLOAT(OFS_PARM3) = devid;
-		PR_ExecuteProgram(menu_world.progs, mpfuncs.inputevent);
-	}
-	else if (mpfuncs.keyup)
-	{
-		void *pr_globals = PR_globals(menu_world.progs, PR_CURRENT);
-		G_FLOAT(OFS_PARM0) = MP_TranslateFTEtoQCCodes(key);
-		G_FLOAT(OFS_PARM1) = unicode;
-		PR_ExecuteProgram(menu_world.progs, mpfuncs.keyup);
-	}
-	if (R2D_Flush)
-		R2D_Flush();
-	inmenuprogs--;
-}
-
-qboolean MP_MousePosition(float xabs, float yabs, unsigned int devid)
-{
-	void *pr_globals;
-
-	if (!menu_world.progs || !mpfuncs.inputevent)
-		return false;
-
-	if (setjmp(mp_abort))
-		return false;
-	inmenuprogs++;
-	pr_globals = PR_globals(menu_world.progs, PR_CURRENT);
-	G_FLOAT(OFS_PARM0) = CSIE_MOUSEABS;
-	G_FLOAT(OFS_PARM1) = (xabs * vid.width) / vid.pixelwidth;
-	G_FLOAT(OFS_PARM2) = (yabs * vid.height) / vid.pixelheight;
-	G_FLOAT(OFS_PARM3) = devid;
-	PR_ExecuteProgram (menu_world.progs, mpfuncs.inputevent);
-	if (R2D_Flush)
-		R2D_Flush();
-	inmenuprogs--;
-	return G_FLOAT(OFS_RETURN);
-}
-qboolean MP_MouseMove(float xdelta, float ydelta, unsigned int devid)
-{
-	void *pr_globals;
-
-	if (!menu_world.progs || !mpfuncs.inputevent)
-		return false;
-
-	if (setjmp(mp_abort))
-		return false;
-	inmenuprogs++;
-	pr_globals = PR_globals(menu_world.progs, PR_CURRENT);
-	G_FLOAT(OFS_PARM0) = CSIE_MOUSEDELTA;
-	G_FLOAT(OFS_PARM1) = (xdelta * vid.width) / vid.pixelwidth;
-	G_FLOAT(OFS_PARM2) = (ydelta * vid.height) / vid.pixelheight;
-	G_FLOAT(OFS_PARM3) = devid;
-	PR_ExecuteProgram (menu_world.progs, mpfuncs.inputevent);
-	if (R2D_Flush)
-		R2D_Flush();
-	inmenuprogs--;
-	return G_FLOAT(OFS_RETURN);
-}
-
-qboolean MP_JoystickAxis(int axis, float value, unsigned int devid)
-{
-	void *pr_globals;
-	if (!menu_world.progs || !mpfuncs.inputevent)
-		return false;
-	if (setjmp(mp_abort))
-		return false;
-	inmenuprogs++;
-	pr_globals = PR_globals(menu_world.progs, PR_CURRENT);
-	G_FLOAT(OFS_PARM0) = CSIE_JOYAXIS;
-	G_FLOAT(OFS_PARM1) = axis;
-	G_FLOAT(OFS_PARM2) = value;
-	G_FLOAT(OFS_PARM3) = devid;
-	PR_ExecuteProgram (menu_world.progs, mpfuncs.inputevent);
-	if (R2D_Flush)
-		R2D_Flush();
-	inmenuprogs--;
-	return G_FLOAT(OFS_RETURN);
 }
 
 qboolean MP_Toggle(int mode)
@@ -3061,7 +3246,7 @@ qboolean MP_Toggle(int mode)
 		return false;
 #endif
 
-	if (!mode && !Key_Dest_Has(kdm_gmenu))
+	if (!mode && !Key_Dest_Has(kdm_menu))
 		return false;
 
 	if (setjmp(mp_abort))

@@ -547,8 +547,7 @@ qboolean CL_GetDemoMessage (void)
 		{	//start the timer only once we are connected.
 			//make sure everything is loaded, to avoid stalls
 
-			if (Key_Dest_Has(kdm_gmenu))
-				MP_Toggle(0);
+			Menu_PopAll();
 			COM_WorkerFullSync();
 
 			cls.td_starttime = Sys_DoubleTime();
@@ -556,7 +555,6 @@ qboolean CL_GetDemoMessage (void)
 
 			//force the console up, we're done loading.
 			Key_Dest_Remove(kdm_console);
-			Key_Dest_Remove(kdm_emenu);
 			scr_con_current = 0;
 		}
 
@@ -1368,10 +1366,14 @@ void CLNQ_WriteServerData(sizebuf_t *buf)	//for demo recording
 		protfl |= RMQFL_SHORTANGLE;
 	if (cls.netchan.message.prim.anglesize == 4)
 		protfl |= RMQFL_FLOATANGLE;
-	if (cls.netchan.message.prim.coordsize == 3)
-		protfl |= RMQFL_24BITCOORD;
-	if (cls.netchan.message.prim.coordsize == 4)
-		protfl |= RMQFL_FLOATCOORD;
+	switch(cls.netchan.message.prim.coordtype)
+	{
+	case COORDTYPE_FLOAT_32:	 protfl |= RMQFL_FLOATCOORD;	break;
+	case COORDTYPE_FIXED_28_4:	 protfl |= RMQFL_INT32COORD;	break;
+	case COORDTYPE_FIXED_16_8:	 protfl |= RMQFL_24BITCOORD;	break;
+	default:	//err?
+	case COORDTYPE_FIXED_13_3:	break;
+	}
 	switch(cls.protocol_nq)
 	{
 	default:
@@ -1582,7 +1584,7 @@ static int CL_Record_Lightstyles(sizebuf_t *buf, int seq)
 {
 	unsigned int i;
 // send all current light styles
-	for (i=0 ; i<MAX_LIGHTSTYLES ; i++)
+	for (i=0 ; i<cl_max_lightstyles ; i++)
 	{
 		if (i >= MAX_STANDARDLIGHTSTYLES)
 			if (!*cl_lightstyle[i].map)
@@ -2619,7 +2621,7 @@ void CL_QTVPoll (void)
 	qboolean streamavailable = false;
 	qboolean saidheader = false;
 #ifndef NOBUILTINMENUS
-	menu_t *sourcesmenu = NULL;
+	emenu_t *sourcesmenu = NULL;
 #endif
 	int sourcenum = 0;
 
@@ -2794,7 +2796,6 @@ void CL_QTVPoll (void)
 				//now put it on a menu
 				if (!sourcesmenu)
 				{
-					Key_Dest_Add(kdm_emenu);
 					sourcesmenu = M_CreateMenu(0);
 
 					MC_AddPicture(sourcesmenu, 16, 4, 32, 144, "gfx/qplaque.lmp");

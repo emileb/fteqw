@@ -52,6 +52,7 @@ static const struct banflags_s
 	{BAN_PERMIT,	{"safe",		"permit"}},
 	{BAN_CUFF,		{"cuff"}},
 	{BAN_MUTE,		{"mute"}},
+	{BAN_VMUTE,		{"vmute"}},
 	{BAN_CRIPPLED,	{"cripple"}},
 	{BAN_DEAF,		{"deaf"}},
 	{BAN_LAGGED,	{"lag",		"lagged"}},
@@ -817,9 +818,8 @@ void SV_Map_f (void)
 	}
 #endif
 
-#if defined(MENU_DAT) && !defined(SERVERONLY)
-	if (Key_Dest_Has(kdm_gmenu))
-		MP_Toggle(0);
+#ifdef HAVE_CLIENT
+	Menu_PopAll();
 #endif
 
 	if (preserveplayers && svprogfuncs)
@@ -877,6 +877,17 @@ void SV_Map_f (void)
 			host_client->prespawn_stage = PRESPAWN_INVALID;
 			host_client->prespawn_idx = 0;
 		}
+
+#ifdef NQPROT
+		if (dpcompat_nopreparse.ival)
+		{	//wipe broadcasts here...
+			sv.reliable_datagram.cursize = 0;
+			sv.datagram.cursize = 0;
+			sv.nqreliable_datagram.cursize = 0;
+			sv.nqdatagram.cursize = 0;
+		}
+#endif
+
 		SV_SendMessagesToAll ();
 
 		if (flushparms)

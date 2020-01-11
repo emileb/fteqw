@@ -6,6 +6,7 @@ PLUG_LDFLAGS= -static-libgcc
 PLUG_LDFLAGS_ZLIB=-L../engine/libs/mingw-libs -lzlib
 	BITS=32
 	PLUG_LDFLAGS_DL=
+	CMAKERULES=$(OUT_DIR)/toolchain_$(FTE_TARGET).cmake
 endif
 ifeq ($(FTE_TARGET),win64)
 	PLUG_NATIVE_EXT=_x64.dll
@@ -13,6 +14,7 @@ PLUG_LDFLAGS=-Wl,--support-old-code -static-libgcc
 PLUG_LDFLAGS_ZLIB=-L../engine/libs/mingw64-libs -lz
 	BITS=64
 	PLUG_LDFLAGS_DL=
+	CMAKERULES=$(OUT_DIR)/toolchain_$(FTE_TARGET).cmake
 endif
 
 PLUG_PREFIX=$(OUT_DIR)/fteplug_
@@ -91,38 +93,15 @@ PLUG_LDFLAGS:=-L../engine/libs-$(ARCH) $(PLUG_LDFLAGS)
 PLUG_CFLAGS:=-I../engine/libs-$(ARCH) $(PLUG_CFLAGS)
 PLUG_CXXFLAGS:=-I../engine/libs-$(ARCH) $(PLUG_CXXFLAGS)
 
-all: ezscript qi hud irc
+#legacy build rule, now equivelent to all
+native: all
 
 clean: ezscript-clean qi-clean hud-clean irc-clean
 
-.PHONY: all ezscript hud irc native distclean clean
+.PHONY: all native distclean clean
 
 help:
 	@-echo make a subdirectory
-
-ezscript:
-	$(MAKE) -C ezscript
-
-ezscript-clean:
-	$(MAKE) clean -C ezscript
-
-hud:
-	$(MAKE) -C hud
-
-hud-clean:
-	$(MAKE) clean -C hud
-
-qi:
-	$(MAKE) -C qi
-
-qi-clean:
-	$(MAKE) clean -C qi
-
-irc:
-	$(MAKE) -C irc
-
-irc-clean:
-	$(MAKE) clean -C irc
 
 #small script to download+install avformat for windows cross compiles.
 #linux users are expected to have the library installed locally already. If your version is too old or missing, run the following command to install it (to /usr/local), then delete the gz and directory.
@@ -161,7 +140,7 @@ else
 endif
 
 
-AVPLUG_OBJS= avplug/avaudio.c avplug/avencode.c avplug/avdecode.c plugin.c qvm_api.c
+AVPLUG_OBJS= avplug/avaudio.c avplug/avencode.c avplug/avdecode.c plugin.c
 ifeq ($(FTE_TARGET),win32)
 FFMPEG_ZIP=$(OUT_DIR)/$(AV_VER)-x86.zip
 #NATIVE_PLUGINS+=ffmpeg
@@ -229,48 +208,66 @@ $(ODE_LIB): $(OUT_DIR)/../ode-$(ODE_VER).tar.gz
 	mkdir -p $(ODE_BASE) && cd $(ODE_BASE) && tar xvfz $<
 	cd $(ODE_BASE)ode-$(ODE_VER)/ && ./bootstrap && ./configure --enable-double-precision --disable-demos --without-x --with-pic CC="$(CC) $(PLUG_CXXFLAGS)" CXX="$(CC) $(PLUG_CXXFLAGS)" --host=`$(CC) -dumpmachine` && make
 
-ODE_FILES=../engine/common/com_phys_ode.c ../engine/common/mathlib.c plugin.c qvm_api.c $(ODE_LIB)
+ODE_FILES=../engine/common/com_phys_ode.c ../engine/common/mathlib.c plugin.c $(ODE_LIB)
 $(PLUG_PREFIX)ode$(PLUG_NATIVE_EXT): $(ODE_FILES)
 	$(CC) -flto -s $(BASE_CFLAGS) $(CFLAGS) -Os -DFTEPLUGIN -DODE_STATIC -o $@ -shared $(PLUG_CFLAGS) -I$(ODE_BASE)ode-$(ODE_VER)/include $(ODE_FILES) $(PLUG_DEFFILE) $(PLUG_LDFLAGS) -static-libgcc `$(CC) -print-file-name=libstdc++.a` -lpthread
 #NATIVE_PLUGINS+=ode
 
+ifneq ($(CMAKERULES),)
+BULLET_CFLAGS+=-static-libstdc++
+PLUG_CMAKE+= -DCMAKE_TOOLCHAIN_FILE="$(CMAKERULES)" 
+$(CMAKERULES):
+	echo "set(CMAKE_SYSTEM_NAME Windows)" > $@
+	echo "set(TOOLCHAIN_PREFIX `$(CC) -dumpmachine`)" >> $@
+	# cross compilers to use for C, C++ and Fortran
+	echo "set(CMAKE_C_COMPILER $(CC))" >> $@
+	echo "set(CMAKE_CXX_COMPILER $(CXX))" >> $@
+	echo "set(CMAKE_RC_COMPILER $${TOOLCHAIN_PREFIX}-windres)" >> $@
+	# target environment on the build host system
+	echo "set(CMAKE_FIND_ROOT_PATH /usr/$${TOOLCHAIN_PREFIX})" >> $@
+	# modify default behavior of FIND_XXX() commands
+	echo "set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)" >> $@
+	echo "set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)" >> $@
+	echo "set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)" >> $@
+endif
 
 BULLET_VER=2.87
 BULLET_URL=https://github.com/bulletphysics/bullet3/archive/$(BULLET_VER).tar.gz
 BULLET_BASE=$(OUT_DIR)/../bullet3-$(BULLET_VER)_$(FTE_TARGET)/
 BULLET_LIBS=	\
-	$(BULLET_BASE)bullet3-$(BULLET_VER)/src/BulletDynamics/libBulletDynamics.a		\
-	$(BULLET_BASE)bullet3-$(BULLET_VER)/src/BulletCollision/libBulletCollision.a	\
-	$(BULLET_BASE)bullet3-$(BULLET_VER)/src/LinearMath/libLinearMath.a
-BULLET_CFLAGS=-I$(BULLET_BASE)bullet3-$(BULLET_VER)/src
+	$(BULLET_BASE)bullet3-$(BULLET_VER)/lib/libBulletDynamics.a		\
+	$(BULLET_BASE)bullet3-$(BULLET_VER)/lib/libBulletCollision.a	\
+	$(BULLET_BASE)bullet3-$(BULLET_VER)/lib/libLinearMath.a
+BULLET_CFLAGS+=-I$(BULLET_BASE)bullet3-$(BULLET_VER)/src
 $(OUT_DIR)/../bullet3-$(BULLET_VER).tar.gz:
 	mkdir -p $(BULLET_BASE)
 	wget -N $(BULLET_URL) -O $@
 
-BULLET_LIB=$(BULLET_BASE)bullet3-$(BULLET_VER)/src/LinearMath/libLinearMath.a
-$(BULLET_BASE)bullet3-$(BULLET_VER)/src/BulletDynamics/libBulletDynamics.a $(BULLET_BASE)bullet3-$(BULLET_VER)/src/BulletCollision/libBulletCollision.a: $(BULLET_LIB)
-$(BULLET_LIB): $(OUT_DIR)/../bullet3-$(BULLET_VER).tar.gz
+BULLET_LIB=$(BULLET_BASE)bullet3-$(BULLET_VER)/lib/libLinearMath.a
+$(BULLET_BASE)bullet3-$(BULLET_VER)/lib/libBulletDynamics.a $(BULLET_BASE)bullet3-$(BULLET_VER)/lib/libBulletCollision.a: $(BULLET_LIB)
+$(BULLET_LIB): $(OUT_DIR)/../bullet3-$(BULLET_VER).tar.gz $(CMAKERULES)
 	mkdir -p $(BULLET_BASE) && cd $(BULLET_BASE) && tar xvfz $<
-	cd $(BULLET_BASE)bullet3-$(BULLET_VER)/ && cmake $(PLUG_CMAKE) . && $(MAKE) LinearMath BulletDynamics BulletCollision
+	rm $(BULLET_BASE)bullet3-$(BULLET_VER)/build3/cmake/FindPythonLibs.cmake	#cmake is a pile of shite and fails at cross compiling. oh well, we didn't want any python stuff anyway.
+	cd $(BULLET_BASE)bullet3-$(BULLET_VER)/ && cmake $(PLUG_CMAKE) -DBUILD_DEMOS:BOOL=OFF -DBUILD_EXTRAS:BOOL=OFF -DLIBRARY_OUTPUT_PATH=$(BULLET_BASE)bullet3-$(BULLET_VER)/lib . && $(MAKE) LinearMath BulletDynamics BulletCollision
 #./configure --enable-double-precision --disable-demos --without-x CXX="$(CC)" CFLAGS="$(PLUG_CFLAGS)" CXXFLAGS="$(PLUG_CXXFLAGS)" --host=`$(CC) -dumpmachine` && make
 
 
-$(PLUG_PREFIX)bullet$(PLUG_NATIVE_EXT): bullet/bulletplug.cpp plugin.c qvm_api.c $(BULLET_LIBS)
-	$(CXX) $(BASE_CFLAGS) $(CFLAGS) -DFTEPLUGIN -o $@ -shared $(PLUG_CFLAGS) $^ $(PLUG_DEFFILE) $(PLUG_LDFLAGS) $(BULLET_CFLAGS)
+$(PLUG_PREFIX)bullet$(PLUG_NATIVE_EXT): bullet/bulletplug.cpp plugin.c $(BULLET_LIBS)
+	$(CXX) $(BASE_CXXFLAGS) $(CFLAGS) -DFTEPLUGIN -o $@ -shared $(PLUG_CFLAGS) $^ $(PLUG_DEFFILE) $(PLUG_LDFLAGS) $(BULLET_CFLAGS)
 #NATIVE_PLUGINS+=bullet
 
 
 -include Makefile.private
 
-$(PLUG_PREFIX)mpq$(PLUG_NATIVE_EXT): mpq/fs_mpq.c mpq/blast.c plugin.c qvm_api.c
+$(PLUG_PREFIX)mpq$(PLUG_NATIVE_EXT): mpq/fs_mpq.c mpq/blast.c plugin.c
 	$(CC) $(BASE_CFLAGS) $(CFLAGS) -DFTEPLUGIN -o $@ -shared $(PLUG_CFLAGS) -Impq $^ $(PLUG_DEFFILE) $(PLUG_LDFLAGS_ZLIB) $(PLUG_LDFLAGS)
 NATIVE_PLUGINS+=mpq
 
-$(PLUG_PREFIX)xmpp$(PLUG_NATIVE_EXT): jabber/jabberclient.c jabber/jingle.c jabber/sift.c jabber/xml.c plugin.c qvm_api.c ../engine/common/sha1.c emailnot/md5.c
+$(PLUG_PREFIX)xmpp$(PLUG_NATIVE_EXT): jabber/jabberclient.c jabber/jingle.c jabber/sift.c jabber/xml.c plugin.c ../engine/common/sha1.c emailnot/md5.c
 	$(CC) $(BASE_CFLAGS) $(CFLAGS) -DFTEPLUGIN -o $@ -shared $(PLUG_CFLAGS) -Ijabber $^ $(PLUG_DEFFILE) $(PLUG_LDFLAGS) $(LIBRESOLV)
 NATIVE_PLUGINS+=xmpp
 
-$(PLUG_PREFIX)qi$(PLUG_NATIVE_EXT): qi/qi.c jabber/xml.c plugin.c qvm_api.c
+$(PLUG_PREFIX)qi$(PLUG_NATIVE_EXT): qi/qi.c jabber/xml.c plugin.c
 	$(CC) $(BASE_CFLAGS) $(CFLAGS) -DFTEPLUGIN -o $@ -shared $(PLUG_CFLAGS) -Ijabber $^ $(PLUG_DEFFILE) $(PLUG_LDFLAGS)
 NATIVE_PLUGINS+=qi
 
@@ -308,7 +305,7 @@ cef/$(CEF_NAME)/rel.zip: cef/$(CEF_NAME)/include/cef_version.h
 $(OUT_DIR)/cef_$(CEF_VER).zip: cef/$(CEF_NAME)/rel.zip
 	cp cef/$(CEF_NAME)/rel.zip $@
 
-CEF_SOURCES=cef/cef.c plugin.c qvm_api.c
+CEF_SOURCES=cef/cef.c plugin.c
 $(PLUG_PREFIX)cef$(PLUG_NATIVE_EXT): $(CEF_SOURCES) $(OUT_DIR)/cef_$(CEF_VER).zip cef/$(CEF_NAME)/include/cef_version.h
 	$(CC) $(BASE_CFLAGS) $(CFLAGS) -DFTEPLUGIN -o $(PLUG_PREFIX)cef$(PLUG_NATIVE_EXT) -shared $(PLUG_CFLAGS) -Icef/$(CEF_NAME) $(CEF_SOURCES) $(PLUG_DEFFILE) $(PLUG_LDFLAGS) -Wl,-rpath,. $(PLUG_LDFLAGS_DL)
 #NATIVE_PLUGINS+=cef
@@ -318,18 +315,17 @@ $(PLUG_PREFIX)cef$(PLUG_NATIVE_EXT):
 	echo cef plugin not supported on this arch
 endif
 
-#irc plugin can still be built as a qvm.
-$(PLUG_PREFIX)irc$(PLUG_NATIVE_EXT): irc/ircclient.c plugin.c qvm_api.c
+$(PLUG_PREFIX)irc$(PLUG_NATIVE_EXT): irc/ircclient.c plugin.c
 	$(CC) $(BASE_CFLAGS) $(CFLAGS) -DFTEPLUGIN -o $@ -shared $(PLUG_CFLAGS) -Iirc $^ $(PLUG_DEFFILE) $(PLUG_LDFLAGS)
 NATIVE_PLUGINS+=irc
 
 #for compat with ezquake
-$(PLUG_PREFIX)ezhud$(PLUG_NATIVE_EXT): ezhud/ezquakeisms.c ezhud/hud.c ezhud/hud_common.c ezhud/hud_editor.c plugin.c qvm_api.c
+$(PLUG_PREFIX)ezhud$(PLUG_NATIVE_EXT): ezhud/ezquakeisms.c ezhud/hud.c ezhud/hud_common.c ezhud/hud_editor.c plugin.c
 	$(CC) $(BASE_CFLAGS) $(CFLAGS) -DFTEPLUGIN -o $@ -shared $(PLUG_CFLAGS) -Iezhud $^ $(PLUG_DEFFILE) $(PLUG_LDFLAGS)
 NATIVE_PLUGINS+=ezhud
 
-$(PLUG_PREFIX)models$(PLUG_NATIVE_EXT): models/gltf.c models/models.c plugin.c qvm_api.c
+$(PLUG_PREFIX)models$(PLUG_NATIVE_EXT): models/gltf.c models/exportiqm.c models/models.c plugin.c
 	$(CC) $(BASE_CFLAGS) $(CFLAGS) -DFTEPLUGIN -o $@ -shared $(PLUG_CFLAGS) -Imodels $^ $(PLUG_DEFFILE) $(PLUG_LDFLAGS)
 #NATIVE_PLUGINS+=models
 
-native: $(foreach FOO,$(NATIVE_PLUGINS), $(PLUG_PREFIX)$(FOO)$(PLUG_NATIVE_EXT))
+all: $(foreach FOO,$(NATIVE_PLUGINS), $(PLUG_PREFIX)$(FOO)$(PLUG_NATIVE_EXT))

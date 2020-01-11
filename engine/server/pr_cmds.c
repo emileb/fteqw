@@ -63,7 +63,8 @@ cvar_t	noexit = CVAR("noexit", "0");
 extern cvar_t sv_specprint;
 
 //cvar_t	sv_aim = {"sv_aim", "0.93"};
-cvar_t	sv_aim = CVAR("sv_aim", "2");
+cvar_t	sv_aim = CVARD("sv_aim", "2", "The value should be cos(angle), where angle is the greatest allowed angle from which to deviate from the direction the shot would have been along. Values >1 thus disable auto-aim. This can be overridden with setinfo aim 0.73.");
+cvar_t	sv_maxaim = CVARD("sv_maxaim", "22", "The maximum acceptable angle for autoaiming.");
 
 extern cvar_t pr_autocreatecvars;
 cvar_t	pr_ssqc_memsize = CVARD("pr_ssqc_memsize", "-1", "The ammount of memory available to the QC vm. This has a theoretical maximum of 1gb, but that value can only really be used in 64bit builds. -1 will attempt to use some conservative default, but you may need to increase it. Consider also clearing pr_fixbrokenqccarrays if you need to change this cvar.");
@@ -107,6 +108,7 @@ static cvar_t sv_addon[MAXADDONS];
 static char cvargroup_progs[] = "Progs variables";
 
 static evalc_t evalc_idealpitch, evalc_pitch_speed;
+static void PR_Lightstyle_f(void);
 
 qboolean ssqc_deprecated_warned;
 int pr_teamfield;
@@ -711,7 +713,7 @@ static qboolean QDECL SVPR_Event_ContentsTransition(world_t *w, wedict_t *ent, i
 #define H2MP_PROGHEADER_CRC	26905	//hexen2 mission pack uses slightly different defs... *sigh*...
 #define H2DEMO_PROGHEADER_CRC	14046	//I'm guessing this is from the original release or something
 
-pbool PDECL PR_SSQC_CheckHeaderCrc(pubprogfuncs_t *inst, progsnum_t idx, int crc)
+pbool PDECL PR_SSQC_CheckHeaderCrc(pubprogfuncs_t *inst, progsnum_t idx, int crc, const char *filename)
 {
 	progstype_t modtype;
 	if (crc == QW_PROGHEADER_CRC)
@@ -734,7 +736,10 @@ pbool PDECL PR_SSQC_CheckHeaderCrc(pubprogfuncs_t *inst, progsnum_t idx, int crc
 		progstype = modtype;
 	//if the new one differs from the main module, reject it, unless it has crc 0, which we'll allow as a universal mutator (good luck guessing the correct arguments, but hey).
 	if (progstype != modtype && crc != 0)
+	{
+		Con_Printf("Unable to load \"%s\" due to mismatched gametype/progdefs\n", filename);
 		return false;
+	}
 	return true;
 }
 static void *PDECL SSQC_PRReadFile (const char *path, qbyte *(PDECL *buf_get)(void *buf_ctx, size_t size), void *buf_ctx, size_t *size, pbool issource)
@@ -851,16 +856,19 @@ void PR_Deinit(void)
 
 		PR_Common_Shutdown(svprogfuncs, false);
 		World_Destroy(&sv.world);
-		if (svprogfuncs->CloseProgs)
-			svprogfuncs->CloseProgs(svprogfuncs);
+		if (svprogfuncs->Shutdown)
+			svprogfuncs->Shutdown(svprogfuncs);
 		sv.world.progs = NULL;
 		svprogfuncs=NULL;
 
-		for (i = 0; i < MAX_LIGHTSTYLES; i++)
+		for (i = 0; i < sv.maxlightstyles; i++)
 		{
-			BZ_Free((void*)sv.strings.lightstyles[i]);
-			sv.strings.lightstyles[i] = NULL;
+			BZ_Free((void*)sv.lightstyles[i].str);
+			sv.lightstyles[i].str = NULL;
 		}
+		BZ_Free(sv.lightstyles);
+		sv.lightstyles = NULL;
+		sv.maxlightstyles = 0;
 	}
 
 	World_Destroy(&sv.world);
@@ -1544,6 +1552,8 @@ void PR_Init(void)
 	Cmd_AddCommand ("extensionlist_ssqc", PR_SVExtensionList_f);
 	Cmd_AddCommand ("pr_dumpplatform", PR_DumpPlatform_f);
 
+	Cmd_AddCommand ("sv_lightstyle", PR_Lightstyle_f);
+
 /*
 #ifdef _DEBUG
 	Cmd_AddCommand ("svtestprogs", QCLibTest);
@@ -1770,7 +1780,7 @@ static void PDECL PR_DoSpawnInitialEntity(pubprogfuncs_t *progfuncs, struct edic
 				if (developer.value)
 				{
 					int argcount;
-					progfuncs->GetFunctionInfo(progfuncs, f, &argcount, NULL, spawnfuncname, sizeof(spawnfuncname));
+					progfuncs->GetFunctionInfo(progfuncs, f, &argcount, NULL, NULL, spawnfuncname, sizeof(spawnfuncname));
 					if (argcount != 0)
 						Con_Printf("Spawn function %s defined with unsatisfied arguments\n", spawnfuncname);
 				}
@@ -4646,7 +4656,7 @@ void QCBUILTIN PF_applylightstyle(int style, const char *val, vec3_t rgb)
 	client_t	*client;
 	int			j;
 
-	if (style < 0 || style >= MAX_LIGHTSTYLES)
+	if (style < 0 || style >= MAX_NET_LIGHTSTYLES)
 	{
 		Con_Printf("WARNING: Bad lightstyle %i.\n", style);
 		return;
@@ -4654,14 +4664,16 @@ void QCBUILTIN PF_applylightstyle(int style, const char *val, vec3_t rgb)
 	if (strlen(val) >= 64)
 		Con_Printf("WARNING: Style string is longer than standard (%i). Some clients could crash.\n", 63);
 
+	if (style+1 > sv.maxlightstyles)
+		Z_ReallocElements((void**)&sv.lightstyles, &sv.maxlightstyles, style+1, sizeof(*sv.lightstyles));
 
 // change the string in sv
-	if (sv.strings.lightstyles[style])
-		BZ_Free((void*)sv.strings.lightstyles[style]);
-	sv.strings.lightstyles[style] = Z_StrDup(val);
+	if (sv.lightstyles[style].str)
+		BZ_Free((void*)sv.lightstyles[style].str);
+	sv.lightstyles[style].str = Z_StrDup(val);
 
 #ifdef PEXT_LIGHTSTYLECOL
-	VectorCopy(rgb, sv.lightstylecolours[style]);
+	VectorCopy(rgb, sv.lightstyles[style].colours);
 #endif
 
 // send message to all clients on this server
@@ -4672,58 +4684,13 @@ void QCBUILTIN PF_applylightstyle(int style, const char *val, vec3_t rgb)
 	{
 		if (client->controller)
 			continue;
-		if ( client->state == cs_spawned )
-		{
-			if (style >= MAX_STANDARDLIGHTSTYLES)	//only bug out clients if the styles are needed
-				if (!*val)
-					continue;
-#ifdef PEXT_LIGHTSTYLECOL
-			if ((client->fteprotocolextensions & PEXT_LIGHTSTYLECOL) && (rgb[0] != 1 || rgb[1] != 1 || rgb[2] != 1))
-			{
-				ClientReliableWrite_Begin (client, svcfte_lightstylecol, 3+6+strlen(val)+1);
-				ClientReliableWrite_Byte (client, style);
-				ClientReliableWrite_Char (client, 0x87);
-				ClientReliableWrite_Short (client, rgb[0]*1024);
-				ClientReliableWrite_Short (client, rgb[1]*1024);
-				ClientReliableWrite_Short (client, rgb[2]*1024);
-				ClientReliableWrite_String (client, val);
-			}
-			else
-#endif
-			{
-				ClientReliableWrite_Begin (client, svc_lightstyle, strlen(val)+3);
-				ClientReliableWrite_Byte (client, style);
-				ClientReliableWrite_String (client, val);
-			}
-		}
+		if (client->state == cs_spawned)
+			SV_SendLightstyle(client, NULL, style, false);
 	}
 
 #ifdef MVD_RECORDING
 	if (sv.mvdrecording)
-	{
-		if (style < MAX_STANDARDLIGHTSTYLES || *val)
-		{
-			sizebuf_t *msg = MVDWrite_Begin(dem_all, 0, 3+6+strlen(val)+1);
-#ifdef PEXT_LIGHTSTYLECOL
-			if ((demo.recorder.fteprotocolextensions & PEXT_LIGHTSTYLECOL) && (rgb[0] != 1 || rgb[1] != 1 || rgb[2] != 1))
-			{
-				MSG_WriteByte (msg, svcfte_lightstylecol);
-				MSG_WriteByte (msg, style);
-				MSG_WriteChar (msg, 0x87);
-				MSG_WriteShort (msg, rgb[0]*1024);
-				MSG_WriteShort (msg, rgb[1]*1024);
-				MSG_WriteShort (msg, rgb[2]*1024);
-				MSG_WriteString (msg, val);
-			}
-			else
-#endif
-			{
-				MSG_WriteByte (msg, svc_lightstyle);
-				MSG_WriteByte (msg, style);
-				MSG_WriteString (msg, val);
-			}
-		}
-	}
+		SV_SendLightstyle(&demo.recorder, NULL, style, true);
 #endif
 }
 
@@ -4751,35 +4718,65 @@ static void QCBUILTIN PF_lightstyle (pubprogfuncs_t *prinst, struct globalvars_s
 	PF_applylightstyle(style, val, rgb);
 }
 
+static void PR_Lightstyle_f(void)
+{
+	int style = atoi(Cmd_Argv(1));
+	if (svs.gametype != GT_PROGS && svs.gametype != GT_Q1QVM)
+		Con_TPrintf ("not supported in the current game mode.\n");
+	else if (!SV_MayCheat())
+		Con_TPrintf ("Please set sv_cheats 1 and restart the map first.\n");
+	else if (Cmd_Argc() <= 2)
+	{
+		if (style >= 0 && style < sv.maxlightstyles && Cmd_Argc() >= 2)
+			Con_Printf("Style %i: %s %g %g %g\n", style, sv.lightstyles[style].str, sv.lightstyles[style].colours[0], sv.lightstyles[style].colours[1], sv.lightstyles[style].colours[2]);
+		else for (style = 0; style < sv.maxlightstyles; style++)
+			if (sv.lightstyles[style].str)
+				Con_Printf("Style %i: %s %g %g %g\n", style, sv.lightstyles[style].str, sv.lightstyles[style].colours[0], sv.lightstyles[style].colours[1], sv.lightstyles[style].colours[2]);
+	}
+	else
+	{
+		vec3_t rgb = {1,1,1};
+		if (Cmd_Argc() > 5)
+		{
+			rgb[0] = atof(Cmd_Argv(3));
+			rgb[1] = atof(Cmd_Argv(4));
+			rgb[2] = atof(Cmd_Argv(5));
+		}
+		else if (Cmd_Argc() > 3)
+			rgb[0] = rgb[1] = rgb[2] = atof(Cmd_Argv(3));
+		PF_applylightstyle(style, Cmd_Argv(2), rgb);
+	}
+}
+
 static void QCBUILTIN PF_getlightstyle (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	unsigned int		style = G_FLOAT(OFS_PARM0);
 
-	if (style >= countof(sv.strings.lightstyles))
+	if (style >= sv.maxlightstyles)
 	{
 		VectorSet(G_VECTOR(OFS_PARM1), 0, 0, 0);
 		G_INT(OFS_RETURN) = 0;
 	}
 	else
 	{
-		VectorCopy(sv.lightstylecolours[style], G_VECTOR(OFS_PARM1));
-		if (!sv.strings.lightstyles[style])
+		VectorCopy(sv.lightstyles[style].colours, G_VECTOR(OFS_PARM1));
+		if (!sv.lightstyles[style].str)
 			G_INT(OFS_RETURN) = 0;
 		else
-			RETURN_TSTRING(sv.strings.lightstyles[style]);
+			RETURN_TSTRING(sv.lightstyles[style].str);
 	}
 }
 static void QCBUILTIN PF_getlightstylergb (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	unsigned int		style = G_FLOAT(OFS_PARM0);
 	int value;
-	if (!sv.strings.lightstyles[style])
+	if (style >= sv.maxlightstyles || !sv.lightstyles[style].str)
 		value = ('m'-'a')*22;
-	else if (sv.strings.lightstyles[style][0] == '=')
-		value = atof(sv.strings.lightstyles[style]+1)*256;
+	else if (sv.lightstyles[style].str[0] == '=')
+		value = atof(sv.lightstyles[style].str+1)*256;
 	else
-		value = sv.strings.lightstyles[style][max(0,(int)(sv.time*10)) % strlen(sv.strings.lightstyles[style])] - 'a';
-	VectorScale(sv.lightstylecolours[style], value*(1.0/256), G_VECTOR(OFS_RETURN));
+		value = sv.lightstyles[style].str[max(0,(int)(sv.time*10)) % strlen(sv.lightstyles[style].str)] - 'a';
+	VectorScale(sv.lightstyles[style].colours, value*(1.0/256), G_VECTOR(OFS_RETURN));
 }
 
 #ifdef HEXEN2
@@ -4787,12 +4784,12 @@ static void QCBUILTIN PF_lightstylevalue (pubprogfuncs_t *prinst, struct globalv
 {
 	int style;
 	style = G_FLOAT(OFS_PARM0);
-	if(style < 0 || style >= MAX_LIGHTSTYLES || !sv.strings.lightstyles[style])
+	if(style < 0 || style >= sv.maxlightstyles || !sv.lightstyles[style].str || !*sv.lightstyles[style].str)
 	{
 		G_FLOAT(OFS_RETURN) = 0;
 		return;
 	}
-	G_FLOAT(OFS_RETURN) = *sv.strings.lightstyles[style] - 'a';
+	G_FLOAT(OFS_RETURN) = *sv.lightstyles[style].str - 'a';
 }
 
 static void QCBUILTIN PF_lightstylestatic (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
@@ -4832,7 +4829,7 @@ static void QCBUILTIN PF_pointcontents (pubprogfuncs_t *prinst, struct globalvar
 
 	v = G_VECTOR(OFS_PARM0);
 
-	cont = World_PointContents(w, v);
+	cont = World_PointContentsWorldOnly(w, v);
 	if (cont & FTECONTENTS_SOLID)
 		G_FLOAT(OFS_RETURN) = Q1CONTENTS_SOLID;
 	else if (cont & FTECONTENTS_SKY)
@@ -4863,34 +4860,29 @@ void QCBUILTIN PF_aim (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 	vec3_t	start, dir, end, bestdir;
 	int		i, j;
 	trace_t	tr;
-	float	dist, bestdist = sv_aim.value;
-	char	*noaim;
+	float	dist, bestdist;
 
 	ent = G_EDICT(prinst, OFS_PARM0);
 //	speed = G_FLOAT(OFS_PARM1);
 
-	VectorCopy (ent->v->origin, start);
-	start[2] += 20;
 
-// noaim option
+	//figure out the angle we're allowed to aim at
 	i = NUM_FOR_EDICT(prinst, ent);
 	if (i>0 && i<sv.allocated_client_slots)
-	{
-		noaim = InfoBuf_ValueForKey (&svs.clients[i-1].userinfo, "noaim");
-		if (atoi(noaim) > 0)
-		{
-			VectorCopy (P_VEC(v_forward), G_VECTOR(OFS_RETURN));
-			return;
-		}
-
-		noaim = InfoBuf_ValueForKey (&svs.clients[i-1].userinfo, "aim");
-		if (noaim)
-		{
-			dist = atof(noaim);
-			if (dist > 0)
-				bestdist = dist;
-		}
+		bestdist = svs.clients[i-1].autoaimdot;
+	else
+		bestdist = sv_aim.value;
+	if (bestdist >= 1)
+	{	//autoaim disabled, early out and just aim straight
+		VectorCopy (P_VEC(v_forward), G_VECTOR(OFS_RETURN));
+		return;
 	}
+	dist = cos(sv_maxaim.value);
+	bestdist = max(bestdist, dist);
+
+
+	VectorCopy (ent->v->origin, start);
+	start[2] += ent->v->view_ofs[2]; //the view position is at 22, but the gun position is normally at 16.
 
 // try sending a trace straight
 	VectorCopy (P_VEC(v_forward), dir);
@@ -5312,6 +5304,56 @@ void QCBUILTIN PF_WriteLong (pubprogfuncs_t *prinst, struct globalvars_s *pr_glo
 	}
 }
 
+void QCBUILTIN PF_WriteInt (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	int dest = G_FLOAT(OFS_PARM0);
+	if (dest == MSG_CSQC)
+	{	//csqc buffers are always written.
+		MSG_WriteLong(&csqcmsgbuffer, G_INT(OFS_PARM1));
+		return;
+	}
+
+	if (pr_nonetaccess.value)
+		return;
+#ifdef SERVER_DEMO_PLAYBACK
+	if (sv.demofile)
+		return;
+#endif
+
+#ifdef NETPREPARSE
+	if (dpcompat_nopreparse.ival)
+		;
+	else if (progstype != PROG_QW)
+	{
+		NPP_NQWriteLong(dest, G_INT(OFS_PARM1));
+		return;
+	}
+#ifdef NQPROT
+	else
+	{
+		NPP_QWWriteLong(dest, G_INT(OFS_PARM1));
+		return;
+	}
+#endif
+#endif
+
+	if (dest == MSG_ONE)
+	{
+		client_t *cl = Write_GetClient();
+		if (!cl)
+			return;
+		ClientReliableCheckBlock(cl, 4);
+		ClientReliableWrite_Long(cl, G_INT(OFS_PARM1));
+	}
+	else
+	{
+		if (progstype != PROG_QW)
+			MSG_WriteLong (NQWriteDest(dest), G_INT(OFS_PARM1));
+		else
+			MSG_WriteLong (QWWriteDest(dest), G_INT(OFS_PARM1));
+	}
+}
+
 void QCBUILTIN PF_WriteAngle (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	int dest = G_FLOAT(OFS_PARM0);
@@ -5365,7 +5407,7 @@ void QCBUILTIN PF_WriteAngle (pubprogfuncs_t *prinst, struct globalvars_s *pr_gl
 void QCBUILTIN PF_WriteCoord (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	int dest = G_FLOAT(OFS_PARM0);
-	if (developer.ival && sv.reliable_datagram.prim.coordsize == 2)
+	if (developer.ival && sv.reliable_datagram.prim.coordtype == COORDTYPE_FIXED_13_3)
 	{
 		int v = G_FLOAT(OFS_PARM1)*8;
 		if (v > 32767)
@@ -6155,7 +6197,7 @@ char *PF_infokey_Internal (int entnum, const char *key)
 				value = "bjp3";
 				break;
 			case SCP_FITZ666:
-				if (svs.clients[entnum-1].netchan.netprim.coordsize != 2)
+				if (svs.clients[entnum-1].netchan.netprim.coordtype != COORDTYPE_FIXED_13_3)
 					value = "rmq999";
 				else
 					value = "fitz666";
@@ -6984,7 +7026,7 @@ static void QCBUILTIN PF_checkbuiltin (pubprogfuncs_t *prinst, struct globalvars
 	char *funcname = NULL;
 	int args;
 	int builtinno;
-	if (prinst->GetFunctionInfo(prinst, funcref, &args, &builtinno, funcname, sizeof(funcname)))
+	if (prinst->GetFunctionInfo(prinst, funcref, &args, NULL, &builtinno, funcname, sizeof(funcname)))
 	{	//qc defines the function at least. nothing weird there...
 		if (builtinno > 0 && builtinno < prinst->parms->numglobalbuiltins)
 		{
@@ -8883,7 +8925,7 @@ static void QCBUILTIN PF_Fork(pubprogfuncs_t *prinst, struct globalvars_s *pr_gl
 
 	PR_CreateThread(prinst, 1, sv.time + sleeptime, false);
 
-	PRSV_RunThreads();
+//	PRSV_RunThreads();
 
 	G_FLOAT(OFS_RETURN) = 0;
 }
@@ -9882,11 +9924,11 @@ static void QCBUILTIN PF_runclientphys(pubprogfuncs_t *prinst, struct globalvars
 #endif
 	if (client)
 	{
-		movevars.coordsize = client->netchan.netprim.coordsize;
+		movevars.coordtype = client->netchan.netprim.coordtype;
 		client->lastruncmd = sv.time*1000;
 	}
 	else
-		movevars.coordsize = svs.netprim.coordsize;
+		movevars.coordtype = svs.netprim.coordtype;
 
 	pmove.numtouch = 0;
 	pmove.world = &sv.world;
@@ -10325,12 +10367,12 @@ static BuiltinList_t BuiltinList[] = {				//nq	qw		h2		ebfs
 #ifndef SERVERONLY
 	//begin menu-only 'standard'
 	{"checkextension",	PF_Fixme,			0,		0,		0,		1,	D("float(string ext)", "Checks if the named extension is supported by the running engine.")},
-	{"error",			PF_Fixme,			0,		0,		0,		2,	"void(string err,...)"},
-	{"objerror",		PF_Fixme,			0,		0,		0,		3,	"void(string err,...)"},
-	{"print",			PF_Fixme,			0,		0,		0,		4,	"void(string text,...)"},
+	{"error",			PF_Fixme,			0,		0,		0,		2,	D("void(string err,...)", "Fatal error that will trigger a crash-to-console that users will actually notice.")},
+	{"objerror",		PF_Fixme,			0,		0,		0,		3,	D("void(string err,...)", "For some reason this has been redefined as non-fatal, and as it won't force the user to look at the console it'll generally be ignored completely so really what's the point? Other than as a convoluted way to remove(self) that is.")},
+	{"print",			PF_Fixme,			0,		0,		0,		4,	D("void(string text,...)", "Hello, world. Shoves junk on the console. Hopefully people will bother to read it, maybe.")},
 	{"bprint",			PF_Fixme,			0,		0,		0,		5,	"void(string text,...)"},
 	{"msprint",			PF_Fixme,			0,		0,		0,		6,	"void(float clientnum, string text,...)"},
-	{"cprint",			PF_Fixme,			0,		0,		0,		7,	"void(string text,...)"},
+	{"cprint",			PF_Fixme,			0,		0,		0,		7,	D("void(string text,...)", "Tries to show the given message in the centre of the screen, assuming that its not obscured by menus. Oh hey look, you're calling it in menuqc!")},
 	{"normalize",		PF_Fixme,			0,		0,		0,		8,	"vector(vector)"},
 	{"vlen",			PF_Fixme,			0,		0,		0,		9,	"float(vector)"},
 	{"vectoyaw",		PF_Fixme,			0,		0,		0,		10,	"float(vector)"},
@@ -10351,11 +10393,11 @@ static BuiltinList_t BuiltinList[] = {				//nq	qw		h2		ebfs
 	{"findfloat",		PF_Fixme,			0,		0,		0,		25,	"entity(entity start, .__variant field, __variant match)"},
 	{"findchain",		PF_Fixme,			0,		0,		0,		26,	"entity(.string field, string match)"},
 	{"findchainfloat",	PF_Fixme,			0,		0,		0,		27,	"entity(.__variant field, __variant match)"},
-	{"precache_file",	PF_Fixme,			0,		0,		0,		28,	"string(string file)"},
+	{"precache_file",	PF_Fixme,			0,		0,		0,		28,	D("string(string file)", "Attempts to download the named file from the current server, if it isn't found locally. Not very useful as menuqc is normally meant to work before joining servers too.")},
 	{"precache_sound",	PF_Fixme,			0,		0,		0,		29,	"string(string sample)"},
-	{"coredump",		PF_Fixme,			0,		0,		0,		30,	"void()"},
-	{"traceon",			PF_Fixme,			0,		0,		0,		31,	"void()"},
-	{"traceoff",		PF_Fixme,			0,		0,		0,		32,	"void()"},
+	{"coredump",		PF_Fixme,			0,		0,		0,		30,	D("void()", "Takes a dump, writing the qcvm's state to disk. There are normally easier ways to debug, but I suppose this one still beats print spam.")},
+	{"traceon",			PF_Fixme,			0,		0,		0,		31,	D("void()", "Enables single-stepping. Its generally easier to just set a breakpoint.")},
+	{"traceoff",		PF_Fixme,			0,		0,		0,		32,	D("void()", "Disables single-stepping. Which sucks if you started said singlestepping outside of qc.")},
 	{"eprint",			PF_Fixme,			0,		0,		0,		33,	"void(entity)"},
 	{"rint",			PF_Fixme,			0,		0,		0,		34,	"float(float)"},
 	{"floor",			PF_Fixme,			0,		0,		0,		35,	"float(float)"},
@@ -10365,12 +10407,12 @@ static BuiltinList_t BuiltinList[] = {				//nq	qw		h2		ebfs
 	{"cos",				PF_Fixme,			0,		0,		0,		39,	"float(float)"},
 	{"sqrt",			PF_Fixme,			0,		0,		0,		40,	"float(float)"},
 	{"randomvector",	PF_Fixme,			0,		0,		0,		41,	"vector()"},
-	{"registercvar",	PF_Fixme,			0,		0,		0,		42,	"float(string name, string value, float flags)"},
+	{"registercvar",	PF_Fixme,			0,		0,		0,		42,	D("float(string name, string value, float flags)", "Creates the cvar if it didn't already exist. This presents issues for setting those cvars via startup configs of course, and autocvars are easier but I suppose they don't get any flags (which are ignored anyway, of course).")},
 	{"min",				PF_Fixme,			0,		0,		0,		43,	"float(float,...)"},
 	{"max",				PF_Fixme,			0,		0,		0,		44,	"float(float,...)"},
 	{"bound",			PF_Fixme,			0,		0,		0,		45,	"float(float min,float value,float max)"},
 	{"pow",				PF_Fixme,			0,		0,		0,		46,	"float(float,float)"},
-	{"copyentity",		PF_Fixme,			0,		0,		0,		47,	"void(entity src, entity dst)"},
+	{"copyentity",		PF_Fixme,			0,		0,		0,		47,	D("void(entity src, entity dst)", "Copies all entity fields from one entity into another (forgetting any that were previously set on the destination).")},
 	{"fopen",			PF_Fixme,			0,		0,		0,		48,	"filestream(string filename, float mode)"},
 	{"fclose",			PF_Fixme,			0,		0,		0,		49,	"void(filestream fhandle)"},
 	{"fgets",			PF_Fixme,			0,		0,		0,		50,	"string(filestream fhandle)"},
@@ -10379,36 +10421,36 @@ static BuiltinList_t BuiltinList[] = {				//nq	qw		h2		ebfs
 	{"strcat",			PF_Fixme,			0,		0,		0,		53,	"string(string, optional string, optional string, optional string, optional string, optional string, optional string, optional string)"},
 	{"substring",		PF_Fixme,			0,		0,		0,		54,	"string(string s, float start, float length)"},
 	{"stov",			PF_Fixme,			0,		0,		0,		55,	"vector(string)"},
-	{"strzone",			PF_Fixme,			0,		0,		0,		56,	"string(string)"},
-	{"strunzone",		PF_Fixme,			0,		0,		0,		57,	"void(string)"},
-	{"tokenize",		PF_Fixme,			0,		0,		0,		58,	"float(string)"},
-	{"argv",			PF_Fixme,			0,		0,		0,		59,	"string(float)"},
-	{"isserver",		PF_Fixme,			0,		0,		0,		60,	"float()"},
-	{"clientcount",		PF_Fixme,			0,		0,		0,		61,	"float()"},
-	{"clientstate",		PF_Fixme,			0,		0,		0,		62,	"float()"},
-	{"clientcommand",	PF_Fixme,			0,		0,		0,		63,	"void(float client, string s)"},
-	{"changelevel",		PF_Fixme,			0,		0,		0,		64,	"void(string map)"},
-	{"localsound",		PF_Fixme,			0,		0,		0,		65,	"void(string sample, optional float channel, optional float volume)"},
-	{"getmousepos",		PF_Fixme,			0,		0,		0,		66,	"vector()"},
+	{"strzone",			PF_Fixme,			0,		0,		0,		56,	D("string(string)", "Exists in FTE for compat only, no different from strcat.")},
+	{"strunzone",		PF_Fixme,			0,		0,		0,		57,	D("void(string)", "Exists in FTE for compat only, does nothing.")},
+	{"tokenize",		PF_Fixme,			0,		0,		0,		58,	D("float(string)", "Splits up the given string into its different components (what constitutes a token separator is not well defined and has been hacked about with over the years so have fun with that), returning the number of tokens that were found. Call argv(0 through ret-1) to retrieve each individual token. Take care to not use this recursively.")},
+	{"argv",			PF_Fixme,			0,		0,		0,		59,	D("string(float)", "Returns one of the tokens found via tokenize (and equivelent builtins).")},
+	{"isserver",		PF_Fixme,			0,		0,		0,		60,	D("float()", "Returns true if the local engine is running a server, and thus cvars and localcmds are shared with said server.")},
+	{"clientcount",		PF_Fixme,			0,		0,		0,		61,	D("float()", "Returns the maximum number of players on the server. Useless if its a remote server, so its a kinda useless builtin really.")},
+	{"clientstate",		PF_Fixme,			0,		0,		0,		62,	D("float()", "Tells you whether the client is actually connected to anything. 0 for a dedicated server (but dedicated servers don't normally run menuqc anyway), 2 if connecting or connected to a server (but not necessarily spawned+active), 1 for sitting around idle without trying to connect to anything yet.")},
+	{"clientcommand",	PF_Fixme,			0,		0,		0,		63,	D("void(float client, string s)", "Fakes a 'cmd foo' message from the specified player to the local server, and also bypasses ssqc handling of it greatly limiting the use of this builtin."), true},
+	{"changelevel",		PF_Fixme,			0,		0,		0,		64,	D("void(string map)", "Not really any different from a localcmd, but with proper string escapes.")},
+	{"localsound",		PF_Fixme,			0,		0,		0,		65,	D("void(string sample, optional float channel, optional float volume)", "Plays a sound, locally. precaching is optional, but recommended.")},
+	{"getmousepos",		PF_Fixme,			0,		0,		0,		66,	D("vector()", "Obsolete. Return values depend upon the current cursor mode. Implement Menu_InputEvent instead, so you can handle deltas as-is or absolutes if that's all the OS can provide.")},
 	{"gettime",			PF_Fixme,			0,		0,		0,		67,	"float(optional float timetype)"},
-	{"loadfromdata",	PF_Fixme,			0,		0,		0,		68,	"void(string data)"},
-	{"loadfromfile",	PF_Fixme,			0,		0,		0,		69,	"void(string data)"},
+	{"loadfromdata",	PF_Fixme,			0,		0,		0,		68,	D("void(string s)", "Reads a set of entities from the given string. This string should have the same format as a .ent file or a saved game. Entities will be spawned as required. If you need to see the entities that were created, you should use parseentitydata instead.")},
+	{"loadfromfile",	PF_Fixme,			0,		0,		0,		69,	D("void(string s)", "Reads a set of entities from the named file. This file should have the same format as a .ent file or a saved game. Entities will be spawned as required. If you need to see the entities that were created, you should use parseentitydata instead.")},
 	{"mod",				PF_Fixme,			0,		0,		0,		70,	"float(float val, float m)"},
-	{"cvar_string",		PF_Fixme,			0,		0,		0,		71,	"string(string name)"},
-	{"crash",			PF_Fixme,			0,		0,		0,		72,	"void()"},
-	{"stackdump",		PF_Fixme,			0,		0,		0,		73,	"void()"},
+	{"cvar_string",		PF_Fixme,			0,		0,		0,		71,	D("string(string name)", "Returns the value of a cvar, as a string.")},
+	{"crash",			PF_Fixme,			0,		0,		0,		72,	D("void()", "Demonstrates that no program is bug free.")},
+	{"stackdump",		PF_Fixme,			0,		0,		0,		73,	D("void()", "Prints out the QC's stack, for console-based error reports.")},
 	{"search_begin",	PF_Fixme,			0,		0,		0,		74,	"searchhandle(string pattern, float caseinsensitive, float quiet)"},
 	{"search_end",		PF_Fixme,			0,		0,		0,		75,	"void(searchhandle handle)"},
 	{"search_getsize",	PF_Fixme,			0,		0,		0,		76,	"float(searchhandle handle)"},
 	{"search_getfilename",PF_Fixme,			0,		0,		0,		77,	"string(searchhandle handle, float num)"},
 	{"etof",			PF_Fixme,			0,		0,		0,		79,	"float(entity)"},
 	{"ftoe",			PF_Fixme,			0,		0,		0,		80,	"entity(float)"},
-	{"validstring",		PF_Fixme,			0,		0,		0,		81,	"float(string)"},
-	{"altstr_count",	PF_Fixme,			0,		0,		0, 		82,	"float(string str)"},
-	{"altstr_prepare",	PF_Fixme,			0,		0,		0, 		83,	"string(string str)"},
-	{"altstr_get",		PF_Fixme,			0,		0,		0,		84,	"string(string str, float num)"},
-	{"altstr_set",		PF_Fixme,			0,		0,		0, 		85,	"string(string str, float num, string set) "},
-	{"altstr_ins",		PF_Fixme,			0,		0,		0,		86,	"string(string str, float num, string set)"},
+	{"validstring",		PF_Fixme,			0,		0,		0,		81,	D("float(string)", "Returns true if str isn't null. In case 'if [not](str)' was configured to test for empty instead of null.")},
+	{"altstr_count",	PF_Fixme,			0,		0,		0, 		82,	D("float(string str)", "Reports how many single-quotes there were in the string, divided by 2.")},
+	{"altstr_prepare",	PF_Fixme,			0,		0,		0, 		83,	D("string(string str)", "Adds markup to escape only single-quotes. Does not add any.")},
+	{"altstr_get",		PF_Fixme,			0,		0,		0,		84,	D("string(string str, float num)", "Gets the Nth single-quoted token in the input.")},
+	{"altstr_set",		PF_Fixme,			0,		0,		0, 		85,	D("string(string str, float num, string setval)", "Changes the Nth single-quoted token. The setval argument must not contain any single-quotes (use altstr_prepare to ensure this).")},
+	{"altstr_ins",		PF_Fixme,			0,		0,		0,		86,	D("string(string str, float num, string set)", NULL), true},
 	{"findflags",		PF_Fixme,			0,		0,		0,		87,	"entity(entity start, .float field, float match)"},
 	{"findchainflags",	PF_Fixme,			0,		0,		0,		88,	"entity(.float field, float match)"},
 	{"mcvar_defstring",	PF_Fixme,			0,		0,		0,		89,	"string(string name)" STUB},
@@ -10475,7 +10517,7 @@ static BuiltinList_t BuiltinList[] = {				//nq	qw		h2		ebfs
 	{"pointcontents",	PF_pointcontents,	41,		41,		41,		0,	D("float(vector pos)", "Checks the given point to see what is there. Returns one of the SOLID_* constants. Just because a spot is empty does not mean that the player can stand there due to the size of the player - use tracebox for such tests.")},
 //	{"qtest_stopsound",	NULL,				42}, // defined QTest builtin that is never called
 	{"fabs",			PF_fabs,			43,		43,		43,		0,	D("float(float)", "Removes the sign of the float, making it positive if it is negative.")},
-	{"aim",				PF_aim,				44,		44,		44,		0,	D("vector(entity player, float missilespeed)", "Returns a direction vector (specifically v_forward on error). This builtin attempts to guess what pitch angle to fire projectiles at for people that don't know about mouselook. Does not affect yaw angles.")},	//44
+	{"aim",				PF_aim,				44,		44,		44,		0,	D("vector(entity player, float missilespeed)", "Returns a tweaked copy of the v_forward vector (must be set! ie: makevectors(player.v_angle) ). This is important for keyboard users (that don't want to have to look up/down the whole time), as well as joystick users (who's aim is otherwise annoyingly imprecise). Only the upwards component of the result will differ from the value of v_forward. The builtin will select the enemy closest to the crosshair within the angle of acos(sv_aim).")},	//44
 	{"cvar",			PF_cvar,			45,		45,		45,		0,	D("float(string)", "Returns the numeric value of the named cvar")},
 	{"localcmd",		PF_localcmd,		46,		46,		46,		0,	D("void(string, ...)", "Adds the string to the console command queue. Commands will not be executed immediately, but rather at the start of the following frame.")},
 	{"nextent",			PF_nextent,			47,		47,		47,		0,	D("entity(entity)", "Returns the following entity. Skips over removed entities. Returns world when passed the last valid entity.")},
@@ -10485,13 +10527,13 @@ static BuiltinList_t BuiltinList[] = {				//nq	qw		h2		ebfs
 	{"vectoangles",		PF_vectoangles,		51,		51,		51,		0,	D("vector(vector fwd, optional vector up)", "Returns the angles (+x=UP) required to orient an entity to look in the given direction. The 'up' argument is required if you wish to set a roll angle, otherwise it will be limited to just monster-style turning.")},
 
 	{"WriteByte",		PF_WriteByte,		52,		52,		52,		0,	D("void(float to, float val)", "Writes a single byte into a network message buffer. Typically you will find a more correct alternative to writing arbitary data. 'to' should be one of the MSG_* constants. MSG_ONE must have msg_entity set first.")},	//52
-	{"WriteChar",		PF_WriteChar,		53,		53,		53,		0,	"void(float to, float val)"},	//53
-	{"WriteShort",		PF_WriteShort,		54,		54,		54,		0,	"void(float to, float val)"},	//54
-	{"WriteLong",		PF_WriteLong,		55,		55,		55,		0,	"void(float to, float val)"},	//55
-	{"WriteCoord",		PF_WriteCoord,		56,		56,		56,		0,	"void(float to, float val)"},	//56
-	{"WriteAngle",		PF_WriteAngle,		57,		57,		57,		0,	"void(float to, float val)"},	//57
-	{"WriteString",		PF_WriteString,		58,		58,		58,		0,	"void(float to, string val)"},	//58
-	{"WriteEntity",		PF_WriteEntity,		59,		59,		59,		0,	"void(float to, entity val)"},	//59
+	{"WriteChar",		PF_WriteChar,		53,		53,		53,		0,	D("void(float to, float val)", "Writes a signed value between -128 and 127.")},	//53
+	{"WriteShort",		PF_WriteShort,		54,		54,		54,		0,	D("void(float to, float val)", "Writes a signed value between -32768 and 32767. As an exception, values up to 65535 will not trigger warnings (but readshort will read the result as negative!)")},	//54
+	{"WriteLong",		PF_WriteLong,		55,		55,		55,		0,	D("void(float to, float val)", "Writes a signed 32bit integer. Note that the input argument being of float type limits the resulting integer to a mere 24 consecutive bits of validity. Use WriteInt if you want to write an entire 32bit int without data loss.")},	//55
+	{"WriteCoord",		PF_WriteCoord,		56,		56,		56,		0,	D("void(float to, float val)", "Writes a single value suitable for a map coordinate axis. The precision is not strictly specified but is assumed to be of at least 13.3 fixed-point precision (ie: +/-4k with 1/8th precision).")},	//56
+	{"WriteAngle",		PF_WriteAngle,		57,		57,		57,		0,	D("void(float to, float val)", "Writes a single value suitable for an angle axis. The precision is not strictly specified but is assumed to be 8bit, giving 256 notches instead of the assumed 360 range passed in.")},	//57
+	{"WriteString",		PF_WriteString,		58,		58,		58,		0,	D("void(float to, string val)", "Writes a variable-length null terminated string. There are length limits. The codepage is not translated, so be sure that client+server agree on whether utf-8 is being used or not (or just stick to ascii+markup).")},	//58
+	{"WriteEntity",		PF_WriteEntity,		59,		59,		59,		0,	D("void(float to, entity val)", "Writes the index of the specified entity (the network data size is not specified). This can be read clientside using the readentitynum builtin, with caveats.")},	//59
 
 #if !defined(QUAKETC) && defined(NETPREPARSE)
 	{"swritebyte",		PF_qtSingle_WriteByte,			0,		0,		0,		0,	D("void(float val)", "A legacy of qtest - like WriteByte, except writes explicitly to the MSG_ONE target."), true},	//52
@@ -10846,7 +10888,7 @@ static BuiltinList_t BuiltinList[] = {				//nq	qw		h2		ebfs
 	{"crossproduct",	PF_crossproduct,	0,		0,		0,		0,		D("#define dotproduct(v1,v2) ((vector)(v1)*(vector)(v2))\nvector(vector v1, vector v2)", "Small helper function to calculate the crossproduct of two vectors.")},
 	{"pushmove", 		PF_pushmove, 		0, 		0,		0, 		0, 		"float(entity pusher, vector move, vector amove)"},
 #ifdef TERRAIN
-	{"terrain_edit",	PF_terrain_edit,	0,		0,		0,		278,	D("void(float action, optional vector pos, optional float radius, optional float quant, ...)", "Realtime terrain editing. Actions are the TEREDIT_ constants.")},// (??FTE_TERRAIN_EDIT??
+	{"terrain_edit",	PF_terrain_edit,	0,		0,		0,		278,	D("__variant(float action, optional vector pos, optional float radius, optional float quant, ...)", "Realtime terrain editing. Actions are the TEREDIT_ constants.")},// (??FTE_TERRAIN_EDIT??
 
 #define qcbrushface					\
 	"typedef struct\n{\n"			\
@@ -10879,7 +10921,8 @@ static BuiltinList_t BuiltinList[] = {				//nq	qw		h2		ebfs
 #endif
 
 	{"touchtriggers",	PF_touchtriggers,	0,		0,		0,		279,	D("void(optional entity ent, optional vector neworigin)", "Triggers a touch events between self and every SOLID_TRIGGER entity that it is in contact with. This should typically just be the triggers touch functions. Also optionally updates the origin of the moved entity.")},//
-	{"WriteFloat",		PF_WriteFloat,		0,		0,		0,		280,	"void(float buf, float fl)"},//
+	{"WriteFloat",		PF_WriteFloat,		0,		0,		0,		280,	D("void(float buf, float fl)", "Writes a full 32bit float without any data conversions at all, for full precision.")},//
+	{"WriteInt",		PF_WriteInt,		0,		0,		0,		0,		D("void(float buf, int fl)", "Equivelent to WriteLong, but doesn't truncate to a float first before converting back to an int.")},//
 	{"skel_ragupdate",	PF_skel_ragedit,	0,		0,		0,		281,	D("float(entity skelent, string dollcmd, float animskel)", "Updates the skeletal object attached to the entity according to its origin and other properties.\nif animskel is non-zero, the ragdoll will animate towards the bone state in the animskel skeletal object, otherwise they will pick up the model's base pose which may not give nice results.\nIf dollcmd is not set, the ragdoll will update (this should be done each frame).\nIf the doll is updated without having a valid doll, the model's default .doll will be instanciated.\ncommands:\n doll foo.doll : sets up the entity to use the named doll file\n dollstring TEXT : uses the doll file directly embedded within qc, with that extra prefix.\n cleardoll : uninstanciates the doll without destroying the skeletal object.\n animate 0.5 : specifies the strength of the ragdoll as a whole \n animatebody somebody 0.5 : specifies the strength of the ragdoll on a specific body (0 will disable ragdoll animations on that body).\n enablejoint somejoint 1 : enables (or disables) a joint. Disabling joints will allow the doll to shatter.")}, // (FTE_CSQC_RAGDOLL)
 	{"skel_mmap",		PF_skel_mmap,		0,		0,		0,		282,	D("float*(float skel)", "Map the bones in VM memory. They can then be accessed via pointers. Each bone is 12 floats, the four vectors interleaved (sadly).")},// (FTE_QC_RAGDOLL)
 	{"skel_set_bone_world",PF_skel_set_bone_world,0,0,		0,		283,	D("void(entity ent, float bonenum, vector org, optional vector angorfwd, optional vector right, optional vector up)", "Sets the world position of a bone within the given entity's attached skeletal object. The world position is dependant upon the owning entity's position. If no orientation argument is specified, v_forward+v_right+v_up are used for the orientation instead. If 1 is specified, it is understood as angles. If 3 are specified, they are the forawrd/right/up vectors to use.")},
@@ -10913,7 +10956,8 @@ static BuiltinList_t BuiltinList[] = {				//nq	qw		h2		ebfs
 	//gonna expose these to ssqc as a debugging extension
 	{"R_BeginPolygon",	PF_R_PolygonBegin,0,0,		0,		306,	D("void(string texturename, optional float flags, optional float is2d)", "Specifies the shader to use for the following polygons, along with optional flags.\nIf is2d, the polygon will be drawn as soon as the EndPolygon call is made, rather than waiting for renderscene. This allows complex 2d effects.")},// (EXT_CSQC_???)
 	{"R_PolygonVertex",	PF_R_PolygonVertex,0,0,		0,		307,	D("void(vector org, vector texcoords, vector rgb, float alpha)", "Specifies a polygon vertex with its various properties.")},// (EXT_CSQC_???)
-	{"R_EndPolygon",	PF_R_PolygonEnd,0,	0,		0,		308,	D("void()", "Ends the current polygon. At least 3 verticies must have been specified. You do not need to call beginpolygon if you wish to draw another polygon with the same shader.")},
+	{"R_EndPolygon",	PF_R_PolygonEnd,0,	0,		0,		308,	D("void()", "Ends the current polygon. At least 3 verticies must have been specified. You do not need to call beginpolygon again if you wish to draw another polygon with the same shader.")},
+	{"R_EndPolygonRibbon",PF_Fixme,	0,		0,		0,		0,		D("void(float radius, vector texcoordbias)", "Ends the current primitive and duplicates each vertex sideways into a ribbon. The texcoordbias will be added to each duplicated vertex allowing for regular 2d textures. At least 2 verticies must have been specified. You do not need to call beginpolygon again if you wish to draw another polygon with the same shader.")},
 
 	{"getproperty",		PF_Fixme,	0,		0,		0,		309,	D("#define getviewprop getproperty\n__variant(float property)", "Retrieve a currently-set (typically view) property, allowing you to read the current viewport or other things. Due to cheat protection, certain values may be unretrievable.")},// (EXT_CSQC_1)
 
@@ -10928,8 +10972,8 @@ static BuiltinList_t BuiltinList[] = {				//nq	qw		h2		ebfs
 	{"drawline",		PF_Fixme,	0,		0,		0,		315,	D("void(float width, vector pos1, vector pos2, vector rgb, float alpha, optional float drawflag)", "Draws a 2d line between the two 2d points.")},// (EXT_CSQC)
 	{"iscachedpic",		PF_Fixme,	0,		0,		0,		316,	D("float(string name)", "Checks to see if the image is currently loaded. Engines might lie, or cache between maps.")},// (EXT_CSQC)
 	{"precache_pic",	PF_Fixme,	0,		0,		0,		317,	D("string(string name, optional float trywad)", "Forces the engine to load the named image. If trywad is specified, the specified name must any lack path and extension.")},// (EXT_CSQC)
-	{"r_uploadimage",	PF_Fixme,	0,		0,		0,		0,		D("void(string imagename, int width, int height, void *pixeldata, optional int datasize, optional int format)", "Updates a texture with the specified rgba data. Will be created if needed. If blobsize is specified then the image is decoded (eg .ktx or .dds data) instead of being raw R8G8B8A data. You'll typically want shaderforname to also generate a shader to use the texture.")},
-	{"r_readimage",		PF_Fixme,	0,		0,		0,		0,		D("int*(string filename, __out int width, __out int height)", "Reads and decodes an image from disk, providing raw R8G8B8A pixel data. Should not be used for dds or ktx etc formats. Returns __NULL__ if the image could not be read for any reason. Use memfree to free the data once you're done with it.")},
+	{"r_uploadimage",	PF_Fixme,	0,		0,		0,		0,		D("void(string imagename, int width, int height, void *pixeldata, optional int datasize, optional int format)", "Updates a texture with the specified rgba data (uploading it to the gpu). Will be created if needed. If datasize is specified then the image is decoded (eg .ktx or .dds data) instead of being raw R8G8B8A data. You'll typically want shaderforname to also generate a shader to use the texture.")},
+	{"r_readimage",		PF_Fixme,	0,		0,		0,		0,		D("int*(string filename, __out int width, __out int height)", "Reads and decodes an image from disk, providing raw R8G8B8A8 pixel data. Should not be used for dds or ktx etc formats. Returns __NULL__ if the image could not be read for any reason. Use memfree to free the data once you're done with it.")},
 	{"drawgetimagesize",PF_Fixme,	0,		0,		0,		318,	D("#define draw_getimagesize drawgetimagesize\nvector(string picname)", "Returns the dimensions of the named image. Images specified with .lmp should give the original .lmp's dimensions even if texture replacements use a different resolution.")},// (EXT_CSQC)
 	{"freepic",			PF_Fixme,	0,		0,		0,		319,	D("void(string name)", "Tells the engine that the image is no longer needed. The image will appear to be new the next time its needed.")},// (EXT_CSQC)
 //320
@@ -10973,7 +11017,8 @@ static BuiltinList_t BuiltinList[] = {				//nq	qw		h2		ebfs
 
 	{"setcursormode",	PF_Fixme,	0,		0,		0,		343,	D("void(float usecursor, optional string cursorimage, optional vector hotspot, optional float scale)", "Pass TRUE if you want the engine to release the mouse cursor (absolute input events + touchscreen mode). Pass FALSE if you want the engine to grab the cursor (relative input events + standard looking). If the image name is specified, the engine will use that image for a cursor (use an empty string to clear it again), in a way that will not conflict with the console. Images specified this way will be hardware accelerated, if supported by the platform/port.")},
 	{"getcursormode",	PF_Fixme,	0,		0,		0,		0,		D("float(float effective)", "Reports the cursor mode this module previously attempted to use. If 'effective' is true, reports the cursor mode currently active (if was overriden by a different module which has precidence, for instance, or if there is only a touchscreen and no mouse).")},
-	{"getmousepos",		PF_Fixme,	0,		0,		0,		344,	D("vector()", "Nasty convoluted DP extension. Typically returns deltas instead of positions. Use CSQC_InputEvent for such things in csqc mods.")},	// #344 This is a DP extension
+	{"getmousepos",		PF_Fixme,	0,		0,		0,		344,	D("vector()", "Nasty convoluted DP extension. Typically returns deltas instead of positions. Use CSQC_InputEvent instead for such things in csqc mods.")},	// #344 This is a DP extension
+	{"setmousepos",		PF_Fixme,	0,		0,		0,		0,		D("void(vector newpos)", "Warps the mouse cursor to the given location. Should normally only be done following setcursormode(TRUE,...). The warp MAY be visible through *_InputEvent, but normally be seen as an IE_ABSMOUSE event anyway. Not all systems support cursor warping (or even cursors), so this is a hint only and you should not depend upon it.")},
 
 	{"getinputstate",	PF_Fixme,	0,		0,		0,		345,	D("float(float inputsequencenum)", "Looks up an input frame from the log, setting the input_* globals accordingly.\nThe sequence number range used for prediction should normally be servercommandframe < sequence <= clientcommandframe.\nThe sequence equal to clientcommandframe will change between input frames.")},// (EXT_CSQC)
 	{"setsensitivityscaler",PF_Fixme,0,		0,		0,		346,	D("void(float sens)", "Temporarily scales the player's mouse sensitivity based upon something like zoom, avoiding potential cvar saving and thus corruption.")},// (EXT_CSQC)
@@ -11002,20 +11047,22 @@ static BuiltinList_t BuiltinList[] = {				//nq	qw		h2		ebfs
 	{"setserverkey",	PF_setserverkey,0,	0,		0,		0,		D("void(string key, void *ptr, optional int size)", "Changes the server's serverinfo.")},//
 	{"getentitytoken",	PF_Fixme,	0,		0,		0,		355,	D("string(optional string resetstring)", "Grab the next token in the map's entity lump.\nIf resetstring is not specified, the next token will be returned with no other sideeffects.\nIf empty, will reset from the map before returning the first token, probably {.\nIf not empty, will tokenize from that string instead.\nAlways returns tempstrings.")},//;
 	{"findfont",		PF_Fixme,	0,		0,		0,		356,	D("float(string s)", "Looks up a named font slot. Matches the actual font name as a last resort.")},//;
-	{"loadfont",		PF_Fixme,	0,		0,		0,		357,	D("float(string fontname, string fontmaps, string sizes, float slot, optional float fix_scale, optional float fix_voffset)", "too convoluted for me to even try to explain correct usage. Try drawfont = loadfont(\"\", \"cour\", \"16\", -1, 0, 0); to switch to the courier font (optimised for 16 virtual pixels high), if you have the freetype2 library in windows..")},
+	{"loadfont",		PF_Fixme,	0,		0,		0,		357,	D("float(string fontname, string fontmaps, string sizes, float slot, optional float fix_scale, optional float fix_voffset)", "too convoluted for me to even try to explain correct usage. Try drawfont = loadfont(\"\", \"cour\", \"16\", -1, 0, 0); to switch to the courier font (optimised for 16 virtual pixels high) ('cour' requires mscorefonts installed in linux). Additionally you can add \"outline=1\" as an extra token in the sizes string, to have more readable outlined fonts.")},
+
 	//358
 	{"sendevent",		PF_Fixme,	0,		0,		0,		359,	D("void(string evname, string evargs, ...)", "Invoke CSEv_evname_evargs in ssqc. evargs must be a string of initials refering to the types of the arguments to pass. v=vector, e=entity(.entnum field is sent), f=float, i=int. 6 arguments max - you can get more if you pack your floats into vectors.")},// (EXT_CSQC_1)
 
-	{"readbyte",		PF_Fixme,	0,		0,		0,		360,	"float()"},// (EXT_CSQC)
-	{"readchar",		PF_Fixme,	0,		0,		0,		361,	"float()"},// (EXT_CSQC)
-	{"readshort",		PF_Fixme,	0,		0,		0,		362,	"float()"},// (EXT_CSQC)
-	{"readlong",		PF_Fixme,	0,		0,		0,		363,	"float()"},// (EXT_CSQC)
-	{"readcoord",		PF_Fixme,	0,		0,		0,		364,	"float()"},// (EXT_CSQC)
+	{"readbyte",		PF_Fixme,	0,		0,		0,		360,	D("float()", "Reads an unsigned 8-bit value, pair with WriteByte.")},// (EXT_CSQC)
+	{"readchar",		PF_Fixme,	0,		0,		0,		361,	D("float()", "Reads a signed 8-bit value. Paired with WriteChar.")},// (EXT_CSQC)
+	{"readshort",		PF_Fixme,	0,		0,		0,		362,	D("float()", "Reads a signed 16-bit value. Paired with WriteShort.")},// (EXT_CSQC)
+	{"readlong",		PF_Fixme,	0,		0,		0,		363,	D("float()", "Reads a signed 32-bit value. Paired with WriteLong or WriteInt.")},// (EXT_CSQC)
+	{"readcoord",		PF_Fixme,	0,		0,		0,		364,	D("float()", "Reads a value matching the unspecified precision written ONLY by WriteCoord.")},// (EXT_CSQC)
 
-	{"readangle",		PF_Fixme,	0,		0,		0,		365,	"float()"},// (EXT_CSQC)
-	{"readstring",		PF_Fixme,	0,		0,		0,		366,	"string()"},// (EXT_CSQC)
-	{"readfloat",		PF_Fixme,	0,		0,		0,		367,	"float()"},// (EXT_CSQC)
-	{"readentitynum",	PF_Fixme,	0,		0,		0,		368,	"float()"},// (EXT_CSQC)
+	{"readangle",		PF_Fixme,	0,		0,		0,		365,	D("float()", "Reads a value matching the unspecified precision written ONLY by WriteAngle.")},// (EXT_CSQC)
+	{"readstring",		PF_Fixme,	0,		0,		0,		366,	D("string()", "Reads a null-terminated string.")},// (EXT_CSQC)
+	{"readfloat",		PF_Fixme,	0,		0,		0,		367,	D("float()", "Reads a float without any truncation nor conversions. Data MUST have originally been written with WriteFloat.")},// (EXT_CSQC)
+	{"readint",			PF_Fixme,	0,		0,		0,		0,		D("int()", "Reads a 32bit int without any conversions to float, otherwise interchangable with readlong.")},// (EXT_CSQC)
+	{"readentitynum",	PF_Fixme,	0,		0,		0,		368,	D("float()", "Reads the serverside index of an entity, paired with WriteEntity. There may be nothing else known about the entity yet, so the result typically needs to be saved as-is and re-looked up each frame. This can be done via getentity(NUM, GE_*) for non-csqc ents, or findentity(world,entnum,NUM) - both of which can fail due to latency.")},// (EXT_CSQC)
 
 //	{"readserverentitystate",PF_Fixme,0,	0,		0,		369,	"void(float flags, float simtime)"},// (EXT_CSQC_1)
 //	{"readsingleentitystate",PF_Fixme,0,	0,		0,		370},
@@ -11328,6 +11375,14 @@ static BuiltinList_t BuiltinList[] = {				//nq	qw		h2		ebfs
 	{"crypto_getmyidstatus",PF_Fixme,		0,		0,		0,		641,	"float(float i)"	STUB},
 
 	//end dp extras
+
+	//wrath extras...
+	{"fcopy",			PF_fcopy,			0,		0,		0,		650,	D("float(string src, string dst)",	"Equivelent to fopen+fread+fwrite+fclose from QC (ie: reads from $gamedir/data/ or $gamedir, but always writes to $gamedir/data/ )")},
+	{"frename",			PF_frename,			0,		0,		0,		651,	D("float(string src, string dst)",	"Renames the file, returning 0 on success. Both paths are relative to the data/ subdir.")},
+	{"fremove",			PF_fremove,			0,		0,		0,		652,	D("float(string fname)",	"Deletes the named file - path is relative to data/ subdir, like fopen's FILE_WRITE. Returns 0 on success.")},
+	{"fexists",			PF_fexists,			0,		0,		0,		653,	D("float(string fname)",	"Use whichpack instead. Returns true if it exists inside the default writable path.")},
+	{"rmtree",			PF_rmtree,			0,		0,		0,		654,	D("float(string path)",		"Dangerous, but sandboxed to data/")},
+	//end wrath extras
 
 	{"getrmqeffectsversion",PF_Ignore,		0,		0,		0,		666,	"float()" STUB},
 	//don't exceed sizeof(pr_builtin)/sizeof(pr_builtin[0]) (currently 1024) without modifing the size of pr_builtin
@@ -12040,7 +12095,7 @@ void PR_DumpPlatform_f(void)
 #undef comfieldstring
 #undef comfieldfunction
 
-		{"URI_Get_Callback",		"void(float reqid, float responsecode, string resourcebody)",	QW|NQ|CS|MENU, "Called as an eventual result of the uri_get builtin."},
+		{"URI_Get_Callback",		"void(float reqid, float responsecode, string resourcebody, int resourcebytes)",	QW|NQ|CS|MENU, "Called as an eventual result of the uri_get builtin."},
 		{"SpectatorConnect",		"void()", QW|NQ, "Called when a spectator joins the game."},
 		{"SpectatorDisconnect",		"void()", QW|NQ, "Called when a spectator disconnects from the game."},
 		{"SpectatorThink",			"void()", QW|NQ, "Called each frame for each spectator."},
@@ -12548,6 +12603,7 @@ void PR_DumpPlatform_f(void)
 		{"IMGFMT_R5G6B5",		"const float", CS|MENU, D("Packed 16-bit colour pixel format."), 11},
 		{"IMGFMT_R4G4B4A4",		"const float", CS|MENU, D("Packed 16-bit colour pixel format, with alpha"), 12},
 		{"IMGFMT_R8G8",			"const float", CS|MENU, D("16-bit two-channel pixel format."), 13},
+		{"IMGFMT_R32G32B32F",	"const float", CS|MENU, D("A pixel format that matches QC's vector type."), 14},
 
 		{"RF_VIEWMODEL",		"const float", CS, D("Specifies that the entity is a view model, and that its origin is relative to the current view position. These entities are also subject to viewweapon bob."), CSQCRF_VIEWMODEL},
 		{"RF_EXTERNALMODEL",	"const float", CS, D("Specifies that this entity should be displayed in mirrors (and may still cast shadows), but will not otherwise be visible."), CSQCRF_EXTERNALMODEL},
@@ -12557,14 +12613,14 @@ void PR_DumpPlatform_f(void)
 		{"RF_NOSHADOW",			"const float", CS, D("This entity will not cast shadows. Often useful on view models."), CSQCRF_NOSHADOW},
 		{"RF_FRAMETIMESARESTARTTIMES","const float", CS, D("Specifies that the frame1time, frame2time field are timestamps (denoting the start of the animation) rather than time into the animation."), CSQCRF_FRAMETIMESARESTARTTIMES},
 
-		{"IE_KEYDOWN",			"const float", CS, D("Specifies that a key was pressed. Second argument is the scan code. Third argument is the unicode (printable) char value. Fourth argument denotes which keyboard(or mouse, if its a mouse 'scan' key) the event came from. Note that some systems may completely separate scan codes and unicode values, with a 0 value for the unspecified argument."), CSIE_KEYDOWN},
-		{"IE_KEYUP",			"const float", CS, D("Specifies that a key was released. Arguments are the same as IE_KEYDOWN. On some systems, this may be fired instantly after IE_KEYDOWN was fired."), CSIE_KEYUP},
-		{"IE_MOUSEDELTA",		"const float", CS, D("Specifies that a mouse was moved (touch screens and tablets typically give IE_MOUSEABS events instead, use in_windowed_mouse 0 to test code to cope with either). Second argument is the X displacement, third argument is the Y displacement. Fourth argument is which mouse or touch event triggered the event."), CSIE_MOUSEDELTA},
-		{"IE_MOUSEABS",			"const float", CS, D("Specifies that a mouse cursor or touch event was moved to a specific location relative to the virtual screen space. Second argument is the new X position, third argument is the new Y position. Fourth argument is which mouse or touch event triggered the event."), CSIE_MOUSEABS},
-		{"IE_ACCELEROMETER",	"const float", CS, NULL, CSIE_ACCELEROMETER},
-		{"IE_FOCUS",			"const float", CS, D("Specifies that input focus was given. parama says mouse focus, paramb says keyboard focus. If either are -1, then it is unchanged."), CSIE_FOCUS},
-		{"IE_JOYAXIS",			"const float", CS, D("Specifies that what value a joystick/controller axis currently specifies. x=axis, y=value. Will be called multiple times, once for each axis of each active controller."), CSIE_JOYAXIS},
-		{"IE_GYROSCOPE",		"const float", CS, NULL, CSIE_GYROSCOPE},
+		{"IE_KEYDOWN",			"const float", CS|MENU, D("Specifies that a key was pressed. Second argument is the scan code. Third argument is the unicode (printable) char value. Fourth argument denotes which keyboard(or mouse, if its a mouse 'scan' key) the event came from. Note that some systems may completely separate scan codes and unicode values, with a 0 value for the unspecified argument."), CSIE_KEYDOWN},
+		{"IE_KEYUP",			"const float", CS|MENU, D("Specifies that a key was released. Arguments are the same as IE_KEYDOWN. On some systems, this may be fired instantly after IE_KEYDOWN was fired."), CSIE_KEYUP},
+		{"IE_MOUSEDELTA",		"const float", CS|MENU, D("Specifies that a mouse was moved (touch screens and tablets typically give IE_MOUSEABS events instead, use in_windowed_mouse 0 to test code to cope with either). Second argument is the X displacement, third argument is the Y displacement. Fourth argument is which mouse or touch event triggered the event."), CSIE_MOUSEDELTA},
+		{"IE_MOUSEABS",			"const float", CS|MENU, D("Specifies that a mouse cursor or touch event was moved to a specific location relative to the virtual screen space. Second argument is the new X position, third argument is the new Y position. Fourth argument is which mouse or touch event triggered the event."), CSIE_MOUSEABS},
+		{"IE_ACCELEROMETER",	"const float", CS|MENU, NULL, CSIE_ACCELEROMETER},
+		{"IE_FOCUS",			"const float", CS|MENU, D("Specifies that input focus was given. parama says mouse focus, paramb says keyboard focus. If either are -1, then it is unchanged."), CSIE_FOCUS},
+		{"IE_JOYAXIS",			"const float", CS|MENU, D("Specifies that what value a joystick/controller axis currently specifies. x=axis, y=value. Will be called multiple times, once for each axis of each active controller."), CSIE_JOYAXIS},
+		{"IE_GYROSCOPE",		"const float", CS|MENU, NULL, CSIE_GYROSCOPE},
 
 		{"CLIENTTYPE_DISCONNECTED","const float", QW|NQ, D("Return value from clienttype() builtin. This entity is a player slot that is currently empty."), CLIENTTYPE_DISCONNECTED},
 		{"CLIENTTYPE_REAL",		"const float", QW|NQ, D("This is a real player, and not a bot."), CLIENTTYPE_REAL},
@@ -12741,7 +12797,7 @@ void PR_DumpPlatform_f(void)
 	}
 
 	VFS_PRINTF(f,	"/*\n"
-					"This file was automatically generated by %s v%i.%02i\n"
+					"This file was generated by %s %s, dated %s.\n"
 					"This file can be regenerated by issuing the following command:\n"
 					"%s %s\n"
 					"Available options:\n"
@@ -12754,7 +12810,13 @@ void PR_DumpPlatform_f(void)
 					"-Faccessors - use accessors instead of basic types via defines\n"
 					"-O          - write to a different qc file\n"
 					"*/\n"
-					, FULLENGINENAME, FTE_VER_MAJOR, FTE_VER_MINOR, Cmd_Argv(0), Cmd_Args());
+					, FULLENGINENAME, STRINGIFY(SVNREVISION),
+					#ifdef SVNDATE
+					STRINGIFY(SVNDATE)
+					#else
+					__DATE__
+					#endif
+					, Cmd_Argv(0), Cmd_Args());
 
 	VFS_PRINTF(f, "#pragma noref 1\n");
 	VFS_PRINTF(f, "//#pragma flag enable logicops\n");

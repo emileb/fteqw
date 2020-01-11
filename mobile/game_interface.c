@@ -273,7 +273,7 @@ void PortableCommand(const char * cmd)
 extern int key_dest;
 touchscreemode_t PortableGetScreenMode()
 {
-	if( Key_Dest_Has( kdm_centerprint | kdm_message | kdm_gmenu | kdm_nmenu | kdm_emenu ) )
+	if( Key_Dest_Has( kdm_centerprint | kdm_message | kdm_menu | kdm_console | kdm_cwindows | kdm_prompt ) )
 	{
 		return TS_MENU;
 	}

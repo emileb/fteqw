@@ -140,7 +140,7 @@ typedef struct batch_s
 	image_t		*envmap;
 
 	short lightmap[MAXRLIGHTMAPS];	/*used for shader lightmap textures*/
-	unsigned char lmlightstyle[MAXRLIGHTMAPS];
+	lightstyleindex_t lmlightstyle[MAXRLIGHTMAPS];
 	unsigned char vtlightstyle[MAXRLIGHTMAPS];
 
 	unsigned int maxmeshes;	/*not used by backend*/
@@ -330,8 +330,8 @@ typedef struct texture_s
 	struct shader_s	*shader;
 	char		*partname;				//parsed from the worldspawn entity
 
-	int			anim_total;				// total tenths in sequence ( 0 = no)
-	int			anim_min, anim_max;		// time for this frame min <=time< max
+	unsigned int	anim_total;				// total tenths in sequence ( 0 = no)
+	unsigned int	anim_min, anim_max;		// time for this frame min <=time< max
 	struct texture_s *anim_next;		// in the animation sequence
 	struct texture_s *alternate_anims;	// bmodels in frmae 1 use these
 
@@ -444,7 +444,7 @@ typedef struct msurface_s
 
 //static lighting
 	int			lightmaptexturenums[MAXRLIGHTMAPS];	//rbsp+fbsp formats have multiple lightmaps
-	qbyte		styles[MAXQ1LIGHTMAPS];
+	lightstyleindex_t	styles[MAXQ1LIGHTMAPS];
 	qbyte		vlstyles[MAXRLIGHTMAPS];
 	int			cached_light[MAXQ1LIGHTMAPS];	// values currently used in lightmap
 	int			cached_colour[MAXQ1LIGHTMAPS];	// values currently used in lightmap
@@ -1026,6 +1026,7 @@ typedef struct model_s
 		int width;				//x size of lightmaps
 		int height;				//y size of lightmaps
 		int surfstyles;			//numbers of style per surface.
+		int maxstyle;			//highest (valid) style used (cl_max_lightstyles must be 1+ higher).
 		enum {
 			//vanilla used byte values, with 255 being a value of about 2.
 			//float/hdr formats use 1 to mean 1, however.
@@ -1079,8 +1080,8 @@ float RadiusFromBounds (const vec3_t mins, const vec3_t maxs);
 //
 #ifdef TERRAIN
 void Terr_Init(void);
-struct terrainfuncs_s;
-struct terrainfuncs_s *QDECL Terr_GetTerrainFuncs(void);
+struct plugterrainfuncs_s;
+struct plugterrainfuncs_s *Terr_GetTerrainFuncs(size_t structsize);
 void Terr_DrawTerrainModel (batch_t **batch, entity_t *e);
 void Terr_FreeModel(model_t *mod);
 void Terr_FinishTerrain(model_t *model);

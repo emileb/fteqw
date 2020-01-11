@@ -59,7 +59,6 @@ needs almost the entire 256k of stack space!
 void SCR_DrawCursor(void);
 qboolean GLSCR_UpdateScreen (void)
 {
-	int uimenu;
 	qboolean nohud;
 	qboolean noworld;
 	extern cvar_t vid_srgb;
@@ -102,20 +101,26 @@ qboolean GLSCR_UpdateScreen (void)
 
 	if (scr_disabled_for_loading)
 	{
+		extern char levelshotname[];
 		extern float scr_disabled_time;
-		if (Sys_DoubleTime() - scr_disabled_time > 60 || !Key_Dest_Has(~kdm_game))
+		float now = Sys_DoubleTime();
+		if (now - scr_disabled_time > 60 || Key_Dest_Has(~kdm_game))
 		{
-			//FIXME: instead of reenabling the screen, we should just draw the relevent things skipping only the game.
+			//FIXME: instead of reenabling the screen, we should just draw the relevent things skipping only the game (except that this requires a copy of the game beneath or otherwise results in flickering).
 			scr_disabled_for_loading = false;
 		}
+		else if (!*levelshotname && !CSQC_UseGamecodeLoadingScreen() && !MP_UsingGamecodeLoadingScreen()
+#ifdef MENU_NATIVECODE
+				&& !(mn_entry && mn_entry->DrawLoading)
+#endif
+				)
+			return false;	//don't refresh if we can't do so safely.
 		else
 		{
-//			scr_drawloading = true;
 			SCR_DrawLoading (true);
 			SCR_SetUpToDrawConsole();
 			if (Key_Dest_Has(kdm_console))
 				SCR_DrawConsole(false);
-//			scr_drawloading = false;
 			if (R2D_Flush)
 				R2D_Flush();
 			VID_SwapBuffers();
@@ -127,11 +132,6 @@ qboolean GLSCR_UpdateScreen (void)
 	Shader_DoReload();
 
 	qglDisable(GL_SCISSOR_TEST);
-#ifdef VM_UI
-	uimenu = UI_MenuState();
-#else
-	uimenu = 0;
-#endif
 
 #ifdef TEXTEDITOR
 	if (editormodal)
@@ -149,14 +149,6 @@ qboolean GLSCR_UpdateScreen (void)
 	}
 	else
 #endif
-	if (Media_ShowFilm())
-	{
-		M_Draw(0);
-		V_UpdatePalette (false);
-		R2D_BrightenScreen();
-		Media_RecordFrame();
-	}
-	else
 	{
 		//
 		// do 3D refresh drawing, and then update the screen
@@ -174,26 +166,22 @@ qboolean GLSCR_UpdateScreen (void)
 			depthcleared = true;
 		}
 
-#ifdef VM_CG
-		if (CG_Refresh())
+		if (topmenu && topmenu->isopaque)
 			nohud = true;
-		else
+#ifdef VM_CG
+		else if (CG_Refresh())
+			nohud = true;
 #endif
 #ifdef CSQC_DAT
-			if (CSQC_DrawView())
+		else if (CSQC_DrawView())
 			nohud = true;
-		else
 #endif
+		else
 		{
-			if (uimenu != 1)
-			{
-				if (r_worldentity.model && cls.state == ca_active)
-					V_RenderView (nohud);
-				else
-				{
-					noworld = true;
-				}
-			}
+			if (r_worldentity.model && cls.state == ca_active)
+				V_RenderView (nohud);
+			else
+				noworld = true;
 		}
 
 		GL_Set2D (false);
@@ -205,14 +193,26 @@ qboolean GLSCR_UpdateScreen (void)
 			if (R2D_DrawLevelshot())
 				;
 			else if (scr_con_current != vid.height)
-				R2D_ConsoleBackground(0, vid.height, true);
+			{
+#ifdef HAVE_LEGACY
+				extern cvar_t dpcompat_console;
+				if (dpcompat_console.ival)
+				{
+					R2D_ImageColours(0,0,0,1);
+					R2D_FillBlock(0, 0, vid.width, vid.height);
+					R2D_ImageColours(1,1,1,1);
+				}
+				else
+#endif
+					R2D_ConsoleBackground(0, vid.height, true);
+			}
 			else
 				scr_con_forcedraw = true;
 
 			nohud = true;
 		}
 
-		SCR_DrawTwoDimensional(uimenu, nohud);
+		SCR_DrawTwoDimensional(nohud);
 
 		V_UpdatePalette (false);
 		R2D_BrightenScreen();
@@ -257,12 +257,27 @@ char *GLVID_GetRGBInfo(int *bytestride, int *truewidth, int *trueheight, enum up
 	int i, c;
 	qbyte *ret;
 	extern qboolean r2d_canhwgamma;
+	qboolean hdr = false;
 
 	*bytestride = 0;
 	*truewidth = vid.fbpwidth;
 	*trueheight = vid.fbpheight;
 
-	/*if (1)
+	if (*r_refdef.rt_destcolour[0].texname)
+	{
+		unsigned int w,h;
+		texid_t tid = R2D_RT_GetTexture(r_refdef.rt_destcolour[0].texname, &w, &h);
+		if (tid)
+			hdr = (tid->format==PTI_RGBA16F)||(tid->format==PTI_RGBA32F)||(tid->format==PTI_B10G11R11F);
+	}
+	if (hdr)
+	{
+		*fmt = PTI_RGBA16F;
+		ret = BZ_Malloc((*truewidth)*(*trueheight)*8);
+		qglReadPixels (0, 0, (*truewidth), (*trueheight), GL_RGBA, GL_HALF_FLOAT, ret);
+		*bytestride = *truewidth*-8;
+	}
+	/*else if (1)
 	{
 		float *p;
 
@@ -279,8 +294,8 @@ char *GLVID_GetRGBInfo(int *bytestride, int *truewidth, int *trueheight, enum up
 			ret[i*3+2]=p[i]*p[i]*p[i]*255;
 		}
 		BZ_Free(p);
-	}
-	else*/ if (gl_config.gles || (*truewidth&3))
+	}*/
+	else if (gl_config.gles || (*truewidth&3))
 	{
 		qbyte *p;
 
@@ -295,7 +310,7 @@ char *GLVID_GetRGBInfo(int *bytestride, int *truewidth, int *trueheight, enum up
 		qglReadPixels (0, 0, (*truewidth), (*trueheight), GL_RGBA, GL_UNSIGNED_BYTE, ret);
 		*bytestride = *truewidth*-3;
 
-		*fmt = TF_RGB24;
+		*fmt = PTI_RGB8;
 		c = (*truewidth)*(*trueheight);
 		p = ret;
 		for (i = 1; i < c; i++)
@@ -309,7 +324,7 @@ char *GLVID_GetRGBInfo(int *bytestride, int *truewidth, int *trueheight, enum up
 #if 1//def _DEBUG
 	else if (!gl_config.gles && sh_config.texfmt[PTI_BGRA8])
 	{
-		*fmt = TF_BGRA32;
+		*fmt = PTI_BGRA8;
 		ret = BZ_Malloc((*truewidth)*(*trueheight)*4);
 		qglReadPixels (0, 0, (*truewidth), (*trueheight), GL_BGRA_EXT, GL_UNSIGNED_INT_8_8_8_8_REV, ret); 
 		*bytestride = *truewidth*-4;
@@ -317,7 +332,7 @@ char *GLVID_GetRGBInfo(int *bytestride, int *truewidth, int *trueheight, enum up
 #endif
 	else
 	{
-		*fmt = TF_RGB24;
+		*fmt = PTI_RGB8;
 		ret = BZ_Malloc((*truewidth)*(*trueheight)*3);
 		qglReadPixels (0, 0, (*truewidth), (*trueheight), GL_RGB, GL_UNSIGNED_BYTE, ret); 
 		*bytestride = *truewidth*-3;
@@ -325,21 +340,23 @@ char *GLVID_GetRGBInfo(int *bytestride, int *truewidth, int *trueheight, enum up
 
 	if (gammaworks && r2d_canhwgamma)
 	{
-		if (*fmt == TF_BGRA32 || *fmt == TF_RGBA32)
+		if (*fmt == PTI_BGRA8 || *fmt == PTI_BGRX8 || *fmt == PTI_BGR8)
 		{
-			c = (*truewidth)*(*trueheight)*4;
-			for (i=0 ; i<c ; i+=4)
+			int pxsize = (*fmt == PTI_BGR8)?3:4;
+			c = (*truewidth)*(*trueheight)*pxsize;
+			for (i=0 ; i<c ; i+=pxsize)
 			{
 				extern qbyte		gammatable[256];
-				ret[i+0] = gammatable[ret[i+0]];
+				ret[i+0] = gammatable[ret[i+2]];
 				ret[i+1] = gammatable[ret[i+1]];
-				ret[i+2] = gammatable[ret[i+2]];
+				ret[i+2] = gammatable[ret[i+0]];
 			}
 		}
-		else
+		else if (*fmt == PTI_RGBA8 || *fmt == PTI_RGBX8 || *fmt == PTI_RGB8)
 		{
-			c = (*truewidth)*(*trueheight)*3;
-			for (i=0 ; i<c ; i+=3)
+			int pxsize = (*fmt == PTI_RGB8)?3:4;
+			c = (*truewidth)*(*trueheight)*pxsize;
+			for (i=0 ; i<c ; i+=pxsize)
 			{
 				extern qbyte		gammatable[256];
 				ret[i+0] = gammatable[ret[i+0]];

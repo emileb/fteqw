@@ -2,6 +2,7 @@
 //provides both a package manager and downloads menu.
 //FIXME: block downloads of exe/dll/so/etc if not an https url (even if inside zips). also block such files from package lists over http.
 #include "quakedef.h"
+#include "shader.h"
 
 #ifdef PACKAGEMANAGER
 	#if !defined(NOBUILTINMENUS) && !defined(SERVERONLY)
@@ -12,32 +13,7 @@
 #ifdef PACKAGEMANAGER
 #include "fs.h"
 
-//whole load of extra args for the downloads menu (for the downloads menu to handle engine updates).
-#if defined(VKQUAKE) && !defined(SERVERONLY)
-#define PHPVK "&vk=1"
-#else
-#define PHPVK
-#endif
-#if defined(GLQUAKE) && !defined(SERVERONLY)
-#define PHPGL "&gl=1"
-#else
-#define PHPGL
-#endif
-#if defined(D3DQUAKE) && !defined(SERVERONLY)
-#define PHPD3D "&d3d=1"
-#else
-#define PHPD3D
-#endif
-#ifdef MINIMAL
-#define PHPMIN "&min=1"
-#else
-#define PHPMIN
-#endif
-#ifdef HAVE_LEGACY
-#define PHPLEG "&leg=1&test=1"
-#else
-#define PHPLEG "&leg=0&test=1"
-#endif
+//some extra args for the downloads menu (for the downloads menu to handle engine updates).
 #if defined(_DEBUG) || defined(DEBUG)
 #define PHPDBG "&dbg=1"
 #else
@@ -47,11 +23,10 @@
 #define SVNREVISION -
 #endif
 #define SVNREVISIONSTR STRINGIFY(SVNREVISION)
-#define DOWNLOADABLESARGS "ver=" SVNREVISIONSTR PHPVK PHPGL PHPD3D PHPMIN PHPLEG PHPDBG "&arch="PLATFORM "_" ARCH_CPU_POSTFIX
+#define DOWNLOADABLESARGS PHPDBG
 
 
 
-extern cvar_t pm_autoupdate;
 extern cvar_t pm_downloads_url;
 #define INSTALLEDFILES	"installed.lst"	//the file that resides in the quakedir (saying what's installed).
 
@@ -161,15 +136,16 @@ typedef struct package_s {
 		struct packagedep_s *next;
 		enum
 		{
-			DEP_CONFLICT,
+			DEP_CONFLICT,		//don't install if we have the named package installed.
 			DEP_FILECONFLICT,	//don't install if this file already exists.
-			DEP_REQUIRE,
-			DEP_RECOMMEND,	//like depend, but uninstalling will not bubble.
-			DEP_SUGGEST,	//like recommend, but will not force install (ie: only prevents auto-uninstall)
+			DEP_REQUIRE,		//don't install unless we have the named package installed.
+			DEP_RECOMMEND,		//like depend, but uninstalling will not bubble.
+			DEP_SUGGEST,		//like recommend, but will not force install (ie: only prevents auto-uninstall)
+			DEP_NEEDFEATURE,	//requires a specific feature to be available (typically controlled via a cvar)
 //			DEP_MIRROR,
 //			DEP_FAILEDMIRROR,
 
-			DEP_FILE
+			DEP_FILE			//a file that will be installed
 		} dtype;
 		char name[1];
 	} *deps;
@@ -192,10 +168,9 @@ static char *manifestpackages;	//metapackage named by the manicfest.
 static char *declinedpackages;	//metapackage named by the manicfest.
 static int domanifestinstall;	//SECURITY_MANIFEST_*
 
-#ifdef PLUGINS
 static qboolean pluginpromptshown;	//so we only show prompts for new externally-installed plugins once, instead of every time the file is reloaded.
-#endif
 #ifdef WEBCLIENT
+static int allowphonehome = -1;	//if autoupdates are disabled, make sure we get (temporary) permission before phoning home for available updates. (-1=unknown, 0=no, 1=yes)
 static qboolean doautoupdate;	//updates will be marked (but not applied without the user's actions)
 static qboolean pkg_updating;	//when flagged, further changes are blocked until completion.
 #else
@@ -549,6 +524,57 @@ static void PM_InsertPackage(package_t *p)
 	numpackages++;
 }
 
+static qboolean PM_CheckFeature(const char *feature, const char **featurename, const char **concommand)
+{
+#ifdef HAVE_CLIENT
+	extern cvar_t r_replacemodels;
+#endif
+	*featurename = NULL;
+	*concommand = NULL;
+#ifdef HAVE_CLIENT
+	//check for compressed texture formats, to warn when not supported.
+	if (!strcmp(feature, "bc1") || !strcmp(feature, "bc2") || !strcmp(feature, "bc3") || !strcmp(feature, "s3tc"))
+		return *featurename="S3 Texture Compression", sh_config.hw_bc>=1;
+	if (!strcmp(feature, "bc4") || !strcmp(feature, "bc5") || !strcmp(feature, "rgtc"))
+		return *featurename="Red/Green Texture Compression", sh_config.hw_bc>=2;
+	if (!strcmp(feature, "bc6") || !strcmp(feature, "bc7") || !strcmp(feature, "bptc"))
+		return *featurename="Block Partitioned Texture Compression", sh_config.hw_bc>=3;
+	if (!strcmp(feature, "etc1"))
+		return *featurename="Ericson Texture Compression, Original", sh_config.hw_etc>=1;
+	if (!strcmp(feature, "etc2") || !strcmp(feature, "eac"))
+		return *featurename="Ericson Texture Compression, Revision 2", sh_config.hw_etc>=2;
+	if (!strcmp(feature, "astcldr") || !strcmp(feature, "astc"))
+		return *featurename="Adaptive Scalable Texture Compression (LDR)", sh_config.hw_astc>=1;
+	if (!strcmp(feature, "astchdr"))
+		return *featurename="Adaptive Scalable Texture Compression (HDR)", sh_config.hw_astc>=2;
+
+	if (!strcmp(feature, "24bit"))
+		return *featurename="24bit Textures", *concommand="seta gl_load24bit 1\n", gl_load24bit.ival;
+	if (!strcmp(feature, "md3"))
+		return *featurename="Replacement Models", *concommand="seta r_replacemodels md3 md2\n", !!strstr(r_replacemodels.string, "md3");
+	if (!strcmp(feature, "rtlights"))
+		return *featurename="Realtime Dynamic Lights", *concommand="seta r_shadow_realtime_dlight 1\n", r_shadow_realtime_dlight.ival||r_shadow_realtime_world.ival;
+	if (!strcmp(feature, "rtworld"))
+		return *featurename="Realtime World Lights", *concommand="seta r_shadow_realtime_dlight 1\nseta r_shadow_realtime_world 1\n", r_shadow_realtime_world.ival;
+#endif
+
+	return false;
+}
+static qboolean PM_CheckPackageFeatures(package_t *p)
+{
+	struct packagedep_s *dep;
+	const char *featname, *enablecmd;
+
+	for (dep = p->deps; dep; dep = dep->next)
+	{
+		if (dep->dtype == DEP_NEEDFEATURE)
+		{
+			if (!PM_CheckFeature(dep->name, &featname, &enablecmd))
+				return false;
+		}
+	}
+	return true;
+}
 
 static qboolean PM_CheckFile(const char *filename, enum fs_relative base)
 {
@@ -611,6 +637,7 @@ static void PM_AddSubList(const char *url, const char *prefix, qboolean save, qb
 		numdownloadablelists++;
 	}
 }
+#ifdef WEBCLIENT
 static void PM_RemSubList(const char *url)
 {
 	int i;
@@ -622,6 +649,7 @@ static void PM_RemSubList(const char *url)
 		}
 	}
 }
+#endif
 
 static qboolean PM_ParsePackageList(vfsfile_t *f, int parseflags, const char *url, const char *prefix)
 {
@@ -694,15 +722,6 @@ static qboolean PM_ParsePackageList(vfsfile_t *f, int parseflags, const char *ur
 					subprefix = va("%s/%s", prefix, com_token);
 				else
 					subprefix = com_token;
-
-#if defined(HAVE_LEGACY) && defined(WEBCLIENT)
-				//hack. I'm trying to retire the self-signed cert on [fte.]triptohell.info
-				if (!strcmp(url, "https://triptohell.info/downloadables.php") || !strcmp(url, "https://fte.triptohell.info/downloadables.php"))
-				{
-					Q_strncpyz(url, "https://updates.triptohell.info/downloadables.php", sizeof(url));
-					forcewrite = true;
-				}
-#endif
 
 				PM_AddSubList(url, subprefix, (parseflags & DPF_ENABLED)?true:false, (parseflags&DPF_TRUSTED));
 				continue;
@@ -916,6 +935,8 @@ static qboolean PM_ParsePackageList(vfsfile_t *f, int parseflags, const char *ur
 						PM_AddDep(p, DEP_RECOMMEND, val);
 					else if (!strcmp(key, "suggest"))
 						PM_AddDep(p, DEP_SUGGEST, val);
+					else if (!strcmp(key, "need"))
+						PM_AddDep(p, DEP_NEEDFEATURE, val);
 					else if (!strcmp(key, "test"))
 						flags |= DPF_TESTING;
 					else if (!strcmp(key, "stale") && version==2)
@@ -1173,6 +1194,20 @@ void PM_PluginDetected(void *ctx, int status)
 #endif
 #endif
 
+#ifndef SERVERONLY
+void PM_AutoUpdateQuery(void *ctx, int status)
+{
+	if (status == -1)
+		return; //'Later'
+	if (status == 1)
+		Cvar_ForceSet(&pkg_autoupdate, "0"); //'Disable'
+	else
+		Cvar_ForceSet(&pkg_autoupdate, "1"); //'Enable'
+	PM_WriteInstalledPackages();
+	Menu_Download_Update();
+}
+#endif
+
 static void PM_PreparePackageList(void)
 {
 	//figure out what we've previously installed.
@@ -1198,11 +1233,18 @@ static void PM_PreparePackageList(void)
 			{
 				pluginpromptshown = true;
 #ifndef SERVERONLY
-				M_Menu_Prompt(PM_PluginDetected, NULL, "Plugin(s) appears to have\nbeen installed externally.\nUse the updates menu\nto enable them.", "View", NULL, "Disable");
+				Menu_Prompt(PM_PluginDetected, NULL, "Plugin(s) appears to have\nbeen installed externally.\nUse the updates menu\nto enable them.", "View", NULL, "Disable");
 #endif
 			}
 		}
 #endif
+		if (!pluginpromptshown && pkg_autoupdate.ival < 0 && numdownloadablelists)
+		{
+			pluginpromptshown = true;
+#ifndef SERVERONLY
+			Menu_Prompt(PM_AutoUpdateQuery, NULL, "Would you like to\nenable update checks?", "Enable", "Disable", "Later");
+#endif
+		}
 	}
 }
 
@@ -1486,7 +1528,12 @@ static void PM_MarkPackage(package_t *package, unsigned int markflag)
 			{
 				d = PM_FindPackage(dep->name);
 				if (d)
-					PM_MarkPackage(d, DPF_AUTOMARKED);
+				{
+					if (dep->dtype == DEP_RECOMMEND && !PM_CheckPackageFeatures(d))
+						Con_DPrintf("Skipping recommendation \"%s\"\n", dep->name);
+					else
+						PM_MarkPackage(d, DPF_AUTOMARKED);
+				}
 				else
 					Con_DPrintf("Couldn't find dependancy \"%s\"\n", dep->name);
 			}
@@ -1758,12 +1805,7 @@ static void PM_ListDownloaded(struct dl_download *dl)
 #ifdef DOWNLOADMENU
 			if (!isDedicated)
 			{
-				if (Key_Dest_Has(kdm_emenu))
-					Key_Dest_Remove(kdm_emenu);
-#ifdef MENU_DAT
-				if (Key_Dest_Has(kdm_gmenu))
-					MP_Toggle(0);
-#endif
+				Menu_PopAll();
 				Cmd_ExecuteString("menu_download\n", RESTRICT_LOCAL);
 			}
 			else
@@ -1771,6 +1813,22 @@ static void PM_ListDownloaded(struct dl_download *dl)
 				PM_PrintChanges();
 		}
 	}
+}
+#endif
+#if defined(HAVE_CLIENT) && defined(WEBCLIENT)
+static void PM_UpdatePackageList(qboolean autoupdate, int retry);
+static void PM_AllowPackageListQuery_Callback(void *ctx, int opt)
+{
+	unsigned int i;
+	allowphonehome = (opt==0);
+
+	//something changed, let it download now.
+	for (i = 0; i < numdownloadablelists; i++)
+	{
+		if (downloadablelist[i].received == -2)
+			downloadablelist[i].received = 0;
+	}
+	PM_UpdatePackageList(false, 0);
 }
 #endif
 //retry 1==
@@ -1793,15 +1851,32 @@ static void PM_UpdatePackageList(qboolean autoupdate, int retry)
 #else
 	doautoupdate |= autoupdate;
 
+#ifdef HAVE_CLIENT
+	if (pkg_autoupdate.ival >= 1)
+		allowphonehome = true;
+	else if (allowphonehome == -1)
+	{
+		Menu_Prompt(PM_AllowPackageListQuery_Callback, NULL, "Query updates list?\n", "Okay", NULL, "Nope");
+		return;
+	}
+#else
+	allowphonehome = true; //erk.
+#endif
+
 	//kick off the initial tier of list-downloads.
 	for (i = 0; i < numdownloadablelists; i++)
 	{
-		if (downloadablelist[i].received)
+		if (downloadablelist[i].received && allowphonehome>=0)
 			continue;
 		autoupdate = false;
 		if (downloadablelist[i].curdl)
 			continue;
 
+		if (allowphonehome<=0)
+		{
+			downloadablelist[i].received = -2;
+			continue;
+		}
 		downloadablelist[i].curdl = HTTP_CL_Get(va("%s%s"DOWNLOADABLESARGS, downloadablelist[i].url, strchr(downloadablelist[i].url,'?')?"&":"?"), NULL, PM_ListDownloaded);
 		if (downloadablelist[i].curdl)
 		{
@@ -1833,7 +1908,6 @@ static void PM_UpdatePackageList(qboolean autoupdate, int retry)
 	}
 #endif
 }
-
 
 
 
@@ -2000,6 +2074,11 @@ static void PM_WriteInstalledPackages(void)
 					Q_strncatz(buf, " ", sizeof(buf));
 					COM_QuotedConcat(va("recommend=%s", dep->name), buf, sizeof(buf));
 				}
+				else if (dep->dtype == DEP_NEEDFEATURE)
+				{
+					Q_strncatz(buf, " ", sizeof(buf));
+					COM_QuotedConcat(va("need=%s", dep->name), buf, sizeof(buf));
+				}
 			}
 
 			if (p->flags & DPF_TESTING)
@@ -2027,6 +2106,31 @@ static void PM_WriteInstalledPackages(void)
 		char native[MAX_OSPATH];
 		FS_NativePath(ef->name, e->fsroot, native, sizeof(native));
 		Sys_SetUpdatedBinary(native);
+	}
+}
+
+//package has been downloaded and installed, but some packages need to be enabled
+//(plugins might have other dll dependancies, so this can only happen AFTER the entire package was extracted)
+static void PM_PackageEnabled(package_t *p)
+{
+	char ext[8];
+	struct packagedep_s *dep;
+	FS_FlushFSHashFull();
+	for (dep = p->deps; dep; dep = dep->next)
+	{
+		if (dep->dtype != DEP_FILE)
+			continue;
+		COM_FileExtension(dep->name, ext, sizeof(ext));
+		if (!stricmp(ext, "pak") || !stricmp(ext, "pk3"))
+			FS_ReloadPackFiles();
+#ifdef PLUGINS
+		if ((p->flags & DPF_PLUGIN) && !Q_strncasecmp(dep->name, PLUGINPREFIX, strlen(PLUGINPREFIX)))
+			Cmd_ExecuteString(va("plug_load %s\n", dep->name), RESTRICT_LOCAL);
+#endif
+#ifdef MENU_DAT
+		if (!Q_strcasecmp(dep->name, "menu.dat"))
+			Cmd_ExecuteString("menu_restart\n", RESTRICT_LOCAL);
+#endif
 	}
 }
 
@@ -2060,31 +2164,6 @@ static int QDECL PM_ExtractFiles(const char *fname, qofs_t fsize, time_t mtime, 
 		}
 	}
 	return 1;
-}
-
-//package has been downloaded and installed, but some packages need to be enabled
-//(plugins might have other dll dependancies, so this can only happen AFTER the entire package was extracted)
-static void PM_PackageEnabled(package_t *p)
-{
-	char ext[8];
-	struct packagedep_s *dep;
-	FS_FlushFSHashFull();
-	for (dep = p->deps; dep; dep = dep->next)
-	{
-		if (dep->dtype != DEP_FILE)
-			continue;
-		COM_FileExtension(dep->name, ext, sizeof(ext));
-		if (!stricmp(ext, "pak") || !stricmp(ext, "pk3"))
-			FS_ReloadPackFiles();
-#ifdef PLUGINS
-		if ((p->flags & DPF_PLUGIN) && !Q_strncasecmp(dep->name, PLUGINPREFIX, strlen(PLUGINPREFIX)))
-			Cmd_ExecuteString(va("plug_load %s\n", dep->name), RESTRICT_LOCAL);
-#endif
-#ifdef MENU_DAT
-		if (!Q_strcasecmp(dep->name, "menu.dat"))
-			Cmd_ExecuteString("menu_restart\n", RESTRICT_LOCAL);
-#endif
-	}
 }
 
 static void PM_StartADownload(void);
@@ -2339,10 +2418,10 @@ int PM_IsApplying(qboolean listsonly)
 	return count;
 }
 
+#ifdef WEBCLIENT
 //looks for the next package that needs downloading, and grabs it
 static void PM_StartADownload(void)
 {
-#ifdef WEBCLIENT
 	vfsfile_t *tmpfile;
 	char *temp;
 	package_t *p;
@@ -2471,8 +2550,8 @@ static void PM_StartADownload(void)
 
 	//clear the updating flag once there's no more activity needed
 	pkg_updating = downloading;
-#endif
 }
+#endif
 //'just' starts doing all the things needed to remove/install selected packages
 void PM_ApplyChanges(void)
 {
@@ -2616,8 +2695,45 @@ void PM_ApplyChanges(void)
 		if ((p->flags&DPF_MARKED) && !(p->flags&DPF_ENABLED) && !p->download)
 			p->trymirrors = ~0u;
 	}
-#endif
 	PM_StartADownload();	//and try to do those downloads.
+#else
+	for (p = availablepackages; p; p=p->next)
+	{
+		if ((p->flags&DPF_MARKED) && !(p->flags&DPF_ENABLED))
+		{	//flagged for a (re?)download
+			int i;
+			struct packagedep_s *dep;
+			for (i = 0; i < countof(p->mirror); i++)
+				if (p->mirror[i])
+					break;
+			for (dep = p->deps; dep; dep=dep->next)
+				if (dep->dtype == DEP_FILE)
+					break;
+			if (!dep && i == countof(p->mirror))
+			{	//this appears to be a meta package with no download
+				//just directly install it.
+				p->flags &= ~(DPF_NATIVE|DPF_CACHED|DPF_CORRUPT);
+				p->flags |= DPF_ENABLED;
+
+				Con_Printf("Enabled meta package %s\n", p->name);
+				PM_WriteInstalledPackages();
+				PM_PackageEnabled(p);
+			}
+
+			if ((p->flags & DPF_PRESENT) && !PM_PurgeOnDisable(p))
+			{	//its in our cache directory, so lets just use that
+				p->flags |= DPF_ENABLED;
+
+				Con_Printf("Enabled cached package %s\n", p->name);
+				PM_WriteInstalledPackages();
+				PM_PackageEnabled(p);
+				continue;
+			}
+			else
+				p->flags &= ~DPF_MARKED;
+		}
+	}
+#endif
 }
 
 #if defined(M_Menu_Prompt) || defined(SERVERONLY)
@@ -2717,7 +2833,7 @@ static void PM_PromptApplyChanges(void)
 	//lock it down, so noone can make any changes while this prompt is still displayed
 	if (pkg_updating)
 	{
-		M_Menu_Prompt(PM_PromptApplyChanges_Callback, NULL, "An update is already in progress\nPlease wait\n", NULL, NULL, "Cancel");
+		Menu_Prompt(PM_PromptApplyChanges_Callback, NULL, "An update is already in progress\nPlease wait\n", NULL, NULL, "Cancel");
 		return;
 	}
 	pkg_updating = true;
@@ -2725,7 +2841,7 @@ static void PM_PromptApplyChanges(void)
 
 	strcpy(text, "Really decline the following\nrecommendedpackages?\n\n");
 	if (PM_DeclinedPackages(text+strlen(text), sizeof(text)-strlen(text)))
-		M_Menu_Prompt(PM_PromptApplyDecline_Callback, NULL, text, NULL, "Confirm", "Cancel");
+		Menu_Prompt(PM_PromptApplyDecline_Callback, NULL, text, NULL, "Confirm", "Cancel");
 	else
 	{
 		strcpy(text, "Apply the following changes?\n\n");
@@ -2737,7 +2853,7 @@ static void PM_PromptApplyChanges(void)
 #endif
 		}
 		else
-			M_Menu_Prompt(PM_PromptApplyChanges_Callback, NULL, text, "Apply", NULL, "Cancel");
+			Menu_Prompt(PM_PromptApplyChanges_Callback, NULL, text, "Apply", NULL, "Cancel");
 	}
 }
 #endif
@@ -2781,6 +2897,33 @@ void PM_Command_f(void)
 		Con_Printf("%s may not be used from gamecode\n", Cmd_Argv(0));
 		return;
 	}
+
+	if (!strcmp(act, "sources") || !strcmp(act, "addsource"))
+	{
+#ifdef WEBCLIENT
+		if (Cmd_Argc() == 2)
+		{
+			int i;
+			for (i = 0; i < numdownloadablelists; i++)
+				Con_Printf("%s %s\n", downloadablelist[i].url, downloadablelist[i].save?"(explicit)":"(implicit)");
+			Con_Printf("<%i sources>\n", numdownloadablelists);
+		}
+		else
+		{
+			PM_AddSubList(Cmd_Argv(2), "", true, true);
+			PM_WriteInstalledPackages();
+		}
+#endif
+	}
+	else if (!strcmp(act, "remsource"))
+	{
+#ifdef WEBCLIENT
+		PM_RemSubList(Cmd_Argv(2));
+		PM_WriteInstalledPackages();
+#endif
+	}
+	else
+	{
 	
 	if (!loadedinstalled)
 		PM_UpdatePackageList(false, false);
@@ -2791,6 +2934,8 @@ void PM_Command_f(void)
 		{
 			const char *status;
 			char *markup;
+			if ((p->flags & DPF_HIDDEN) && !(p->flags & (DPF_MARKED|DPF_ENABLED|DPF_PURGE|DPF_CACHED)))
+				continue;
 			if (p->flags & DPF_ENABLED)
 				markup = S_COLOR_GREEN;
 			else if (p->flags & DPF_CORRUPT)
@@ -2904,28 +3049,6 @@ void PM_Command_f(void)
 		}
 		Con_Printf("<end of list>\n");
 	}
-#ifdef WEBCLIENT
-	else if (!strcmp(act, "sources") || !strcmp(act, "addsource"))
-	{
-		if (Cmd_Argc() == 2)
-		{
-			int i;
-			for (i = 0; i < numdownloadablelists; i++)
-				Con_Printf("%s %s\n", downloadablelist[i].url, downloadablelist[i].save?"(explicit)":"(implicit)");
-			Con_Printf("<%i sources>\n", numdownloadablelists);
-		}
-		else
-		{
-			PM_AddSubList(Cmd_Argv(2), "", true, true);
-			PM_WriteInstalledPackages();
-		}
-	}
-#endif
-	else if (!strcmp(act, "remsource"))
-	{
-		PM_RemSubList(Cmd_Argv(2));
-		PM_WriteInstalledPackages();
-	}
 	else if (!strcmp(act, "apply"))
 	{
 		Con_Printf("Applying package changes\n");
@@ -3031,6 +3154,7 @@ void PM_Command_f(void)
 	}
 	else
 		Con_Printf("%s: Unknown action %s\nShould be one of list, show, search, upgrade, revert, add, rem, del, changes, apply, sources, addsource, remsource\n", Cmd_Argv(0), act);
+	}
 }
 
 qboolean PM_FindUpdatedEngine(char *syspath, size_t syspathsize)
@@ -3105,7 +3229,7 @@ typedef struct {
 	qboolean populated;
 } dlmenu_t;
 
-static void MD_Draw (int x, int y, struct menucustom_s *c, struct menu_s *m)
+static void MD_Draw (int x, int y, struct menucustom_s *c, struct emenu_s *m)
 {
 	package_t *p;
 	char *n;
@@ -3207,8 +3331,12 @@ static void MD_Draw (int x, int y, struct menucustom_s *c, struct menu_s *m)
 
 		if (p->flags & DPF_TESTING)	//hide testing updates 
 			n = va("^h%s", n);
-//			if (!(p->flags & (DPF_ENABLED|DPF_MARKED|DPF_PRESENT))
-//				continue;
+
+		if (!PM_CheckPackageFeatures(p))
+			Draw_FunStringWidth(0, y, "!", x+8, true, true);
+
+//		if (!(p->flags & (DPF_ENABLED|DPF_MARKED|DPF_PRESENT))
+//			continue;
 
 //		if (&m->selecteditem->common == &c->common)
 //			Draw_AltFunString (x+48, y, n);
@@ -3217,7 +3345,7 @@ static void MD_Draw (int x, int y, struct menucustom_s *c, struct menu_s *m)
 	}
 }
 
-static qboolean MD_Key (struct menucustom_s *c, struct menu_s *m, int key, unsigned int unicode)
+static qboolean MD_Key (struct menucustom_s *c, struct emenu_s *m, int key, unsigned int unicode)
 {
 	extern qboolean	keydown[];
 	qboolean ctrl = keydown[K_LCTRL] || keydown[K_RCTRL];
@@ -3329,7 +3457,7 @@ static qboolean MD_Key (struct menucustom_s *c, struct menu_s *m, int key, unsig
 }
 
 #ifdef WEBCLIENT
-static void MD_AutoUpdate_Draw (int x, int y, struct menucustom_s *c, struct menu_s *m)
+static void MD_AutoUpdate_Draw (int x, int y, struct menucustom_s *c, struct emenu_s *m)
 {
 	char *settings[] = 
 	{
@@ -3345,7 +3473,7 @@ static void MD_AutoUpdate_Draw (int x, int y, struct menucustom_s *c, struct men
 //	else
 		Draw_FunString (x, y, text);
 }
-static qboolean MD_AutoUpdate_Key (struct menucustom_s *c, struct menu_s *m, int key, unsigned int unicode)
+static qboolean MD_AutoUpdate_Key (struct menucustom_s *c, struct emenu_s *m, int key, unsigned int unicode)
 {
 	if (key == K_ENTER || key == K_KP_ENTER || key == K_GP_START || key == K_MOUSE1)
 	{
@@ -3360,7 +3488,7 @@ static qboolean MD_AutoUpdate_Key (struct menucustom_s *c, struct menu_s *m, int
 	return false;
 }
 
-static qboolean MD_MarkUpdatesButton (union menuoption_s *mo,struct menu_s *m,int key)
+static qboolean MD_MarkUpdatesButton (union menuoption_s *mo,struct emenu_s *m,int key)
 {
 	if (key == K_ENTER || key == K_KP_ENTER || key == K_GP_START || key == K_MOUSE1)
 	{
@@ -3371,7 +3499,7 @@ static qboolean MD_MarkUpdatesButton (union menuoption_s *mo,struct menu_s *m,in
 }
 #endif
 
-qboolean MD_PopMenu (union menuoption_s *mo,struct menu_s *m,int key)
+qboolean MD_PopMenu (union menuoption_s *mo,struct emenu_s *m,int key)
 {
 	if (key == K_ENTER || key == K_KP_ENTER || key == K_GP_START || key == K_MOUSE1)
 	{
@@ -3381,7 +3509,7 @@ qboolean MD_PopMenu (union menuoption_s *mo,struct menu_s *m,int key)
 	return false;
 }
 
-static qboolean MD_ApplyDownloads (union menuoption_s *mo,struct menu_s *m,int key)
+static qboolean MD_ApplyDownloads (union menuoption_s *mo,struct emenu_s *m,int key)
 {
 	if (key == K_ENTER || key == K_KP_ENTER || key == K_GP_START || key == K_MOUSE1)
 	{
@@ -3391,7 +3519,7 @@ static qboolean MD_ApplyDownloads (union menuoption_s *mo,struct menu_s *m,int k
 	return false;
 }
 
-static qboolean MD_RevertUpdates (union menuoption_s *mo,struct menu_s *m,int key)
+static qboolean MD_RevertUpdates (union menuoption_s *mo,struct emenu_s *m,int key)
 {
 	if (key == K_ENTER || key == K_KP_ENTER || key == K_GP_START || key == K_MOUSE1)
 	{
@@ -3401,7 +3529,7 @@ static qboolean MD_RevertUpdates (union menuoption_s *mo,struct menu_s *m,int ke
 	return false;
 }
 
-static int MD_AddItemsToDownloadMenu(menu_t *m, int y, const char *pathprefix)
+static int MD_AddItemsToDownloadMenu(emenu_t *m, int y, const char *pathprefix)
 {
 	char path[MAX_QPATH];
 	package_t *p;
@@ -3409,6 +3537,7 @@ static int MD_AddItemsToDownloadMenu(menu_t *m, int y, const char *pathprefix)
 	char *slash;
 	menuoption_t *mo;
 	int prefixlen = strlen(pathprefix);
+	struct packagedep_s *dep;
 
 	//add all packages in this dir
 	for (p = availablepackages; p; p = p->next)
@@ -3425,10 +3554,26 @@ static int MD_AddItemsToDownloadMenu(menu_t *m, int y, const char *pathprefix)
 				desc = va("^aauthor: ^a%s\n^alicense: ^a%s\n^awebsite: ^a%s\n%s", p->author?p->author:"^hUnknown^h", p->license?p->license:"^hUnknown^h", p->website?p->website:"^hUnknown^h", p->description);
 			else
 				desc = p->description;
+
+			for (dep = p->deps; dep; dep = dep->next)
+			{
+				if (dep->dtype == DEP_NEEDFEATURE)
+				{
+					const char *featname, *enablecmd;
+					if (!PM_CheckFeature(dep->name, &featname, &enablecmd))
+					{
+						if (enablecmd)
+							desc = va("^aDisabled: ^a%s\n%s", featname, desc);
+						else
+							desc = va("^aUnavailable: ^a%s\n%s", featname, desc);
+					}
+				}
+			}
+
 			c = MC_AddCustom(m, 0, y, p, downloadablessequence, desc);
 			c->draw = MD_Draw;
 			c->key = MD_Key;
-			c->common.width = 320;
+			c->common.width = 320-16;
 			c->common.height = 8;
 			y += 8;
 
@@ -3460,7 +3605,7 @@ static int MD_AddItemsToDownloadMenu(menu_t *m, int y, const char *pathprefix)
 			if (!mo)
 			{
 				y += 8;
-				MC_AddBufferedText(m, 48, 320, y, path+prefixlen, false, true);
+				MC_AddBufferedText(m, 48, 320-16, y, path+prefixlen, false, true);
 				y += 8;
 				Q_strncatz(path, "/", sizeof(path));
 				y = MD_AddItemsToDownloadMenu(m, y, path);
@@ -3471,7 +3616,7 @@ static int MD_AddItemsToDownloadMenu(menu_t *m, int y, const char *pathprefix)
 }
 
 #include "shader.h"
-static void MD_Download_UpdateStatus(struct menu_s *m)
+static void MD_Download_UpdateStatus(struct emenu_s *m)
 {
 	dlmenu_t *info = m->data;
 	int i, y;
@@ -3571,20 +3716,20 @@ static void MD_Download_UpdateStatus(struct menu_s *m)
 		info->populated = true;
 		MC_AddFrameStart(m, 48);
 		y = 48;
-		b = MC_AddCommand(m, 48, 170, y, "Apply", MD_ApplyDownloads);
+		b = MC_AddCommand(m, 48, 320-16, y, "Apply", MD_ApplyDownloads);
 		b->rightalign = false;
 		b->common.tooltip = "Enable/Disable/Download/Delete packages to match any changes made (you will be prompted with a list of the changes that will be made).";
 		y+=8;
-		d = b = MC_AddCommand(m, 48, 170, y, "Back", MD_PopMenu);
+		d = b = MC_AddCommand(m, 48, 320-16, y, "Back", MD_PopMenu);
 		b->rightalign = false;
 		y+=8;
 #ifdef WEBCLIENT
-		b = MC_AddCommand(m, 48, 170, y, "Mark Updates", MD_MarkUpdatesButton);
+		b = MC_AddCommand(m, 48, 320-16, y, "Mark Updates", MD_MarkUpdatesButton);
 		b->rightalign = false;
 		b->common.tooltip = "Select any updated versions of packages that are already installed.";
 		y+=8;
 #endif
-		b = MC_AddCommand(m, 48, 170, y, "Revert Updates", MD_RevertUpdates);
+		b = MC_AddCommand(m, 48, 320-16, y, "Revert Updates", MD_RevertUpdates);
 		b->rightalign = false;
 		b->common.tooltip = "Reset selection to only those packages that are currently installed.";
 		y+=8;
@@ -3592,7 +3737,7 @@ static void MD_Download_UpdateStatus(struct menu_s *m)
 		c = MC_AddCustom(m, 48, y, p, 0, NULL);
 		c->draw = MD_AutoUpdate_Draw;
 		c->key = MD_AutoUpdate_Key;
-		c->common.width = 320;
+		c->common.width = 320-48-16;
 		c->common.height = 8;
 		y += 8;
 #endif
@@ -3621,15 +3766,13 @@ static void MD_Download_UpdateStatus(struct menu_s *m)
 
 void Menu_DownloadStuff_f (void)
 {
-	menu_t *menu;
+	emenu_t *menu;
 	dlmenu_t *info;
-
-	Key_Dest_Add(kdm_emenu);
 
 	menu = M_CreateMenu(sizeof(dlmenu_t));
 	info = menu->data;
 
-	menu->persist = true;
+	menu->menu.persist = true;
 	menu->predraw = MD_Download_UpdateStatus;
 	info->downloadablessequence = downloadablessequence;
 
@@ -3644,7 +3787,7 @@ void Menu_DownloadStuff_f (void)
 //should only be called AFTER the filesystem etc is inited.
 void Menu_Download_Update(void)
 {
-	if (!pkg_autoupdate.ival)
+	if (pkg_autoupdate.ival <= 0)
 		return;
 
 	PM_UpdatePackageList(true, 2);

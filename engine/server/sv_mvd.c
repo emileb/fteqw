@@ -1748,7 +1748,7 @@ void SV_MVD_SendInitialGamestate(mvddest_t *dest)
 	MSG_WriteByte (&buf, svc_serverdata);
 
 	//fix up extensions to match sv_bigcoords correctly. sorry for old clients not working.
-	if (buf.prim.coordsize == 4)
+	if (buf.prim.coordtype == COORDTYPE_FLOAT_32)
 		demo.recorder.fteprotocolextensions |= PEXT_FLOATCOORDS;
 	else
 		demo.recorder.fteprotocolextensions &= ~PEXT_FLOATCOORDS;
@@ -1825,30 +1825,8 @@ void SV_MVD_SendInitialGamestate(mvddest_t *dest)
 	}
 
 // send all current light styles
-	for (i=0 ; i<MAX_LIGHTSTYLES ; i++)
-	{
-		if (i >= MAX_STANDARDLIGHTSTYLES)
-			if (!sv.strings.lightstyles[i])
-				continue;
-#ifdef PEXT_LIGHTSTYLECOL
-		if ((demo.recorder.fteprotocolextensions & PEXT_LIGHTSTYLECOL) && (sv.lightstylecolours[i][0]!=1||sv.lightstylecolours[i][1]!=1||sv.lightstylecolours[i][2]!=1) && sv.strings.lightstyles[i])
-		{
-			MSG_WriteByte (&buf, svcfte_lightstylecol);
-			MSG_WriteByte (&buf, (unsigned char)i);
-			MSG_WriteByte (&buf, 0x87);
-			MSG_WriteShort(&buf, sv.lightstylecolours[i][0]*1024);
-			MSG_WriteShort(&buf, sv.lightstylecolours[i][1]*1024);
-			MSG_WriteShort(&buf, sv.lightstylecolours[i][2]*1024);
-			MSG_WriteString (&buf, sv.strings.lightstyles[i]);
-		}
-		else
-#endif
-		{
-			MSG_WriteByte (&buf, svc_lightstyle);
-			MSG_WriteByte (&buf, (unsigned char)i);
-			MSG_WriteString (&buf, sv.strings.lightstyles[i]);
-		}
-	}
+	for (i=0 ; i<sv.maxlightstyles || i < MAX_STANDARDLIGHTSTYLES; i++)
+		SV_SendLightstyle(&demo.recorder, &buf, i, true);
 
 	//invalidate stats+players somehow
 	for (i = 0; i < MAX_CLIENTS; i++)
@@ -2563,6 +2541,7 @@ void SV_UserCmdMVDList_f (void)
 
 void SV_UserCmdMVDList_HTML (vfsfile_t *pipe)
 {
+//#define EMBEDGAME
 	mvddest_t *d;
 	dir_t	*dir;
 	file_t	*list;
@@ -2579,6 +2558,7 @@ void SV_UserCmdMVDList_HTML (vfsfile_t *pipe)
 					".mydiv { width: 20%%; height: 100%%; padding: 0px; margin: 0px; border: 0px solclass #aaaaaa; float:left; }"
 					".game { width: 80%%; height: 100%%; padding: 0px; margin: 0px; border: 0px solclass #aaaaaa; float:left; }"
 				"</style>"
+#ifdef EMBEDGAME
 				"<script>"
 					"function playdemo(demo)"
 					"{"
@@ -2586,6 +2566,7 @@ void SV_UserCmdMVDList_HTML (vfsfile_t *pipe)
 						"thegame.postMessage({cmd:'playdemo',url:demo}, '*');"
 					"}"
 				"</script>"
+#endif
 			"</head>"
 			"<body>"
 			"<div class='mydiv'>\n"
@@ -2610,7 +2591,11 @@ void SV_UserCmdMVDList_HTML (vfsfile_t *pipe)
 		{
 			char datetime[64];
 			strftime(datetime, sizeof(datetime), "%Y-%m-%d %H:%M:%S", localtime(&list->mtime));
+#ifdef EMBEDGAME
 			VFS_PRINTF(pipe, "%d: <a href='/demos/%s'>%s</a> %uk <a href='javascript:void(0)' onclick='playdemo(\"%s\")'>play</a> %s<br/>\n", i, list->name, list->name, (unsigned int)(list->size/1024), list->name, datetime);
+#else
+			VFS_PRINTF(pipe, "%d: <a href='/demos/%s'>%s</a> %uk %s<br/>\n", i, list->name, list->name, (unsigned int)(list->size/1024), datetime);
+#endif
 		}
 	}
 
@@ -2628,13 +2613,15 @@ void SV_UserCmdMVDList_HTML (vfsfile_t *pipe)
 
 	VFS_PRINTF(pipe,
 				"</div>"
+#ifdef EMBEDGAME
 				"<div class='game'>"
 					"<iframe name='thegame'"	//the name of the game is... thegame!
 						" src='"ENGINEWEBSITE"/quake' allowfullscreen=true"
 						" frameborder='0' scrolling='no' marginheight='0' marginwidth='0' width='100%%' height='100%%'"
 						" onerror=\"alert('Failed to load engine')\">"
-				"</iframe>"
+					"</iframe>"
 				"</div>"
+#endif
 			"</body>\n"
 		"</html>\n");
 

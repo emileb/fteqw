@@ -61,10 +61,6 @@ typedef struct sfx_s
 	qboolean syspath:1; //if the sound is still relevent
 
 	int loopstart;	//-1 or sample index to begin looping at once the sample ends
-
-#ifdef AVAIL_OPENAL
-	unsigned int	openal_buffer;
-#endif
 } sfx_t;
 
 // !!! if this is changed, it much be changed in asm_i386.h too !!!
@@ -105,7 +101,7 @@ typedef struct
 #define CF_FORCELOOP		2	// forces looping. set on static sounds.
 #define CF_NOSPACIALISE		4	// these sounds are played at a fixed volume in both speakers, but still gets quieter with distance.
 //#define CF_PAUSED			8	// rate = 0. or something.
-#define CF_CL_ABSVOLUME		16	// ignores volume cvar. this is ignored if received from the server because there's no practical way for the server to respect the client's preferences.
+#define CF_CL_ABSVOLUME		16	// ignores volume cvar (but not mastervolume). this is ignored if received from the server because there's no practical way for the server to respect the client's preferences.
 //#define CF_SV_RESERVED	CF_CL_ABSVOLUME
 #define CF_NOREVERB			32	// disables reverb on this channel, if possible.
 #define CF_FOLLOW			64	// follows the owning entity (stops moving if we lose track)
@@ -298,7 +294,7 @@ extern cvar_t snd_nominaldistance;
 
 extern	cvar_t loadas8bit;
 extern	cvar_t bgmvolume;
-extern	cvar_t volume;
+extern	cvar_t volume, mastervolume;
 extern	cvar_t snd_capture;
 
 extern float voicevolumemod;
@@ -313,7 +309,8 @@ void S_LocalSound2 (const char *sound, int channel, float volume);
 qboolean S_LoadSound (sfx_t *s, qboolean forcedecode);
 
 typedef qboolean (QDECL *S_LoadSound_t) (sfx_t *s, qbyte *data, size_t datalen, int sndspeed, qboolean forcedecode);
-qboolean S_RegisterSoundInputPlugin(S_LoadSound_t loadfnc);	//called to register additional sound input plugins
+qboolean S_RegisterSoundInputPlugin(void *module, S_LoadSound_t loadfnc); //called to register additional sound input plugins
+void S_UnregisterSoundInputModule(void *module);
 
 void S_AmbientOff (void);
 void S_AmbientOn (void);
@@ -337,6 +334,14 @@ extern sounddriver pSDL_InitCard;
 extern sounddriver pWAV_InitCard;
 extern sounddriver pAHI_InitCard;
 */
+
+typedef enum
+{
+	CUR_SPACIALISEONLY	= 0,	//for ticking over, respacialising, etc
+	CUR_UPDATE			= (1u<<1),			//flags/rate/offset changed without changing the sound itself
+	CUR_SOUNDCHANGE		= (1u<<2),		//the audio file changed too. reset everything.
+	CUR_EVERYTHING		= CUR_UPDATE|CUR_SOUNDCHANGE
+} chanupdatereason_t;
 
 struct soundcardinfo_s { //windows has one defined AFTER directsound
 	char name[256];	//a description of the card.
@@ -375,7 +380,7 @@ struct soundcardinfo_s { //windows has one defined AFTER directsound
 	unsigned int (*GetDMAPos) (soundcardinfo_t *sc);				//get the current point that the hardware is reading from (the return value should not wrap, at least not very often)
 	void (*SetEnvironmentReverb) (soundcardinfo_t *sc, size_t reverb);	//if you have eax enabled, change the environment. fixme. generally this is a stub. optional.
 	void (*Restore) (soundcardinfo_t *sc);							//called before lock/unlock/lock/unlock/submit. optional
-	void (*ChannelUpdate) (soundcardinfo_t *sc, channel_t *channel, unsigned int schanged);	//properties of a sound effect changed. this is to notify hardware mixers. optional.
+	void (*ChannelUpdate) (soundcardinfo_t *sc, channel_t *channel, chanupdatereason_t schanged);	//properties of a sound effect changed. this is to notify hardware mixers. optional.
 	void (*ListenerUpdate) (soundcardinfo_t *sc, int entnum, vec3_t origin, vec3_t forward, vec3_t right, vec3_t up, vec3_t velocity);	//player moved or something. this is to notify hardware mixers. optional.
 	ssamplepos_t (*GetChannelPos) (soundcardinfo_t *sc, channel_t *channel);	//queries a hardware mixer's channel position (essentially returns channel->pos, except more up to date)
 

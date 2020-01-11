@@ -123,14 +123,14 @@ extern func_t EndFrameQC;
 extern qboolean ssqc_deprecated_warned;
 extern cvar_t pr_maxedicts; //used in too many places...
 extern cvar_t noexit, temp1, saved1, saved2, saved3, saved4, savedgamecfg, scratch1, scratch2, scratch3, scratch4, gamecfg, nomonsters; //read by savegame.c
-extern cvar_t pr_ssqc_memsize, pr_imitatemvdsv, sv_aim, pr_ssqc_coreonerror, dpcompat_nopreparse;
+extern cvar_t pr_ssqc_memsize, pr_imitatemvdsv, sv_aim, sv_maxaim, pr_ssqc_coreonerror, dpcompat_nopreparse;
 extern int pr_teamfield;
 
 qboolean PR_QCChat(char *text, int say_type);
 
 void PR_ClientUserInfoChanged(char *name, char *oldivalue, char *newvalue);
 void PR_LocalInfoChanged(char *name, char *oldivalue, char *newvalue);
-void PF_InitTempStrings(pubprogfuncs_t *prinst);
+void PF_InitTempStrings(pubprogfuncs_t *inst);
 
 #ifdef VM_LUA
 qboolean PR_LoadLua(void);

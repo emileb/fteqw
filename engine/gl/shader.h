@@ -272,6 +272,7 @@ typedef struct shaderpass_s {
 		T_GEN_REFLECTCUBE,	//dpreflectcube
 		T_GEN_REFLECTMASK,	//dpreflectcube mask
 		T_GEN_DISPLACEMENT,	//displacement texture (probably half-float or something so higher precision than normalmap.a)
+		T_GEN_OCCLUSION,	//occlusion mask (instead of baking it into the texture itself, required for correct pbr)
 
 		T_GEN_CURRENTRENDER,//copy the current screen to a texture, and draw that
 
@@ -541,20 +542,18 @@ typedef struct programshared_s
 	unsigned int supportedpermutations;
 	unsigned char *cvardata;
 	unsigned int cvardatasize;
+	int shaderver;				//glsl version
+	char *preshade;		//general prefixed #defines
+	char *shadertext;		//the glsl text
+	unsigned char failed[(PERMUTATIONS+7)/8];		//so we don't try recompiling endlessly
+	struct programpermu_s *permu[PERMUTATIONS];	//set once compiled.
+
 #ifdef VKQUAKE
 	qVkShaderModule vert;		//for slightly faster regeneration
 	qVkShaderModule frag;
 	qVkPipelineLayout layout;	//all permutations share the same layout. I'm too lazy not to.
 	qVkDescriptorSetLayout desclayout;
 	struct pipeline_s *pipelines;
-#endif
-#define DELAYEDSHADERCOMPILE
-#ifdef DELAYEDSHADERCOMPILE
-	int shaderver;				//glsl version
-	char *preshade;		//general prefixed #defines
-	char *shadertext;		//the glsl text
-	unsigned char failed[(PERMUTATIONS+7)/8];		//so we don't try recompiling endlessly
-	struct programpermu_s *permu[PERMUTATIONS];	//set once compiled.
 #endif
 } program_t;
 
@@ -571,11 +570,13 @@ enum
 	LSHADER_SPOT=1u<<2,		//filter based upon a single spotlight shadowmap
 #ifdef LFLAG_ORTHO
 	LSHADER_ORTHO=1u<<3,	//uses a parallel projection(ortho) matrix, with the light source being an entire plane instead of a singular point. which is weird. read: infinitely far away sunlight
-	LSHADER_MODES=1u<<4
+	LSHADER_MODES=1u<<4,
 #else
 	LSHADER_ORTHO=0,	//so bitmasks return false
-	LSHADER_MODES=1u<<3
+	LSHADER_MODES=1u<<3,
 #endif
+
+	LSHADER_FAKESHADOWS=1u<<10,	//special 'light' type that isn't a light but still needs a shadowmap. ignores world+bsp shadows.
 };
 enum
 {
@@ -642,6 +643,7 @@ struct shader_s
 		SHADER_NODLIGHT			= 1 << 15,	//from surfaceflags
 		SHADER_HASLIGHTMAP		= 1 << 16,
 		SHADER_HASTOPBOTTOM		= 1 << 17,
+		SHADER_HASREFLECTCUBE	= 1 << 18,	//shader has a T_GEN_REFLECTCUBE pass (otherwise we can skip surf envmaps for better batching)
 //		SHADER_STATICDATA		= 1 << 18,	//set if true: no deforms, no tcgen, rgbgen=identitylighting, alphagen=identity, tmu0=st + tmu1=lm(if available) for every pass, no norms
 		SHADER_HASREFLECT		= 1 << 19,	//says that we need to generate a reflection image first
 		SHADER_HASREFRACT		= 1 << 20,	//says that we need to generate a refraction image first
@@ -797,6 +799,7 @@ typedef struct
 	unsigned int maxver;		//highest glsl version usable
 	unsigned int max_gpu_bones;	//max number of bones supported by uniforms.
 
+	int hw_bc, hw_etc, hw_astc;	//these are set only if the hardware actually supports the format, and not if we think the drivers are software-decoding them (unlike texfmt).
 	qboolean texfmt[PTI_MAX];		//which texture formats are supported (renderable not implied)
 	unsigned int texture2d_maxsize;			//max size of a 2d texture
 	unsigned int texture3d_maxsize;			//max size of a 3d texture
@@ -811,6 +814,7 @@ typedef struct
 	qboolean env_add;
 	qboolean can_mipcap;		//gl1.2+
 	qboolean can_mipbias;		//gl1.4+
+	qboolean can_genmips;		//gl3.0+
 	qboolean havecubemaps;	//since gl1.3, so pretty much everyone will have this... should probably only be set if we also have seamless or clamp-to-edge.
 
 	void	 (*pDeleteProg)		(program_t *prog);
@@ -840,6 +844,7 @@ extern const struct sh_defaultsamplers_s
 
 #ifdef VKQUAKE
 qboolean VK_LoadBlob(program_t *prog, void *blobdata, const char *name);
+void VK_RegisterVulkanCvars(void);
 #endif
 
 #ifdef GLQUAKE
@@ -872,7 +877,7 @@ void GLBE_FBO_Pop(int oldfbo);
 void GLBE_FBO_Destroy(fbostate_t *state);
 int GLBE_FBO_Update(fbostate_t *state, unsigned int enables, texid_t *destcol, int colourbuffers, texid_t destdepth, int width, int height, int layer);
 
-qboolean GLBE_BeginShadowMap(int id, int w, int h, int *restorefbo);
+qboolean GLBE_BeginShadowMap(int id, int w, int h, uploadfmt_t encoding, int *restorefbo);
 void GLBE_EndShadowMap(int restorefbo);
 void GLBE_SetupForShadowMap(dlight_t *dl, int texwidth, int texheight, float shadowscale);
 
@@ -998,6 +1003,7 @@ void D3D11BE_BaseEntTextures(const qbyte *worldpvs, const int *worldareas);
 void Sh_PreGenerateLights(void);
 //Draws lights, called from the backend
 void Sh_DrawLights(qbyte *vis);
+void Sh_GenerateFakeShadows(void);
 void Sh_CheckSettings(void);
 void SH_FreeShadowMesh(struct shadowmesh_s *sm);
 //frees all memory

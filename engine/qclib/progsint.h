@@ -58,6 +58,18 @@ typedef unsigned char qbyte;
 #pragma warning(disable : 4267)
 #endif
 
+#ifndef stricmp
+#ifdef _WIN32
+	//Windows-specific...
+	#define stricmp _stricmp
+	#define strnicmp _strnicmp
+#else
+	//Posix
+	#define stricmp strcasecmp
+	#define strnicmp strncasecmp
+#endif
+#endif
+
 //extern progfuncs_t *progfuncs;
 typedef struct sharedvar_s
 {
@@ -80,16 +92,25 @@ typedef struct
 	char value[4];
 } tempstr_t;
 
+#if defined(QCGC) && defined(MULTITHREAD)
+//	#define THREADEDGC
+#endif
+
 //FIXME: the defines hidden inside this structure are evil.
 typedef struct prinst_s
  {
 	//temp strings are GCed, and can be created by engine, builtins, or just by ent parsing code.
 	tempstr_t **tempstrings;
 	unsigned int maxtempstrings;
+#ifdef THREADEDGC
+	unsigned int nexttempstring;
+	unsigned int livetemps;	//increased on alloc, decremented after sweep
+	struct qcgccontext_s *gccontext;
+#elif defined(QCGC)
 	unsigned int numtempstrings;
-#ifdef QCGC
 	unsigned int nexttempstring;
 #else
+	unsigned int numtempstrings;
 	unsigned int numtempstringsstack;
 #endif
 
@@ -129,9 +150,7 @@ typedef struct prinst_s
 	//call stack
 #define	MAX_STACK_DEPTH		1024	//insanely high value requried for xonotic.
 	prstack_t pr_stack[MAX_STACK_DEPTH];
-#define pr_stack prinst.pr_stack
 	int pr_depth;
-#define pr_depth prinst.pr_depth
 	int spushed;
 
 	//locals
@@ -149,7 +168,6 @@ typedef struct prinst_s
 	mfunction_t	*pr_xfunction;	//active function
 #define pr_xfunction prinst.pr_xfunction
 	int pr_xstatement;			//active statement
-#define pr_xstatement prinst.pr_xstatement
 
 //pr_edict.c
 	evalc_t spawnflagscache;
@@ -208,7 +226,7 @@ extern	QCC_opcode_t	pr_opcodes[];		// sized by initialization
 
 
 
-#ifdef _MSC_VER
+#if defined(_MSC_VER) && _MSC_VER < 1900
 #define Q_vsnprintf _vsnprintf
 #else
 #define Q_vsnprintf vsnprintf
@@ -223,8 +241,8 @@ extern	QCC_opcode_t	pr_opcodes[];		// sized by initialization
 #define sv_edicts (*externs->sv_edicts)
 
 #define PR_DPrintf externs->DPrintf
-#define printf syntax error
-#define Sys_Error externs->Sys_Error
+//#define printf syntax error
+//#define Sys_Error externs->Sys_Error
 
 int PRHunkMark(progfuncs_t *progfuncs);
 void PRHunkFree(progfuncs_t *progfuncs, int mark);
@@ -352,12 +370,6 @@ typedef struct progstate_s
 	struct jitstate *jit;
 #endif
 } progstate_t;
-
-typedef struct extensionbuiltin_s {
-	char *name;
-	builtin_t func;
-	struct extensionbuiltin_s *prev;
-} extensionbuiltin_t;
 
 //============================================================================
 

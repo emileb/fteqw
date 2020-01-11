@@ -76,6 +76,7 @@ pbool	compressoutput;
 
 pbool newstylesource;
 char		destfile[1024];		//the file we're going to output to
+pbool		destfile_explicit;		//destfile was override on the commandline, don't let qc change it.
 
 QCC_eval_t		*qcc_pr_globals;
 unsigned int	numpr_globals;
@@ -423,11 +424,13 @@ struct {
 
 static const char *QCC_VersionString(void)
 {
-#ifdef SVNVERSION
-	if (strcmp(SVNVERSION, "-"))
-		return "FTEQCC: " STRINGIFY(SVNVERSION) " (" __DATE__")";
-#endif
+#if defined(SVNREVISION) && defined(SVNDATE)
+	return "FTEQCC: " STRINGIFY(SVNREVISION) " (" STRINGIFY(SVNDATE) ")";
+#elif defined(SVNREVISION)
+	return "FTEQCC: " STRINGIFY(SVNREVISION) " (" __DATE__")";
+#else
 	return "FTEQCC: " __DATE__;
+#endif
 }
 
 /*
@@ -1527,7 +1530,7 @@ static pbool QCC_WriteData (int crc)
 		outputsttype = PST_QTEST;
 		break;
 	default:
-		Sys_Error("invalid progs type chosen!");
+		externs->Sys_Error("invalid progs type chosen!");
 	}
 
 
@@ -1670,7 +1673,7 @@ static pbool QCC_WriteData (int crc)
 		}
 		break;
 	default:
-		Sys_Error("structtype error");
+		externs->Sys_Error("structtype error");
 		funcdata = NULL;
 		funcdatasize = 0;
 	}
@@ -2144,7 +2147,7 @@ strofs = (strofs+3)&~3;
 		}
 		break;
 	default:
-		Sys_Error("structtype error");
+		externs->Sys_Error("structtype error");
 	}
 
 	progs.ofs_functions = SafeSeek (h, 0, SEEK_CUR);
@@ -2292,7 +2295,7 @@ strofs = (strofs+3)&~3;
 			SafeWrite (h, fields16, numfielddefs*sizeof(QCC_ddef16_t));
 		break;
 	default:
-		Sys_Error("structtype error");
+		externs->Sys_Error("structtype error");
 	}
 
 	progs.ofs_globals = SafeSeek (h, 0, SEEK_CUR);
@@ -3592,7 +3595,7 @@ static unsigned short QCC_PR_WriteProgdefs (char *filename)
 		QCC_PR_Warning(WARN_SYSTEMCRC, NULL, 0, "please update your tenebrae system defs.\n");
 		break;
 	default:
-		QCC_PR_Warning(WARN_SYSTEMCRC, NULL, 0, "system defs not recognised from quake nor clones\n");
+		QCC_PR_Warning(WARN_SYSTEMCRC, NULL, 0, "system defs not recognised from quake nor clones, probably buggy (sys)defs.qc\n");
 		break;
 	}
 
@@ -4008,10 +4011,12 @@ static void QCC_PR_CommandLinePrecompilerOptions (void)
 		{	//explicit output file
 			i++;
 			strcpy(destfile, myargv[i]);
+			destfile_explicit = true;
 		}
 		else if ( !strncmp(myargv[i], "-o", 2) )
 		{	//explicit output file
 			strcpy(destfile, myargv[i]+2);
+			destfile_explicit = true;
 		}
 		else if ( !strcmp(myargv[i], "-qc") )
 			QCC_PR_Warning(0, NULL, WARN_BADPARAMS, "Argument %s is experimental", myargv[i]);	//compile without linking. output cannot be read by engines.
@@ -4805,7 +4810,11 @@ pbool QCC_main (int argc, const char **argv)	//as part of the quake engine
 	*/
 
 	time(&long_time);
-	strftime(QCC_copyright, sizeof(QCC_copyright),  "Compiled [%Y/%m/%d]. ", localtime( &long_time ));
+	strftime(QCC_copyright, sizeof(QCC_copyright),  "Compiled [%Y/%m/%d]"
+#ifdef SVNREVISION
+			", by fteqcc "STRINGIFY(SVNREVISION)
+#endif
+			". ", localtime( &long_time ));
 	(void)QC_strlcat(QCC_copyright, QCC_VersionString(), sizeof(QCC_copyright));
 	for (p = 0; p < 5; p++)
 		strcpy(QCC_Packname[p], "");
@@ -4995,7 +5004,7 @@ memset(pr_immediate_string, 0, sizeof(pr_immediate_string));
 			strcpy(sourcefileslist[numsourcefiles++], qccmprogsdat);
 			currentsourcefile = 0;
 		}
-		else if (currentsourcefile == numsourcefiles)
+		else if (currentsourcefile == numsourcefiles || (currentsourcefile && destfile_explicit))
 		{
 			//no more.
 			qcc_compileactive = false;

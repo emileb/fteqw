@@ -6,10 +6,10 @@
 !!cvarf gl_specular=0.3
 !!cvarb r_fog_exp2=true
 !!samps diffuse normalmap specular fullbright lightmap
-!!samps deluxmap reflectmask reflectcube
+!!samps deluxemap reflectmask reflectcube
 !!argb vertexlit=0
-!!samps paletted 1
-!!argb eightbit=0
+//!!samps =EIGHTBIT paletted 1
+//!!argb eightbit=0
 !!argf mask=1.0
 !!argb masklt=false
 !!permu FOG
@@ -101,10 +101,10 @@ void main ()
 #ifdef LIGHTSTYLED
 		if (DELUXE)
 		{
-			lightmaps  = texture2D(s_lightmap0, lm0).rgb * e_lmscale[0].rgb * dot(norm, 2.0*texture2D(s_deluxmap0, lm0).rgb-0.5);
-			lightmaps += texture2D(s_lightmap1, lm1).rgb * e_lmscale[1].rgb * dot(norm, 2.0*texture2D(s_deluxmap1, lm1).rgb-0.5);
-			lightmaps += texture2D(s_lightmap2, lm2).rgb * e_lmscale[2].rgb * dot(norm, 2.0*texture2D(s_deluxmap2, lm2).rgb-0.5);
-			lightmaps += texture2D(s_lightmap3, lm3).rgb * e_lmscale[3].rgb * dot(norm, 2.0*texture2D(s_deluxmap3, lm3).rgb-0.5);
+			lightmaps  = texture2D(s_lightmap0, lm0).rgb * e_lmscale[0].rgb * dot(norm, 2.0*texture2D(s_deluxemap0, lm0).rgb-0.5);
+			lightmaps += texture2D(s_lightmap1, lm1).rgb * e_lmscale[1].rgb * dot(norm, 2.0*texture2D(s_deluxemap1, lm1).rgb-0.5);
+			lightmaps += texture2D(s_lightmap2, lm2).rgb * e_lmscale[2].rgb * dot(norm, 2.0*texture2D(s_deluxemap2, lm2).rgb-0.5);
+			lightmaps += texture2D(s_lightmap3, lm3).rgb * e_lmscale[3].rgb * dot(norm, 2.0*texture2D(s_deluxemap3, lm3).rgb-0.5);
 		}
 		else
 		{
@@ -114,7 +114,7 @@ void main ()
 			lightmaps += texture2D(s_lightmap3, lm3).rgb * e_lmscale[3].rgb;
 		}
 #else
-		if (arg_eightbit)
+		/*if (arg_eightbit)
 		{
 			//optional: round the lightmap coords to ensure all pixels within a texel have different lighting values either. it just looks wrong otherwise.
 			//don't bother if its lightstyled, such cases will have unpredictable correlations anyway.
@@ -122,12 +122,12 @@ void main ()
 			vec2 nearestlm0 = floor(lm0 * 256.0*8.0)/(256.0*8.0);
 			lightmaps = (texture2D(s_lightmap, nearestlm0) * e_lmscale).rgb;
 		}
-		else
+		else*/
 			lightmaps = (texture2D(s_lightmap, lm0) * e_lmscale).rgb;
 		//modulate by the  bumpmap dot light
 		if (DELUXE)
 		{
-			vec3 delux = 2.0*(texture2D(s_deluxmap, lm0).rgb-0.5);
+			vec3 delux = 2.0*(texture2D(s_deluxemap, lm0).rgb-0.5);
 			lightmaps *= 1.0 / max(0.25, delux.z);	//counter the darkening from deluxmaps
 			lightmaps *= dot(norm, delux);
 		}
@@ -142,7 +142,7 @@ void main ()
 		if (DELUXE)
 		{
 //not lightstyled...
-			halfdir = normalize(normalize(eyevector) + 2.0*(texture2D(s_deluxmap0, lm0).rgb-0.5));	//this norm should be the deluxemap info instead
+			halfdir = normalize(normalize(eyevector) + 2.0*(texture2D(s_deluxemap0, lm0).rgb-0.5));	//this norm should be the deluxemap info instead
 		}
 		else
 		{
@@ -165,7 +165,7 @@ void main ()
 		gl_FragColor.rgb += texture2D(s_reflectmask, tc).rgb * textureCube(s_reflectcube, rtc).rgb;
 	}
 
-	if (arg_eightbit)
+	/*if (arg_eightbit)
 	{
 		//FIXME: with this extra flag, half the permutations are redundant.
 		lightmaps *= 0.5;	//counter the fact that the colourmap contains overbright values and logically ranges from 0 to 2 intead of to 1.
@@ -175,7 +175,7 @@ void main ()
 		gl_FragColor.g = texture2D(s_colourmap, vec2(pal, 1.0-lightmaps.g)).g;	//its not very softwarey, but re-palettizing is ugly.
 		gl_FragColor.b = texture2D(s_colourmap, vec2(pal, 1.0-lightmaps.b)).b;	//without lits, it should be identical.
 	}
-	else
+	else*/
 	{
 		//now we have our diffuse+specular terms, modulate by lightmap values.
 		gl_FragColor.rgb *= lightmaps.rgb;

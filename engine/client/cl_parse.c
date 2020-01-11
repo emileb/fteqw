@@ -1750,7 +1750,18 @@ void CL_RequestNextDownload (void)
 				break;
 			case DLFAIL_UNTRIED:
 				if (COM_FCheckExists(worldname))
-					Con_Printf(CON_ERROR "Couldn't load \"%s\" - corrupt? - cannot fully connect\n", worldname);
+				{
+					if (!cl.worldmodel)
+						Con_Printf(CON_ERROR "Couldn't load \"%s\" - worldmodel not set - cannot fully connect\n", worldname);
+					else if (cl.worldmodel->loadstate == MLS_FAILED)
+						Con_Printf(CON_ERROR "Couldn't load \"%s\" - corrupt? - cannot fully connect\n", worldname);
+					else if (cl.worldmodel->loadstate == MLS_LOADING)
+						Con_Printf(CON_ERROR "Couldn't load \"%s\" - still loading - cannot fully connect\n", worldname);
+					else if (cl.worldmodel->loadstate == MLS_NOTLOADED)
+						Con_Printf(CON_ERROR "Couldn't load \"%s\" - worldmodel not loaded - cannot fully connect\n", worldname);
+					else
+						Con_Printf(CON_ERROR "Couldn't load \"%s\" - corrupt? - cannot fully connect\n", worldname);
+				}
 				else
 					Con_Printf(CON_ERROR "Couldn't find \"%s\" - cannot fully connect\n", worldname);
 				break;
@@ -2842,6 +2853,7 @@ static void CLDP_ParseDownloadBegin(char *s)
 
 	if (!dl || strcmp(fname, dl->remotename))
 	{
+#ifdef CSQC_DAT
 		if (cls.demoplayback && !dl && cl_dp_csqc_progssize && size == cl_dp_csqc_progssize && !strcmp(fname, cl_dp_csqc_progsname))
 		{	//its somewhat common for demos to contain a copy of the csprogs, so that the same version is available when trying to play the demo back.
 			extern cvar_t cl_download_csprogs, cl_nocsqc;
@@ -2857,6 +2869,7 @@ static void CLDP_ParseDownloadBegin(char *s)
 				return;	//silently ignore it
 		}
 		else
+#endif
 		{
 			Con_Printf("Warning: server started sending a file we did not request. Ignoring.\n");
 			return;
@@ -3220,12 +3233,12 @@ static void CLQW_ParseServerData (void)
 
 	if (cls.fteprotocolextensions & PEXT_FLOATCOORDS)
 	{
-		cls.netchan.netprim.coordsize = 4;
+		cls.netchan.netprim.coordtype = COORDTYPE_FLOAT_32;
 		cls.netchan.netprim.anglesize = 2;
 	}
 	else
 	{
-		cls.netchan.netprim.coordsize = 2;
+		cls.netchan.netprim.coordtype = COORDTYPE_FIXED_13_3;
 		cls.netchan.netprim.anglesize = 1;
 	}
 	cls.netchan.message.prim = cls.netchan.netprim;
@@ -3465,7 +3478,7 @@ static void CLQ2_ParseServerData (void)
 //	int cflag;
 
 	memset(&cls.netchan.netprim, 0, sizeof(cls.netchan.netprim));
-	cls.netchan.netprim.coordsize = 2;
+	cls.netchan.netprim.coordtype = COORDTYPE_FIXED_13_3;
 	cls.netchan.netprim.anglesize = 1;
 	cls.fteprotocolextensions = 0;
 	cls.fteprotocolextensions2 = 0;
@@ -3500,7 +3513,7 @@ static void CLQ2_ParseServerData (void)
 		i = MSG_ReadLong ();
 
 		if (cls.fteprotocolextensions & PEXT_FLOATCOORDS)
-			cls.netchan.netprim.coordsize = 4;
+			cls.netchan.netprim.coordtype = COORDTYPE_FLOAT_32;
 	}
 	cls.protocol_q2 = i;
 
@@ -3656,7 +3669,7 @@ static void CLNQ_ParseProtoVersion(void)
 		break;
 	}
 
-	netprim.coordsize = 2;
+	netprim.coordtype = COORDTYPE_FIXED_13_3;
 	netprim.anglesize = 1;
 
 	cls.protocol_nq = CPNQ_ID;
@@ -3693,17 +3706,19 @@ static void CLNQ_ParseProtoVersion(void)
 		if (fl & RMQFL_FLOATANGLE)
 			netprim.anglesize = 4;
 		if (fl & RMQFL_24BITCOORD)
-			netprim.coordsize = 3;
+			netprim.coordtype = COORDTYPE_FIXED_16_8;
+		if (fl & RMQFL_INT32COORD)
+			netprim.coordtype = COORDTYPE_FIXED_28_4;
 		if (fl & RMQFL_FLOATCOORD)
-			netprim.coordsize = 4;
-		if (fl & ~(RMQFL_SHORTANGLE|RMQFL_FLOATANGLE|RMQFL_24BITCOORD|RMQFL_FLOATCOORD|RMQFL_EDICTSCALE))
+			netprim.coordtype = COORDTYPE_FLOAT_32;
+		if (fl & ~(RMQFL_SHORTANGLE|RMQFL_FLOATANGLE|RMQFL_24BITCOORD|RMQFL_INT32COORD|RMQFL_FLOATCOORD|RMQFL_EDICTSCALE))
 			Con_Printf("WARNING: Server is using unsupported RMQ extensions\n");
 	}
 	else if (protover == PROTOCOL_VERSION_DP5)
 	{
 		//darkplaces5
 		cls.protocol_nq = CPNQ_DP5;
-		netprim.coordsize = 4;
+		netprim.coordtype = COORDTYPE_FLOAT_32;
 		netprim.anglesize = 2;
 
 		Con_DPrintf("DP5 protocols\n");
@@ -3712,7 +3727,7 @@ static void CLNQ_ParseProtoVersion(void)
 	{
 		//darkplaces6 (it's a small difference from dp5)
 		cls.protocol_nq = CPNQ_DP6;
-		netprim.coordsize = 4;
+		netprim.coordtype = COORDTYPE_FLOAT_32;
 		netprim.anglesize = 2;
 
 		cls.z_ext = Z_EXT_VIEWHEIGHT;
@@ -3723,7 +3738,7 @@ static void CLNQ_ParseProtoVersion(void)
 	{
 		//darkplaces7 (it's a small difference from dp5)
 		cls.protocol_nq = CPNQ_DP7;
-		netprim.coordsize = 4;
+		netprim.coordtype = COORDTYPE_FLOAT_32;
 		netprim.anglesize = 2;
 
 		cls.z_ext = Z_EXT_VIEWHEIGHT;
@@ -3757,8 +3772,8 @@ static void CLNQ_ParseProtoVersion(void)
 	{
 		if (netprim.anglesize < 2)
 			netprim.anglesize = 2;
-		if (netprim.coordsize < 4)
-			netprim.coordsize = 4;
+		if (netprim.coordtype < COORDTYPE_FLOAT_32)
+			netprim.coordtype = COORDTYPE_FLOAT_32;
 	}
 	cls.netchan.message.prim = cls.netchan.netprim = netprim;
 	MSG_ChangePrimitives(netprim);
@@ -3964,7 +3979,7 @@ Con_DPrintf ("CL_SignonReply: %i\n", cls.signon);
 	case 1:
 		cl.sendprespawn = true;
 		SCR_SetLoadingFile("loading data");
-		CL_RequestNextDownload();
+		CL_RequestNextDownload();	//this sucks, but sometimes mods send csqc-specific messages to us before things are properly inited. if we start doing stuff now then we can minimize the chances of dodgy mods screwing with us. FIXME: warn about receiving csqc messages before begin.
 		break;
 
 	case 2:
@@ -4512,10 +4527,6 @@ static void CLQ2_ParseConfigString (void)
 				Con_Printf(CON_WARNING "WARNING: Client checksum does not match server checksum (%i != %i)", map_checksum, serverchecksum);
 		}
 	}
-
-#ifdef VM_UI
-	UI_StringChanged(i);
-#endif
 }
 #endif
 
@@ -5720,21 +5731,20 @@ static void CL_MuzzleFlash (int entnum)
 
 	if (P_RunParticleEffectType(org, axis[0], 1, pt_muzzleflash))
 	{
+		extern cvar_t r_muzzleflash_colour;
+		extern cvar_t r_muzzleflash_fade;
+
 		dl = CL_AllocDlight (dlightkey);
 		VectorMA (org, 15, axis[0], dl->origin);
 		memcpy(dl->axis, axis, sizeof(dl->axis));
 
-		dl->radius = 200 + (rand()&31);
 		dl->minlight = 32;
 		dl->die = cl.time + 0.1;
-		dl->color[0] = 1.5;
-		dl->color[1] = 1.3;
-		dl->color[2] = 1.0;
 
-		dl->channelfade[0] = 1.5;
-		dl->channelfade[1] = 0.75;
-		dl->channelfade[2] = 0.375;
-		dl->decay = 1000;
+		VectorCopy(r_muzzleflash_colour.vec4, dl->color);
+		dl->radius = r_muzzleflash_colour.vec4[3] + (rand()&31);
+		VectorCopy(r_muzzleflash_fade.vec4, dl->channelfade);
+		dl->decay = r_muzzleflash_fade.vec4[3];
 #ifdef RTLIGHTS
 		dl->lightcolourscales[2] = 4;
 #endif
@@ -5761,6 +5771,9 @@ static char *CL_ParseChat(char *text, player_info_t **player, int *msgflags)
 	{
 		if (!cls.demoplayback)
 			Sys_ServerActivity();	//chat always flashes the screen..
+
+		if (Ignore_Message((*player)->name, s, flags))
+			return NULL;
 
 		//check f_ stuff
 		if (*player && (!strncmp(s, "f_", 2)|| !strncmp(s, "q_", 2)))
@@ -6418,6 +6431,15 @@ static void CL_ParseStuffCmd(char *msg, int destsplit)	//this protects stuffcmds
 			InfoBuf_SetStarKey(&cl.serverinfo, Cmd_Argv(1), Cmd_Argv(2));
 			CL_CheckServerInfo();
 		}
+		else if (!strncmp(stufftext, "//ls ", 5))	//for extended lightstyles
+		{
+			vec3_t rgb;
+			Cmd_TokenizeString(stufftext+2, false, false);
+			rgb[0] = ((Cmd_Argc()>3)?atof(Cmd_Argv(3)):1);
+			rgb[1] = ((Cmd_Argc()>5)?atof(Cmd_Argv(4)):rgb[0]);
+			rgb[2] = ((Cmd_Argc()>5)?atof(Cmd_Argv(5)):rgb[0]);
+			R_UpdateLightStyle(atoi(Cmd_Argv(1)), Cmd_Argv(2), rgb[0], rgb[1], rgb[2]);
+		}
 
 #ifdef NQPROT
 		//DP's download protocol
@@ -7022,7 +7044,7 @@ void CLQW_ParseServerMessage (void)
 
 		case svc_lightstyle:
 			i = MSG_ReadByte ();
-			if (i >= MAX_LIGHTSTYLES)
+			if (i >= MAX_NET_LIGHTSTYLES)
 				Host_EndGame ("svc_lightstyle > MAX_LIGHTSTYLES");
 			R_UpdateLightStyle(i, MSG_ReadString(), 1, 1, 1);
 			break;
@@ -7030,18 +7052,18 @@ void CLQW_ParseServerMessage (void)
 		case svcfte_lightstylecol:
 			if (!(cls.fteprotocolextensions & PEXT_LIGHTSTYLECOL))
 				Host_EndGame("PEXT_LIGHTSTYLECOL is meant to be disabled\n");
-			i = MSG_ReadByte ();
-			if (i >= MAX_LIGHTSTYLES)
-				Host_EndGame ("svc_lightstyle > MAX_LIGHTSTYLES");
 			{
 				int bits;
 				vec3_t rgb;
+				i = MSG_ReadByte ();
 				bits = MSG_ReadByte();
+				if (bits & 0x40)
+					i |= MSG_ReadByte()<<8;	//high bits of style index.
 				if (bits & 0x80)
 				{
-					rgb[0] = MSG_ReadShort()/1024.0;
-					rgb[1] = MSG_ReadShort()/1024.0;
-					rgb[2] = MSG_ReadShort()/1024.0;
+					rgb[0] = (bits&1)?MSG_ReadShort()/1024.0:0;
+					rgb[1] = (bits&2)?MSG_ReadShort()/1024.0:0;
+					rgb[2] = (bits&4)?MSG_ReadShort()/1024.0:0;
 				}
 				else
 				{
@@ -7049,6 +7071,9 @@ void CLQW_ParseServerMessage (void)
 					rgb[1] = (bits&2)?1:0;
 					rgb[2] = (bits&4)?1:0;
 				}
+
+				if (i >= MAX_NET_LIGHTSTYLES)
+					Host_EndGame ("svc_lightstyle > MAX_LIGHTSTYLES");
 				R_UpdateLightStyle(i, MSG_ReadString(), rgb[0], rgb[1], rgb[2]);
 			}
 			break;
@@ -7531,9 +7556,6 @@ isilegible:
 		case svcq2_layout:
 			s = MSG_ReadString ();
 			Q_strncpyz (cl.q2layout[seat], s, sizeof(cl.q2layout[seat]));
-#ifdef VM_UI
-			UI_Q2LayoutChanged();
-#endif
 			break;
 		case svcq2_inventory:
 			CLQ2_ParseInventory(seat);
@@ -8165,7 +8187,7 @@ void CLNQ_ParseServerMessage (void)
 			break;
 		case svc_lightstyle:
 			i = MSG_ReadByte ();
-			if (i >= MAX_LIGHTSTYLES)
+			if (i >= MAX_NET_LIGHTSTYLES)
 			{
 				Con_Printf("svc_lightstyle: %i >= MAX_LIGHTSTYLES\n", i);
 				MSG_ReadString();
@@ -8183,16 +8205,16 @@ void CLNQ_ParseServerMessage (void)
 		//case svcneh_fog:
 			if (CPNQ_IS_BJP || cls.protocol_nq == CPNQ_NEHAHRA)
 			{
-				CL_ResetFog(0);
+				CL_ResetFog(FOGTYPE_AIR);
 				if (MSG_ReadByte())
 				{
-					cl.fog[0].density = MSG_ReadFloat();
-					cl.fog[0].colour[0] = SRGBf(MSG_ReadByte()/255.0f);
-					cl.fog[0].colour[1] = SRGBf(MSG_ReadByte()/255.0f);
-					cl.fog[0].colour[2] = SRGBf(MSG_ReadByte()/255.0f);
-					cl.fog[0].time += 0.25;	//change fairly fast, but not instantly
+					cl.fog[FOGTYPE_AIR].density = MSG_ReadFloat();
+					cl.fog[FOGTYPE_AIR].colour[0] = SRGBf(MSG_ReadByte()/255.0f);
+					cl.fog[FOGTYPE_AIR].colour[1] = SRGBf(MSG_ReadByte()/255.0f);
+					cl.fog[FOGTYPE_AIR].colour[2] = SRGBf(MSG_ReadByte()/255.0f);
+					cl.fog[FOGTYPE_AIR].time += 0.25;	//change fairly fast, but not instantly
 				}
-				cl.fog_locked = !!cl.fog[0].density;
+				cl.fog_locked = !!cl.fog[FOGTYPE_AIR].density;
 			}
 			else
 			{
@@ -8316,13 +8338,13 @@ void CLNQ_ParseServerMessage (void)
 			Cmd_ExecuteString("bf", RESTRICT_SERVER);
 			break;
 		case svcfitz_fog:
-			CL_ResetFog(0);
-			cl.fog[0].density = MSG_ReadByte()/255.0f;
-			cl.fog[0].colour[0] = SRGBf(MSG_ReadByte()/255.0f);
-			cl.fog[0].colour[1] = SRGBf(MSG_ReadByte()/255.0f);
-			cl.fog[0].colour[2] = SRGBf(MSG_ReadByte()/255.0f);
-			cl.fog[0].time += ((unsigned short)MSG_ReadShort()) / 100.0;
-			cl.fog_locked = !!cl.fog[0].density;
+			CL_ResetFog(FOGTYPE_AIR);
+			cl.fog[FOGTYPE_AIR].density = MSG_ReadByte()/255.0f;
+			cl.fog[FOGTYPE_AIR].colour[0] = SRGBf(MSG_ReadByte()/255.0f);
+			cl.fog[FOGTYPE_AIR].colour[1] = SRGBf(MSG_ReadByte()/255.0f);
+			cl.fog[FOGTYPE_AIR].colour[2] = SRGBf(MSG_ReadByte()/255.0f);
+			cl.fog[FOGTYPE_AIR].time += ((unsigned short)MSG_ReadShort()) / 100.0;
+			cl.fog_locked = !!cl.fog[FOGTYPE_AIR].density;
 			break;
 		case svcfitz_spawnbaseline2:
 			i = MSGCL_ReadEntity ();

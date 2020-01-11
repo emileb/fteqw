@@ -298,6 +298,7 @@ skinid_t Mod_ReadSkinFile(const char *skinname, const char *skintext)
 				skin->mappings[skin->nummappings].shader = R_RegisterSkin(shadername, skin->skinname);
 				R_BuildDefaultTexnums(NULL, skin->mappings[skin->nummappings].shader, 0);
 				skin->mappings[skin->nummappings].texnums = *skin->mappings[skin->nummappings].shader->defaulttextures;
+				skin->mappings[skin->nummappings].needsfree = false;
 				skin->nummappings++;
 			}
 		}
@@ -398,6 +399,7 @@ skinid_t Mod_ReadSkinFile(const char *skinname, const char *skintext)
 				skin->mappings[skin->nummappings].shader = R_RegisterCustom (shadername, 0, Shader_DefaultSkin, NULL);
 				R_BuildDefaultTexnums(NULL, skin->mappings[skin->nummappings].shader, 0);
 				skin->mappings[skin->nummappings].texnums = *skin->mappings[skin->nummappings].shader->defaulttextures;
+				skin->mappings[skin->nummappings].needsfree = false;
 				skin->nummappings++;
 			}
 		}
@@ -1770,6 +1772,8 @@ void R_GAlias_GenerateBatches(entity_t *e, batch_t **batches)
 
 	for(surfnum=0; inf; inf=inf->nextsurf, surfnum++)
 	{
+		if (!inf->numindexes)
+			continue;
 		if (lod < inf->mindist || (inf->maxdist && lod >= inf->maxdist))
 			continue;
 
@@ -2937,7 +2941,7 @@ void BE_GenModelBatches(batch_t **batches, const dlight_t *dl, unsigned int bemo
 		}
 	}
 
-	if (cl_numstris)
+	if (cl_numstris && !(r_refdef.flags & RDF_DISABLEPARTICLES))
 		BE_GenPolyBatches(batches);
 
 	while(orig_numstris < cl_numstris)

@@ -50,10 +50,11 @@ typedef struct
 
 	double		state_time;		// not the same as the packet time,
 								// because player commands come asyncronously
+
 	usercmd_t	command;		// last command for prediction
 
 	vec3_t		origin;
-	vec3_t		predorigin;		// pre-predicted pos
+	vec3_t		predorigin;		// pre-predicted pos for other players (allowing us to just lerp when active)
 	vec3_t		viewangles;		// only for demos, not from server
 	vec3_t		velocity;
 	int			weaponframe;
@@ -75,15 +76,15 @@ typedef struct
 	int			flags;			// dead, gib, etc
 
 	int			pm_type;
-	float		waterjumptime;
-	qboolean	onground;
-	qboolean	jump_held;
-	int			jump_msec;		// hack for fixing bunny-hop flickering on non-ZQuake servers
-	vec3_t		szmins, szmaxs;
-	vec3_t		gravitydir;
 
-	float lerpstarttime;
-	int oldframe;
+	vec3_t		szmins, szmaxs;
+
+	//maybe-propagated... use the networked value if available.
+	float		waterjumptime;	//never networked...
+	qboolean	onground;	//networked with Z_EXT_PF_ONGROUND||replacementdeltas
+	qboolean	jump_held;	//networked with Z_EXT_PM_TYPE
+	int			jump_msec;	// hack for fixing bunny-hop flickering on non-ZQuake servers
+	vec3_t		gravitydir;	//networked with replacementdeltas
 } player_state_t;
 
 
@@ -308,7 +309,7 @@ typedef struct
 #define LFLAG_ORTHO			(1<<11)	//sun-style -light
 
 #define LFLAG_INTERNAL		(LFLAG_LIGHTMAP|LFLAG_FLASHBLEND)	//these are internal to FTE, and never written to disk (ie: .rtlights files shouldn't contain these)
-#define LFLAG_DYNAMIC (LFLAG_LIGHTMAP | LFLAG_FLASHBLEND | LFLAG_NORMALMODE | LFLAG_REALTIMEMODE)
+#define LFLAG_DYNAMIC (LFLAG_LIGHTMAP | LFLAG_FLASHBLEND | LFLAG_NORMALMODE)
 
 typedef struct dlight_s
 {
@@ -343,7 +344,7 @@ typedef struct dlight_s
 	struct {
 		float updatetime;
 	} face [6];
-	int style;	//multiply by style values if > 0
+	int style;	//multiply by style values if >= 0 && < MAX_LIGHTSTYLES
 	float	fov; //spotlight
 	float	nearclip; //for spotlights...
 	struct dlight_s *next;
@@ -620,6 +621,15 @@ typedef struct {
 	entity_state_t *entstate;
 } lerpents_t;
 
+enum
+{
+	FOGTYPE_AIR,
+	FOGTYPE_WATER,
+	FOGTYPE_SKYROOM,
+
+	FOGTYPE_COUNT
+};
+
 //state associated with each player 'seat' (one for each splitscreen client)
 //note that this doesn't include networking inputlog info.
 struct playerview_s
@@ -685,6 +695,20 @@ struct playerview_s
 	qboolean	onground;
 	float		viewheight;
 	int			waterlevel;		//for smartjump
+
+	//for values that are propagated from one frame to the next
+	//the next frame will always predict from the one we're tracking, where possible.
+	//these values should all regenerate naturally from networked state (misses should be small/rare and fade when the physics catches up).
+	struct playerpredprop_s
+	{
+		float		waterjumptime;
+		qboolean	onground;
+		vec3_t		gravitydir;
+		qboolean	jump_held;
+		int			jump_msec;		// hack for fixing bunny-hop flickering on non-ZQuake servers
+
+		int			sequence;
+	} prop;
 
 #ifdef Q2CLIENT
 	vec3_t predicted_origin;
@@ -893,9 +917,9 @@ typedef struct
 	float skyrotate;
 	vec3_t skyaxis;
 
-	qboolean	fog_locked;
-	fogstate_t	fog[2];	//0 = air, 1 = water. if water has no density fall back on air.
-	fogstate_t	oldfog[2];
+	qboolean	fog_locked;			//FIXME: make bitmask
+	fogstate_t	fog[FOGTYPE_COUNT];	//0 = air, 1 = water. if water has no density fall back on air.
+	fogstate_t	oldfog[FOGTYPE_COUNT];
 
 	char		levelname[40];	// for display on solo scoreboard
 	char		*windowtitle;	// fully overrides the window caption.
@@ -1060,9 +1084,12 @@ typedef struct
 extern	entity_state_t *cl_baselines;
 extern	static_entity_t		*cl_static_entities;
 extern	unsigned int	cl_max_static_entities;
-extern	lightstyle_t	cl_lightstyle[MAX_LIGHTSTYLES];
+extern	lightstyle_t	*cl_lightstyle;
+extern	size_t			cl_max_lightstyles;
 extern	dlight_t		*cl_dlights;
 extern	size_t cl_maxdlights;
+
+extern	int				d_lightstylevalue[MAX_NET_LIGHTSTYLES];
 
 extern size_t rtlights_first, rtlights_max;
 extern int cl_baselines_count;
@@ -1232,7 +1259,7 @@ int Master_FindBestRoute(char *server, char *out, size_t outsize, int *directcos
 float CL_KeyState (kbutton_t *key, int pnum, qboolean noslowstart);
 const char *Key_KeynumToString (int keynum, int modifier);
 int Key_StringToKeynum (const char *str, int *modifier);
-char *Key_GetBinding(int keynum, int bindmap, int modifier);
+const char *Key_GetBinding(int keynum, int bindmap, int modifier);
 void Key_GetBindMap(int *bindmaps);
 void Key_SetBindMap(int *bindmaps);
 
@@ -1530,7 +1557,7 @@ char*		TP_EnemyTeam (void);
 void		TP_ExecTrigger (char *s, qboolean indemos);
 qboolean	TP_FilterMessage (char *s);
 void		TP_Init(void);
-char*		TP_LocationName (vec3_t location);
+char*		TP_LocationName (const vec3_t location);
 char*		TP_MapName (void);
 void		TP_NewMap (void);
 void		TP_ParsePlayerInfo(player_state_t *oldstate, player_state_t *state, player_info_t *info);
@@ -1592,7 +1619,7 @@ void	Validation_FlushFileList(void);
 void	Validation_CheckIfResponse(char *text);
 void	Validation_DelatchRulesets(void);
 void	InitValidation(void);
-void	Validation_IncludeFile(char *filename, char *file, int filelen);
+void	Validation_FileLoaded(const char *filename, const qbyte *filedata, size_t filesize);
 void	Validation_Auto_Response(int playernum, char *s);
 
 extern	qboolean f_modified_particles;
@@ -1682,7 +1709,6 @@ typedef enum
 	CINSTATE_FLUSHED,	//video will restart from beginning
 } cinstates_t;
 /*media playing system*/
-qboolean Media_PlayingFullScreen(void);
 qboolean Media_PlayFilm(char *name, qboolean enqueue);
 qboolean Media_StopFilm(qboolean all);
 struct cin_s *Media_StartCin(char *name);
@@ -1701,8 +1727,6 @@ cinstates_t Media_GetState(cin_t *cin);
 const char *Media_Send_GetProperty(cin_t *cin, const char *key);
 
 #else
-#define Media_Playing() false
-#define Media_PlayingFullScreen() false
 #define Media_PlayFilm(n,e) false
 #define Media_StopFilm(a) (void)true
 #endif

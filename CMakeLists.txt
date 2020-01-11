@@ -25,7 +25,20 @@ EXECUTE_PROCESS(COMMAND
 )
 
 IF (NOT "${FTE_REVISON}" STREQUAL "")
-	SET(FTE_REVISON SVNREVISION=${FTE_REVISON})
+	MESSAGE(STATUS "FTE SVN Revision ${FTE_REVISON}")
+	IF(FTE_REVISON MATCHES "M")
+		MESSAGE(STATUS "--- PRIVATE CHANGES DETECTED ---")
+		SET(FTE_REVISON SVNREVISION=${FTE_REVISON})
+	ELSE()
+		MESSAGE(STATUS "No local changes")
+		EXECUTE_PROCESS(COMMAND
+			svn info --show-item last-changed-date --no-newline
+			WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+			OUTPUT_VARIABLE FTE_DATE
+		)
+
+		SET(FTE_REVISON SVNREVISION="${FTE_REVISON}" SVNDATE="${FTE_DATE}")
+	ENDIF()
 ENDIF()
 
 #plugins need visibility hidden in order to avoid conflicts with function names that match the engine.
@@ -56,17 +69,26 @@ ENDIF()
 SET(FTE_BUILD_CONFIG ${CMAKE_HOME_DIRECTORY}/engine/common/config_fteqw.h CACHE FILEPATH "Which build config file to use to control supported features.")
 SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES};CONFIG_FILE_NAME=${FTE_BUILD_CONFIG})
 
+IF(NOT WIN32)
+	SET(SYS_LIBS ${SYS_LIBS} m)
+ELSE()
+	SET(SYS_LIBS ${SYS_LIBS})
+ENDIF()
+
 FIND_PACKAGE(ZLIB)
-IF(NOT ZLIB_FOUND)
+IF(ZLIB_FOUND)
+	SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES};ZLIB_STATIC)
+	SET(FTE_LIBS ${FTE_LIBS} ${ZLIB_LIBRARIES})
+	SET(FTESV_LIBS ${FTESV_LIBS} ${ZLIB_LIBRARIES})
+	SET(FTEQCC_LIBS ${FTEQCC_LIBS} ${ZLIB_LIBRARIES})
+ELSE()
 	MESSAGE(WARNING "libz library NOT available. compressed pk3 will not be available.")
 	SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES};NO_ZLIB)
-	SET(ZLIB_LIBRARY )
-	SET(ZLIB_LIBRARIES )
 ENDIF()
 
 FIND_PACKAGE(BZip2)
 IF(BZIP2_FOUND)
-	SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES};AVAIL_BZLIB)
+	SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES};AVAIL_BZLIB;BZLIB_STATIC)
 	SET(FTE_LIBS ${FTE_LIBS} bz2)
 	SET(FTESV_LIBS ${FTESV_LIBS} bz2)
 	MESSAGE(STATUS "bzip2 library found. bz2-compressed pk3s will work for the price of extra bloat! yay!")
@@ -84,20 +106,28 @@ ELSE()
 ENDIF()
 
 FIND_PACKAGE(JPEG)
-IF(NOT JPEG_FOUND)
+IF(JPEG_FOUND)
+	SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES};LIBJPEG_STATIC)
+	SET(FTE_LIBS ${FTE_LIBS} ${JPEG_LIBRARIES})
+ELSE()
 	MESSAGE(WARNING "libjpeg library NOT available. Who cares?")
 	SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES};NO_JPEG)
 ENDIF()
 
 FIND_PACKAGE(PNG)
-IF(NOT PNG_FOUND)
+IF(PNG_FOUND)
+	SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES};LIBPNG_STATIC)
+	SET(FTE_LIBS ${FTE_LIBS} ${PNG_LIBRARIES})
+ELSE()
 	MESSAGE(WARNING "libpng library NOT available. Good luck with screenshots.")
 	SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES};NO_PNG)
 ENDIF()
-	
+
 FIND_PACKAGE(Freetype)
 IF(FREETYPE_FOUND)
 	INCLUDE_DIRECTORIES( ${FREETYPE_INCLUDE_DIRS} )
+	SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES};LIBFREETYPE_STATIC)
+	SET(FTE_LIBS ${FTE_LIBS} ${FREETYPE_LIBRARIES})
 ELSE()
 	MESSAGE(WARNING "freetype library NOT available. I hope you're okay with ascii.")
 	SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES};NO_FREETYPE)
@@ -130,6 +160,7 @@ IF(CMAKE_C_COMPILER_ID MATCHES "GNU")
 	SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wstrict-prototypes")			#
 	SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wold-style-definition")		#k&r c is weird and can't cope with 64bit types.
 	SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wold-style-declaration")		#
+	SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wpointer-arith")				#void* stuff
 	SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wvla")							#msvc doesn't support vla
 	SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wdeclaration-after-statement")	#msvc doesn't allow defs after statements, and they're so very tempting...
 	#SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wc++-compat")	#lul
@@ -155,8 +186,8 @@ IF(${ANDROID})
 
 #	INCLUDE_DIRECTORIES(	${FREETYPE_INCLUDE_DIRS} )
 
-	SET(FTE_DEFINES ${FTE_DEFINES};ANDROID;VKQUAKE;DYNAMIC_LIBPNG;DYNAMIC_LIBJPEG;MULTITHREAD;stricmp=strcasecmp;strnicmp=strncasecmp)
-	SET(FTE_LIBS ${FTE_LIBS} android log EGL ${ZLIB_LIBRARIES} m ${CMAKE_DL_LIBS})
+	SET(FTE_DEFINES ${FTE_DEFINES};ANDROID;VKQUAKE;MULTITHREAD)
+	SET(FTE_LIBS ${FTE_LIBS} android log EGL ${SYS_LIBS} ${CMAKE_DL_LIBS})
 	SET(FTE_ARCH_FILES
 		engine/client/sys_droid.c
 		engine/common/sys_linux_threads.c
@@ -170,8 +201,8 @@ ELSEIF(${WIN32})
 	
 	#	engine/server/sv_sys_win.c
 	
-	SET(FTE_LIBS ${FTE_LIBS} ${ZLIB_LIBRARIES} ole32 gdi32 wsock32 winmm dxguid)
-	SET(FTE_DEFINES ${FTE_DEFINES};D3D9QUAKE;D3D11QUAKE;DYNAMIC_LIBPNG;DYNAMIC_LIBJPEG)
+	SET(FTE_LIBS ${FTE_LIBS} ole32 gdi32 wsock32 winmm dxguid)
+	SET(FTE_DEFINES ${FTE_DEFINES};D3D9QUAKE;D3D11QUAKE)
 	SET(FTE_ARCH_FILES 
 		engine/client/winquake.rc
 		engine/common/sys_win_threads.c
@@ -201,7 +232,7 @@ ELSEIF(${WIN32})
 		engine/d3d/vid_d3d8.c
 	)
 	
-	SET(FTESV_LIBS ${FTESV_LIBS} ${ZLIB_LIBRARIES} wsock32 winmm)
+	SET(FTESV_LIBS ${FTESV_LIBS} wsock32 winmm)
 	SET(FTESV_ARCH_FILES 
 		engine/client/winquake.rc
 		engine/common/sys_win_threads.c
@@ -236,8 +267,8 @@ ELSEIF(${UNIX})	#linux(ish)
 		SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES};NO_X11)
 	ENDIF()
 
-	SET(FTE_DEFINES ${FTE_DEFINES};DYNAMIC_LIBPNG;DYNAMIC_LIBJPEG;DYNAMIC_SDL;MULTITHREAD;stricmp=strcasecmp;strnicmp=strncasecmp)
-	SET(FTE_LIBS ${FTE_LIBS} ${ZLIB_LIBRARIES} m ${CMAKE_DL_LIBS} pthread ${SDL2_LIBRARIES})
+	SET(FTE_DEFINES ${FTE_DEFINES};DYNAMIC_SDL;MULTITHREAD)
+	SET(FTE_LIBS ${FTE_LIBS} ${SYS_LIBS} ${CMAKE_DL_LIBS} pthread ${SDL2_LIBRARIES})
 	SET(FTE_ARCH_FILES
 		engine/client/sys_linux.c
 		engine/common/sys_linux_threads.c
@@ -285,14 +316,14 @@ ELSEIF(${UNIX})	#linux(ish)
 		ENDIF()
 	ENDIF()
 
-	SET(FTESV_DEFINES MULTITHREAD;stricmp=strcasecmp;strnicmp=strncasecmp)
+	SET(FTESV_DEFINES MULTITHREAD)
 	SET(FTESV_ARCH_FILES 
 		engine/server/sv_sys_unix.c
 		engine/common/sys_linux_threads.c
 		engine/common/net_ssl_gnutls.c
 #		engine/common/net_ssl_openssl.c
 	)
-	SET(FTESV_LIBS ${FTESV_LIBS} ${ZLIB_LIBRARIES} m ${CMAKE_DL_LIBS} pthread)
+	SET(FTESV_LIBS ${FTESV_LIBS} ${SYS_LIBS} ${CMAKE_DL_LIBS} pthread)
 
 #	SET(FTE_DEFINES ${FTE_DEFINES};HAVE_OPENSSL)
 #	SET(FTESV_DEFINES ${FTESV_DEFINES};HAVE_OPENSSL)
@@ -310,8 +341,8 @@ ELSEIF(1)	#SDL
 	INCLUDE_DIRECTORIES(${FREETYPE_INCLUDE_DIRS} ${SDL2_INCLUDE_DIRS})
 	
 	#SDL2.0.7 supports vulkan, so lets use it.
-	SET(FTE_DEFINES ${FTE_DEFINES};FTE_SDL;DYNAMIC_LIBPNG;DYNAMIC_LIBJPEG;stricmp=strcasecmp;strnicmp=strncasecmp)
-	SET(FTE_LIBS ${FTE_LIBS} ${ZLIB_LIBRARIES} m ${CMAKE_DL_LIBS} ${SDL2_LIBRARIES})
+	SET(FTE_DEFINES ${FTE_DEFINES};FTE_SDL)
+	SET(FTE_LIBS ${FTE_LIBS} ${SYS_LIBS} ${CMAKE_DL_LIBS} ${SDL2_LIBRARIES})
 	SET(FTE_ARCH_FILES
 		engine/client/sys_sdl.c
 		engine/client/snd_al.c
@@ -321,8 +352,8 @@ ELSEIF(1)	#SDL
 		engine/gl/gl_vidsdl.c
 	)
 
-	SET(FTESV_DEFINES FTE_SDL;stricmp=strcasecmp;strnicmp=strncasecmp)
-	SET(FTESV_LIBS ${FTESV_LIBS} ${ZLIB_LIBRARIES} m ${CMAKE_DL_LIBS} ${SDL2_LIBRARIES})
+	SET(FTESV_DEFINES FTE_SDL)
+	SET(FTESV_LIBS ${FTESV_LIBS} ${SYS_LIBS} ${CMAKE_DL_LIBS} ${SDL2_LIBRARIES})
 
 	IF(WIN32)
 		SET(FTE_LIBS ${FTE_LIBS} wsock32 gdi32 ole32)
@@ -708,15 +739,14 @@ ELSE()
 	FIND_PACKAGE(Bullet)
 	IF (BULLET_FOUND)
 		ADD_LIBRARY(bullet MODULE
-			plugins/qvm_api.c
 			plugins/plugin.c
 			plugins/bullet/bulletplug.cpp
 		)
 		TARGET_INCLUDE_DIRECTORIES(bullet PUBLIC ${BULLET_INCLUDE_DIRS})
-		SET_TARGET_PROPERTIES(bullet PROPERTIES COMPILE_DEFINITIONS "FTEPLUGIN")
+		SET_TARGET_PROPERTIES(bullet PROPERTIES COMPILE_DEFINITIONS "FTEPLUGIN;${FTE_LIB_DEFINES}")
 		SET_TARGET_PROPERTIES(bullet PROPERTIES PREFIX "fteplug_")
 		SET_TARGET_PROPERTIES(bullet PROPERTIES LINK_FLAGS "-Wl,--no-undefined")
-		TARGET_LINK_LIBRARIES(bullet m ${BULLET_LIBRARIES})
+		TARGET_LINK_LIBRARIES(bullet ${SYS_LIBS} ${BULLET_LIBRARIES})
 		SET(INSTALLTARGS ${INSTALLTARGS} bullet)
 	ENDIF()
 ENDIF()
@@ -757,6 +787,14 @@ ELSE()
 	SET_TARGET_PROPERTIES(iqmtool PROPERTIES COMPILE_DEFINITIONS "${FTE_REVISON}")
 	SET(INSTALLTARGS ${INSTALLTARGS} iqmtool)
 
+	ADD_EXECUTABLE(imgtool
+		engine/client/image.c
+		imgtool.c
+	)
+	SET_TARGET_PROPERTIES(imgtool PROPERTIES COMPILE_DEFINITIONS "IMGTOOL;${FTE_LIB_DEFINES};${FTE_DEFINES};${FTE_REVISON}")
+	TARGET_LINK_LIBRARIES(imgtool ${FTE_LIBS} )
+	SET(INSTALLTARGS ${INSTALLTARGS} imgtool)
+
 	ADD_EXECUTABLE(qtv
 		fteqtv/netchan.c
 		fteqtv/parse.c
@@ -775,11 +813,11 @@ ELSE()
 		fteqtv/libqtvc/glibc_sucks.c
 		engine/common/sha1.c
 	)
-	SET_TARGET_PROPERTIES(qtv PROPERTIES COMPILE_DEFINITIONS "${FTE_REVISON};stricmp=strcasecmp;strnicmp=strncasecmp")
+	SET_TARGET_PROPERTIES(qtv PROPERTIES COMPILE_DEFINITIONS "${FTE_REVISON}")
 	IF(WIN32)
-		TARGET_LINK_LIBRARIES(qtv ${ZLIB_LIBRARIES} ws2_32 winmm)
+		TARGET_LINK_LIBRARIES(qtv ws2_32 winmm ${SYS_LIBS})
 	ELSE()
-		TARGET_LINK_LIBRARIES(qtv m)
+		TARGET_LINK_LIBRARIES(qtv ${SYS_LIBS})
 	ENDIF()
 	SET(INSTALLTARGS ${INSTALLTARGS} qtv)
 
@@ -811,9 +849,9 @@ ELSE()
 		engine/http/iwebiface.c
 		engine/http/ftpserver.c
 	)
-	SET_TARGET_PROPERTIES(httpserver PROPERTIES COMPILE_DEFINITIONS "WEBSERVER;WEBSVONLY;${FTE_REVISON};stricmp=strcasecmp;strnicmp=strncasecmp")
+	SET_TARGET_PROPERTIES(httpserver PROPERTIES COMPILE_DEFINITIONS "WEBSERVER;WEBSVONLY;${FTE_REVISON}")
 	IF(WIN32)
-		TARGET_LINK_LIBRARIES(httpserver ${ZLIB_LIBRARIES} ws2_32)
+		TARGET_LINK_LIBRARIES(httpserver ws2_32)
 	ENDIF()
 	#SET(INSTALLTARGS ${INSTALLTARGS} httpserver)
 
@@ -828,7 +866,7 @@ ELSE()
 		engine/qclib/qcd_main.c
 	)
 	SET_TARGET_PROPERTIES(fteqcc PROPERTIES COMPILE_DEFINITIONS "${FTE_LIB_DEFINES};${FTE_REVISON}")
-	TARGET_LINK_LIBRARIES(fteqcc ${ZLIB_LIBRARIES} m)
+	TARGET_LINK_LIBRARIES(fteqcc ${FTEQCC_LIBS} ${SYS_LIBS})
 	SET(INSTALLTARGS ${INSTALLTARGS} fteqcc)
 
 	IF(${WIN32})
@@ -846,11 +884,26 @@ ELSE()
 			engine/qclib/qcd_main.c
 		)
 		SET_TARGET_PROPERTIES(fteqccgui PROPERTIES COMPILE_DEFINITIONS "${FTE_LIB_DEFINES};${FTE_REVISON}")
-		TARGET_LINK_LIBRARIES(fteqccgui ${ZLIB_LIBRARIES} shlwapi ole32 comctl32 comdlg32)
+		TARGET_LINK_LIBRARIES(fteqccgui ${FTEQCC_LIBS} shlwapi ole32 comctl32 comdlg32)
 		SET(INSTALLTARGS ${INSTALLTARGS} fteqccgui)
 	ELSE()
 		FIND_PACKAGE(Qt5Widgets)
-		IF (Qt5Widgets_FOUND)
+
+		FIND_PATH(QSCINTILLA_INCLUDE_DIR
+			NAMES Qsci/qsciglobal.h
+			PATHS ${Qt5Widgets_INCLUDE_DIRS}
+			PATH_SUFFIXES Qsci
+		)
+		FIND_LIBRARY(QSCINTILLA_LIBRARY
+			NAMES qscintilla2_qt5
+			PATHS
+				${QT_LIBRARY_DIR}
+				/usr/local/lib
+				/usr/local/lib/qt5
+				/usr/lib
+		)
+
+		IF (QSCINTILLA_INCLUDE_DIR AND QSCINTILLA_LIBRARY AND Qt5Widgets_FOUND)
 			ADD_EXECUTABLE(fteqccgui
 				engine/qclib/qccguiqt.cpp
 				engine/qclib/qccguistuff.c
@@ -864,18 +917,19 @@ ELSE()
 				engine/qclib/packager.c
 				engine/qclib/qcd_main.c
 			)
-			TARGET_INCLUDE_DIRECTORIES(fteqccgui PUBLIC ${Qt5Widgets_INCLUDE_DIRS})
+			TARGET_INCLUDE_DIRECTORIES(fteqccgui PUBLIC ${Qt5Widgets_INCLUDE_DIRS} ${QSCINTILLA_INCLUDE_DIR})
 			SET_TARGET_PROPERTIES(fteqccgui PROPERTIES COMPILE_DEFINITIONS "${FTE_LIB_DEFINES};${FTE_REVISON};${Qt5Widgets_COMPILE_DEFINITIONS}")
 			SET_PROPERTY(TARGET fteqccgui PROPERTY POSITION_INDEPENDENT_CODE TRUE)
-			TARGET_LINK_LIBRARIES(fteqccgui ${ZLIB_LIBRARIES} ${Qt5Widgets_LIBRARIES} qscintilla2_qt5)
+			TARGET_LINK_LIBRARIES(fteqccgui ${FTEQCC_LIBS} ${Qt5Widgets_LIBRARIES} ${QSCINTILLA_LIBRARY})
 			SET(INSTALLTARGS ${INSTALLTARGS} fteqccgui)
+		ELSE()
+			MESSAGE(WARNING "qscintilla/qt5widgets library not detected, no fteqccgui for you")
 		ENDIF()
 	ENDIF()
 ENDIF()
 
 #Quake Injector Alike plugin
 ADD_LIBRARY(qi MODULE
-	plugins/qvm_api.c
 	plugins/plugin.c
 		plugins/qi/qi.c
 	plugins/emailnot/md5.c
@@ -884,7 +938,7 @@ ADD_LIBRARY(qi MODULE
 SET_TARGET_PROPERTIES(qi PROPERTIES COMPILE_DEFINITIONS "FTEPLUGIN;${FTE_LIB_DEFINES}")
 SET_TARGET_PROPERTIES(qi PROPERTIES PREFIX "fteplug_")
 SET_TARGET_PROPERTIES(qi PROPERTIES LINK_FLAGS "-Wl,--no-undefined")
-TARGET_LINK_LIBRARIES(qi m)
+TARGET_LINK_LIBRARIES(qi ${SYS_LIBS})
 SET(INSTALLTARGS ${INSTALLTARGS} qi)
 
 #ODE Physics library plugin
@@ -892,7 +946,6 @@ FIND_PATH(LIBODE_INCLUDE_DIR ode/ode.h)
 FIND_LIBRARY(LIBODE_LIBRARY ode)
 IF (LIBODE_INCLUDE_DIR)
 	ADD_LIBRARY(ode MODULE
-		plugins/qvm_api.c
 		plugins/plugin.c
 		engine/common/com_phys_ode.c
 		engine/common/mathlib.c
@@ -901,13 +954,12 @@ IF (LIBODE_INCLUDE_DIR)
 	SET_TARGET_PROPERTIES(ode PROPERTIES COMPILE_DEFINITIONS "FTEPLUGIN;ODE_STATIC")
 	SET_TARGET_PROPERTIES(ode PROPERTIES PREFIX "fteplug_")
 	SET_TARGET_PROPERTIES(ode PROPERTIES LINK_FLAGS "-Wl,--no-undefined")
-	TARGET_LINK_LIBRARIES(ode m ${LIBODE_LIBRARY})
+	TARGET_LINK_LIBRARIES(ode ${SYS_LIBS} ${LIBODE_LIBRARY})
 	SET(INSTALLTARGS ${INSTALLTARGS} ode)
 ENDIF()
 
 #EzQuake Hud port plugin
 ADD_LIBRARY(ezhud MODULE
-	plugins/qvm_api.c
 	plugins/plugin.c
 	plugins/ezhud/ezquakeisms.c
 	plugins/ezhud/hud.c
@@ -917,48 +969,71 @@ ADD_LIBRARY(ezhud MODULE
 SET_TARGET_PROPERTIES(ezhud PROPERTIES COMPILE_DEFINITIONS "FTEPLUGIN;${FTE_LIB_DEFINES}")
 SET_TARGET_PROPERTIES(ezhud PROPERTIES PREFIX "fteplug_")
 SET_TARGET_PROPERTIES(ezhud PROPERTIES LINK_FLAGS "-Wl,--no-undefined")
-TARGET_LINK_LIBRARIES(ezhud m)
+TARGET_LINK_LIBRARIES(ezhud ${SYS_LIBS})
 SET(INSTALLTARGS ${INSTALLTARGS} ezhud)
+
+#NameMaker string generation plugin
+ADD_LIBRARY(namemaker MODULE
+	plugins/plugin.c
+	plugins/namemaker/namemaker.c
+)
+SET_TARGET_PROPERTIES(namemaker PROPERTIES COMPILE_DEFINITIONS "${FTE_LIB_DEFINES}")
+SET_TARGET_PROPERTIES(namemaker PROPERTIES PREFIX "fteplug_")
+SET_TARGET_PROPERTIES(namemaker PROPERTIES LINK_FLAGS "-Wl,--no-undefined")
+TARGET_LINK_LIBRARIES(namemaker ${SYS_LIBS})
+SET(INSTALLTARGS ${INSTALLTARGS} namemaker)
+
+#Terrain Generation plugin
+ADD_LIBRARY(terrorgen MODULE
+	plugins/plugin.c
+	plugins/terrorgen/terragen.c
+)
+SET_TARGET_PROPERTIES(terrorgen PROPERTIES COMPILE_DEFINITIONS "FTEPLUGIN;${FTE_LIB_DEFINES}")
+SET_TARGET_PROPERTIES(terrorgen PROPERTIES PREFIX "fteplug_")
+SET_TARGET_PROPERTIES(terrorgen PROPERTIES LINK_FLAGS "-Wl,--no-undefined")
+TARGET_LINK_LIBRARIES(terrorgen ${SYS_LIBS})
+SET(INSTALLTARGS ${INSTALLTARGS} terrorgen)
 
 #IRC client plugin
 ADD_LIBRARY(irc MODULE
-	plugins/qvm_api.c
 	plugins/plugin.c
 	plugins/irc/ircclient.c
 )
-SET_TARGET_PROPERTIES(irc PROPERTIES COMPILE_DEFINITIONS "FTEPLUGIN;${FTE_LIB_DEFINES}")
+SET_TARGET_PROPERTIES(irc PROPERTIES COMPILE_DEFINITIONS "FTEPLUGIN;${FTE_REVISON};${FTE_LIB_DEFINES}")
 SET_TARGET_PROPERTIES(irc PROPERTIES PREFIX "fteplug_")
 SET_TARGET_PROPERTIES(irc PROPERTIES LINK_FLAGS "-Wl,--no-undefined")
-TARGET_LINK_LIBRARIES(irc m)
+TARGET_LINK_LIBRARIES(irc ${SYS_LIBS})
 SET(INSTALLTARGS ${INSTALLTARGS} irc)
 
 #model formats plugin
 ADD_LIBRARY(models MODULE
-	plugins/qvm_api.c
 	plugins/plugin.c
 	plugins/models/models.c
 	plugins/models/gltf.c
+	plugins/models/exportiqm.c
 )
 SET_TARGET_PROPERTIES(models PROPERTIES COMPILE_DEFINITIONS "FTEPLUGIN;${FTE_LIB_DEFINES}")
 SET_TARGET_PROPERTIES(models PROPERTIES PREFIX "fteplug_")
 SET_TARGET_PROPERTIES(models PROPERTIES LINK_FLAGS "-Wl,--no-undefined")
-TARGET_LINK_LIBRARIES(models m)
+TARGET_LINK_LIBRARIES(models ${SYS_LIBS})
 SET(INSTALLTARGS ${INSTALLTARGS} models)
 
-#x11 server plugin (note: for displaying other programs)
-ADD_LIBRARY(x11 MODULE
-	plugins/qvm_api.c
-	plugins/plugin.c
-	plugins/xsv/m_x.c
-	plugins/xsv/x_reqs.c
-	plugins/xsv/x_res.c
-	engine/qclib/hash.c
-)
-SET_TARGET_PROPERTIES(x11 PROPERTIES COMPILE_DEFINITIONS "FTEPLUGIN;${FTE_LIB_DEFINES}")
-SET_TARGET_PROPERTIES(x11 PROPERTIES PREFIX "fteplug_")
-SET_TARGET_PROPERTIES(x11 PROPERTIES LINK_FLAGS "-Wl,--no-undefined")
-TARGET_LINK_LIBRARIES(x11 m)
-SET(INSTALLTARGS ${INSTALLTARGS} x11)
+IF(0)
+	#x11 server plugin (note: for displaying other programs)
+	#not stable enough, and probably won't ever be
+	ADD_LIBRARY(x11sv MODULE
+		plugins/plugin.c
+		plugins/xsv/m_x.c
+		plugins/xsv/x_reqs.c
+		plugins/xsv/x_res.c
+		engine/qclib/hash.c
+	)
+	SET_TARGET_PROPERTIES(x11sv PROPERTIES COMPILE_DEFINITIONS "FTEPLUGIN;${FTE_LIB_DEFINES}")
+	SET_TARGET_PROPERTIES(x11sv PROPERTIES PREFIX "fteplug_")
+	SET_TARGET_PROPERTIES(x11sv PROPERTIES LINK_FLAGS "-Wl,--no-undefined")
+	TARGET_LINK_LIBRARIES(x11sv ${SYS_LIBS})
+	SET(INSTALLTARGS ${INSTALLTARGS} x11sv)
+ENDIF()
 
 #ffmpeg client plugin. no proper way to detect dependancies right now, so I've gotta try the manual way.
 FIND_PATH(AVCODEC_INCLUDE_DIR libavcodec/avcodec.h)
@@ -972,7 +1047,6 @@ IF((AVFORMAT_INCLUDE_DIR) AND (AVSWSCALE_INCLUDE_DIR))
 	FIND_LIBRARY(AVSWSCALE_LIBRARY swscale)
 
 	ADD_LIBRARY(ffmpeg MODULE
-		plugins/qvm_api.c
 		plugins/plugin.c
 		plugins/avplug/avaudio.c
 		plugins/avplug/avdecode.c
@@ -980,7 +1054,7 @@ IF((AVFORMAT_INCLUDE_DIR) AND (AVSWSCALE_INCLUDE_DIR))
 	)
 	TARGET_INCLUDE_DIRECTORIES(ffmpeg PUBLIC ${AVCODEC_INCLUDE_DIR} ${AVFORMAT_INCLUDE_DIR} ${AVUTIL_INCLUDE_DIR} ${AVSWSCALE_INCLUDE_DIR})
 	SET_TARGET_PROPERTIES(ffmpeg PROPERTIES LINK_FLAGS "-Wl,--no-undefined")
-	TARGET_LINK_LIBRARIES(ffmpeg m ${AVFORMAT_LIBRARY} ${AVCODEC_LIBRARY} ${AVUTIL_LIBRARY} ${AVSWSCALE_LIBRARY})
+	TARGET_LINK_LIBRARIES(ffmpeg ${SYS_LIBS} ${AVFORMAT_LIBRARY} ${AVCODEC_LIBRARY} ${AVUTIL_LIBRARY} ${AVSWSCALE_LIBRARY})
 	SET_TARGET_PROPERTIES(ffmpeg PROPERTIES COMPILE_DEFINITIONS "FTEPLUGIN;${FTE_LIB_DEFINES}")
 	SET_TARGET_PROPERTIES(ffmpeg PROPERTIES PREFIX "fteplug_")
 	SET(INSTALLTARGS ${INSTALLTARGS} ffmpeg)
@@ -988,10 +1062,11 @@ ELSE()
 	MESSAGE(WARNING "ffmpeg library NOT available. Quake shouldn't be playing fmv anyway.")
 ENDIF()
 
+#TODO: cef plugin
+
 IF(NOT ANDROID)
 	#XMPP/jabber client plugin
 	ADD_LIBRARY(xmpp MODULE
-		plugins/qvm_api.c
 		plugins/plugin.c
 		plugins/jabber/jabberclient.c
 		plugins/jabber/xml.c
@@ -1005,7 +1080,7 @@ IF(NOT ANDROID)
 	SET_TARGET_PROPERTIES(xmpp PROPERTIES LINK_FLAGS "-Wl,--no-undefined")
 	IF(${WIN32})
 	ELSE()
-		TARGET_LINK_LIBRARIES(xmpp m resolv)
+		TARGET_LINK_LIBRARIES(xmpp ${SYS_LIBS} resolv)
 	ENDIF()
 	SET(INSTALLTARGS ${INSTALLTARGS} xmpp)
 ENDIF()
@@ -1017,4 +1092,37 @@ INSTALL(TARGETS ${INSTALLTARGS}
 	LIBRARY DESTINATION "${CMAKE_INSTALL_FULL_LIBDIR}"
 )
 
-#cef plugin
+ADD_CUSTOM_TARGET(menusys ALL
+	VERBATIM
+	COMMAND fteqcc -srcfile "${CMAKE_CURRENT_SOURCE_DIR}/quakec/menusys/menu.src" -o "${CMAKE_CURRENT_BINARY_DIR}/menu.dat"
+	BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/menu.dat" "${CMAKE_CURRENT_BINARY_DIR}/menu.lno"
+	SOURCES
+		quakec/menusys/menu.src
+		quakec/menusys/menusys/mitems.qc
+		quakec/menusys/menusys/mitems_common.qc
+		quakec/menusys/menusys/mitem_desktop.qc
+		quakec/menusys/menusys/mitem_exmenu.qc
+		quakec/menusys/menusys/mitem_edittext.qc
+		quakec/menusys/menusys/mitem_tabs.qc
+		quakec/menusys/menusys/mitem_colours.qc
+		quakec/menusys/menusys/mitem_checkbox.qc
+		quakec/menusys/menusys/mitem_slider.qc
+		quakec/menusys/menusys/mitem_combo.qc
+		quakec/menusys/menusys/mitem_bind.qc
+		quakec/menusys/menusys/mitem_spinnymodel.qc
+		quakec/menusys/menu/loadsave.qc
+		quakec/menusys/menu/newgame.qc
+		quakec/menusys/menu/options_basic.qc
+		quakec/menusys/menu/options_effects.qc
+		quakec/menusys/menu/options_keys.qc
+		quakec/menusys/menu/options.qc
+		quakec/menusys/menu/presets.qc
+		quakec/menusys/menu/servers.qc
+		quakec/menusys/menu/main.qc
+		quakec/menusys/menu/options_audio.qc
+		quakec/menusys/menu/options_configs.qc
+		quakec/menusys/menu/options_hud.qc
+		quakec/menusys/menu/options_particles.qc
+		quakec/menusys/menu/options_video.qc
+		quakec/menusys/menu/quit.qc
+)

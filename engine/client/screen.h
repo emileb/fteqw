@@ -99,6 +99,8 @@ typedef enum uploadfmt
 	PTI_BGRX8_SRGB,	//no alpha channel
 	PTI_RGB8,		//24bit packed format. generally not supported
 	PTI_BGR8,		//24bit packed format. generally not supported
+	PTI_RGB8_SRGB,	//24bit packed format. generally not supported
+	PTI_BGR8_SRGB,	//24bit packed format. generally not supported
 	PTI_L8,			//8bit format. luminance gets flooded to all RGB channels. might be supported using swizzles.
 	PTI_L8A8,		//16bit format. L=luminance. might be supported using swizzles.
 	PTI_L8_SRGB,	//8bit format. luminance gets flooded to all RGB channels. might be supported using swizzles.
@@ -115,74 +117,93 @@ typedef enum uploadfmt
 	//floating point formats
 	PTI_R16F,
 	PTI_R32F,
-	PTI_RGBA16F,	//consider using e5bgr9
+	PTI_RGB32F,		//so qc can just use vectors for rgb. not really recommended.
+	PTI_RGBA16F,	//consider using e5bgr9 or bc6/astc
 	PTI_RGBA32F,	//usually overkill
 	//packed/misaligned formats: these are specified in native endian order (high bits listed first because that's how things are represented in hex), so may need byte swapping...
 	PTI_A2BGR10,	//mostly for rendertargets, might also be useful for overbight lightmaps.
-	PTI_E5BGR9,		//mostly for fancy lightmaps
+	PTI_B10G11R11F,	//unshared exponents
 	PTI_RGB565,		//16bit alphaless format.
 	PTI_RGBA4444,	//16bit format (gl)
 	PTI_ARGB4444,	//16bit format (d3d)
 	PTI_RGBA5551,	//16bit alpha format (gl).
 	PTI_ARGB1555,	//16bit alpha format (d3d).
+#define PTI_FIRSTCOMPRESSED PTI_E5BGR9
+	PTI_E5BGR9,		//mostly for fancy lightmaps (technically compressed, with a block size of 1...)
 	//(desktop/tegra) compressed formats
-	PTI_BC1_RGB,
-	PTI_BC1_RGB_SRGB,
-	PTI_BC1_RGBA,
-	PTI_BC1_RGBA_SRGB,
-	PTI_BC2_RGBA,
-	PTI_BC2_RGBA_SRGB,
-	PTI_BC3_RGBA,	//maybe add a bc3 normalmapswizzle type for d3d9?
-	PTI_BC3_RGBA_SRGB,
-	PTI_BC4_R8,		//greyscale, kinda
-	PTI_BC4_R8_SNORM,
-	PTI_BC5_RG8,	//useful for normalmaps
-	PTI_BC5_RG8_SNORM,	//useful for normalmaps
-	PTI_BC6_RGB_UFLOAT,	//unsigned (half) floats!
-	PTI_BC6_RGB_SFLOAT,	//signed (half) floats!
-	PTI_BC7_RGBA,	//multimode compression, using as many bits as bc2/bc3
-	PTI_BC7_RGBA_SRGB,
+	PTI_BC1_RGB,		/*4bpp*/
+	PTI_BC1_RGB_SRGB,	/*4bpp*/
+	PTI_BC1_RGBA,		/*4bpp*/
+	PTI_BC1_RGBA_SRGB,	/*4bpp*/
+	PTI_BC2_RGBA,		/*8bpp*/
+	PTI_BC2_RGBA_SRGB,	/*8bpp*/
+	PTI_BC3_RGBA,		/*8bpp*/ //maybe add a bc3 normalmapswizzle type for d3d9?
+	PTI_BC3_RGBA_SRGB,	/*8bpp*/
+	PTI_BC4_R8,			/*4bpp*/ //greyscale, kinda
+	PTI_BC4_R8_SNORM,	/*4bpp*/
+	PTI_BC5_RG8,		/*8bpp*/ //useful for normalmaps
+	PTI_BC5_RG8_SNORM,	/*8bpp*/ //useful for normalmaps
+	PTI_BC6_RGB_UFLOAT,	/*8bpp*/ //unsigned (half) floats!
+	PTI_BC6_RGB_SFLOAT,	/*8bpp*/ //signed (half) floats!
+	PTI_BC7_RGBA,		/*8bpp*/ //multimode compression, using as many bits as bc2/bc3
+	PTI_BC7_RGBA_SRGB,	/*8bpp*/
 	//(mobile/intel) compressed formats
-	PTI_ETC1_RGB8,	//limited form
-	PTI_ETC2_RGB8,	//extended form
-	PTI_ETC2_RGB8A1,
-	PTI_ETC2_RGB8A8,
-	PTI_ETC2_RGB8_SRGB,
-	PTI_ETC2_RGB8A1_SRGB,
-	PTI_ETC2_RGB8A8_SRGB,
-	PTI_EAC_R11,	//might be useful for overlays, with swizzles.
-	PTI_EAC_R11_SNORM,	//no idea what this might be used for, whatever
-	PTI_EAC_RG11,	//useful for normalmaps (calculate blue)
-	PTI_EAC_RG11_SNORM,	//useful for normalmaps (calculate blue)
-	//astc... zomg
-	PTI_ASTC_4X4,
+	PTI_ETC1_RGB8,		/*4bpp*/ //limited form
+	PTI_ETC2_RGB8,		/*4bpp*/ //extended form
+	PTI_ETC2_RGB8A1,	/*4bpp*/
+	PTI_ETC2_RGB8A8,	/*8bpp*/
+	PTI_ETC2_RGB8_SRGB,	/*4bpp*/
+	PTI_ETC2_RGB8A1_SRGB,/*4bpp*/
+	PTI_ETC2_RGB8A8_SRGB,/*8bpp*/
+	PTI_EAC_R11,		/*4bpp*/ //might be useful for overlays, with swizzles.
+	PTI_EAC_R11_SNORM,	/*4bpp*/ //no idea what this might be used for, whatever
+	PTI_EAC_RG11,		/*8bpp*/ //useful for normalmaps (calculate blue)
+	PTI_EAC_RG11_SNORM,	/*8bpp*/ //useful for normalmaps (calculate blue)
+	//astc... zomg.
+	PTI_ASTC_4X4_LDR,	/*8bpp*/ //ldr/srgb/hdr formats are technically all the same.
+	PTI_ASTC_5X4_LDR,	/*6.40*/ //srgb formats are different because of an extra srgb lookup step
+	PTI_ASTC_5X5_LDR,	/*5.12*/ //ldr formats are identical to hdr except for the extended colour modes disabled.
+	PTI_ASTC_6X5_LDR,	/*4.17*/
+	PTI_ASTC_6X6_LDR,	/*3.56*/
+	PTI_ASTC_8X5_LDR,	/*3.20*/
+	PTI_ASTC_8X6_LDR,	/*2.67*/
+	PTI_ASTC_10X5_LDR,	/*2.56*/
+	PTI_ASTC_10X6_LDR,	/*2.13*/
+	PTI_ASTC_8X8_LDR,	/*2bpp*/
+	PTI_ASTC_10X8_LDR,	/*1.60*/
+	PTI_ASTC_10X10_LDR,	/*1.28*/
+	PTI_ASTC_12X10_LDR,	/*1.07*/
+	PTI_ASTC_12X12_LDR,	/*0.89*/
 	PTI_ASTC_4X4_SRGB,
-	PTI_ASTC_5X4,
 	PTI_ASTC_5X4_SRGB,
-	PTI_ASTC_5X5,
 	PTI_ASTC_5X5_SRGB,
-	PTI_ASTC_6X5,
 	PTI_ASTC_6X5_SRGB,
-	PTI_ASTC_6X6,
 	PTI_ASTC_6X6_SRGB,
-	PTI_ASTC_8X5,
 	PTI_ASTC_8X5_SRGB,
-	PTI_ASTC_8X6,
 	PTI_ASTC_8X6_SRGB,
-	PTI_ASTC_10X5,
 	PTI_ASTC_10X5_SRGB,
-	PTI_ASTC_10X6,
 	PTI_ASTC_10X6_SRGB,
-	PTI_ASTC_8X8,
 	PTI_ASTC_8X8_SRGB,
-	PTI_ASTC_10X8,
 	PTI_ASTC_10X8_SRGB,
-	PTI_ASTC_10X10,
 	PTI_ASTC_10X10_SRGB,
-	PTI_ASTC_12X10,
 	PTI_ASTC_12X10_SRGB,
-	PTI_ASTC_12X12,
 	PTI_ASTC_12X12_SRGB,
+	PTI_ASTC_4X4_HDR,	//these are not strictly necessary, and are likely to be treated identically to the ldr versions, but they may use extra features that the hardware does not support
+	PTI_ASTC_5X4_HDR,
+	PTI_ASTC_5X5_HDR,
+	PTI_ASTC_6X5_HDR,
+	PTI_ASTC_6X6_HDR,
+	PTI_ASTC_8X5_HDR,
+	PTI_ASTC_8X6_HDR,
+	PTI_ASTC_10X5_HDR,
+	PTI_ASTC_10X6_HDR,
+	PTI_ASTC_8X8_HDR,
+	PTI_ASTC_10X8_HDR,
+	PTI_ASTC_10X10_HDR,
+	PTI_ASTC_12X10_HDR,
+	PTI_ASTC_12X12_HDR,
+#define PTI_ASTC_FIRST	PTI_ASTC_4X4_LDR
+#define PTI_ASTC_LAST	PTI_ASTC_12X12_HDR
 
 	//depth formats
 	PTI_DEPTH16,
@@ -200,12 +221,12 @@ typedef enum uploadfmt
 	TF_TRANS8,      /*8bit quake-palette image, index 255=transparent*/
 	TF_TRANS8_FULLBRIGHT,   /*fullbright 8 - fullbright texels have alpha 255, everything else 0*/
 	TF_HEIGHT8,     /*image data is greyscale, convert to a normalmap and load that, uploaded alpha contains the original heights*/
-	TF_HEIGHT8PAL, /*source data is palette values rather than actual heights, generate a fallback heightmap*/
+	TF_HEIGHT8PAL, /*source data is palette values rather than actual heights, generate a fallback heightmap. actual palette is ignored...*/
 	TF_H2_T7G1, /*8bit data, odd indexes give greyscale transparence*/
 	TF_H2_TRANS8_0, /*8bit data, 0 is transparent, not 255*/
 	TF_H2_T4A4,     /*8bit data, weird packing*/
 
-	PTI_LLLX8,		/*RGB data where the RGB values were all the same. we can convert to L8 to use less memory (common with shirt/pants/reflection)*/
+	PTI_LLLX8,		/*RGBX data where the RGB values were all the same. we can convert to L8 to use less memory (common with shirt/pants/reflection)*/
 	PTI_LLLA8,		/*RGBA data where the RGB values were all the same. we can convert to LA8 to use less memory (common with gloss)*/
 
 	/*this block requires an explicit (separate) palette*/
@@ -233,7 +254,7 @@ typedef enum uploadfmt
 
 qboolean SCR_ScreenShot (char *filename, enum fs_relative fsroot, void **buffer, int numbuffers, qintptr_t bytestride, int width, int height, enum uploadfmt fmt, qboolean writemeta);
 
-void SCR_DrawTwoDimensional(int uimenu, qboolean nohud);
+void SCR_DrawTwoDimensional(qboolean nohud);
 
 enum
 {
@@ -251,7 +272,7 @@ void Font_Init(void);
 void Font_Shutdown(void);
 int Font_RegisterTrackerImage(const char *image);	//returns a unicode char value that can be used to embed the char within a line of text.
 qboolean Font_TrackerValid(unsigned int imid);
-struct font_s *Font_LoadFont(const char *fontfilename, float height);
+struct font_s *Font_LoadFont(const char *fontfilename, float height, float scale, int outline);
 void Font_Free(struct font_s *f);
 void Font_BeginString(struct font_s *font, float vx, float vy, int *px, int *py);
 void Font_BeginScaledString(struct font_s *font, float vx, float vy, float szx, float szy, float *px, float *py); /*avoid using*/
@@ -259,6 +280,7 @@ void Font_Transform(float vx, float vy, int *px, int *py);
 int Font_CharHeight(void);
 float Font_CharVHeight(struct font_s *font);
 int Font_CharPHeight(struct font_s *font);
+int Font_GetTrueHeight(struct font_s *font);
 float Font_CharScaleHeight(void);
 int Font_CharWidth(unsigned int charflags, unsigned int codepoint);
 float Font_CharScaleWidth(unsigned int charflags, unsigned int codepoint);

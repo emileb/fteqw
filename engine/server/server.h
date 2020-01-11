@@ -21,8 +21,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #define	QW_SERVER
 
-#define	MAX_SIGNON_BUFFERS	16
-
 typedef enum {
 	ss_dead,			// no map loaded
 	ss_clustermode,
@@ -158,12 +156,16 @@ typedef struct
 			const char	*model_precache[MAX_PRECACHE_MODELS];	// NULL terminated
 			const char	*particle_precache[MAX_SSPARTICLESPRE];	// NULL terminated
 			const char	*sound_precache[MAX_PRECACHE_SOUNDS];	// NULL terminated
-			const char	*lightstyles[MAX_LIGHTSTYLES];
 		};
 		const char *ptrs[1];
 	} strings;
 	qboolean	stringsalloced;	//if true, we need to free the string pointers safely rather than just memsetting them to 0
-	vec3_t		lightstylecolours[MAX_LIGHTSTYLES];
+	struct
+	{
+		const char	*str; //double dynamic. urgh, but allows it to be nice and long.
+		vec3_t		colours;
+	} *lightstyles;
+	size_t maxlightstyles;	//limited to MAX_NET_LIGHTSTYLES
 
 #ifdef HEXEN2
 	char		h2miditrack[MAX_QPATH];
@@ -225,9 +227,8 @@ typedef struct
 	// multiple signon messages are kept
 	// fte only stores writebyted stuff in here. everything else is regenerated based upon the client's extensions.
 	sizebuf_t	signon;
-	int			num_signon_buffers;
-	int			signon_buffer_size[MAX_SIGNON_BUFFERS];
-	qbyte		signon_buffers[MAX_SIGNON_BUFFERS][MAX_DATAGRAM];
+	int			used_signon_space;
+	qbyte		signon_buffer[MAX_OVERALLMSGLEN]; //flushed after every 512 bytes (two leading bytes says the size of the buffer).
 
 	qboolean gamedirchanged;
 
@@ -524,6 +525,7 @@ typedef struct client_s
 										// extracted from userinfo
 	char			guid[64]; /*+2 for split+pad*/
 	int				messagelevel;		// for filtering printed messages
+	int				autoaimdot;			//smallest dotproduct allowed for autoaim
 #ifdef HAVE_LEGACY
 	float			*dp_ping;
 	float			*dp_pl;
@@ -1109,14 +1111,15 @@ char *SV_BannedReason (netadr_t *a);
 void SV_EvaluatePenalties(client_t *cl);
 void SV_AutoAddPenalty (client_t *cl, unsigned int banflag, int duration, char *reason);
 
+//note: not all penalties are actually penalties, but they can still expire.
 #define BAN_BAN			(1u<<0)	//user is banned from the server
-#define	BAN_PERMIT		(1u<<1)	//user can evade block bans or filterban
+#define	BAN_PERMIT		(1u<<1)	//+user can evade block bans or filterban
 #define	BAN_CUFF		(1u<<2)	//can't shoot/use impulses
-#define	BAN_MUTE		(1u<<3)	//can't use say/say_team
+#define	BAN_MUTE		(1u<<3)	//can't use say/say_team/voip
 #define	BAN_CRIPPLED	(1u<<4)	//can't move
 #define	BAN_DEAF		(1u<<5)	//can't see say/say_team
 #define	BAN_LAGGED		(1u<<6)	//given an extra 200ms
-#define BAN_VIP			(1u<<7)	//mods might give the user special rights, via the *VIP infokey. the engine itself currently does not do anything but track it.
+#define BAN_VIP			(1u<<7)	//+mods might give the user special rights, via the *VIP infokey. the engine itself currently does not do anything but track it.
 #define BAN_BLIND		(1u<<8)	//player's pvs is wiped.
 #define BAN_SPECONLY	(1u<<9) //player is forced to spectate
 #define BAN_STEALTH		(1u<<10)//player is not told of their bans
@@ -1128,7 +1131,8 @@ void SV_AutoAddPenalty (client_t *cl, unsigned int banflag, int duration, char *
 #define BAN_USER6		(1u<<16)//mod-specified
 #define BAN_USER7		(1u<<17)//mod-specified
 #define BAN_USER8		(1u<<18)//mod-specified
-#define BAN_MAPPER		(1u<<19)//player is allowed to use the brush/entity editing clc.
+#define BAN_MAPPER		(1u<<19)//+player is allowed to use the brush/entity editing clc.
+#define BAN_VMUTE		(1u<<20)//can't use voip (but can still use other forms of chat)
 
 #define BAN_NOLOCALHOST	(BAN_BAN|BAN_PERMIT|BAN_SPECONLY)	//any attempt to ban localhost is denied, but you can vip, lag, cripple, etc them.
 
@@ -1257,7 +1261,7 @@ void MSV_OpenUserDatabase(void);
 //
 void SV_SpawnServer (const char *server, const char *startspot, qboolean noents, qboolean usecinematic);
 void SV_UnspawnServer (void);
-void SV_FlushSignon (void);
+void SV_FlushSignon (qboolean force);
 void SV_UpdateMaxPlayers(int newmax);
 
 void SV_FilterImpulseInit(void);
@@ -1304,6 +1308,7 @@ void SV_ClearQCStats(void);
 
 void SV_SendClientMessages (void);
 
+void SV_SendLightstyle(client_t *cl, sizebuf_t *forcemsg, int style, qboolean initial);
 void VARGS SV_Multicast (vec3_t origin, multicast_t to);
 #define FULLDIMENSIONMASK 0xffffffff
 void SV_MulticastProtExt(vec3_t origin, multicast_t to, int dimension_mask, int with, int without);

@@ -25,26 +25,27 @@
 #endif
 
 #ifdef __MINGW32_VERSION
-#define MINGW
+	#define MINGW
 #endif
 
 #define progfuncs qccprogfuncs
 extern progfuncs_t *qccprogfuncs;
 
-#ifndef _WIN32
-#define stricmp strcasecmp
-#define strnicmp strncasecmp
+#if defined(_MSC_VER) && _MSC_VER < 1900
+	#define strtoull _strtoui64
+	#ifndef PRIxPTR
+		#define PRIxPTR "Ix"
+	#endif
+#else
+	#include <inttypes.h>
+	#ifndef PRIxPTR
+		#define PRIxPTR "p"
+	#endif
 #endif
 
-#ifdef _MSC_VER	//ffs
-#define strtoull _strtoui64
-#ifndef PRIxPTR
-#define PRIxPTR "Ix"
-#endif
-#else
-#ifndef PRIxPTR
-#define PRIxPTR "Ix"
-#endif
+#ifndef STRINGIFY
+	#define STRINGIFY2(s) #s
+	#define STRINGIFY(s) STRINGIFY2(s)
 #endif
 
 void *qccHunkAlloc(size_t mem);
