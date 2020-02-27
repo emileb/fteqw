@@ -20,6 +20,9 @@
 qboolean		r_loadbumpmapping;
 extern cvar_t r_noframegrouplerp;
 cvar_t r_lerpmuzzlehack						= CVARF  ("r_lerpmuzzlehack", "1", CVAR_ARCHIVE);
+#ifdef MD1MODELS
+cvar_t mod_h2holey_bugged					= CVARD ("mod_h2holey_bugged", "0", "Hexen2's holey-model flag uses index 0 as transparent (and additionally 255 in gl, due to a bug). GLQuake engines tend to have bugs that use ONLY index 255, resulting in a significant compatibility issue that can be resolved only with this shitty cvar hack.");
+#endif
 static void QDECL r_meshpitch_callback(cvar_t *var, char *oldvalue)
 {
 	if (!strcmp(var->string, "-1") || !strcmp(var->string, "1"))
@@ -585,7 +588,7 @@ static const float *Alias_ConvertBoneData(skeltype_t sourcetype, const float *so
 		for (i = 0; i < bonecount; i++)
 		{
 			if (bones[i].parent >= 0)
-				R_ConcatTransforms((void*)(dest + bones[i].parent*12), (void*)(sourcedata+i*12), (void*)(dest+i*12));
+				R_ConcatTransforms((const void*)(dest + bones[i].parent*12), (const void*)(sourcedata+i*12), (void*)(dest+i*12));
 			else
 			{
 				Vector4Copy(sourcedata+i*12+0, dest+i*12+0);
@@ -609,7 +612,7 @@ static const float *Alias_ConvertBoneData(skeltype_t sourcetype, const float *so
 		for (i = 0; i < bonecount; i++)
 		{
 			Matrix3x4_Invert_Simple(bones[i].inverse, iim);
-			R_ConcatTransforms((void*)(sourcedata + i*12), (void*)iim, (void*)(dest + i*12));
+			R_ConcatTransforms((const void*)(sourcedata + i*12), (const void*)iim, (void*)(dest + i*12));
 		}
 		sourcedata = dest;
 		sourcetype = SKEL_ABSOLUTE;
@@ -627,7 +630,7 @@ static const float *Alias_ConvertBoneData(skeltype_t sourcetype, const float *so
 			if (bones[i].parent >= 0)
 			{
 				Matrix3x4_Invert_Simple(sourcedata+bones[i].parent*12, ip);
-				R_ConcatTransforms((void*)ip, (void*)(sourcedata+i*12), (void*)(dest+i*12));
+				R_ConcatTransforms((const void*)ip, (const void*)(sourcedata+i*12), (void*)(dest+i*12));
 			}
 			else
 			{
@@ -648,7 +651,7 @@ static const float *Alias_ConvertBoneData(skeltype_t sourcetype, const float *so
 	{
 		float *dest = (sourcedata == destbuffer)?destbufferalt:destbuffer;
 		for (i = 0; i < bonecount; i++)
-			R_ConcatTransforms((void*)(sourcedata + i*12), (void*)(bones[i].inverse), (void*)(dest + i*12));
+			R_ConcatTransforms((const void*)(sourcedata + i*12), (const void*)(bones[i].inverse), (void*)(dest + i*12));
 		sourcedata = dest;
 		sourcetype = SKEL_INVERSE_ABSOLUTE;
 	}
@@ -1369,7 +1372,7 @@ static void Alias_BuildSkeletalMesh(mesh_t *mesh, framestate_t *framestate, gali
 	if (meshcache.bonecachetype != SKEL_INVERSE_ABSOLUTE)
 		meshcache.usebonepose = Alias_GetBoneInformation(inf, framestate, meshcache.bonecachetype=SKEL_INVERSE_ABSOLUTE, meshcache.boneposebuffer1, meshcache.boneposebuffer2, MAX_BONES);
 
-	if (1)
+	if ((1))
 		Alias_TransformVerticies_VNST(meshcache.usebonepose, inf->numverts, bidx, weight, 
 				inf->ofs_skel_xyz[0], mesh->xyz_array[0],
 				inf->ofs_skel_norm[0], mesh->normals_array[0],
@@ -2560,7 +2563,7 @@ static qboolean Mod_Trace(model_t *model, int forcehullnum, const framestate_t *
 			{
 				vec3_t iaxis[3];
 				vec3_t norm;
-				Matrix3x3_RM_Invert_Simple((void *)axis, iaxis);
+				Matrix3x3_RM_Invert_Simple((const void *)axis, iaxis);
 				VectorCopy(trace->plane.normal, norm);
 				trace->plane.normal[0] = DotProduct(norm, iaxis[0]);
 				trace->plane.normal[1] = DotProduct(norm, iaxis[1]);
@@ -3069,18 +3072,25 @@ void Mod_LoadAliasShaders(model_t *mod)
 	char alttexpath[MAX_QPATH];
 	uploadfmt_t skintranstype;
 	char *slash;
+#ifdef MD1MODELS
 #ifdef HEXEN2
-	if( mod->flags & MFH2_TRANSPARENT )
+	if (mod->flags & MFH2_TRANSPARENT)
 		skintranstype = TF_H2_T7G1;	//hexen2
 	else
 #endif
-	 if(mod->flags & MFH2_HOLEY)
-		skintranstype = TF_H2_TRANS8_0;	//hexen2
+		if (mod->flags & MFH2_HOLEY)
+	{
+		//in hexen2, the official value is 0.
+		//hexen2's GL renderer ONLY also has a bug that ADDITIONALLY translates index 255. this is the 'normal' behaviour.
+		//quakespasm has a bug that translates ONLY 255 and ignores 0. massive fuckup, when index 0 is more commonly used (and is also a dupe anyway, with q1's palette).
+		skintranstype = mod_h2holey_bugged.ival?TF_TRANS8:TF_H2_TRANS8_0;	//hexen2
+	}
 #ifdef HEXEN2
-	else if(mod->flags & MFH2_SPECIAL_TRANS)
+	else if (mod->flags & MFH2_SPECIAL_TRANS)
 		skintranstype = TF_H2_T4A4;	//hexen2
 #endif
 	else
+#endif
 		skintranstype = TF_SOLID8;
 
 	COM_FileBase(mod->name, basename, sizeof(basename));
@@ -3602,7 +3612,6 @@ static void *Q1MDL_LoadSkins_GL (galiasinfo_t *galias, dmdl_t *pq1inmodel, model
 	galiasskin_t *outskin = galias->ofsskins;
 	const char *slash;
 	unsigned int texflags;
-	const char *defaultshader = NULL;
 
 	s = pq1inmodel->skinwidth*pq1inmodel->skinheight;
 	for (i = 0; i < pq1inmodel->numskins; i++)
@@ -3654,7 +3663,7 @@ static void *Q1MDL_LoadSkins_GL (galiasinfo_t *galias, dmdl_t *pq1inmodel, model
 			{
 			default:	//urk
 			case TF_SOLID8:
-				frames[0].defaultshader = defaultshader;
+				frames[0].defaultshader = NULL;	//default skin...
 				break;
 			case TF_H2_T7G1:
 				frames[0].defaultshader =
@@ -3672,6 +3681,7 @@ static void *Q1MDL_LoadSkins_GL (galiasinfo_t *galias, dmdl_t *pq1inmodel, model
 			case TF_H2_TRANS8_0:
 				frames[0].defaultshader =
 					"{\n"
+//						"program defaultskin#MASK=0.5#MASKLT\n"
 						"{\n"
 							"map $diffuse\n"
 							"blendfunc gl_src_alpha gl_one_minus_src_alpha\n"
@@ -3680,11 +3690,26 @@ static void *Q1MDL_LoadSkins_GL (galiasinfo_t *galias, dmdl_t *pq1inmodel, model
 							"alphagen entity\n"
 							"depthwrite\n"
 						"}\n"
+						"{\n"
+							"map $loweroverlay\n"
+							"rgbgen bottomcolor\n"
+							"blendfunc gl_src_alpha gl_one\n"
+						"}\n"
+						"{\n"
+							"map $upperoverlay\n"
+							"rgbgen topcolor\n"
+							"blendfunc gl_src_alpha gl_one\n"
+						"}\n"
+						"{\n"
+							"map $fullbright\n"
+							"blendfunc add\n"
+						"}\n"
 					"}\n";
 				break;
 			case TF_H2_T4A4:
 				frames[0].defaultshader =
 					"{\n"
+//						"program defaultskin\n"
 						"cull disable\n"
 						"{\n"
 							"map $diffuse\n"
@@ -3692,6 +3717,20 @@ static void *Q1MDL_LoadSkins_GL (galiasinfo_t *galias, dmdl_t *pq1inmodel, model
 							"alphagen entity\n"
 							"rgbgen lightingDiffuse\n"
 							"depthwrite\n"
+						"}\n"
+						"{\n"
+							"map $loweroverlay\n"
+							"rgbgen bottomcolor\n"
+							"blendfunc gl_src_alpha gl_one\n"
+						"}\n"
+						"{\n"
+							"map $upperoverlay\n"
+							"rgbgen topcolor\n"
+							"blendfunc gl_src_alpha gl_one\n"
+						"}\n"
+						"{\n"
+							"map $fullbright\n"
+							"blendfunc add\n"
 						"}\n"
 					"}\n";
 				break;
@@ -5077,7 +5116,7 @@ qboolean Mod_GetTag(model_t *model, int tagnum, framestate_t *fstate, float *res
 				tagnum = bone[tagnum].parent;
 			}
 
-			for (b = 0; b < numbonegroups; lerp++, b++)
+			for (b = 0; b < numbonegroups; b++)
 				for (k = 0; k < lerps[b].lerpcount; k++)
 					BZ_Free(lerps[b].needsfree[k]);
 			return true;
@@ -5870,7 +5909,7 @@ static qboolean QDECL Mod_LoadQ3Model(model_t *mod, void *buffer, size_t fsize)
 				char lodname[MAX_QPATH];
 				memcpy(basename, mod->name, ext-mod->name);
 				basename[ext-mod->name] = 0;
-				Q_snprintfz(lodname, sizeof(lodname), "%s_%i.%s", basename, lod, ext);
+				Q_snprintfz(lodname, sizeof(lodname), "%s_%i%s", basename, lod, ext);
 				f = FS_LoadMallocFile(lodname, &s);
 				if (!f)
 					break;

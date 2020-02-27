@@ -85,6 +85,7 @@
 #define INTERQUAKEMODELS		//Preferred model format, at least from an idealism perspective.
 #define MODELFMT_MDX			//kingpin's format (for hitboxes+geomsets).
 #define MODELFMT_OBJ			//lame mesh-only format that needs far too much processing and even lacks a proper magic identifier too
+#define MODELFMT_GLTF			//khronos 'transmission format'. .gltf or .glb extension. PBR. Version 2 only, for now.
 #define RAGDOLL					//ragdoll support. requires RBE support (via a plugin...).
 
 //Image formats
@@ -153,7 +154,7 @@
 #define HAVE_HTTPSV				//net_enable_http/websocket
 #define TCPCONNECT				//support for playing over tcp sockets, instead of just udp. compatible with qizmo.
 //#define IRCCONNECT			//lame support for routing game packets via irc server. not a good idea.
-#define SUPPORT_ICE				//Internet Connectivity Establishment, for use by plugins to establish voice or game connections.
+//#define SUPPORT_ICE				//Internet Connectivity Establishment, for use by plugins to establish voice or game connections.
 #define CL_MASTER				//Clientside Server Browser functionality.
 #define PACKAGEMANAGER			//Allows the user to enable/disable/download(with WEBCLIENT) packages and plugins.
 

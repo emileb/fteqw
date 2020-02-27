@@ -179,7 +179,7 @@ Marks the edict as free
 FIXME: walk all entities and NULL out references to this entity
 =================
 */
-void PDECL ED_Free (pubprogfuncs_t *ppf, struct edict_s *ed)
+void PDECL ED_Free (pubprogfuncs_t *ppf, struct edict_s *ed, pbool instant)
 {
 	progfuncs_t *progfuncs = (progfuncs_t*)ppf;
 	edictrun_t *e = (edictrun_t *)ed;
@@ -188,7 +188,7 @@ void PDECL ED_Free (pubprogfuncs_t *ppf, struct edict_s *ed)
 	if (e->ereftype == ER_FREE)	//this happens on start.bsp where an onlyregistered trigger killtargets itself (when all of this sort die after 1 trigger anyway).
 	{
 		if (prinst.pr_depth)
-			externs->Printf("Tried to free free entity within %s\n", pr_xfunction->s_name+progfuncs->funcs.stringtable);
+			externs->Printf("Tried to free free entity within %s\n", prinst.pr_xfunction->s_name+progfuncs->funcs.stringtable);
 		else
 			externs->Printf("Engine tried to free free entity\n");
 //		if (developer.value == 1)
@@ -201,7 +201,7 @@ void PDECL ED_Free (pubprogfuncs_t *ppf, struct edict_s *ed)
 			return;
 
 	e->ereftype = ER_FREE;
-	e->freetime = (float)*externs->gametime;
+	e->freetime = instant?0:(float)*externs->gametime;
 
 /*
 	ed->v.model = 0;
@@ -1705,9 +1705,9 @@ char *PR_SaveCallStack (progfuncs_t *progfuncs, char *buf, size_t *bufofs, size_
 		return buf;
 	}
 
-	globalbase = (int *)pr_globals + pr_xfunction->parm_start + pr_xfunction->locals;
+	globalbase = (int *)pr_globals + prinst.pr_xfunction->parm_start + prinst.pr_xfunction->locals;
 
-	prinst.pr_stack[prinst.pr_depth].f = pr_xfunction;
+	prinst.pr_stack[prinst.pr_depth].f = prinst.pr_xfunction;
 	for (i=prinst.pr_depth ; i>0 ; i--)
 	{
 		f = prinst.pr_stack[i].f;

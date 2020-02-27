@@ -396,6 +396,8 @@ static ftemanifest_t *FS_Manifest_Create(const char *syspath)
 #else
 	man->mainconfig = Z_StrDup("fte.cfg");
 #endif
+
+	man->rtcbroker = Z_StrDup("tls://master.frag-net.com:27950");	//This is eukara's server. fixme: this really ought to be a cvar instead.
 	return man;
 }
 
@@ -523,7 +525,7 @@ static qboolean FS_GamedirIsOkay(const char *path)
 	//don't allow leading dots, hidden files are evil.
 	//don't allow complex paths. those are evil too.
 	if (!*path || *path == '.' || !strcmp(path, ".") || strstr(path, "..") || strstr(path, "/")
-		|| strstr(path, "\\") || strstr(path, ":") )
+		|| strstr(path, "\\") || strstr(path, ":") || strstr(path, "\""))
 	{
 		Con_Printf ("Gamedir should be a single filename, not \"%s\"\n", path);
 		return false;
@@ -965,13 +967,13 @@ static int QDECL COM_Dir_List(const char *name, qofs_t size, time_t mtime, void 
 	}
 
 	if (size > 1.0*1024*1024*1024)
-		Con_Printf(U8("^[%s%s%s^] \t(%#.3ggb) (%s)\n"), colour, name, link, size/(1024.0*1024*1024), s?s->logicalpath:"??");
+		Con_Printf(U8("(%#.3ggb) ^[%s%s%s^] \t^h(%s)\n"), size/(1024.0*1024*1024), colour, name, link, s?s->logicalpath:"??");
 	else if (size > 1.0*1024*1024)
-		Con_Printf(U8("^[%s%s%s^] \t(%#.3gmb) (%s)\n"), colour, name, link, size/(1024.0*1024), s?s->logicalpath:"??");
+		Con_Printf(U8("(%#.3gmb) ^[%s%s%s^] \t^h(%s)\n"), size/(1024.0*1024), colour, name, link, s?s->logicalpath:"??");
 	else if (size > 1.0*1024)
-		Con_Printf(U8("^[%s%s%s^] \t(%#.3gkb) (%s)\n"), colour, name, link, size/1024.0, s?s->logicalpath:"??");
+		Con_Printf(U8("(%#.3gkb) ^[%s%s%s^] \t^h(%s)\n"), size/1024.0, colour, name, link, s?s->logicalpath:"??");
 	else
-		Con_Printf(U8("^[%s%s%s^] \t(%ub) (%s)\n"), colour, name, link, (unsigned int)size, s?s->logicalpath:"??");
+		Con_Printf(U8("(%5ub) ^[%s%s%s^] \t^h(%s)\n"), (unsigned int)size, colour, name, link, s?s->logicalpath:"??");
 	return 1;
 }
 
@@ -2213,7 +2215,15 @@ qboolean FS_Rename2(const char *oldf, const char *newf, enum fs_relative oldrela
 		return false;
 
 	FS_CreatePath(newf, newrelativeto);
-	return Sys_Rename(oldfullname, newfullname);
+	if (Sys_Rename(oldfullname, newfullname))
+	{
+		if (oldrelativeto >= FS_GAME)
+			FS_FlushFSHashRemoved(oldf);
+		if (newrelativeto >= FS_GAME)
+			FS_FlushFSHashWritten(newf);
+		return true;
+	}
+	return false;
 }
 qboolean FS_Rename(const char *oldf, const char *newf, enum fs_relative relativeto)
 {
@@ -2226,7 +2236,13 @@ qboolean FS_Remove(const char *fname, enum fs_relative relativeto)
 	if (!FS_NativePath(fname, relativeto, fullname, sizeof(fullname)))
 		return false;
 
-	return Sys_remove (fullname);
+	if (Sys_remove (fullname))
+	{
+		if (relativeto >= FS_GAME)
+			FS_FlushFSHashRemoved(fname);
+		return true;
+	}
+	return false;
 }
 //create a path for the given filename (dir-only must have trailing slash)
 void FS_CreatePath(const char *pname, enum fs_relative relativeto)
@@ -2238,6 +2254,7 @@ void FS_CreatePath(const char *pname, enum fs_relative relativeto)
 	COM_CreatePath(fullname);
 }
 
+//FIXME: why is this qofs_t and not size_t?!?
 void *FS_MallocFile(const char *filename, enum fs_relative relativeto, qofs_t *filesize)
 {
 	vfsfile_t *f;
@@ -2250,9 +2267,15 @@ void *FS_MallocFile(const char *filename, enum fs_relative relativeto, qofs_t *f
 	len = VFS_GETLEN(f);
 	if (filesize)
 		*filesize = len;
+	if (len >= ~(size_t)0)
+	{
+		VFS_CLOSE(f);
+		Con_Printf(CON_ERROR"File %s: too large\n", filename);
+		return NULL;
+	}
 
 	buf = (qbyte*)BZ_Malloc(len+1);
-	if (!buf)
+	if (!buf)	//this could be a soft error, but I don't want to have to deal with users reporting misc unrelated issues (and frankly most malloc failures are due to OOB writes)
 		Sys_Error ("FS_MallocFile: out of memory loading %s", filename);
 
 	((qbyte *)buf)[len] = 0;
@@ -3255,10 +3278,8 @@ void COM_Gamedir (const char *dir, const struct gamepacks *packagespaths)
 	if (!fs_manifest)
 		FS_ChangeGame(NULL, true, false);
 
-	//don't allow leading dots, hidden files are evil.
-	//don't allow complex paths. those are evil too.
-	if (*dir == '.' || !strcmp(dir, ".") || strstr(dir, "..") || strstr(dir, "/")
-		|| strstr(dir, "\\") || strstr(dir, ":") || strstr(dir, "\"") )
+	//we do allow empty here, for base.
+	if (*dir && !FS_GamedirIsOkay(dir))
 	{
 		Con_Printf ("Gamedir should be a single filename, not \"%s\"\n", dir);
 		return;
@@ -3338,8 +3359,9 @@ void COM_Gamedir (const char *dir, const struct gamepacks *packagespaths)
 /*ezquake cheats and compat*/
 #define EZQUAKECOMPETITIVE "set ruleset_allow_fbmodels 1\nset sv_demoExtensions \"\"\n"
 /*quake requires a few settings for compatibility*/
-#define QRPCOMPAT "set cl_cursor_scale 0.2\nset cl_cursor_bias_x 7.5\nset cl_cursor_bias_y 0.8"
-#define QCFG "set v_gammainverted 1\nset con_stayhidden 0\nset com_parseutf8 0\nset allow_download_pakcontents 1\nset allow_download_refpackages 0\nset sv_bigcoords \"\"\nmap_autoopenportals 1\n"  "sv_port "STRINGIFY(PORT_QWSERVER)" "STRINGIFY(PORT_NQSERVER)"\n" ZFIXHACK EZQUAKECOMPETITIVE QRPCOMPAT
+#define QRPCOMPAT "set cl_cursor_scale 0.2\nset cl_cursor_bias_x 7.5\nset cl_cursor_bias_y 0.8\n"
+#define QUAKESPASMSUCKS "set mod_h2holey_bugged 1\n"
+#define QCFG "set v_gammainverted 1\nset con_stayhidden 0\nset com_parseutf8 0\nset allow_download_pakcontents 1\nset allow_download_refpackages 0\nset sv_bigcoords \"\"\nmap_autoopenportals 1\n"  "sv_port "STRINGIFY(PORT_QWSERVER)" "STRINGIFY(PORT_NQSERVER)"\n" ZFIXHACK EZQUAKECOMPETITIVE QRPCOMPAT QUAKESPASMSUCKS
 /*NetQuake reconfiguration, to make certain people feel more at home...*/
 #define NQCFG "//-nohome\ncfg_save_auto 1\n" QCFG "sv_nqplayerphysics 1\ncl_loopbackprotocol auto\ncl_sbar 1\nplug_sbar 0\nsv_port "STRINGIFY(PORT_NQSERVER)"\ncl_defaultport "STRINGIFY(PORT_NQSERVER)"\n"
 //nehahra has to be weird with its extra cvars, and buggy fullbrights.
@@ -3450,13 +3472,13 @@ const gamemode_info_t gamemode_info[] = {
 	{"-hexen2",		"hexen2",	"FTE-Hexen2",			{"data1/pak0.pak"},				HEX2CFG,{"data1",						"*fteh2"},	"Hexen II",							UPDATEURL(H2)},
 #endif
 #if defined(Q2CLIENT) || defined(Q2SERVER)
-	{"-quake2",		"q2",		"FTE-Quake2",			{"baseq2/pak0.pak"},			Q2CFG,	{"baseq2",						"*fteq2"},	"Quake II",							UPDATEURL(Q2)},
+	{"-quake2",		"q2",		"Quake2",				{"baseq2/pak0.pak"},			Q2CFG,	{"baseq2",						"*fteq2"},	"Quake II",							UPDATEURL(Q2)},
 	//mods of the above that should generally work.
-	{"-dday",		"dday",		"FTE-Quake2",			{"dday/pak0.pak"},				Q2CFG,	{"baseq2",	"dday",				"*fteq2"},	"D-Day: Normandy"},
+	{"-dday",		"dday",		"Quake2",				{"dday/pak0.pak"},				Q2CFG,	{"baseq2",	"dday",				"*fteq2"},	"D-Day: Normandy"},
 #endif
 
 #if defined(Q3CLIENT) || defined(Q3SERVER)
-	{"-quake3",		"q3",		"FTE-Quake3",			{"baseq3/pak0.pk3"},			Q3CFG,	{"baseq3",						"*fteq3"},	"Quake III Arena",					UPDATEURL(Q3)},
+	{"-quake3",		"q3",		"Quake3",				{"baseq3/pak0.pk3"},			Q3CFG,	{"baseq3",						"*fteq3"},	"Quake III Arena",					UPDATEURL(Q3)},
 	//the rest are not supported in any real way. maps-only mostly, if that
 //	{"-quake4",		"q4",		"FTE-Quake4",			{"q4base/pak00.pk4"},			NULL,	{"q4base",						"*fteq4"},	"Quake 4"},
 //	{"-et",			NULL,		"FTE-EnemyTerritory",	{"etmain/pak0.pk3"},			NULL,	{"etmain",						"*fteet"},	"Wolfenstein - Enemy Territory"},
@@ -5877,10 +5899,10 @@ qboolean FS_ChangeGame(ftemanifest_t *man, qboolean allowreloadconfigs, qboolean
 						char *oldprefix = "http://fte.";
 						char *newprefix = "https://updates.";
 						e = COM_ParseFunString(CON_WHITEMASK, ENGINEWEBSITE, musite, sizeof(musite), false);
-						COM_DeFunString(musite, e, site, sizeof(site), true, true);
+						COM_DeFunString(musite, e, site, sizeof(site)-1, true, true);
 						if (!strncmp(site, oldprefix, strlen(oldprefix)))
 						{
-							memmove(site+strlen(newprefix), site+strlen(oldprefix), strlen(site)-strlen(oldprefix));
+							memmove(site+strlen(newprefix), site+strlen(oldprefix), strlen(site)-strlen(oldprefix)+1);
 							memcpy(site, newprefix, strlen(newprefix));
 						}
 						Cmd_TokenizeString(va("downloadsurl \"%s%s\"", site, gamemode_info[i].downloadsurl), false, false);
@@ -6799,6 +6821,7 @@ void COM_InitFilesystem (void)
 	Cmd_AddCommand("fs_showmanifest", FS_ShowManifest_f);
 	Cmd_AddCommand ("fs_flush", COM_RefreshFSCache_f);
 	Cmd_AddCommandAD("dir", COM_Dir_f,			FS_ArbitraryFile_c, "Displays filesystem listings. Accepts wildcards."); //q3 like
+	Cmd_AddCommandAD("ls", COM_Dir_f,			FS_ArbitraryFile_c, "Displays filesystem listings. Accepts wildcards."); //q3 like
 	Cmd_AddCommandD("path", COM_Path_f,			"prints a list of current search paths.");
 	Cmd_AddCommandAD("flocate", COM_Locate_f,	FS_ArbitraryFile_c, "Searches for a named file, and displays where it can be found in the OS's filesystem");	//prints the pak or whatever where this file can be found.
 	Cmd_AddCommandAD("which", COM_Locate_f,	FS_ArbitraryFile_c, "Searches for a named file, and displays where it can be found in the OS's filesystem");	//prints the pak or whatever where this file can be found.

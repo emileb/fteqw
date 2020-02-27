@@ -160,13 +160,11 @@ typedef struct prinst_s
 
 	//step-by-step debug state
 	int debugstatement;
-	int continuestatement;
 	int exitdepth;
 
 	pbool profiling;
 	prclocks_t profilingalert;	//one second, in cpu clocks
 	mfunction_t	*pr_xfunction;	//active function
-#define pr_xfunction prinst.pr_xfunction
 	int pr_xstatement;			//active statement
 
 //pr_edict.c
@@ -405,7 +403,7 @@ void *PRHunkAlloc(progfuncs_t *progfuncs, int ammount, const char *name);
 void PR_Profile_f (void);
 
 struct edict_s *PDECL ED_Alloc (pubprogfuncs_t *progfuncs, pbool object, size_t extrasize);
-void PDECL ED_Free (pubprogfuncs_t *progfuncs, struct edict_s *ed);
+void PDECL ED_Free (pubprogfuncs_t *progfuncs, struct edict_s *ed, pbool instant);
 
 pbool PR_RunGC			(progfuncs_t *progfuncs);
 string_t PDECL PR_AllocTempString			(pubprogfuncs_t *ppf, const char *str);

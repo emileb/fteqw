@@ -4646,17 +4646,17 @@ void CLQW_ParsePlayerinfo (void)
 
 	if (cls.demoplayback == DPB_MVD || cls.demoplayback == DPB_EZTV)
 	{
-		player_state_t	*prevstate, dummy;
+		player_state_t	dummy;
 		if (!cl.parsecount || info->prevcount > cl.parsecount || cl.parsecount - info->prevcount >= UPDATE_BACKUP - 1)
 		{
 			memset(&dummy, 0, sizeof(dummy));
-			prevstate = &dummy;
+			oldstate = &dummy;
 		}
 		else
 		{
-			prevstate = &cl.inframes[info->prevcount & UPDATE_MASK].playerstate[num];
+			oldstate = &cl.inframes[info->prevcount & UPDATE_MASK].playerstate[num];
 		}
-		memcpy(state, prevstate, sizeof(player_state_t));
+		memcpy(state, oldstate, sizeof(player_state_t));
 		info->prevcount = cl.parsecount;
 
 #ifdef QUAKESTATS
@@ -4689,7 +4689,7 @@ void CLQW_ParsePlayerinfo (void)
 			}
 		}
 
-		VectorSubtract(state->origin, prevstate->origin, dist);
+		VectorSubtract(state->origin, oldstate->origin, dist);
 		VectorScale(dist, 1/(cl.inframes[parsecountmod].packet_entities.servertime - cl.inframes[oldparsecountmod].packet_entities.servertime), state->velocity);
 		VectorCopy (state->origin, state->predorigin);
 
@@ -5330,6 +5330,7 @@ void CL_LinkPlayers (void)
 #ifdef PEXT_SCALE
 		ent->scale = state->scale;
 #endif
+		ent->glowmod[0] = ent->glowmod[1] = ent->glowmod[2] = 1;
 		ent->shaderRGBAf[0] = state->colourmod[0]/32.0f;
 		ent->shaderRGBAf[1] = state->colourmod[1]/32.0f;
 		ent->shaderRGBAf[2] = state->colourmod[2]/32.0f;
@@ -5538,9 +5539,8 @@ void CL_LinkViewModel(void)
 	ent.angles[1] = cl_gunangley.value;
 	ent.angles[2] = cl_gunanglez.value;
 
-	ent.shaderRGBAf[0] = 1;
-	ent.shaderRGBAf[1] = 1;
-	ent.shaderRGBAf[2] = 1;
+	ent.glowmod[0] = ent.glowmod[1] = ent.glowmod[2] = 1;
+	ent.shaderRGBAf[0] = ent.shaderRGBAf[1] = ent.shaderRGBAf[2] = 1;
 	ent.shaderRGBAf[3] = alpha;
 	if (alpha != 1)
 	{

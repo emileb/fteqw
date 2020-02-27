@@ -2804,6 +2804,7 @@ char *COM_DeFunString(conchar_t *str, conchar_t *stop, char *out, int outsize, q
 	if (!outsize)
 		Sys_Error("COM_DeFunString given outsize=0");
 #endif
+	outsize--;
 
 	/*if (ignoreflags)
 	{
@@ -3049,7 +3050,7 @@ char *COM_ParseStringSetSep (const char *data, char sep, char *out, size_t outsi
 			return (char*)data;
 		}
 		c = *data++;
-		if (c == ';')
+		if (c == sep)
 			break;
 		out[len++] = c;
 	}

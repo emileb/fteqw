@@ -80,7 +80,9 @@ static qboolean XVK_SetupSurface_XCB(void);
 #endif
 
 #define USE_VMODE
-#define USE_XRANDR
+#ifndef NO_X11_RANDR
+	#define USE_XRANDR
+#endif
 
 #include <X11/keysym.h>
 #include <X11/cursorfont.h>
@@ -179,6 +181,7 @@ static struct
 	int	 (*pXMoveResizeWindow)(Display *display, Window w, int x, int y, unsigned width, unsigned height);
 	int	 (*pXMoveWindow)(Display *display, Window w, int x, int y);
 	int	 (*pXNextEvent)(Display *display, XEvent *event_return);
+	int	 (*pXPeekEvent)(Display *display, XEvent *event_return);
 	Display *(*pXOpenDisplay)(char *display_name);
 	int 	 (*pXPending)(Display *display);
 	Bool 	 (*pXQueryExtension)(Display *display, const char *name, int *major_opcode_return, int *first_event_return, int *first_error_return);
@@ -280,6 +283,7 @@ static qboolean x11_initlib(void)
 		{(void**)&x11.pXMoveResizeWindow,	"XMoveResizeWindow"},
 		{(void**)&x11.pXMoveWindow,		"XMoveWindow"},
 		{(void**)&x11.pXNextEvent,		"XNextEvent"},
+		{(void**)&x11.pXPeekEvent,		"XPeekEvent"},
 		{(void**)&x11.pXOpenDisplay,		"XOpenDisplay"},
 		{(void**)&x11.pXPending,		"XPending"},
 		{(void**)&x11.pXQueryExtension,		"XQueryExtension"},
@@ -2906,6 +2910,13 @@ static void GetEvent(void)
 		X_KeyEvent(&event.xkey, true, filtered);
 		break;
 	case KeyRelease:
+		if (x11.pXPending(vid_dpy))
+		{	//autorepeat is messy - if the next event is a press event for the same key then ignore the release (we still get presses doing their autorepeat thing, just not the releases)
+			XEvent nextev;
+			x11.pXPeekEvent(vid_dpy, &nextev);	//blocks, so needs XPending
+			if (nextev.type == KeyPress && nextev.xkey.time == event.xkey.time && nextev.xkey.keycode == event.xkey.keycode)
+				break;
+		}
 		X_KeyEvent(&event.xkey, false, filtered);
 		break;
 
@@ -4214,7 +4225,7 @@ static qboolean X11VID_Init (rendererstate_t *info, unsigned char *palette, int 
 	else
 #endif
 #ifdef USE_VMODE
-	if (!xrandr.origgamma && vm.pXF86VidModeGetGammaRampSize)
+	if (vm.pXF86VidModeGetGammaRampSize)
 	{
 		int rampsize = 256;
 		vm.pXF86VidModeGetGammaRampSize(vid_dpy, scrnum, &rampsize);

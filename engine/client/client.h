@@ -358,10 +358,6 @@ typedef struct
 	int		colourkey;	//compacted version of the colours, for comparison against caches
 } lightstyle_t;
 
-
-
-#define	MAX_EFRAGS		512
-
 #define	MAX_DEMOS		8
 #define	MAX_DEMONAME	16
 
@@ -531,7 +527,7 @@ typedef struct
 	float		latency;		// rolling average
 
 	qboolean	allow_anyparticles;
-	qboolean	allow_skyboxes;
+	qboolean	allow_skyboxes;	//skyboxes/domes do not need to be depth-masked when set. FIXME: we treat this as an optimisation hint, but some hl/q2/q3 maps require strict do-not-mask rules to look right.
 	qboolean	allow_watervis;	//fixme: not checked any more
 	float		allow_fbskins;	//fraction of allowance
 	qboolean	allow_cheats;
@@ -865,6 +861,7 @@ typedef struct
 	float maxpitch;
 
 	qboolean	paused;			// send over by server
+	qboolean	implicitpause;	//for csqc. only a hint, respected only in singleplayer.
 
 	enum
 	{
@@ -1528,7 +1525,6 @@ void Cam_Lock(playerview_t *pv, int playernum);	//attempt to lock on to the give
 void Cam_NowLocked(playerview_t *pv);						//player was located, track them now
 void Cam_SelfTrack(playerview_t *pv);
 void Cam_Track(playerview_t *pv, usercmd_t *cmd);
-void Cam_TrackCrosshairedPlayer(playerview_t *pv);
 void Cam_SetModAutoTrack(int userid);
 void Cam_FinishMove(playerview_t *pv, usercmd_t *cmd);
 void Cam_Reset(void);
@@ -1793,7 +1789,7 @@ typedef struct
 	size_t structsize;
 	const char *drivername;
 	const char *description;
-	const char *defaultextension;
+	const char *extensions;
 	void *(VARGS *capture_begin) (char *streamname, int videorate, int width, int height, int *sndkhz, int *sndchannels, int *sndbits);
 	void (VARGS *capture_video) (void *ctx, int frame, void *data, int stride, int width, int height, enum uploadfmt fmt);
 	void (VARGS *capture_audio) (void *ctx, void *data, int bytes);

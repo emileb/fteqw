@@ -3663,7 +3663,7 @@ static void BE_Program_Set_Attributes(const program_t *prog, struct programpermu
 				for (j = 0; j < MAXRLIGHTMAPS ; j++)
 				{
 					s = shaderstate.curbatch->lmlightstyle[j];
-					if (s == 255)
+					if (s == INVALID_LIGHTSTYLE)
 					{
 						for (; j < MAXRLIGHTMAPS ; j++)
 						{
@@ -3694,6 +3694,7 @@ static void BE_Program_Set_Attributes(const program_t *prog, struct programpermu
 			else
 #endif
 			{
+				unsigned short s;
 				if (shaderstate.curentity->model && (shaderstate.curentity->model->engineflags & MDLF_NEEDOVERBRIGHT) && !shaderstate.force2d)
 				{
 					float sc = (1<<bound(0, gl_overbright.ival, 2)) * shaderstate.identitylighting;
@@ -3703,6 +3704,10 @@ static void BE_Program_Set_Attributes(const program_t *prog, struct programpermu
 				{
 					Vector4Set(param4, shaderstate.identitylighting, shaderstate.identitylighting, shaderstate.identitylighting, 1);
 				}
+
+				s = shaderstate.curbatch->lmlightstyle[0];	//only one style.
+				if (s != INVALID_LIGHTSTYLE)
+					VectorScale(param4, d_lightstylevalue[s]/256.0f, param4);
 
 				qglUniform4fvARB(ph, 1, (GLfloat*)param4);
 			}
@@ -6367,8 +6372,10 @@ void GLBE_DrawWorld (batch_t **worldbatches)
 		else
 #endif
 		{
+#ifdef RTLIGHTS
 			if (r_fakeshadows)
 				Sh_GenerateFakeShadows();
+#endif
 			GLBE_SelectEntity(&r_worldentity);
 
 			if (shaderstate.identitylighting == 0)

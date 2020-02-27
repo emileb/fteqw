@@ -3,7 +3,10 @@
 #undef stderr
 #define stderr stdout
 
+#define LittleLong(s) s
+
 #include <limits.h>
+#include <ctype.h>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -348,11 +351,29 @@ static void ImgTool_FreeMips(struct pendingtextureinfo *mips)
 
 sh_config_t sh_config;
 viddef_t vid;
-static const char *imagetypename[] = {"2D", "3D", "Cube", "2DArray", "CubemapArray", "INVALID", "INVALID", "INVALID", "INVALID", "INVALID"};
 
+typedef struct
+{
+   unsigned int offset;				// Position of the entry in WAD
+   unsigned int dsize;				// Size of the entry in WAD file
+   unsigned int size;				// Size of the entry in memory
+   char type;						// type of entry
+   char cmprs;						// Compression. 0 if none.
+   short dummy;						// Not used
+   char name[16];					// we use only first 8
+} wad2entry_t;
+typedef struct
+{
+   char magic[4];					//should be WAD2
+   unsigned int num;				//number of entries
+   unsigned int offset;				//location of directory
+} wad2_t;
+
+static const char *imagetypename[] = {"2D", "3D", "Cube", "2DArray", "CubemapArray", "INVALID", "INVALID", "INVALID", "INVALID", "INVALID"};
 struct opts_s
 {
 	int textype;
+	const char *defaultext;		//.dds or whatever when the output's extension is not explicitly given.
 	unsigned int flags;			//image flags to use (affects how textures get interpreted a little)
 	unsigned int mipnum;		//when exporting to a mipless format, this is the mip level that is actually written. default 0.
 	uploadfmt_t newpixelformat;	//try to convert to this pixel format on export.
@@ -376,23 +397,16 @@ static enum uploadfmt ImgTool_ASTCToLDR(uploadfmt_t fmt)
 	return fmt;
 }
 #ifdef _WIN32
-#include <io.h>
-#include <fcntl.h>
 static void FS_MakeTempName(char *out, size_t outsize, char *prefix, char *suffix)
 {
-	int fd;
-	unsigned int n;
-	unsigned int s = rand();
-	for (n = 0; n < 0xffffff; n++)
-	{
-		Q_snprintfz(out, outsize, "/tmp/%s%06x%s", prefix, (n+s)&0xffffff, suffix);
-		fd = _open(out, _O_CREAT | _O_EXCL, _S_IREAD | _S_IWRITE);
-		if (fd == -1)
-			continue;
-		close(fd);
-		return;
-	}
-	Sys_Error("FS_MakeTempName failed\n");
+	static char temp_path[MAX_PATH];
+	char temp_file_name[MAX_PATH];
+	if (!*temp_path && !GetTempPathA(sizeof(temp_path), temp_path))
+		Sys_Error("FS_MakeTempName failed to get temp path\n");
+	if (!GetTempFileNameA(temp_path, prefix, 0, temp_file_name))
+		Sys_Error("FS_MakeTempName failed\n");
+
+	Q_snprintfz(out, outsize, "%s%s", temp_file_name, suffix);
 }
 #else
 #include <unistd.h>
@@ -402,6 +416,58 @@ static void FS_MakeTempName(char *out, size_t outsize, char *prefix, char *suffi
 	close(mkstemps(out, strlen(suffix)));	//bsd4.3/posix1-2001
 }
 #endif
+
+static qboolean ImgTool_HasAlpha(struct pendingtextureinfo *mips)
+{
+	if (mips->encoding == PTI_RGBA8 || mips->encoding == PTI_BGRA8 || mips->encoding == PTI_LLLA8 || mips->encoding == PTI_RGBA8_SRGB || mips->encoding == PTI_BGRA8_SRGB)
+	{
+		size_t l = 0, pixels, p;
+		qbyte *d;
+		for (l = 0; l < mips->mipcount; l++)
+		{
+			pixels = mips->mip[l].width * mips->mip[l].height * mips->mip[l].depth * 4;
+			d = mips->mip[l].data;
+			d+=3;
+			for (p = 0; p < pixels; p+=4)
+				if (d[p] != 255)
+					return true;	//a transparent pixel!
+		}
+		return false;
+	}
+	else if (mips->encoding == PTI_L8A8 || mips->encoding == PTI_L8A8_SRGB)
+	{
+		size_t l = 0, pixels, p;
+		qbyte *d;
+		for (l = 0; l < mips->mipcount; l++)
+		{
+			pixels = mips->mip[l].width * mips->mip[l].height * mips->mip[l].depth * 2;
+			d = mips->mip[l].data;
+			d+=1;
+			for (p = 0; p < pixels; p+=2)
+				if (d[p] != 255)
+					return true;	//a transparent pixel!
+		}
+		return false;
+	}
+	else if (mips->encoding == PTI_RGBA16)
+	{
+		size_t l = 0, pixels, p;
+		unsigned short *d;
+		for (l = 0; l < mips->mipcount; l++)
+		{
+			pixels = mips->mip[l].width * mips->mip[l].height * mips->mip[l].depth * 4;
+			d = mips->mip[l].data;
+			d+=3;
+			for (p = 0; p < pixels; p+=4)
+				if (d[p] != 0xffff)
+					return true;	//a transparent pixel!
+		}
+		return false;
+	}
+	else
+		return Image_FormatHasAlpha(mips->encoding);
+}
+
 static qboolean ImgTool_ConvertPixelFormat(struct opts_s *args, const char *inname, struct pendingtextureinfo *mips)
 {
 	struct pendingtextureinfo tmp, *ret;
@@ -415,10 +481,10 @@ static qboolean ImgTool_ConvertPixelFormat(struct opts_s *args, const char *inna
 	int bb,bw,bh;
 	qboolean canktx = false;
 	uploadfmt_t targfmt = args->newpixelformat;
-	int d,l, layers;
+	int d,l, layers, r;
 
 	//force it to bc1 if bc2 or bc3 with no alpha channel.
-	if ((targfmt == PTI_BC2_RGBA || targfmt == PTI_BC3_RGBA) && !Image_FormatHasAlpha(mips->encoding))
+	if ((targfmt == PTI_BC2_RGBA || targfmt == PTI_BC3_RGBA) && !ImgTool_HasAlpha(mips))
 		targfmt = PTI_BC1_RGB;
 
 	if (targfmt >= PTI_ASTC_FIRST && targfmt <= PTI_ASTC_LAST)
@@ -428,12 +494,20 @@ static qboolean ImgTool_ConvertPixelFormat(struct opts_s *args, const char *inna
 	}
 	else if (targfmt == PTI_BC1_RGB)
 		Q_snprintfz(command, sizeof(command), "nvcompress -bc1%s", (args->flags&IF_TRYBUMP)?"n":"");
+	else if (targfmt == PTI_BC1_RGB_SRGB)
+		Q_snprintfz(command, sizeof(command), "nvcompress -bc1%s -srgb -dds10", (args->flags&IF_TRYBUMP)?"n":"");
 	else if (targfmt == PTI_BC1_RGBA)
 		Q_snprintfz(command, sizeof(command), "nvcompress -bc1a");
+	else if (targfmt == PTI_BC1_RGBA_SRGB)
+		Q_snprintfz(command, sizeof(command), "nvcompress -bc1a -srgb -dds10");
 	else if (targfmt == PTI_BC2_RGBA)
 		Q_snprintfz(command, sizeof(command), "nvcompress -bc2");
+	else if (targfmt == PTI_BC2_RGBA_SRGB)
+		Q_snprintfz(command, sizeof(command), "nvcompress -bc2 -srgb -dds10");
 	else if (targfmt == PTI_BC3_RGBA)
 		Q_snprintfz(command, sizeof(command), "nvcompress -bc3%s", (args->flags&IF_TRYBUMP)?"n":"");
+	else if (targfmt == PTI_BC3_RGBA_SRGB)
+		Q_snprintfz(command, sizeof(command), "nvcompress -bc3%s -srgb -dds10", (args->flags&IF_TRYBUMP)?"n":"");
 	else if (targfmt == PTI_BC4_R8)
 		Q_snprintfz(command, sizeof(command), "nvcompress -bc4");
 	else if (targfmt == PTI_BC5_RG8)
@@ -442,6 +516,8 @@ static qboolean ImgTool_ConvertPixelFormat(struct opts_s *args, const char *inna
 		Q_snprintfz(command, sizeof(command), "nvcompress -bc6");
 	else if (targfmt == PTI_BC7_RGBA)
 		Q_snprintfz(command, sizeof(command), "nvcompress -bc7");
+	else if (targfmt == PTI_BC7_RGBA_SRGB)
+		Q_snprintfz(command, sizeof(command), "nvcompress -bc7 -srgb");
 	else
 	{
 		if (mips->encoding != targfmt)
@@ -487,8 +563,12 @@ static qboolean ImgTool_ConvertPixelFormat(struct opts_s *args, const char *inna
 		Q_strncatz(command, " -hdr", sizeof(command));
 	if (targfmt >= PTI_BC1_RGB && targfmt <= PTI_BC7_RGBA_SRGB && (strstr(inname, "_n.")||strstr(inname, "_norm.")))
 		Q_strncatz(command, " -normal", sizeof(command));	//looks like a normalmap... tweak metrics to favour normalised results.
-	Q_strncatz(command, ">> /dev/null", sizeof(command));
 
+#ifdef _WIN32
+   Q_strncatz(command, "> NUL 2>&1", sizeof(command));
+#else
+   Q_strncatz(command, ">> /dev/null", sizeof(command));
+#endif
 
 	if (!canktx)
 	{
@@ -549,7 +629,12 @@ static qboolean ImgTool_ConvertPixelFormat(struct opts_s *args, const char *inna
 					break;
 			}
 
-			system(command);
+			r = system(command);
+			if (r != EXIT_SUCCESS)
+			{
+				Con_Printf("The following system command failed with code %i: %s\n", r, command);
+				break;
+			}
 
 			fdata = FS_LoadMallocFile(comp, &fsize);
 			ret = Image_LoadMipsFromMemory(IF_NOMIPMAP, comp, comp, fdata, fsize);
@@ -608,7 +693,7 @@ const char *COM_GetFileExtension (const char *in, const char *term)
 		if (*dot == '.')
 			return dot;
 	}
-	return "";
+	return term+strlen(term);
 }
 static struct pendingtextureinfo *ImgTool_Read(struct opts_s *args, const char *inname)
 {
@@ -620,7 +705,7 @@ static struct pendingtextureinfo *ImgTool_Read(struct opts_s *args, const char *
 		printf("%s: unable to read\n", inname);
 	else
 	{
-		in = Image_LoadMipsFromMemory(args->flags, inname, inname, indata, fsize);
+		in = Image_LoadMipsFromMemory(args->flags|IF_NOMIPMAP, inname, inname, indata, fsize);
 		if (!in)
 		{
 			printf("%s: unsupported format\n", inname);
@@ -845,16 +930,31 @@ static struct pendingtextureinfo *ImgTool_Combine(struct opts_s *args, const cha
 static void ImgTool_Convert(struct opts_s *args, struct pendingtextureinfo *in, const char *inname, const char *outname)
 {
 	size_t k;
-	const char *outext = COM_GetFileExtension(outname, NULL);
+	const char *outext;
 	qboolean allowcompressed = false;
+	char newout[MAX_OSPATH];
 
+	if (!outname)
+	{
+		outext = COM_GetFileExtension(inname, NULL);
+		k = min(MAX_OSPATH-2-strlen(args->defaultext), outext-inname);
+		memcpy(newout, inname, k);
+		newout[k++] = '.';
+		strcpy(newout+k, args->defaultext);
+		outname = newout;
+	}
+
+	outext = COM_GetFileExtension(outname, NULL);
 	if (!strcmp(outext, ".dds") || !strcmp(outext, ".ktx"))
 		allowcompressed = true;
 
 	if (in)
 	{
-		if (!(args->flags & IF_NOMIPMAP) && in->mipcount == 1)
-			Image_GenerateMips(in, args->flags);
+		if (!strcmp(outext, ".ktx") || !strcmp(outext, ".dds") || args->mipnum >= in->mipcount)
+		{
+			if (!(args->flags & IF_NOMIPMAP) && in->mipcount == 1)
+				Image_GenerateMips(in, args->flags);
+		}
 
 		if (args->mipnum >= in->mipcount)
 		{
@@ -870,18 +970,13 @@ static void ImgTool_Convert(struct opts_s *args, struct pendingtextureinfo *in, 
 		in->mipcount -= k;
 		memmove(in->mip, &in->mip[k], sizeof(in->mip[0])*in->mipcount);
 
+		printf("%s(%s)->", inname, Image_FormatName(in->encoding));
+
 		if (args->newpixelformat != PTI_INVALID && (args->newpixelformat < PTI_BC1_RGB || allowcompressed) && ImgTool_ConvertPixelFormat(args, inname, in))
-			printf("\t(Converted to %s)\n", Image_FormatName(in->encoding));
+			printf("(%s)->\n", Image_FormatName(in->encoding));
 
 		if (!in->mipcount)
-		{
-			ImgTool_FreeMips(in);
 			printf("%s: unable to convert any mips\n", inname);
-			return;
-		}
-
-		if (0)
-			;
 #ifdef IMAGEFMT_KTX
 		else if (!strcmp(outext, ".ktx"))
 		{
@@ -918,11 +1013,8 @@ static void ImgTool_Convert(struct opts_s *args, struct pendingtextureinfo *in, 
 							/*(k == PTI_L16) ||*/
 							(k == PTI_BGR8) || (k == PTI_BGR8) ||
 							0;
-				if (!sh_config.texfmt[in->encoding])
-				{
+				if (!outformats[in->encoding])
 					Image_ChangeFormat(in, outformats, PTI_INVALID, outname);
-					printf("\t(Exporting as %s)\n", Image_FormatName(in->encoding));
-				}
 				Image_BlockSizeForEncoding(in->encoding, &bb, &bw,&bh);
 				if (!Image_WritePNG(outname, FS_SYSTEM, 0, &in->mip[0].data, 1, in->mip[0].width*bb, in->mip[0].width, in->mip[0].height, in->encoding, false))
 #endif
@@ -944,10 +1036,7 @@ static void ImgTool_Convert(struct opts_s *args, struct pendingtextureinfo *in, 
 							(k == PTI_BGR8) || (k == PTI_BGR8) ||
 							0;
 				if (!outformats[in->encoding])
-				{
 					Image_ChangeFormat(in, outformats, PTI_INVALID, outname);
-					printf("\t(Exporting as %s)\n", Image_FormatName(in->encoding));
-				}
 				Image_BlockSizeForEncoding(in->encoding, &bb, &bw,&bh);
 				if (!WriteTGA(outname, FS_SYSTEM, in->mip[0].data, in->mip[0].width*bb, in->mip[0].width, in->mip[0].height, in->encoding))
 					Con_Printf("%s(%s): Write failed\n", outname, Image_FormatName(in->encoding));
@@ -957,9 +1046,14 @@ static void ImgTool_Convert(struct opts_s *args, struct pendingtextureinfo *in, 
 				Con_Printf("%s: Unknown output file format\n", outname);
 		}
 
-		printf("%s: %s %s, %i*%i, %i mips\n", outname, imagetypename[in->type], Image_FormatName(in->encoding), in->mip[0].width, in->mip[0].height, in->mipcount);
-		for (k = 0; k < in->mipcount; k++)
-			printf("\t%u: %i*%i*%i, %u\n", (unsigned)k, in->mip[k].width, in->mip[k].height, in->mip[k].depth, (unsigned)in->mip[k].datasize);
+		if (in->mipcount > 1)
+		{
+			printf("%s(%s): %s %i*%i*%i, %i mips\n", outname, Image_FormatName(in->encoding), imagetypename[in->type], in->mip[0].width, in->mip[0].height, in->mip[0].depth, in->mipcount);
+			for (k = 0; k < in->mipcount; k++)
+				printf("\t%u: %i*%i*%i, %u\n", (unsigned)k, in->mip[k].width, in->mip[k].height, in->mip[k].depth, (unsigned)in->mip[k].datasize);
+		}
+		else
+			printf("%s(%s): %s %i*%i*%i, %u bytes\n", outname, Image_FormatName(in->encoding), imagetypename[in->type], in->mip[0].width, in->mip[0].height, in->mip[0].depth, (unsigned)in->mip[0].datasize);
 
 		ImgTool_FreeMips(in);
 	}
@@ -974,14 +1068,47 @@ static void ImgTool_Info(struct opts_s *args, const char *inname)
 	indata = FS_LoadMallocFile(inname, &fsize);
 	if (!indata)
 		printf("%s: unable to read\n", inname);
+	else if (fsize >= sizeof(wad2_t) && indata[0] == 'W' && indata[1] == 'A' && indata[2] == 'D')
+	{
+		const wad2_t *w = (const wad2_t *)indata;
+		const wad2entry_t *e = (const wad2entry_t *)(indata+w->offset);
+		printf("%s: wad%c file with %i entries\n", inname, w->magic[3], w->num);
+		for (m = 0; m < w->num; m++, e++)
+		{
+			switch(e->type)
+			{
+			case 67:	//hl...
+			case TYP_MIPTEX:
+				{
+					const miptex_t *mip = (const miptex_t *)(indata+e->offset);
+					/*mip name SHOULD match entry name... but gah!*/
+					if (strcasecmp(e->name, mip->name))
+						printf("\t%16.16s (%s): %u*%u%s\n", e->name, mip->name, mip->width, mip->height, mip->offsets[0]?"":" (external data)");
+					else
+						printf("\t%16.16s: %u*%u%s\n", mip->name, mip->width, mip->height, mip->offsets[0]?"":" (external data)");
+				}
+				break;
+			case TYP_PALETTE:
+				printf("\t%16.16s: palette - %u bytes\n", e->name, e->size);
+				break;
+			default:
+				printf("\t%16.16s: ENTRY TYPE %u (%u bytes)\n", e->name, e->type, e->size);
+				break;
+			}
+		}
+	}
 	else
 	{
-		in = Image_LoadMipsFromMemory(args->flags, inname, inname, indata, fsize);
+		in = Image_LoadMipsFromMemory(args->flags|IF_NOMIPMAP, inname, inname, indata, fsize);
 		if (!in)
-			printf("%s: unsupported format\n", inname);
+			printf("%-20s: unsupported format\n", inname);
+		else if (in->mipcount == 1 && in->type == PTI_2D && in->mip[0].depth == 1)
+			printf("%-20s(%s): %4i*%-4i\n", inname, Image_FormatName(in->encoding), in->mip[0].width, in->mip[0].height);
+		else if (in->mipcount == 1)
+			printf("%-20s(%s): %s, %i*%i*%i, %u bytes\n", inname, Image_FormatName(in->encoding), imagetypename[in->type], in->mip[0].width, in->mip[0].height, in->mip[0].depth, (unsigned)in->mip[0].datasize);
 		else
 		{
-			printf("%s: %s %s, %i*%i, %i mips\n", inname, imagetypename[in->type], Image_FormatName(in->encoding), in->mip[0].width, in->mip[0].height, in->mipcount);
+			printf("%-20s(%s): %s, %i*%i*%i, %i mips\n", inname, Image_FormatName(in->encoding), imagetypename[in->type], in->mip[0].width, in->mip[0].height, in->mip[0].depth, in->mipcount);
 			for (m = 0; m < in->mipcount; m++)
 				printf("\t%u: %i*%i*%i, %u\n", (unsigned)m, in->mip[m].width, in->mip[m].height, in->mip[m].depth, (unsigned)in->mip[m].datasize);
 
@@ -996,6 +1123,7 @@ struct filelist_s
 	const char **exts;
 	size_t numfiles;
 	struct {
+		const char *rootpath; //the basepath that was passed to the filelist scan.
 		char *name;
 		size_t baselen; //length up to but not including the filename extension.
 	} *file;
@@ -1010,7 +1138,7 @@ static void FileList_Release(struct filelist_s *list)
 	list->numfiles = 0;
 	list->maxfiles = 0;
 }
-static void FileList_Add(struct filelist_s *list, char *fname)
+static void FileList_Add(struct filelist_s *list, const char *rootpath, char *fname)
 {
 	size_t i;
 	size_t baselen;
@@ -1036,15 +1164,47 @@ static void FileList_Add(struct filelist_s *list, char *fname)
 		list->maxfiles += 64;
 		list->file = realloc(list->file, sizeof(*list->file)*list->maxfiles);
 	}
+	list->file[i].rootpath = rootpath;
 	list->file[i].name = strdup(fname);
 	list->file[i].baselen = baselen;
 	list->numfiles++;
 }
 #ifdef _WIN32
-static void ImgTool_TreeScan(struct filelist_s *list, const char *basepath, const char *subpath)
-{
-	(void)FileList_Add;
-	Con_Printf("ImgTool_TreeScan not implemented on windows.\n");
+static void ImgTool_TreeScan(struct filelist_s *list, const char *rootpath, const char *subpath)
+{	//FIXME: convert to utf-8.
+	HANDLE h;
+	WIN32_FIND_DATAA fd;
+	char file[MAX_OSPATH];
+
+	if (subpath && *subpath)
+		Q_snprintfz(file, sizeof(file), "%s/%s", rootpath, subpath);
+	else
+		Q_snprintfz(file, sizeof(file), "%s", rootpath);
+	if (GetFileAttributesA(file) & FILE_ATTRIBUTE_DIRECTORY)	//if its a directory then scan it.
+		Q_snprintfz(file+strlen(file), sizeof(file)-strlen(file), "/*");
+
+	h = FindFirstFileA(file, &fd);
+	if (h != INVALID_HANDLE_VALUE)
+	{
+		do
+		{
+			if (*fd.cFileName == '.')
+				continue;	//skip .. (and unix hidden files, because urgh)
+
+			if (subpath && *subpath)
+				Q_snprintfz(file, sizeof(file), "%s/%s", subpath, fd.cFileName);
+			else
+				Q_snprintfz(file, sizeof(file), "%s", fd.cFileName);
+
+			if (fd.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN)
+				; //don't report hidden entries.
+			else if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+				ImgTool_TreeScan(list, rootpath, file);
+			else
+				FileList_Add(list, rootpath, file);
+		} while(FindNextFileA(h, &fd));
+		FindClose(h);
+	}
 }
 #else
 #include <dirent.h>
@@ -1088,13 +1248,13 @@ static void ImgTool_TreeScan(struct filelist_s *list, const char *basepath, cons
 				Q_snprintfz(file, sizeof(file), "%s/%s", subpath, ent->d_name);
 			else
 				Q_snprintfz(file, sizeof(file), "%s", ent->d_name);
-			FileList_Add(list, file);
+			FileList_Add(list, basepath, file);
 		}
 	}
 	closedir(dir);
 }
 #endif
-static void ImgTool_TreeConvert(struct opts_s *args, const char *srcpath, const char *destpath)
+static void ImgTool_TreeConvert(struct opts_s *args, const char *destpath, const char *srcpath)
 {
 	size_t newfiles=0, skippedfiles=0, processedfiles=0;
 	char file[MAX_OSPATH];
@@ -1145,25 +1305,109 @@ static void ImgTool_TreeConvert(struct opts_s *args, const char *srcpath, const 
 
 
 
-
-
-typedef struct
+static void ImgTool_WadExtract(struct opts_s *args, const char *wadname)
 {
-   unsigned int offset;				// Position of the entry in WAD
-   unsigned int dsize;				// Size of the entry in WAD file
-   unsigned int size;				// Size of the entry in memory
-   char type;						// type of entry
-   char cmprs;						// Compression. 0 if none.
-   short dummy;						// Not used
-   char name[16];					// we use only first 8
-} wad2entry_t;
-typedef struct
-{
-   char magic[4];					//should be WAD2
-   unsigned int num;				//number of entries
-   unsigned int offset;				//location of directory
-} wad2_t;
-static void ImgTool_WadConvert(struct opts_s *args, const char *srcpath, const char *destpath, int wadtype/*x,2,3*/)
+	qbyte *indata;
+	size_t fsize;
+	size_t m;
+	indata = FS_LoadMallocFile(wadname, &fsize);
+	if (!indata)
+		printf("%s: unable to read\n", wadname);
+	else if (fsize >= sizeof(wad2_t) && indata[0] == 'W' && indata[1] == 'A' && indata[2] == 'D')
+	{
+		const wad2_t *w = (const wad2_t *)indata;
+		const wad2entry_t *e = (const wad2entry_t *)(indata+w->offset);
+		int i;
+		char clean[sizeof(e->name)+1];
+
+		for (m = 0; m < w->num; m++, e++)
+		{
+			switch(e->type)
+			{
+			case 67:	//hl...
+			case TYP_MIPTEX:
+				{
+					miptex_t *mip = (miptex_t *)(indata+e->offset);
+					struct pendingtextureinfo *out = Z_Malloc(sizeof(*out));
+
+					if (!strcmp(e->name, "CONCHARS") && e->size==128*128)
+					{	//special hack for conchars, which is listed as a miptex for some reason, with no qpic header (it not being a qpic lump)
+						out->encoding = TF_H2_TRANS8_0;
+						out->type = PTI_2D;
+						out->mip[0].width = 128;
+						out->mip[0].height = 128;
+						out->mip[0].depth = 1;
+						out->mip[0].datasize = out->mip[0].width*out->mip[0].height*out->mip[0].depth;
+						out->mip[0].data = (char*)mip;
+						out->mipcount = 1;
+						ImgTool_Convert(args, out, "conchars", NULL);
+						break;
+					}
+
+					out->encoding = PTI_P8;
+					out->type = PTI_2D;
+					for (out->mipcount = 0; out->mipcount < 4 && mip->offsets[out->mipcount]; out->mipcount++)
+					{
+						out->mip[out->mipcount].width = mip->width>>out->mipcount;
+						out->mip[out->mipcount].height = mip->height>>out->mipcount;
+						out->mip[out->mipcount].depth = 1;
+						out->mip[out->mipcount].datasize = out->mip[out->mipcount].width*out->mip[out->mipcount].height*out->mip[out->mipcount].depth;
+						out->mip[out->mipcount].data = (char*)mip + mip->offsets[out->mipcount];
+					}
+					if (*mip->name == '*')
+						*mip->name = '#';	//convert from * to #, so its a valid file name.
+					ImgTool_Convert(args, out, mip->name, NULL);
+				}
+				break;
+			case TYP_QPIC:
+				{
+					int *qpic = (int *)(indata+e->offset);
+					struct pendingtextureinfo *out = Z_Malloc(sizeof(*out));
+					size_t sz;
+					qbyte *p;
+
+					if (e->size < 8 || 8+qpic[0]*qpic[1] != e->size)
+					{
+						printf("invalid size/header for qpic lump: %s\n", e->name);
+						break;
+					}
+
+					out->type = PTI_2D;
+					out->mip[0].width = LittleLong(qpic[0]);
+					out->mip[0].height = LittleLong(qpic[1]);
+					out->mip[0].depth = 1;
+					out->mip[0].datasize = out->mip[0].width*out->mip[0].height*out->mip[0].depth;
+					out->mip[0].data = (char*)(qpic+2);
+					out->mipcount = 1;
+
+					for (sz = 0, p = out->mip[0].data; sz < out->mip[0].datasize; sz++)
+						if (p[sz] == 255)
+							break;
+					out->encoding = sz<out->mip[0].datasize?TF_TRANS8:PTI_P8;
+
+					for (i = 0; i < sizeof(e->name); i++)
+					{	//lowercase it.
+						if (e->name[i] >= 'A' && e->name[i] <= 'Z')
+							clean[i] = (e->name[i]-'A')+'a';
+						else
+							clean[i] = e->name[i];
+					}
+					clean[sizeof(e->name)] = 0;
+
+					ImgTool_Convert(args, out, clean, NULL);
+				}
+				break;
+			case TYP_PALETTE:
+			default:
+				printf("skipping %s\n", e->name);
+				break;
+			}
+		}
+	}
+	else
+		printf("%s: does not appear to be a wad file\n", wadname);
+}
+static void ImgTool_WadConvert(struct opts_s *args, const char *destpath, const char **srcpaths, size_t numpaths, int wadtype/*x,2,3*/)
 {
 	char file[MAX_OSPATH];
 	const char *exts[] = {".png", ".bmp", ".tga", ".exr", ".hdr", ".dds", ".ktx", ".xcf", ".pcx", ".jpg", NULL};
@@ -1179,7 +1423,16 @@ static void ImgTool_WadConvert(struct opts_s *args, const char *srcpath, const c
 	miptex_t mip;
 	qboolean wadpixelformats[PTI_MAX] = {0};
 	wadpixelformats[PTI_P8] = true;
-	ImgTool_TreeScan(&list, srcpath, NULL);
+	if (!numpaths)
+		ImgTool_TreeScan(&list, ".", NULL);
+	else while(numpaths --> 0)
+		ImgTool_TreeScan(&list, *srcpaths++, NULL);
+
+	if (!list.numfiles)
+	{
+		printf("%s: No files specified\n", destpath);
+		return;
+	}
 
 	f = FS_OpenVFS(destpath, "wb", FS_SYSTEM);
 	wad2.magic[0] = 'W';
@@ -1194,9 +1447,26 @@ static void ImgTool_WadConvert(struct opts_s *args, const char *srcpath, const c
 	for (u = 1; u < countof(sh_config.texfmt); u++)
 		sh_config.texfmt[u] = (u==PTI_RGBA8)||(u==PTI_RGBX8)||(u==PTI_P8);
 
+	if (wadtype == 2)
+	{	//WAD2 texture files generally have a palette lump.
+		if (wad2.num == maxentries)
+		{
+			maxentries += 64;
+			wadentries = realloc(wadentries, sizeof(*wadentries)*maxentries);
+		}
+		entry = &wadentries[wad2.num++];
+		memset(entry, 0, sizeof(*entry));
+		Q_strncpyz(entry->name, "PALETTE", 16);
+		entry->type = TYP_PALETTE;
+		entry->offset = VFS_TELL(f);
+
+		//and the lump data.
+		VFS_WRITE(f, host_basepal, 256*3);
+	}
+
 	for (i = 0; i < list.numfiles; i++)
 	{
-		Q_snprintfz(file, sizeof(file), "%s/%s", srcpath, list.file[i].name);
+		Q_snprintfz(file, sizeof(file), "%s/%s", list.file[i].rootpath, list.file[i].name);
 		inname = list.file[i].name;
 		if (list.file[i].baselen > 15)
 		{
@@ -1204,7 +1474,9 @@ static void ImgTool_WadConvert(struct opts_s *args, const char *srcpath, const c
 			continue;
 		}
 		indata = FS_LoadMallocFile(file, &fsize);
-		if (indata)
+		if (!indata)
+			printf("Unable to open %s\n", inname);
+		else
 		{
 			struct pendingtextureinfo *in = Image_LoadMipsFromMemory(args->flags, inname, file, indata, fsize);
 			Image_GenerateMips(in, args->flags);
@@ -1253,10 +1525,6 @@ static void ImgTool_WadConvert(struct opts_s *args, const char *srcpath, const c
 				in->mipcount = 4;
 			memmove(&in->mip[0], &in->mip[args->mipnum], sizeof(in->mip[0])*in->mipcount);
 			memset(&in->mip[in->mipcount], 0, sizeof(in->mip[0])*((args->mipnum+4)-in->mipcount)); //null it out, just in case.
-			if (!in->mip[0].width || (in->mip[0].width & 15))
-				Con_Printf("%s(%i): WARNING: miptex width is not a multiple of 16 - %i*%i\n", inname, args->mipnum, in->mip[0].width, in->mip[0].height);
-			if (!in->mip[0].height || (in->mip[0].height & 15))
-				Con_Printf("%s(%i): WARNING: miptex height is not a not multiple of 16 - %i*%i\n", inname, args->mipnum, in->mip[0].width, in->mip[0].height);
 
 			if (in->encoding != PTI_P8)
 				Image_ChangeFormat(in, wadpixelformats, (*inname=='{')?TF_TRANS8:PTI_INVALID, inname);
@@ -1276,30 +1544,60 @@ static void ImgTool_WadConvert(struct opts_s *args, const char *srcpath, const c
 			entry->name[list.file[i].baselen] = 0; //kill any .tga
 			if (*entry->name == '#')
 				*entry->name = '*';	//* is not valid in a filename, yet needed for turbs, so by convention # is used instead. this is only relevant for the first char.
-			entry->type = TYP_MIPTEX;
+			if (wadtype == 3)
+			{
+				for (u = 0; u < sizeof(entry->name); u++)
+					entry->name[u] = toupper(entry->name[u]);
+				entry->type = 67;
+			}
+			else
+				entry->type = TYP_MIPTEX;
 			entry->cmprs = 0;
 			entry->dummy = 0;
 			entry->offset = VFS_TELL(f);
 
-			memcpy(mip.name, entry->name, sizeof(mip.name));
-			mip.width = in->mip[0].width;
-			mip.height = in->mip[0].height;
-			mip.offsets[0] = in->mip[0].datasize?sizeof(mip):0;
-			mip.offsets[1] = in->mip[1].datasize?mip.offsets[0]+in->mip[0].datasize:0;
-			mip.offsets[2] = in->mip[2].datasize?mip.offsets[1]+in->mip[1].datasize:0;
-			mip.offsets[3] = in->mip[3].datasize?mip.offsets[2]+in->mip[2].datasize:0;
+			if (!in->mip[0].width || (in->mip[0].width & 15))
+				Con_Printf("%s(%i): WARNING: miptex width is not a multiple of 16 - %i*%i\n", inname, args->mipnum, in->mip[0].width, in->mip[0].height);
+			if (!in->mip[0].height || (in->mip[0].height & 15))
+				Con_Printf("%s(%i): WARNING: miptex height is not a not multiple of 16 - %i*%i\n", inname, args->mipnum, in->mip[0].width, in->mip[0].height);
 
-			Con_Printf("%s: %ix%i\n", mip.name, mip.width, mip.height);
-
-			VFS_WRITE(f, &mip, sizeof(mip));
-			VFS_WRITE(f, in->mip[0].data, in->mip[0].datasize);
-			VFS_WRITE(f, in->mip[1].data, in->mip[1].datasize);
-			VFS_WRITE(f, in->mip[2].data, in->mip[2].datasize);
-			VFS_WRITE(f, in->mip[3].data, in->mip[3].datasize);
-			if (wad2.magic[3] == '3')
+			if (0)
 			{
-				VFS_WRITE(f, "\x00\x01", 2);
-				VFS_WRITE(f, host_basepal, 256*3);
+				if (!strcasecmp(entry->name, "CONCHARS") && in->mip[0].width==128&&in->mip[0].height==128)
+					entry->type = TYP_MIPTEX;	//yes, weird. match vanilla quake. explicitly avoid qpic to avoid corruption in the first 8 bytes (due to the engine's early endian swapping)
+												//FIXME: encoding should be pti_trans8_0...
+				else
+				{
+					entry->type = TYP_QPIC;
+					//qpics need a header
+					VFS_WRITE(f, &in->mip[0].width, sizeof(int));
+					VFS_WRITE(f, &in->mip[0].height, sizeof(int));
+				}
+				//and now the 8bit pixel data itself
+				VFS_WRITE(f, in->mip[0].data, in->mip[0].datasize);
+			}
+			else
+			{
+				memcpy(mip.name, entry->name, sizeof(mip.name));
+				mip.width = in->mip[0].width;
+				mip.height = in->mip[0].height;
+				mip.offsets[0] = in->mip[0].datasize?sizeof(mip):0;
+				mip.offsets[1] = in->mip[1].datasize?mip.offsets[0]+in->mip[0].datasize:0;
+				mip.offsets[2] = in->mip[2].datasize?mip.offsets[1]+in->mip[1].datasize:0;
+				mip.offsets[3] = in->mip[3].datasize?mip.offsets[2]+in->mip[2].datasize:0;
+
+				Con_Printf("%s: %ix%i\n", mip.name, mip.width, mip.height);
+
+				VFS_WRITE(f, &mip, sizeof(mip));
+				VFS_WRITE(f, in->mip[0].data, in->mip[0].datasize);
+				VFS_WRITE(f, in->mip[1].data, in->mip[1].datasize);
+				VFS_WRITE(f, in->mip[2].data, in->mip[2].datasize);
+				VFS_WRITE(f, in->mip[3].data, in->mip[3].datasize);
+				if (wad2.magic[3] == '3')
+				{
+					VFS_WRITE(f, "\x00\x01", 2);
+					VFS_WRITE(f, host_basepal, 256*3);
+				}
 			}
 
 			entry->size = entry->dsize = VFS_TELL(f)-entry->offset;
@@ -1326,6 +1624,7 @@ int main(int argc, const char **argv)
 		mode_genwadx,
 		mode_genwad2,
 		mode_genwad3,
+		mode_extractwad,
 	} mode = mode_info;
 	size_t u, f;
 	qboolean nomoreopts = false;
@@ -1338,6 +1637,7 @@ int main(int argc, const char **argv)
 	args.newpixelformat = PTI_INVALID;
 	args.mipnum = 0;
 	args.textype = -1;
+	args.defaultext = NULL;
 
 	sh_config.texture2d_maxsize = 1u<<31;
 	sh_config.texture3d_maxsize = 1u<<31;
@@ -1364,13 +1664,14 @@ int main(int argc, const char **argv)
 			else if (!strcmp(argv[u], "-?") || !strcmp(argv[u], "--help"))
 			{
 showhelp:
-				Con_Printf("show info : %s -i *.ktx\n", argv[0]);
-				Con_Printf("compress  : %s --astc_6x6_ldr [--nomips] in.png out.ktx [in2.png out2.ktx]\n", argv[0]);
-				Con_Printf("compress  : %s --bc3_rgba [--premul] [--nomips] in.png out.dds\n\tConvert pixel format (to bc3 aka dxt5) before writing to output file.\n", argv[0]);
-				Con_Printf("convert   : %s --convert in.exr out.dds\n\tConvert to different file format, while trying to preserve pixel formats.\n", argv[0]);
-				Con_Printf("recursive : %s --astc_6x6_ldr -r srcdir destdir\n", argv[0]);
-				Con_Printf("decompress: %s --decompress [--exportmip 0] [--nomips] in.ktx out.png\n\tDecompresses any block-compressed pixel data.\n", argv[0]);
-				Con_Printf("gen wad   : %s --genwad3 [--exportmip 2] srcdir out.wad\n", argv[0]);
+				Con_Printf("show info  : %s -i *.ktx\n", argv[0]);
+				Con_Printf("compress   : %s --astc_6x6_ldr [--nomips] in.png out.ktx [in2.png out2.ktx]\n", argv[0]);
+				Con_Printf("compress   : %s --bc3_rgba [--premul] [--nomips] in.png out.dds\n\tConvert pixel format (to bc3 aka dxt5) before writing to output file.\n", argv[0]);
+				Con_Printf("convert    : %s --convert in.exr out.dds\n\tConvert to different file format, while trying to preserve pixel formats.\n", argv[0]);
+				Con_Printf("recursive  : %s --auto --astc_6x6_ldr destdir srcdir\n\tCompresses the files to dds (writing to an optionally different directory)", argv[0]);
+				Con_Printf("decompress : %s --decompress [--exportmip 0] [--nomips] in.ktx out.png\n\tDecompresses any block-compressed pixel data.\n", argv[0]);
+				Con_Printf("create wad : %s -w [--exportmip 2] out.wad srcdir\n", argv[0]);
+				Con_Printf("extract wad: %s -x [--ext png] src.wad\n", argv[0]);
 
 				Image_PrintInputFormatVersions();
 				Con_Printf("Supported compressed/interesting pixelformats are:\n");
@@ -1426,6 +1727,8 @@ showhelp:
 				mode = mode_genwad2;
 			else if (!files && (!strcmp(argv[u], "-w") || !strcmp(argv[u], "--genwadx")))
 				mode = mode_genwadx;
+			else if (!files && (!strcmp(argv[u], "-x") || !strcmp(argv[u], "--extractwad")))
+				mode = mode_extractwad;
 			else if (!strcmp(argv[u], "--2d"))
 				args.textype = PTI_2D;
 			else if (!strcmp(argv[u], "--3d"))
@@ -1444,6 +1747,16 @@ showhelp:
 				args.flags |= IF_PREMULTIPLYALPHA;
 			else if (!strcmp(argv[u], "--nopremul"))
 				args.flags &= ~IF_PREMULTIPLYALPHA;
+			else if (!strcmp(argv[u], "--ext"))
+			{
+				if (u+1 < argc)
+					args.defaultext = argv[++u];
+				else
+				{
+					Con_Printf("--exportmip requires trailing numeric argument\n");
+					return 1;
+				}
+			}
 			else if (!strcmp(argv[u], "--exportmip"))
 			{
 				char *e = "erk";
@@ -1480,6 +1793,14 @@ showhelp:
 			argv[files++] = argv[u];
 	}
 
+	if (!args.defaultext)
+	{
+		if (mode == mode_extractwad)
+			args.defaultext = "png";	//something the user expects to be able to view easily (and lossless)
+		else
+			args.defaultext = "ktx";
+	}
+
 	if (mode == mode_info)
 	{	//just print info about each listed file.
 		for (u = 0; u < files; u++)
@@ -1491,7 +1812,7 @@ showhelp:
 		ImgTool_Convert(&args, ImgTool_Combine(&args, argv, files), "combined", argv[files]);
 	}
 	else if (mode == mode_convert && files == 1 && args.textype<0)	//overwrite input
-		ImgTool_Convert(&args, ImgTool_Read(&args, argv[u]), argv[u], argv[u]);
+		ImgTool_Convert(&args, ImgTool_Read(&args, argv[0]), argv[0], NULL);
 	else if (mode == mode_convert && !(files&1) && args.textype<0)	//list of pairs
 	{
 		//-c src1 dst1 src2 dst2
@@ -1500,10 +1821,15 @@ showhelp:
 	}
 	else if (mode == mode_autotree && files == 2)
 		ImgTool_TreeConvert(&args, argv[0], argv[1]);
-	else if ((mode == mode_genwad2 || mode == mode_genwad3 || mode == mode_genwadx) && files == 2)
-		ImgTool_WadConvert(&args, argv[0], argv[1], mode-mode_genwadx);
+	else if ((mode == mode_genwad2 || mode == mode_genwad3 || mode == mode_genwadx))
+		ImgTool_WadConvert(&args, argv[0], argv+1, files-1, mode-mode_genwadx);
+	else if ((mode == mode_extractwad) && files == 1)
+		ImgTool_WadExtract(&args, argv[0]);
 	else
+	{
+		printf("%u files\n", (int)files);
+		printf("unsupported arg count for mode\n");
 		return EXIT_FAILURE;
-
+	}
 	return EXIT_SUCCESS;
 }

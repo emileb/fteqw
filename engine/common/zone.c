@@ -195,6 +195,7 @@ void *ZF_Malloc(size_t size)
 	return ret;
 #elif defined(__linux__)
 	void *ret = NULL;
+
 	if (!posix_memalign(&ret, max(sizeof(float)*4, sizeof(void*)), size))
 		memset(ret, 0, size);
 	return ret;
@@ -520,7 +521,7 @@ void *QDECL ZG_Malloc(zonegroup_t *ctx, size_t size)
 #endif
 	newm->next = ctx->first;
 	ctx->first = newm;
-	ctx->bytes += size;
+	ctx->totalbytes += size;
 	return(void*)(newm+1);
 }
 void ZG_FreeGroup(zonegroup_t *ctx)
@@ -532,7 +533,7 @@ void ZG_FreeGroup(zonegroup_t *ctx)
 		ctx->first = old->next;
 		BZ_Free(old);
 	}
-	ctx->bytes = 0;
+	ctx->totalbytes = 0;
 }
 
 //============================================================================
