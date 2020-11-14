@@ -24,7 +24,6 @@ mat3 rotateAroundAxis(vec4 axis) //xyz axis, with angle in w
 void main ()
 {
 	pos = v_position.xyz - e_eyepos;
-	pos.y = -pos.y;
 
 	if (r_glsl_skybox_orientation.xyz != vec3(0.0))
 		pos = pos*rotateAroundAxis(r_glsl_skybox_orientation);
@@ -36,6 +35,15 @@ void main ()
 void main ()
 {
 	vec4 skybox = textureCube(s_reflectcube, pos);
-	gl_FragColor = vec4(mix(skybox.rgb, fog3(skybox.rgb), float(r_skyfog)), 1.0);
+
+	//Fun question: should sky be fogged as if infinite, or as if an actual surface?
+#ifdef FOG
+	#if 1
+		skybox.rgb = mix(skybox.rgb, w_fogcolour, float(r_skyfog)*w_fogalpha);	//flat fog ignoring actual geometry
+	#else
+		skybox.rgb = mix(skybox.rgb, fog3(skybox.rgb), float(r_skyfog));		//fog in terms of actual geometry distance
+	#endif
+#endif
+	gl_FragColor = skybox;
 }
 #endif

@@ -220,7 +220,7 @@ void VK_R_BloomBlend (texid_t source, int x, int y, int w, int h)
 		R2D_Flush();
 #if 1
 	/*filter the screen into a downscaled image*/
-	VKBE_RT_Gen(&vk_rt_filter, texwidth[0], texheight[0], false, RT_IMAGEFLAGS);
+	VKBE_RT_Gen(&vk_rt_filter, NULL, texwidth[0], texheight[0], false, RT_IMAGEFLAGS);
 	VKBE_RT_Begin(&vk_rt_filter);
 	vk.sourcecolour = source;
 	R2D_ScalePic(0, 0, vid.width, vid.height, bloomfilter);
@@ -251,7 +251,7 @@ void VK_R_BloomBlend (texid_t source, int x, int y, int w, int h)
 
 		r_worldentity.glowmod[1] = 0;
 
-		VKBE_RT_Gen(&vk_rt_bloom[1][i], texwidth[i], texheight[i], false, RT_IMAGEFLAGS);
+		VKBE_RT_Gen(&vk_rt_bloom[1][i], NULL, texwidth[i], texheight[i], false, RT_IMAGEFLAGS);
 		VKBE_RT_Begin(&vk_rt_bloom[1][i]);
 		vk.sourcecolour = intex;
 		BE_SelectEntity(&r_worldentity);
@@ -261,7 +261,7 @@ void VK_R_BloomBlend (texid_t source, int x, int y, int w, int h)
 		r_worldentity.glowmod[0] = 0;
 		r_worldentity.glowmod[1] = 1.0 / texheight[i];
 
-		VKBE_RT_Gen(&vk_rt_bloom[0][i], texwidth[i], texheight[i], false, RT_IMAGEFLAGS);
+		VKBE_RT_Gen(&vk_rt_bloom[0][i], NULL, texwidth[i], texheight[i], false, RT_IMAGEFLAGS);
 		VKBE_RT_Begin(&vk_rt_bloom[0][i]);
 		vk.sourcecolour = &vk_rt_bloom[1][i].q_colour;
 		BE_SelectEntity(&r_worldentity);
@@ -286,10 +286,10 @@ void VK_R_BloomShutdown(void)
 	int i;
 	for (i = 0; i < MAXLEVELS; i++)
 	{
-		VKBE_RT_Gen(&vk_rt_bloom[0][i], 0, 0, false, RT_IMAGEFLAGS);
-		VKBE_RT_Gen(&vk_rt_bloom[1][i], 0, 0, false, RT_IMAGEFLAGS);
+		VKBE_RT_Gen(&vk_rt_bloom[0][i], NULL, 0, 0, false, RT_IMAGEFLAGS);
+		VKBE_RT_Gen(&vk_rt_bloom[1][i], NULL, 0, 0, false, RT_IMAGEFLAGS);
 	}
-	VKBE_RT_Gen(&vk_rt_filter, 0, 0, false, RT_IMAGEFLAGS);
+	VKBE_RT_Gen(&vk_rt_filter, NULL, 0, 0, false, RT_IMAGEFLAGS);
 
 	R_InitBloomTextures();
 }
@@ -318,7 +318,7 @@ void R_BloomBlend (texid_t source, int x, int y, int w, int h)
 	{
 		sprintf(name, "***bloom*%c*%i***", 'a'+0, 0);
 		TEXASSIGN(pingtex[0][0], Image_CreateTexture(name, NULL, IF_CLAMP|IF_NOMIPMAP|IF_NOPICMIP|IF_LINEAR));
-		Image_Upload(pingtex[0][0], PTI_RGBA8, NULL, NULL, texwidth[0], texheight[0], IF_CLAMP|IF_NOMIPMAP|IF_NOPICMIP|IF_LINEAR|IF_NOSRGB);
+		Image_Upload(pingtex[0][0], PTI_RGBA8, NULL, NULL, texwidth[0], texheight[0], 1, IF_CLAMP|IF_NOMIPMAP|IF_NOPICMIP|IF_LINEAR|IF_NOSRGB);
 	}
 
 	if (R2D_Flush)
@@ -341,13 +341,13 @@ void R_BloomBlend (texid_t source, int x, int y, int w, int h)
 		{
 			sprintf(name, "***bloom*%c*%i***", 'a'+0, i);
 			TEXASSIGN(pingtex[0][i], Image_CreateTexture(name, NULL, IF_CLAMP|IF_NOMIPMAP|IF_NOPICMIP|IF_LINEAR));
-			Image_Upload(pingtex[0][i], PTI_RGBA8, NULL, NULL, texwidth[i], texheight[i], IF_CLAMP|IF_NOMIPMAP|IF_NOPICMIP|IF_LINEAR|IF_NOSRGB);
+			Image_Upload(pingtex[0][i], PTI_RGBA8, NULL, NULL, texwidth[i], texheight[i], 1, IF_CLAMP|IF_NOMIPMAP|IF_NOPICMIP|IF_LINEAR|IF_NOSRGB);
 		}
 		if (!TEXVALID(pingtex[1][i]))
 		{
 			sprintf(name, "***bloom*%c*%i***", 'a'+1, i);
 			TEXASSIGN(pingtex[1][i], Image_CreateTexture(name, NULL, IF_CLAMP|IF_NOMIPMAP|IF_NOPICMIP|IF_LINEAR));
-			Image_Upload(pingtex[1][i], PTI_RGBA8, NULL, NULL, texwidth[i], texheight[i], IF_CLAMP|IF_NOMIPMAP|IF_NOPICMIP|IF_LINEAR|IF_NOSRGB);
+			Image_Upload(pingtex[1][i], PTI_RGBA8, NULL, NULL, texwidth[i], texheight[i], 1, IF_CLAMP|IF_NOMIPMAP|IF_NOPICMIP|IF_LINEAR|IF_NOSRGB);
 		}
 
 		if (R2D_Flush)

@@ -621,11 +621,12 @@ void CL_CalcClientTime(void)
 			extern float olddemotime;
 			cl.servertime = olddemotime;
 		}
-		//q2 has no drifting.
-		//q3 always drifts.
-		//nq+qw code can drift
+		//q2 has no drifting (our code can't cope with picking anything beyond old/new snapshots, and frankly its 10fps which is horrendous enough as it is).
+		//q3 always drifts (gamecode does snapshot selection).
+		//qw code can drift (but oh noes! my latency!)
+		//FIXME: nq code should be able to drift, but is apparently buggy somewhere and ends up uncomfortably stuttery right now.
 		//default is to drift in demos+SP but not live (oh noes! added latency!)
-		if (cls.protocol == CP_QUAKE2 || (cls.protocol != CP_QUAKE3 && (!cl_lerp_smooth.ival || (cl_lerp_smooth.ival == 2 && !(cls.demoplayback || cl.allocated_client_slots == 1 || cl.playerview[0].spectator))) && cls.demoplayback != DPB_MVD))
+		if (cls.protocol == CP_QUAKE2 || cls.protocol==CP_NETQUAKE/*FIXME*/ || (cls.protocol != CP_QUAKE3 && (!cl_lerp_smooth.ival || (cl_lerp_smooth.ival == 2 && !(cls.demoplayback || cl.allocated_client_slots == 1 || cl.playerview[0].spectator))) && cls.demoplayback != DPB_MVD))
 		{	//no drift logic
 			float f;
 			f = cl.gametime - cl.oldgametime;
@@ -671,6 +672,8 @@ void CL_CalcClientTime(void)
 				else
 				{
 					cl.servertime -= 0.02*(max - cl.servertime);
+					if (cl.servertime < cl.time)
+						cl.servertime = cl.time;
 				}
 			}
 			if (cl.servertime < min)
@@ -773,6 +776,7 @@ static void CL_EntStateToPlayerState(player_state_t *plstate, entity_state_t *st
 {
 	vec3_t a;
 	int pmtype;
+	unsigned int flags = plstate->flags;
 	qboolean onground = plstate->onground;
 	qboolean jumpheld = plstate->jump_held;
 	vec3_t vel;
@@ -824,6 +828,7 @@ static void CL_EntStateToPlayerState(player_state_t *plstate, entity_state_t *st
 		plstate->jump_held = !!(state->u.q1.pmovetype&64);
 	}
 	plstate->pm_type = pmtype;
+	plstate->flags = flags & PF_INWATER;
 
 	plstate->viewangles[0] = SHORT2ANGLE(state->u.q1.vangle[0]);
 	plstate->viewangles[1] = SHORT2ANGLE(state->u.q1.vangle[1]);
@@ -886,6 +891,7 @@ void CL_PredictEntityMovement(entity_state_t *estate, float age)
 		VectorClear(startstate.velocity);
 		startstate.onground = false;
 		startstate.jump_held = false;
+		startstate.flags = 0;
 		CL_EntStateToPlayerState(&startstate, estate);
 		CL_EntStateToPlayerCommand(&cmd, estate, age);
 
@@ -1127,7 +1133,7 @@ void CL_PredictMovePNum (int seat)
 			from.frame = i;
 			from.time = backdate->senttime;
 			from.cmd = &backdate->cmd[seat];
-			if (to.frame > pv->prop.sequence)
+			if (cl.inframes[to.frame&UPDATE_MASK].ackframe > pv->prop.sequence)
 				continue; //if we didn't predict to this frame yet, then the waterjump etc state will be invalid, so try to go for an older frame so that it actually propagates properly.
 			if (from.time < simtime && from.frame != to.frame)
 				break;	//okay, we found the first frame that is older, no need to continue looking
@@ -1169,6 +1175,8 @@ void CL_PredictMovePNum (int seat)
 	{
 		packet_entities_t *pe;
 		pe = &cl.inframes[from.frame & UPDATE_MASK].packet_entities;
+		if (!pe->num_entities && !from.frame)
+			pe = &cl.inframes[to.frame & UPDATE_MASK].packet_entities;
 		for (i = 0; i < pe->num_entities; i++)
 		{
 			if (pe->entities[i].number == trackent)
@@ -1181,7 +1189,8 @@ void CL_PredictMovePNum (int seat)
 		}
 		if (i == pe->num_entities && pv->nolocalplayer)
 		{
-			return;	//no player, nothing makes sense any more.
+			if (cls.state >= ca_active)
+				return;	//no player, nothing makes sense any more.
 			from.state = &nullstate;
 			nopred = true;
 		}
@@ -1240,6 +1249,11 @@ void CL_PredictMovePNum (int seat)
 	{
 		int stopframe;
 		//Con_Printf("Pred %i to %i\n", to.frame+1, min(from.frame+UPDATE_BACKUP, cl.movesequence));
+
+		//fix up sequence numbers for nq
+		int validsequence = cl.inframes[cl.validsequence&UPDATE_MASK].ackframe;
+		from.frame = cl.inframes[from.frame&UPDATE_MASK].ackframe;
+		to.frame = cl.inframes[to.frame&UPDATE_MASK].ackframe;
 		for (i=to.frame+1, stopframe=min(from.frame+UPDATE_BACKUP, cl.movesequence) ; i < stopframe; i++)
 		{
 			outframe_t *of = &cl.outframes[i & UPDATE_MASK];
@@ -1270,7 +1284,7 @@ void CL_PredictMovePNum (int seat)
 					VectorCopy(pv->prop.gravitydir, from.state->gravitydir);
 			}
 			CL_PredictUsercmd (seat, trackent, from.state, to.state, to.cmd);
-			if (i <= cl.validsequence && simtime >= to.time)
+			if (i <= validsequence && simtime >= to.time)
 			{	//this frame is final keep track of our propagated values.
 				pv->prop.onground = pmove.onground;
 				pv->prop.jump_held = pmove.jump_held;
@@ -1374,7 +1388,19 @@ void CL_PredictMovePNum (int seat)
 		}
 	}
 	if (cls.protocol == CP_NETQUAKE && nopred)
+	{
 		pv->onground = to.state->onground;
+		if (to.state->flags & PF_INWATER)
+		{
+			pmove.watertype = FTECONTENTS_WATER;	//don't really know.
+			pmove.waterlevel = 3;	//pick one at random.
+		}
+		else
+		{
+			pmove.watertype = FTECONTENTS_EMPTY;
+			pmove.waterlevel = 0;
+		}
+	}
 	else
 		CL_CatagorizePosition(pv, to.state->origin);
 
@@ -1402,6 +1428,7 @@ void CL_PredictMovePNum (int seat)
 			if (pv->pmovetype != PM_6DOF)
 				le->angles[0] *= 0.333;
 			le->angles[0] *= r_meshpitch.value;
+			le->angles[2] *= r_meshroll.value;
 		}
 	}
 

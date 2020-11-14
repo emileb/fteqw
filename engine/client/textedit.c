@@ -236,13 +236,14 @@ static void Con_Editor_DeleteSelection(console_t *con)
 		con->useroffset = con->selstartoffset;
 	}
 }
-static void Con_Editor_DoPaste(void *ctx, char *utf8)
+static void Con_Editor_DoPaste(void *ctx, const char *utf8)
 {
 	console_t *con = ctx;
 	if (utf8)
 	{
 		conchar_t buffer[8192], *end;
-		char *s, *nl;
+		const char *s;
+		char *nl;
 		if (*utf8 && (con->flags & CONF_KEEPSELECTION))
 			Con_Editor_DeleteSelection(con);
 		for(s = utf8; ; )
@@ -832,16 +833,16 @@ qboolean Con_Editor_Key(console_t *con, unsigned int unicode, int key)
 	Q_snprintfz(con->title, sizeof(con->title), "MODIFIED: %s", con->name);
 	return true;
 }
-void Con_Editor_CloseCallback(void *ctx, int op)
+void Con_Editor_CloseCallback(void *ctx, promptbutton_t op)
 {
 	console_t *con = ctx;
 
 	if (con != con_curwindow)	//ensure that it still exists (lame only-active-window check)
 		return;
 	
-	if (op == 0)
+	if (op == PROMPT_YES)
 		Con_Editor_Save(con);
-	if (op != -1)	//-1 == cancel
+	if (op != PROMPT_CANCEL)
 		Con_Destroy(con);
 }
 qboolean Con_Editor_Close(console_t *con, qboolean force)

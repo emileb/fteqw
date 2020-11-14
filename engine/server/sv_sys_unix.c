@@ -63,9 +63,10 @@ cvar_t sys_extrasleep = CVAR("sys_extrasleep","0");
 cvar_t sys_colorconsole = CVAR("sys_colorconsole", "1");
 cvar_t sys_linebuffer = CVARC("sys_linebuffer", "1", Sys_Linebuffer_Callback);
 
-qboolean	stdin_ready;
+static qboolean	stdin_ready;
+static qboolean noconinput = false;
 
-struct termios orig, changes;
+static struct termios orig, changes;
 
 /*
 ===============================================================================
@@ -157,47 +158,108 @@ int Sys_DebugLog(char *file, char *fmt, ...)
 	return 1;
 }
 
-/*
-================
-Sys_Milliseconds
-================
-*/
-unsigned int Sys_Milliseconds (void)
+
+static quint64_t timer_basetime;	//used by all clocks to bias them to starting at 0
+static void Sys_ClockType_Changed(cvar_t *var, char *oldval);
+static cvar_t sys_clocktype = CVARFCD("sys_clocktype", "", CVAR_NOTFROMSERVER, Sys_ClockType_Changed, "Controls which system clock to base timings from.\n0: auto\n"
+	"1: gettimeofday (may be discontinuous).\n"
+	"2: monotonic.");
+static enum
 {
-	struct timeval tp;
-	struct timezone tzp;
-	static int secbase;
+	QCLOCK_AUTO = 0,
 
-	gettimeofday(&tp, &tzp);
+	QCLOCK_GTOD,
+	QCLOCK_MONOTONIC,
+	QCLOCK_REALTIME,
 
-	if (!secbase)
+	QCLOCK_INVALID
+} timer_clocktype;
+static quint64_t Sys_GetClock(quint64_t *freq)
+{
+	quint64_t t;
+	if (timer_clocktype == QCLOCK_MONOTONIC)
 	{
-		secbase = tp.tv_sec;
-		return tp.tv_usec/1000;
+		struct timespec ts;
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+		*freq = 1000000000;
+		t = (ts.tv_sec*(quint64_t)1000000000) + ts.tv_nsec;
 	}
-	return (tp.tv_sec - secbase)*1000 + tp.tv_usec/1000;
-}
+	else if (timer_clocktype == QCLOCK_REALTIME)
+	{
+		struct timespec ts;
+		clock_gettime(CLOCK_REALTIME, &ts);
+		*freq = 1000000000;
+		t = (ts.tv_sec*(quint64_t)1000000000) + ts.tv_nsec;
 
-/*
-================
-Sys_DoubleTime
-================
-*/
+		//WARNING t can go backwards
+	}
+	else //if (timer_clocktype == QCLOCK_GTOD)
+	{
+		struct timeval tp;
+		gettimeofday(&tp, NULL);
+		*freq = 1000000;
+		t = tp.tv_sec*(quint64_t)1000000 + tp.tv_usec;
+
+		//WARNING t can go backwards
+	}
+	return t - timer_basetime;
+}
+static void Sys_ClockType_Changed(cvar_t *var, char *oldval)
+{
+	int newtype = var?var->ival:0;
+	if (newtype >= QCLOCK_INVALID)
+		newtype = QCLOCK_AUTO;
+	if (newtype <= QCLOCK_AUTO)
+		newtype = QCLOCK_MONOTONIC;
+
+	if (newtype != timer_clocktype)
+	{
+		quint64_t oldtime, oldfreq;
+		quint64_t newtime, newfreq;
+
+		oldtime = Sys_GetClock(&oldfreq);
+		timer_clocktype = newtype;
+		timer_basetime = 0;
+		newtime = Sys_GetClock(&newfreq);
+
+		timer_basetime = newtime - (newfreq * (oldtime) / oldfreq);
+
+		/*if (host_initialized)
+		{
+			const char *clockname = "unknown";
+			switch(timer_clocktype)
+			{
+			case QCLOCK_GTOD:		clockname = "gettimeofday";	break;
+			case QCLOCK_MONOTONIC:	clockname = "monotonic";	break;
+			case QCLOCK_REALTIME:	clockname = "realtime";	break;
+			case QCLOCK_AUTO:
+			case QCLOCK_INVALID:	break;
+			}
+			Con_Printf("Clock %s, wraps after %"PRIu64" days, %"PRIu64" years\n", clockname, (((quint64_t)-1)/newfreq)/(24*60*60), (((quint64_t)-1)/newfreq)/(24*60*60*365));
+		}*/
+	}
+}
+static void Sys_InitClock(void)
+{
+	quint64_t freq;
+
+	Cvar_Register(&sys_clocktype, "System vars");
+
+	//calibrate it, and apply.
+	Sys_ClockType_Changed(NULL, NULL);
+	timer_basetime = 0;
+	timer_basetime = Sys_GetClock(&freq);
+}
 double Sys_DoubleTime (void)
 {
-	struct timeval tp;
-	struct timezone tzp;
-	static int		secbase;
-
-	gettimeofday(&tp, &tzp);
-
-	if (!secbase)
-	{
-		secbase = tp.tv_sec;
-		return tp.tv_usec/1000000.0;
-	}
-
-	return (tp.tv_sec - secbase) + tp.tv_usec/1000000.0;
+	quint64_t denum, num = Sys_GetClock(&denum);
+	return num / (long double)denum;
+}
+unsigned int Sys_Milliseconds (void)
+{
+	quint64_t denum, num = Sys_GetClock(&denum);
+	num *= 1000;
+	return num / denum;
 }
 
 /*
@@ -216,7 +278,11 @@ void Sys_Error (const char *error, ...)
 	COM_WorkerAbort(string);
 	printf ("Fatal error: %s\n",string);
 
-	tcsetattr(STDIN_FILENO, TCSADRAIN, &orig);
+	if (!noconinput)
+	{
+		tcsetattr(STDIN_FILENO, TCSADRAIN, &orig);
+		fcntl (STDIN_FILENO, F_SETFL, fcntl (STDIN_FILENO, F_GETFL, 0) & ~FNDELAY);
+	}
 
 	//we used to fire sigsegv. this resulted in people reporting segfaults and not the error message that appeared above. resulting in wasted debugging.
 	//abort should trigger a SIGABRT and still give us the same stack trace. should be more useful that way.
@@ -497,11 +563,13 @@ Sys_Quit
 */
 void Sys_Quit (void)
 {
-	tcsetattr(STDIN_FILENO, TCSADRAIN, &orig);
+	if (!noconinput)
+	{
+		tcsetattr(STDIN_FILENO, TCSADRAIN, &orig);
+		fcntl (STDIN_FILENO, F_SETFL, fcntl (STDIN_FILENO, F_GETFL, 0) & ~FNDELAY);
+	}
 	exit (0);		// appkit isn't running
 }
-
-static int do_stdin = 1;
 
 #if 1
 static char *Sys_LineInputChar(char *line)
@@ -570,7 +638,11 @@ it to the host command processor
 ================
 */
 void Sys_Linebuffer_Callback (struct cvar_s *var, char *oldvalue)
-{
+{	//reconfigures the tty to send a char at a time (or line at a time)
+
+	if (noconinput)
+		return;	//oh noes! we already hungup!
+
 	changes = orig;
 	if (var->value)
 	{
@@ -590,40 +662,64 @@ char *Sys_ConsoleInput (void)
 	static char	text[256];
 	int	len;
 
-#ifdef SUBSERVERS
-	if (SSV_IsSubServer())
-	{
-		SSV_CheckFromMaster();
-		return NULL;
-	}
-#endif
-
-	if (!stdin_ready || !do_stdin)
+	if (!stdin_ready || noconinput==true)
 		return NULL;		// the select didn't say it was ready
 	stdin_ready = false;
 
-	if (sys_linebuffer.value == 0)
+//libraries and muxers and things can all screw with our stdin blocking state.
+//if a server sits around waiting for its never-coming stdin then we're screwed.
+//and don't assume that it won't block just because select told us it was readable, select lies.
+//so force it non-blocking so we don't get any nasty surprises.
+#if defined(__linux__)
 	{
-		text[0] = getc(stdin);
-		text[1] = 0;
-		len = 1;
-		return Sys_LineInputChar(text);
-	}
-	else
-	{
-		len = read (0, text, sizeof(text)-1);
-		if (len == 0)
+		int fl = fcntl (STDIN_FILENO, F_GETFL, 0);
+		if (!(fl & FNDELAY))
 		{
-			// end of file
-			do_stdin = 0;
+			fcntl(STDIN_FILENO, F_SETFL, fl | FNDELAY);
+//			Sys_Printf(CON_WARNING "stdin flags became blocking - gdb bug?\n");
+		}
+	}
+#endif
+
+	len = read (STDIN_FILENO, text, sizeof(text)-1);
+	if (len < 0)
+	{
+		int err = errno;
+		switch(err)
+		{
+		case EINTR:		//unix sucks
+		case EAGAIN:	//a select fuckup?
+			break;
+		case EIO:
+			noconinput |= 2;
+			stdin_ready = true;
+			return NULL;
+		default:
+			Con_Printf("error %i reading from stdin\n", err);
+			noconinput = true;	//we don't know what it was, but don't keep triggering it.
 			return NULL;
 		}
-		if (len < 1)
-			return NULL;
-		text[len-1] = 0;	// rip off the /n and terminate
-
-		return text;
 	}
+	if (noconinput&2)
+	{	//posix job stuff sucks - there's no way to detect when we're directly pushed to the foreground after being backgrounded.
+		Con_Printf("Welcome back!\n");
+		noconinput &= ~2;
+	}
+
+	/*if (len == 0)
+	{
+		// end of file? doesn't really make sense. depend upon sighup instead
+		Con_Printf("EOF reading from stdin\n");
+		noconinput = true;
+		return NULL;
+	}*/
+	if (len < 1)
+		return NULL;
+	text[len-1] = 0;	// rip off the /n and terminate
+
+	if (sys_linebuffer.value == 0)
+		return Sys_LineInputChar(text);
+	return text;
 }
 
 /*
@@ -636,6 +732,8 @@ is marked
 */
 void Sys_Init (void)
 {
+	Sys_InitClock();
+
 	Cvar_Register (&sys_nostdout, "System configuration");
 	Cvar_Register (&sys_extrasleep,	"System configuration");
 
@@ -675,9 +773,11 @@ static void Friendly_Crash_Handler(int sig, siginfo_t *info, void *vcontext)
 
 #if defined(__i386__)
 	//x86 signals don't leave the stack in a clean state, so replace the signal handler with the real crash address, and hide this function
-	ucontext_t *uc = vcontext;
-	array[1] = (void*)uc->uc_mcontext.gregs[REG_EIP];
-	firstframe = 1;
+	{
+		ucontext_t *uc = vcontext;
+		array[1] = (void*)uc->uc_mcontext.gregs[REG_EIP];
+		firstframe = 1;
+	}
 #elif defined(__amd64__)
 	//amd64 is sane enough, but this function and the libc signal handler are on the stack, and should be ignored.
 	firstframe = 2;
@@ -867,6 +967,16 @@ static int Sys_CheckChRoot(void)
 	return ret;
 }
 
+#ifdef _POSIX_C_SOURCE
+static void SigCont(int code)
+{	//lets us know when we regained foreground focus.
+	int fl = fcntl (STDIN_FILENO, F_GETFL, 0);
+	if (!(fl & FNDELAY))
+		fcntl(STDIN_FILENO, F_SETFL, fl | FNDELAY);
+	noconinput &= ~2;
+}
+#endif
+
 /*
 =============
 main
@@ -898,6 +1008,8 @@ int main(int argc, char *argv[])
 		useansicolours = false;
 	else
 		useansicolours = (isatty(STDOUT_FILENO) || COM_CheckParm("-colour") || COM_CheckParm("-color"));
+	if (COM_CheckParm("-nostdin"))
+		noconinput = true;
 
 	switch(Sys_CheckChRoot())
 	{
@@ -952,6 +1064,12 @@ int main(int argc, char *argv[])
 	}
 #endif
 
+#ifdef _POSIX_C_SOURCE
+	signal(SIGTTIN, SIG_IGN);	//have to ignore this if we want to not lock up when running backgrounded.
+	signal(SIGCONT, SigCont);
+	signal(SIGCHLD, SIG_IGN);	//mapcluster stuff might leak zombie processes if we don't do this.
+#endif
+
 
 #ifdef SUBSERVERS
 	if (COM_CheckParm("-clusterslave"))
@@ -970,8 +1088,8 @@ int main(int argc, char *argv[])
 //
 	while (1)
 	{
-		if (do_stdin)
-			stdin_ready = NET_Sleep(maxsleep, true);
+		if (noconinput != true)
+			stdin_ready |= NET_Sleep(maxsleep, true);
 		else
 		{
 			NET_Sleep(maxsleep, false);
@@ -1172,7 +1290,7 @@ qboolean Sys_RandomBytes(qbyte *string, int len)
 	return res;
 }
 
-#ifdef WEBCLIENT
+#ifdef MANIFESTDOWNLOADS
 #include "fs.h"
 static qboolean Sys_DoInstall(void)
 {

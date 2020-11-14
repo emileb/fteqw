@@ -1457,13 +1457,13 @@ void SV_StartSound (int ent, vec3_t origin, float *velocity, int seenmask, int c
 void QDECL SVQ1_StartSound (float *origin, wedict_t *wentity, int channel, const char *sample, int volume, float attenuation, float pitchadj, float timeofs, unsigned int chflags)
 {
 	edict_t *entity = (edict_t*)wentity;
-	int i;
-	vec3_t originbuf;
-	float *velocity = NULL;
+	int i, solid;
+	vec3_t originbuf, velocity={0,0,0};
 	if (!origin)
 	{
 		origin = originbuf;
-		if (entity->v->solid == SOLID_BSP)
+		solid = entity->v->solid;
+		if (solid == SOLID_BSP || solid == SOLID_BSPTRIGGER)
 		{
 			for (i=0 ; i<3 ; i++)
 				origin[i] = entity->v->origin[i]+0.5*(entity->v->mins[i]+entity->v->maxs[i]);
@@ -1486,7 +1486,7 @@ void QDECL SVQ1_StartSound (float *origin, wedict_t *wentity, int channel, const
 		}
 
 		if (chflags & CF_SV_SENDVELOCITY)
-			velocity = entity->v->velocity;
+			VectorCopy(entity->v->velocity, velocity);
 	}
 
 	SV_StartSound(NUM_FOR_EDICT(svprogfuncs, entity), origin, velocity, entity->xv->dimension_seen, channel, sample, volume, attenuation, pitchadj, timeofs, chflags);
@@ -1623,19 +1623,66 @@ void SV_FindModelNumbers (void)
 	}
 }
 
+void SV_SendFixAngle(client_t *client, sizebuf_t *msg, int fixtype, qboolean roll)
+{
+	unsigned i;
+	client_t *controller = client->controller?client->controller:client;
+	edict_t *ent = client->edict;
+	pvec_t *ang;
+	if (!ent || client->protocol == SCP_QUAKE2)
+		return;
+	ang = ent->v->fixangle?ent->v->angles:ent->v->v_angle;	//angles is just WEIRD for mdls, but then quake sucks.
+	if (ent->v->movetype == MOVETYPE_6DOF)
+		roll = true;
+
+	if (fixtype == FIXANGLE_AUTO)
+	{
+		if (client->lockanglesseq<controller->netchan.incoming_acknowledged && controller->delta_sequence != -1 && !client->viewent)
+			fixtype = FIXANGLE_DELTA;
+		else
+			fixtype = FIXANGLE_FIXED;
+	}
+	if (fixtype == FIXANGLE_DELTA && !(controller->fteprotocolextensions2 & PEXT2_SETANGLEDELTA))
+		fixtype = FIXANGLE_FIXED;	//sorry, can't do it.
+
+	if (client->lockanglesseq>=controller->netchan.incoming_acknowledged && controller->netchan.message.cursize < controller->netchan.message.maxsize/2)
+		msg = NULL;	//try to keep them vaugely reliable, where feasable.
+	if (!msg)
+		msg = ClientReliable_StartWrite(client, 10);
+
+	if (client->seat)
+	{
+		MSG_WriteByte(msg, svcfte_choosesplitclient);
+		MSG_WriteByte(msg, client->seat);
+	}
+	if (fixtype == FIXANGLE_DELTA && (controller->fteprotocolextensions2 & PEXT2_SETANGLEDELTA))
+	{
+		MSG_WriteByte (msg, svcfte_setangledelta);
+		for (i=0 ; i < 3 ; i++)
+		{
+			int newa = ang[i] - SHORT2ANGLE(client->lastcmd.angles[i]);
+			MSG_WriteAngle16 (msg, newa);
+			client->lastcmd.angles[i] = ANGLE2SHORT(ang[i]);
+		}
+	}
+	else
+	{
+		MSG_WriteByte (msg, svc_setangle);
+		if (client->ezprotocolextensions1 & EZPEXT1_SETANGLEREASON)
+			MSG_WriteByte (msg, (fixtype == FIXANGLE_DELTA)?2:0);	//shitty backwards incompatible protocol extension that breaks from writebytes.
+		for (i=0 ; i < 3 ; i++)
+			MSG_WriteAngle (msg, (i==2&&!roll)?0:ang[i]);
+	}
+	client->lockanglesseq = controller->netchan.outgoing_sequence+1;	//so that spammed fixangles use absolute values, locking the camera in place.
+}
+
 void SV_WriteEntityDataToMessage (client_t *client, sizebuf_t *msg, int pnum)
 {
 	edict_t	*other;
 	edict_t	*ent;
 	int i;
-	float newa;
-	client_t *controller;
 
 	ent = client->edict;
-	if (client->controller)
-		controller = client->controller;
-	else
-		controller = client;
 
 	if (!ent)
 		return;
@@ -1673,40 +1720,9 @@ void SV_WriteEntityDataToMessage (client_t *client, sizebuf_t *msg, int pnum)
 	}
 	else if (ent->v->fixangle)
 	{
-		int fix = ent->v->fixangle;
-		if (!client->lockangles)
-		{
-			//try to keep them vaugely reliable.
-			if (controller->netchan.message.cursize < controller->netchan.message.maxsize/2)
-				msg = &controller->netchan.message;
-		}
-
-		if (pnum)
-		{
-			MSG_WriteByte(msg, svcfte_choosesplitclient);
-			MSG_WriteByte(msg, pnum);
-		}
-		if (((!client->lockangles && fix!=3) || fix==2) && (controller->fteprotocolextensions2 & PEXT2_SETANGLEDELTA) && controller->delta_sequence != -1 && !client->viewent)
-		{
-			MSG_WriteByte (msg, svcfte_setangledelta);
-			for (i=0 ; i < 3 ; i++)
-			{
-				newa = ent->v->angles[i] - SHORT2ANGLE(client->lastcmd.angles[i]);
-				MSG_WriteAngle16 (msg, newa);
-				client->lastcmd.angles[i] = ANGLE2SHORT(ent->v->angles[i]);
-			}
-		}
-		else
-		{
-			MSG_WriteByte (msg, svc_setangle);
-			for (i=0 ; i < 3 ; i++)
-				MSG_WriteAngle (msg, ent->v->angles[i]);
-		}
-		ent->v->fixangle = 0;
-		client->lockangles = true;
+		SV_SendFixAngle(client, msg, ent->v->fixangle, true);
+		ent->v->fixangle = FIXANGLE_NO;
 	}
-	else
-		client->lockangles = false;
 }
 
 /*sends the a centerprint string directly to the client*/
@@ -3608,16 +3624,28 @@ void SV_SendClientMessages (void)
 			}
 			else
 			{
+				extern cvar_t sv_nqplayerphysics;
 				if (c->nextservertimeupdate > pt + 0.1)
 					c->nextservertimeupdate = 0;
 
 				c->netchan.nqunreliableonly = false;
 				c->send_message = false;
 				//nq sends one packet only for each server physics frame
-				if (c->nextservertimeupdate < pt && c->state >= cs_connected)
+				if (sv_mintic.value || sv_nqplayerphysics.ival)	//(nqplayerphysics forces 72hz when mintic )
+				{	//explicit packet/tick rate. don't spam faster/slower, clients don't like that too much.
+					if (c->nextservertimeupdate != pt && c->state >= cs_connected)
+					{
+						c->send_message = true;
+						c->nextservertimeupdate = pt;
+					}
+				}
+				else
 				{
-					c->send_message = true;
-					c->nextservertimeupdate = pt + 1.0/77;
+					if (c->nextservertimeupdate < pt && c->state >= cs_connected)
+					{
+						c->send_message = true;
+						c->nextservertimeupdate = pt + 1.0/77;
+					}
 				}
 			}
 		}

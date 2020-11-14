@@ -6,6 +6,7 @@ Setting them should be fine.
 */
 #ifndef __PR_COMP_H__
 #define __PR_COMP_H__
+#include "progtype.h"
 
 /*
 #ifdef USE_MSVCRT_DEBUG
@@ -145,37 +146,37 @@ enum qcop_e {
 	OP_SUBSTOREP_F,	//78
 	OP_SUBSTOREP_V,	//79
 
-	OP_FETCH_GBL_F,	//80
-	OP_FETCH_GBL_V,	//81
-	OP_FETCH_GBL_S,	//82
-	OP_FETCH_GBL_E,	//83
-	OP_FETCH_GBL_FNC,//84
+	OP_FETCH_GBL_F,	//80 has built-in bounds check
+	OP_FETCH_GBL_V,	//81 has built-in bounds check
+	OP_FETCH_GBL_S,	//82 has built-in bounds check
+	OP_FETCH_GBL_E,	//83 has built-in bounds check
+	OP_FETCH_GBL_FNC,//84 has built-in bounds check
 
 	OP_CSTATE,		//85
 	OP_CWSTATE,		//86
 
-	OP_THINKTIME,	//87
+	OP_THINKTIME,	//87 shortcut for OPA.nextthink=time+OPB
 
 	OP_BITSETSTORE_F,	//88 redundant, for h2 compat
 	OP_BITSETSTOREP_F,	//89
 	OP_BITCLRSTORE_F,	//90
 	OP_BITCLRSTOREP_F,	//91
 
-	OP_RAND0,		//92
-	OP_RAND1,		//93
-	OP_RAND2,		//94
-	OP_RANDV0,		//95
+	OP_RAND0,		//92	OPC = random()
+	OP_RAND1,		//93	OPC = random()*OPA
+	OP_RAND2,		//94	OPC = random()*(OPB-OPA)+OPA
+	OP_RANDV0,		//95	//3d/box versions of the above.
 	OP_RANDV1,		//96
 	OP_RANDV2,		//97
 
-	OP_SWITCH_F,	//98
+	OP_SWITCH_F,	//98	switchref=OPA; PC += OPB   --- the jump allows the jump table (such as it is) to be inserted after the block.
 	OP_SWITCH_V,	//99
 	OP_SWITCH_S,	//100
 	OP_SWITCH_E,	//101
 	OP_SWITCH_FNC,	//102
 
-	OP_CASE,		//103
-	OP_CASERANGE,	//104
+	OP_CASE,		//103	if (OPA===switchref) PC += OPB
+	OP_CASERANGE,	//104   if (OPA<=switchref&&switchref<=OPB) PC += OPC
 
 
 
@@ -184,9 +185,10 @@ enum qcop_e {
 	//the rest are added
 	//mostly they are various different ways of adding two vars with conversions.
 
-	OP_CALL1H,
-	OP_CALL2H,
-	OP_CALL3H,
+	//hexen2 calling convention (-TH2 requires us to remap OP_CALLX to these on load, -TFTE just uses these directly.)
+	OP_CALL1H,	//OFS_PARM0=OPB
+	OP_CALL2H,	//OFS_PARM0,1=OPB,OPC
+	OP_CALL3H,	//no extra args
 	OP_CALL4H,
 	OP_CALL5H,
 	OP_CALL6H,		//110
@@ -195,21 +197,21 @@ enum qcop_e {
 
 
 	OP_STORE_I,
-	OP_STORE_IF,
-	OP_STORE_FI,
+	OP_STORE_IF,			//OPB.f = (float)OPA.i (makes more sense when written as a->b)
+	OP_STORE_FI,			//OPB.i = (int)OPA.f
 	
 	OP_ADD_I,
-	OP_ADD_FI,
-	OP_ADD_IF,
+	OP_ADD_FI,				//OPC.f = OPA.f + OPB.i
+	OP_ADD_IF,				//OPC.f = OPA.i + OPB.f	-- redundant...
   
-	OP_SUB_I,
-	OP_SUB_FI,		//120
-	OP_SUB_IF,
+	OP_SUB_I,				//OPC.i = OPA.i - OPB.i
+	OP_SUB_FI,		//120	//OPC.f = OPA.f - OPB.i
+	OP_SUB_IF,				//OPC.f = OPA.i - OPB.f
 
-	OP_CONV_ITOF,
-	OP_CONV_FTOI,
-	OP_CP_ITOF,
-	OP_CP_FTOI,
+	OP_CONV_ITOF,			//OPC.f=(float)OPA.i -- useful mostly so decompilers don't do weird stuff.
+	OP_CONV_FTOI,			//OPC.i=(int)OPA.f
+	OP_LOADP_ITOF,				//OPC.f=(float)(*OPA).i	-- fixme: rename to LOADP_ITOF
+	OP_LOADP_FTOI,				//OPC.i=(int)(*OPA).f
 	OP_LOAD_I,
 	OP_STOREP_I,
 	OP_STOREP_IF,
@@ -223,7 +225,7 @@ enum qcop_e {
 	OP_EQ_I,
 	OP_NE_I,
 
-	OP_IFNOT_S,
+	OP_IFNOT_S,	//compares string empty, rather than just null.
 	OP_IF_S,
 
 	OP_NOT_I,
@@ -234,8 +236,8 @@ enum qcop_e {
 	OP_RSHIFT_I,
 	OP_LSHIFT_I,
 
-	OP_GLOBALADDRESS,
-	OP_ADD_PIW,	//add B words to A pointer
+	OP_GLOBALADDRESS,	//C.p = &A + B.i*4
+	OP_ADD_PIW,			//C.p = A.p + B.i*4
 
 	OP_LOADA_F,
 	OP_LOADA_V,	
@@ -302,7 +304,7 @@ enum qcop_e {
 	OP_NE_IF,
 	OP_NE_FI,
 
-//erm... FTEQCC doesn't make use of these... These are for DP.
+//fte doesn't really model two separate pointer types. these are thus special-case things for array access only.
 	OP_GSTOREP_I,
 	OP_GSTOREP_F,
 	OP_GSTOREP_ENT,
@@ -310,7 +312,7 @@ enum qcop_e {
 	OP_GSTOREP_S,
 	OP_GSTOREP_FNC,		
 	OP_GSTOREP_V,
-	OP_GADDRESS,
+	OP_GADDRESS,	//poorly defined opcode, which makes it too unreliable to actually use.
 	OP_GLOAD_I,
 	OP_GLOAD_F,
 	OP_GLOAD_FLD,
@@ -326,9 +328,75 @@ enum qcop_e {
 
 	OP_SWITCH_I,//hmm.
 	OP_GLOAD_V,
-
-	OP_IF_F,
+//r3349+
+	OP_IF_F,		//compares as an actual float, instead of treating -0 as positive.
 	OP_IFNOT_F,
+
+//r5697+
+	OP_STOREF_V,	//3 elements...
+	OP_STOREF_F,	//1 fpu element...
+	OP_STOREF_S,	//1 string reference
+	OP_STOREF_I,	//1 non-string reference/int
+
+//r5744+
+	OP_STOREP_B,//((char*)b)[(int)c] = (int)a
+	OP_LOADP_B,	//(int)c = *(char*)
+
+//r5768+
+//opcodes for 32bit uints
+	OP_LE_U,		//aka GT
+	OP_LT_U,		//aka GE
+	OP_DIV_U,		//don't need mul+add+sub
+	OP_RSHIFT_U,	//lshift is the same for signed+unsigned
+
+//opcodes for 64bit ints
+	OP_ADD_I64,
+	OP_SUB_I64,
+	OP_MUL_I64,
+	OP_DIV_I64,
+	OP_BITAND_I64,
+	OP_BITOR_I64,
+	OP_BITXOR_I64,
+	OP_LSHIFT_I64I,
+	OP_RSHIFT_I64I,
+	OP_LE_I64,		//aka GT
+	OP_LT_I64,		//aka GE
+	OP_EQ_I64,
+	OP_NE_I64,
+//extra opcodes for 64bit uints
+	OP_LE_U64,		//aka GT
+	OP_LT_U64,		//aka GE
+	OP_DIV_U64,
+	OP_RSHIFT_U64I,
+
+//general 64bitness
+	OP_STORE_I64,
+	OP_STOREP_I64,
+	OP_STOREF_I64,
+	OP_LOAD_I64,
+	OP_LOADA_I64,
+	OP_LOADP_I64,
+//various conversions for our 64bit types (yay type promotion)
+	OP_CONV_UI64, //zero extend
+	OP_CONV_II64, //sign extend
+	OP_CONV_I64I,	//truncate
+	OP_CONV_FD,	//extension
+	OP_CONV_DF,	//truncation
+	OP_CONV_I64F,	//logically a promotion (always signed)
+	OP_CONV_FI64,	//demotion (always signed)
+	OP_CONV_I64D,	//'promotion' (always signed)
+	OP_CONV_DI64,	//demotion (always signed)
+
+//opcodes for doubles.
+	OP_ADD_D,
+	OP_SUB_D,
+	OP_MUL_D,
+	OP_DIV_D,
+	OP_LE_D,
+	OP_LT_D,
+	OP_EQ_D,
+	OP_NE_D,
+
 
 	OP_NUMREALOPS,
 
@@ -387,6 +455,7 @@ enum qcop_e {
 	OP_ANDSTORE_F,
 	OP_BITCLR_F,
 	OP_BITCLR_I,
+	OP_BITCLR_V,
 
 	OP_ADD_SI,
 	OP_ADD_IS,
@@ -403,6 +472,8 @@ enum qcop_e {
 
 	OP_MOD_F,
 	OP_MOD_I,
+	OP_MOD_FI,
+	OP_MOD_IF,
 	OP_MOD_V,
 
 	OP_BITXOR_F,
@@ -427,18 +498,72 @@ enum qcop_e {
 	OP_BITXOR_V,
 
 	OP_POW_F,
+	OP_POW_I,
+	OP_POW_FI,
+	OP_POW_IF,
 	OP_CROSS_V,
 
 	OP_EQ_FLD,
 	OP_NE_FLD,
 
+	OP_SPACESHIP_F,	//lame
+	OP_SPACESHIP_S,	//basically strcmp.
+
+
+	//uint32 opcodes. they match the int32 ones so emulation is basically swapping them over.
+	OP_ADD_U,
+	OP_SUB_U,
+	OP_MUL_U,
+	OP_MOD_U,	//complex
+	OP_BITAND_U,
+	OP_BITOR_U,
+	OP_BITXOR_U,
+	OP_BITNOT_U,	//BITXOR ~0
+	OP_BITCLR_U,
+	OP_LSHIFT_U,	//same as signed (unlike rshift)
+	OP_GE_U,	//LT_U
+	OP_GT_U,	//LE_U
+//	OP_AND_U,
+//	OP_OR_U,
+	OP_EQ_U,
+	OP_NE_U,
+
+	//uint64 opcodes. they match the int32 ones so emulation is basically swapping them over.
+	OP_BITNOT_I64,	//BITXOR ~0
+	OP_BITCLR_I64,
+	OP_GE_I64,	//LT_I64
+	OP_GT_I64,	//LE_I64
+
+	OP_ADD_U64,
+	OP_SUB_U64,
+	OP_MUL_U64,
+	OP_MOD_U64,	//complex
+	OP_BITAND_U64,
+	OP_BITOR_U64,
+	OP_BITXOR_U64,
+	OP_BITNOT_U64,	//BITXOR ~0
+	OP_BITCLR_U64,
+	OP_LSHIFT_U64I,
+	OP_GE_U64,	//LT_U64
+	OP_GT_U64,	//LE_U64
+	OP_EQ_U64,
+	OP_NE_U64,
+
+	//generally implemented by forcing to int64.
+	OP_BITAND_D,
+	OP_BITOR_D,
+	OP_BITXOR_D,
+	OP_BITNOT_D,
+	OP_BITCLR_D,
+	OP_LSHIFT_DI,
+	OP_RSHIFT_DI,
+
 	//special/fake opcodes used by the decompiler.
 	OPD_GOTO_FORSTART,
 	OPD_GOTO_WHILE1,
 
+	OP_NUMOPS,
 	OP_BIT_BREAKPOINT = 0x8000,
-
-	OP_NUMOPS
 };
 
 #define	MAX_PARMS	8
@@ -552,7 +677,7 @@ typedef struct
 	string_t	s_file;			// source file defined in
 
 	int		numparms;
-	qbyte	parm_size[MAX_PARMS];
+	pbyte	parm_size[MAX_PARMS];
 } dfunction_t;
 
 typedef struct
@@ -569,7 +694,7 @@ typedef struct
 	string_t	s_file;			// source file defined in
 
 	int		numparms;
-	qbyte	parm_size[MAX_PARMS];
+	pbyte	parm_size[MAX_PARMS];
 } mfunction_t;
 
 #define PROG_QTESTVERSION	3
@@ -578,6 +703,8 @@ typedef struct
 #define	PROG_EXTENDEDVERSION	7
 #define PROG_SECONDARYVERSION16 ((('1'<<0)|('F'<<8)|('T'<<16)|('E'<<24))^(('P'<<0)|('R'<<8)|('O'<<16)|('G'<<24)))	//something unlikly and still meaningful (to me)
 #define PROG_SECONDARYVERSION32 ((('1'<<0)|('F'<<8)|('T'<<16)|('E'<<24))^(('3'<<0)|('2'<<8)|('B'<<16)|(' '<<24)))	//something unlikly and still meaningful (to me)
+#define PROG_SECONDARYUHEXEN2	((('U'<<0)|('H'<<8)|('2'<<16)|('7'<<24)))	//something unlikly and still meaningful (to me)
+#define PROG_SECONDARYKKQWSV	((('K'<<0)|('K'<<8)|('Q'<<16)|('W'<<24)))	//something unlikly and still meaningful (to me)
 typedef struct
 {
 	int		version;

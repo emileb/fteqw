@@ -281,13 +281,16 @@ sfx_t			*cl_sfx_r_exp3;
 
 cvar_t	cl_expsprite = CVARFD("cl_expsprite", "1", CVAR_ARCHIVE, "Display a central sprite in explosion effects. QuakeWorld typically does so, NQ mods should not (which is problematic when played with the qw protocol).");
 cvar_t  r_explosionlight = CVARFC("r_explosionlight", "1", CVAR_ARCHIVE, Cvar_Limiter_ZeroToOne_Callback);
-static cvar_t  r_explosionlight_colour = CVARF("r_explosionlight_colour", "4.0 2.0 0.5", CVAR_ARCHIVE);
-static cvar_t  r_explosionlight_fade = CVARF("r_explosionlight_fade", "0.784 0.92 0.48", CVAR_ARCHIVE);
-cvar_t  r_dimlight_colour = CVARF("r_dimlight_colour", "2.0 1.0 0.5 200", CVAR_ARCHIVE);
-cvar_t  r_brightlight_colour = CVARF("r_brightlight_colour", "2.0 1.0 0.5 400", CVAR_ARCHIVE);
-cvar_t  r_rocketlight_colour = CVARF("r_rocketlight_colour", "2.0 1.0 0.25 200", CVAR_ARCHIVE);
-cvar_t  r_muzzleflash_colour = CVARF("r_muzzleflash_colour", "1.5 1.3 1.0 200", CVAR_ARCHIVE);
-cvar_t  r_muzzleflash_fade = CVARF("r_muzzleflash_fade", "1.5 0.75 0.375 1000", CVAR_ARCHIVE);
+static cvar_t  r_explosionlight_colour = CVARFD("r_explosionlight_colour", "4.0 2.0 0.5", CVAR_ARCHIVE, "This controls the initial RGB values of EF_EXPLOSION effects.");
+static cvar_t  r_explosionlight_fade = CVARFD("r_explosionlight_fade", "0.784 0.92 0.48", CVAR_ARCHIVE, "This controls the per-second RGB decay values of EF_EXPLOSION effects.");
+cvar_t  r_dimlight_colour = CVARFD("r_dimlight_colour", "2.0 1.0 0.5 200", CVAR_ARCHIVE, "The red, green, blue, radius values for EF_DIMLIGHT effects (used for quad+pent in vanilla quake).");
+cvar_t  r_brightlight_colour = CVARFD("r_brightlight_colour", "2.0 1.0 0.5 400", CVAR_ARCHIVE, "The red, green, blue, radius values for EF_BRIGHTLIGHT effects (unused in vanilla quake).");
+cvar_t  r_redlight_colour = CVARFD("r_redlight_colour", "3.0 0.5 0.5 200", CVAR_ARCHIVE, "The red, green, blue, radius values for EF_RED effects (typically used for pentagram in quakeworld).");
+cvar_t  r_greenlight_colour = CVARFD("r_greenlight_colour", "0.5 3.0 0.5 200", CVAR_ARCHIVE, "The red, green, blue, radius values for EF_GREEN effects (rarely used).");
+cvar_t  r_bluelight_colour = CVARFD("r_bluelight_colour", "0.5 0.5 3.0 200", CVAR_ARCHIVE, "The red, green, blue, radius values for EF_BLUE effects (typically used for quad-damage in quakeworld)");
+cvar_t  r_rocketlight_colour = CVARFD("r_rocketlight_colour", "2.0 1.0 0.25 200", CVAR_ARCHIVE, "This controls the RGB+radius values of MF_ROCKET effects.");
+cvar_t  r_muzzleflash_colour = CVARFD("r_muzzleflash_colour", "1.5 1.3 1.0 200", CVAR_ARCHIVE, "This controls the initial RGB+radius of EF_MUZZLEFLASH/svc_muzzleflash effects.");
+cvar_t  r_muzzleflash_fade = CVARFD("r_muzzleflash_fade", "1.5 0.75 0.375 1000", CVAR_ARCHIVE, "This controls the per-second RGB+radius decay of EF_MUZZLEFLASH/svc_muzzleflash effects.");
 cvar_t	cl_truelightning = CVARF("cl_truelightning", "0",	CVAR_SEMICHEAT);
 static cvar_t  cl_beam_trace = CVAR("cl_beam_trace", "0");
 static cvar_t	cl_legacystains = CVARD("cl_legacystains", "1", "WARNING: this cvar will default to 0 and later removed at some point");	//FIXME: do as the description says!
@@ -424,6 +427,9 @@ void CL_InitTEnts (void)
 	Cvar_Register (&r_muzzleflash_colour, "Temporary entity control");
 	Cvar_Register (&r_muzzleflash_fade, "Temporary entity control");
 	Cvar_Register (&r_dimlight_colour, "Temporary entity control");
+	Cvar_Register (&r_redlight_colour, "Temporary entity control");
+	Cvar_Register (&r_greenlight_colour, "Temporary entity control");
+	Cvar_Register (&r_bluelight_colour, "Temporary entity control");
 	Cvar_Register (&r_brightlight_colour, "Temporary entity control");
 	Cvar_Register (&r_rocketlight_colour, "Temporary entity control");
 	Cvar_Register (&cl_legacystains, "Temporary entity control");
@@ -1131,19 +1137,29 @@ void CL_ParseTEnt (void)
 	if (cl_shownet.ival >= 2)
 	{
 		static char *te_names[] = {
-			"spike", "superspike", "qwgunshot", "qwexplosion",
-			"tarexplosion", "lightning1", "lightning2", "wizspike",
-			"knightspike", "lightning3", "lavasplash", "teleport",
-			"blood", "lightningblood", "bullet", "superbullet",	//bullets deprecated
-			"neh_explosion3", "railtrail/neh_lightning4", "beam", "explosion2",
-			"nqexplosion", "nqgunshot", "?", "?",
-#ifdef HEXEN2
-			"h2lightsml", "h2chain", "h2sunstf1", "h2sunstf2",
-			"h2light", "h2cb", "h2ic", "h2gaze",
-			"h2famine", "h2partexp"
-#endif
+			/* 0*/"spike", "superspike", "qwgunshot", "qwexplosion",
+			/* 4*/"tarexplosion", "lightning1", "lightning2", "wizspike",
+			/* 8*/"knightspike", "lightning3", "lavasplash", "teleport",
+			/*12*/"blood", "lightningblood", "bullet", "superbullet",	//bullets deprecated
+			/*16*/"neh_explosion3", "railtrail", "beam", "explosion2",
+			/*20*/"nqexplosion", "nqgunshot", NULL, NULL,
+			/*24*/"h2lightsml", "h2chain", "h2sunstf1", "h2sunstf2",
+			/*28*/"h2light", "h2cb", "h2ic", "h2gaze",
+			/*32*/"h2famine", "h2partexp",NULL,NULL,
+			/*36*/NULL,NULL,NULL,NULL,
+			/*40*/NULL,NULL,NULL,NULL,
+			/*44*/NULL,NULL,NULL,NULL,
+			/*48*/NULL,NULL,"dpblood","dpspark"
+			/*52*/"dpbloodshower","dpexplosionrgb","dpparticlecube","dpparticlerain",
+			/*56*/"dpparticlesnow","dpgunshotquad","dpspikequad","dpsuperspikequad",
+			/*60*/NULL,NULL,NULL,NULL,
+			/*64*/NULL,NULL,NULL,NULL,
+			/*68*/NULL,NULL,"dpexplosionquad",NULL,
+			/*72*/"dpsmallflash","dpcustomflash","dpflamejet","dpplasmaburn",
+			/*76*/"dpteig3","dpsmoke","dpteibigexplosion","dpteiplasmahit",
+			/*80*/
 		};
-		if (type < countof(te_names))
+		if (type < countof(te_names) && te_names[type])
 			Con_Printf("  te_%s\n", te_names[type]);
 		else
 			Con_Printf("  te_unknown_%i\n", type);
@@ -1891,6 +1907,47 @@ void CL_ParseTEnt (void)
 	}
 }
 
+void CL_ParseTEnt_Sized (void)
+{
+	unsigned short sz = MSG_ReadShort();
+	int start = msg_readcount;
+
+	for(;;)
+	{
+#ifdef NQPROT
+		if (sz&0x8000)
+		{
+			sz&=~0x8000;
+			CL_ParseTEnt(true);
+		}
+		else
+			CL_ParseTEnt(false);
+#else
+		CL_ParseTEnt();
+#endif
+
+		if (msg_readcount < start + sz)
+		{	//try to be more compatible with xonotic.
+			int next = MSG_ReadByte();
+			if (next == svc_temp_entity)
+				continue;
+			msg_readcount--;
+
+			Con_Printf("Sized temp_entity data too large (next byte %i, %i bytes unread)\n", next, (start+sz)-msg_readcount);
+			msg_readcount = start + sz;
+			return;
+		}
+		break;
+	}
+
+
+	if (msg_readcount != start + sz)
+	{
+		Con_Printf("Tempentity size did not match parsed size misread a gamecode packet (%i bytes too much)\n", msg_readcount - (start+sz));
+		msg_readcount = start + sz;
+	}
+}
+
 void MSG_ReadPos (vec3_t pos);
 void MSG_ReadDir (vec3_t dir);
 typedef struct {
@@ -2439,6 +2496,7 @@ void CL_SpawnSpriteEffect(vec3_t org, vec3_t dir, vec3_t orientationup, model_t 
 		else
 			ex->angles[1] = 0;
 		ex->angles[0]*=r_meshpitch.value;
+		ex->angles[2]*=r_meshroll.value;
 	}
 
 
@@ -3148,6 +3206,7 @@ void CL_UpdateExplosions (void)
 		VectorCopy (ex->angles, ent->angles);
 		ent->skinnum = ex->skinnum;
 		ent->angles[0]*=r_meshpitch.value;
+		ent->angles[2]*=r_meshroll.value;
 		AngleVectors(ent->angles, ent->axis[0], ent->axis[1], ent->axis[2]);
 		VectorInverse(ent->axis[1]);
 		ent->model = ex->model;

@@ -44,7 +44,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 //#define vec3_origin vec3_origin_
 //static vec3_t vec3_origin;
 #define VectorCompare VectorCompare_
-static int VectorCompare (const vec3_t v1, const vec3_t v2)
+static int VectorCompare (const pvec3_t v1, const pvec3_t v2)
 {
 	int		i;
 	for (i=0 ; i<3 ; i++)
@@ -216,7 +216,7 @@ static btTransform transformFromQuake(world_t *world, wedict_t *ent)
 	vec3_t forward, left, up;
 	if (NegativeMeshPitch(world, ent))
 	{
-		vec3_t iangles = {-ent->v->angles[0], ent->v->angles[1], ent->v->angles[2]};
+		pvec3_t iangles = {-ent->v->angles[0], ent->v->angles[1], ent->v->angles[2]};
 		rbefuncs->AngleVectors(iangles, forward, left, up);
 	}
 	else
@@ -1788,7 +1788,7 @@ static bool World_Bullet_DoInit(void)
 	if (!rbefuncs || !rbefuncs->RegisterPhysicsEngine)
 	{
 		rbefuncs = nullptr;
-		Con_Printf("Bullet plugin failed: Engine doesn't support physics engine plugins.\n");
+		Con_Printf("Bullet plugin failed: Engine is incompatible.\n");
 	}
 	else if (!rbefuncs->RegisterPhysicsEngine("Bullet", World_Bullet_Start))
 		Con_Printf("Bullet plugin failed: Engine already has a physics plugin active.\n");
@@ -1803,7 +1803,8 @@ static bool World_Bullet_DoInit(void)
 extern "C" qboolean Plug_Init(void)
 {
 	rbefuncs = (rbeplugfuncs_t*)plugfuncs->GetEngineInterface("RBE", sizeof(*rbefuncs));
-	if (rbefuncs && rbefuncs->version < RBEPLUGFUNCS_VERSION)
+	if (rbefuncs && (	rbefuncs->version < RBEPLUGFUNCS_VERSION ||
+						rbefuncs->wedictsize != sizeof(wedict_t)))
 		rbefuncs = nullptr;
 
 	plugfuncs->ExportFunction("Shutdown", (funcptr_t)World_Bullet_Shutdown);

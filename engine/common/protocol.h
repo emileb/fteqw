@@ -83,7 +83,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define PEXT2_NEWSIZEENCODING		0x00000040	//richer size encoding.
 #define PEXT2_INFOBLOBS				0x00000080	//serverinfo+userinfo lengths can be MUCH higher (protocol is unbounded, but expect low sanity limits on userinfo), and contain nulls etc.
 #define PEXT2_STUNAWARE				0x00000100	//changes the netchan to biased-bigendian (so lead two bits are 1 and not stun's 0, so we don't get confused)
-//#define PEXT2_NEWINTENTS			0x00000200	//clc_move changes, more buttons etc
+//#define PEXT2_NEWINTENTS			0x00000200	//clc_move changes, more buttons etc. vr stuff!
 #define PEXT2_CLIENTSUPPORT			(PEXT2_PRYDONCURSOR|PEXT2_VOICECHAT|PEXT2_SETANGLEDELTA|PEXT2_REPLACEMENTDELTAS|PEXT2_MAXPLAYERS|PEXT2_PREDINFO|PEXT2_NEWSIZEENCODING|PEXT2_INFOBLOBS|PEXT2_STUNAWARE)
 
 //EzQuake/Mvdsv extensions. (use ezquake name, to avoid confusion about .mvd format and its protocol differences)
@@ -326,7 +326,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define svcfte_brushedit			87	// networked brush editing, paired with clcfte_brushedit.
 #define	svcfte_updateseats			88	// byte count, byte playernum[count]
 #define svcfte_setinfoblob			89	// [8] 1-based index [string] key [32] isfinal<<31|offset [16] chunksize [chunksize] data
-
+#define svcfte_cgamepacket_sized	90	//svcfte_cgamepacket with an extra short size right after the svc.
+#define	svcfte_temp_entity_sized	91	//svc_temp_entity with an extra short size right after the svc (high bit means nq, unset means qw).
+#define svcfte_csqcentities_sized	92	//entity lump for csqc (with size info)
 
 //fitz svcs
 #define svcfitz_skybox				37
@@ -363,14 +365,19 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 enum clustercmdops_e
 {
 	ccmd_bad = 0,			//abort!
-	ccmd_stuffcmd = 1,		//regular ol stuffcmd
+	ccmd_stuffcmd,		//regular ol stuffcmd
 			//string concommand
-	ccmd_print = 2,
+	ccmd_setcvar,		//master->server to order a cvar change.
+	ccmd_print,
 			//string message
 	ccmd_acceptserver,
 			//serverid
 	ccmd_lostplayer,	//player dropped/timed out
 			//long plid
+	ccmd_foundplayer,	//server->master, saying that a player tried to connect directly (and we need their info)
+			//string name
+			//string clientaddress
+			//string guid
 	ccmd_takeplayer,	//master->server, saying to allocate a slot for a player.
 			//long plid
 			//long fromsvid (0=no reply needed)
@@ -532,6 +539,7 @@ enum {
 #define	PF_GIB			(1<<10)		// offset the view height differently
 
 //ZQuake.
+#define PF_PMC_SHIFT	11
 #define	PF_PMC_MASK		((1<<11) | \
 						 (1<<12) | \
 						 (1<<13))
@@ -558,7 +566,8 @@ enum {
 #define PF_SOLID		(1<<23) //or 15, depending on extensions... messy.
 
 
-#define PF_PMC_SHIFT	11
+//not networked
+#define PF_INWATER		(1u<<31) //for network smartjump.
 
 
 
@@ -1188,8 +1197,8 @@ typedef struct usercmd_s
 	short	forwardmove, sidemove, upmove;
 	qbyte	impulse;
 	qbyte	lightlevel;
+	//end q2 compat
 
-	//freestyle
 	float	msec;		//replace msec, but with more precision
 	int		buttons;	//replaces buttons, but with more bits.
 	int		weapon;		//q3 has a separate weapon field to supplement impulse.

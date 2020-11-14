@@ -47,6 +47,7 @@ typedef struct {
 	qboolean stereo;
 	int srgb;	//<0 = gamma-only. 0 = no srgb at all, >0 full srgb, including textures and stuff
 	int bpp;	//16, 24(aka 32), 30, and 48 are meaningful
+	int depthbits;
 	int rate;
 	int wait;	//-1 = default, 0 = off, 1 = on, 2 = every other
 	int multisample;	//for opengl antialiasing (which requires context stuff)
@@ -54,6 +55,7 @@ typedef struct {
 	char subrenderer[MAX_QPATH];	//external driver
 	char devicename[MAX_QPATH];		//device name (usually monitor)
 	struct rendererinfo_s *renderer;
+	struct plugvrfuncs_s *vr;		//the vr driver we're trying to use.
 } rendererstate_t;
 #ifndef SERVERONLY
 extern rendererstate_t currentrendererstate;
@@ -116,6 +118,8 @@ typedef struct
 
 	qboolean		forcecursor;
 	float			forcecursorpos[2];	//in physical pixels
+
+	struct plugvrfuncs_s *vr;	//how do deal with VR contexts.
 } viddef_t;
 
 extern	viddef_t	vid;				// global video state

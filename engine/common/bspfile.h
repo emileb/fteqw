@@ -24,6 +24,15 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	MAX_MAP_HULLSDQ1	4
 #define	MAX_MAP_HULLSDH2	8
 #define	MAX_MAP_HULLSM		8
+#define RBSP_STYLESPERSURF		4
+#define Q1Q2BSP_STYLESPERSURF	4
+#ifdef Q1BSPS
+#define MAXCPULIGHTMAPS		16	//max lightmaps mixed by the cpu (vanilla q1bsp=4, fte extensions=no real cap, must be >=MAXRLIGHTMAPS)
+#elif defined(Q1BSPS)
+#define MAXCPULIGHTMAPS		Q1Q2BSP_STYLESPERSURF	//max lightmaps mixed by the cpu (vanilla q1bsp=4, fte extensions=no real cap, must be >=MAXRLIGHTMAPS)
+#else
+#define MAXCPULIGHTMAPS		MAXRLIGHTMAPS	//max lightmaps mixed by the cpu (vanilla q1bsp=4, fte extensions=no real cap, must be >=MAXRLIGHTMAPS)
+#endif
 
 //#define	MAX_MAP_MODELS		256
 //#define	MAX_MAP_BRUSHES		0x8000
@@ -235,11 +244,10 @@ typedef struct
 } dledge_t;
 
 #ifdef RFBSPS
-#define	MAXRLIGHTMAPS	4	//max lightmaps mixed by the renderer (rbsp=4, otherwise 1)
+#define	MAXRLIGHTMAPS	4	//max lightmaps mixed by the gpu (rbsp=4, otherwise 1)
 #else
-#define	MAXRLIGHTMAPS	1	//max lightmaps mixed by the renderer (rbsp=4, otherwise 1)
+#define	MAXRLIGHTMAPS	1	//max lightmaps mixed by the gpu (rbsp=4, otherwise 1)
 #endif
-#define MAXQ1LIGHTMAPS	16
 typedef struct
 {
 	short		planenum;
@@ -250,7 +258,7 @@ typedef struct
 	short		texinfo;
 
 // lighting info
-	qbyte		styles[4];
+	qbyte		styles[Q1Q2BSP_STYLESPERSURF];
 	int			lightofs;		// start of [numstyles*surfsize] samples
 } dsface_t;
 typedef struct
@@ -263,7 +271,7 @@ typedef struct
 	int			texinfo;
 
 // lighting info
-	qbyte		styles[4];
+	qbyte		styles[Q1Q2BSP_STYLESPERSURF];
 	int			lightofs;		// start of [numstyles*surfsize] samples
 } dlface_t;
 
@@ -611,17 +619,35 @@ typedef struct
 
 #define	TI_SLICK		0x2		// effects game physics
 
-#define	TI_SKY		0x4		// don't draw, but add to skybox
-#define	TI_WARP		0x8		// turbulent water warp
-#define	TI_TRANS33	0x10
-#define TI_TRANS66	0x20
-#define	TI_FLOWING	0x40	// scroll towards angle
+#define	TI_SKY			0x4		// don't draw, but add to skybox
+#define	TI_WARP			0x8		// turbulent water warp
+#define	TI_TRANS33		0x10
+#define TI_TRANS66		0x20
+#define	TI_FLOWING		0x40	// scroll towards angle
 #define	TI_NODRAW		0x80	// don't bother referencing the texture
 
 #define	TI_ALPHATEST	0x100
 
 //Surface flags
-#define Q3SURF_LADDER	0x8		//wee
+//#define Q3SURFACEFLAG_NODAMAGE	0x1		// never give falling damage
+//#define Q3SURFACEFLAG_SLICK		0x2		// effects game physics
+//#define Q3SURFACEFLAG_SKY			0x4		// lighting from environment map
+#define	Q3SURFACEFLAG_LADDER		0x8
+//#define Q3SURFACEFLAG_NOIMPACT	0x10	// don't make missile explosions
+//#define Q3SURFACEFLAG_NOMARKS		0x20	// don't leave missile marks
+//#define Q3SURFACEFLAG_FLESH		0x40	// make flesh sounds and effects
+//#define Q3SURFACEFLAG_NODRAW		0x80	// don't generate a drawsurface at all
+//#define Q3SURFACEFLAG_HINT		0x100	// make a primary bsp splitter
+//#define Q3SURFACEFLAG_SKIP		0x200	// completely ignore, allowing non-closed brushes
+//#define Q3SURFACEFLAG_NOLIGHTMAP	0x400	// surface doesn't need a lightmap
+//#define Q3SURFACEFLAG_POINTLIGHT	0x800	// generate lighting info at vertexes
+//#define Q3SURFACEFLAG_METALSTEPS	0x1000	// clanking footsteps
+//#define Q3SURFACEFLAG_NOSTEPS		0x2000	// no footstep sounds
+//#define Q3SURFACEFLAG_NONSOLID	0x4000	// don't collide against curves with this set
+//#define Q3SURFACEFLAG_LIGHTFILTER	0x8000	// act as a light filter during q3map -light
+//#define Q3SURFACEFLAG_ALPHASHADOW	0x10000	// do per-pixel light shadow casting in q3map
+//#define Q3SURFACEFLAG_NODLIGHT	0x20000	// don't dlight even if solid (solid lava, skies)
+//#define Q3SURFACEFLAG_DUST		0x40000 // leave a dust trail when walking on this surface
 
 // content masks. Allow q2contents_window in here
 //#define	MASK_ALL				(-1)
@@ -821,9 +847,10 @@ typedef struct
 typedef struct
 {
 	float point[3];
-	float texcoords[5][2];
+	float stcoords[2];
+	float lmtexcoords[RBSP_STYLESPERSURF][2];
 	float normal[3];
-	unsigned char color[4][4];
+	unsigned char color[RBSP_STYLESPERSURF][4];
 } rbspvertex_t;
 
 struct Q3FOG
@@ -854,8 +881,7 @@ typedef struct
 	int firstindex;
 	int num_indexes;
 	int lightmapnum;
-	int lightmap_x; 
-	int lightmap_y;
+	int lightmap_offs[2];
 	int lightmap_width;
 	int lightmap_height;
 	float lightmap_origin[3];
@@ -874,10 +900,10 @@ typedef struct
 	int num_vertices;
 	int firstindex;
 	int num_indexes;
-	unsigned char lm_styles[4];
-	unsigned char vt_styles[4];
-	int lightmapnum[4];
-	int lightmap_offs[2][4]; 
+	unsigned char lm_styles[RBSP_STYLESPERSURF];
+	unsigned char vt_styles[RBSP_STYLESPERSURF];
+	int lightmapnum[RBSP_STYLESPERSURF];
+	int lightmap_offs[2][RBSP_STYLESPERSURF];	//yes, weird ordering.
 	int lightmap_width;
 	int lightmap_height;
 	float lightmap_origin[3];
@@ -891,7 +917,7 @@ typedef struct
 typedef struct pvscache_s
 {
 	int				num_leafs;
-	unsigned short	leafnums[MAX_ENT_LEAFS];
+	unsigned int	leafnums[MAX_ENT_LEAFS];
 #if defined(Q2BSPS) || defined(Q3BSPS) || defined(TERRAIN)
 	int				areanum;	//q2bsp
 	int				areanum2;	//q2bsp

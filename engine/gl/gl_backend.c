@@ -1041,48 +1041,6 @@ void R_FetchPlayerColour(unsigned int cv, vec3_t rgb)
 	}*/
 }
 
-static void RevertToKnownState(void)
-{
-	if (shaderstate.currentvao)
-		qglBindVertexArray(0);
-	shaderstate.currentvao = 0;
-	shaderstate.curvertexvbo = ~0;
-	GL_SelectVBO(0);
-//	GL_SelectEBO(0);
-
-	while(shaderstate.lastpasstmus>0)
-	{
-		GL_LazyBind(--shaderstate.lastpasstmus, 0, r_nulltex);
-	}
-	GL_SelectTexture(0);
-
-#ifndef GLSLONLY
-	if (!gl_config_nofixedfunc)
-	{
-		BE_SetPassBlendMode(0, PBM_REPLACE);
-		qglColor4f(1,1,1,1);
-
-		GL_DeSelectProgram();
-	}
-#endif
-
-	shaderstate.shaderbits &= ~(SBITS_DEPTHFUNC_BITS|SBITS_MASK_BITS|SBITS_AFFINE);
-	shaderstate.shaderbits |= SBITS_MISC_DEPTHWRITE;
-
-	shaderstate.shaderbits &= ~(SBITS_BLEND_BITS);
-	qglDisable(GL_BLEND);
-
-	qglDepthFunc(GL_LEQUAL);
-	qglDepthMask(GL_TRUE);
-
-	qglColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-}
-
-void PPL_RevertToKnownState(void)
-{
-	RevertToKnownState();
-}
-
 #ifdef RTLIGHTS
 void GLBE_SetupForShadowMap(dlight_t *dl, int texwidth, int texheight, float shadowscale)
 {
@@ -1107,7 +1065,7 @@ qboolean GLBE_BeginShadowMap(int id, int w, int h, uploadfmt_t encoding, int *re
 	if (!gl_config.ext_framebuffer_objects)
 		return false;
 
-	if (!TEXVALID(shadowmap[id]) || shadowmap[id]->width != w || shadowmap[id]->height != h || shadowmap[id]->format != encoding)
+	if (!TEXVALID(shadowmap[id]) || shadowmap[id]->width != w || shadowmap[id]->height != h || shadowmap[id]->format != encoding || shadowmap[id]->status != TEX_LOADED)
 	{
 		texid_t tex;
 		if (shadowmap[id])
@@ -1512,7 +1470,7 @@ void GenerateFogTexture(texid_t *tex, float density, float zscale)
 
 	if (!TEXVALID(*tex))
 		*tex = Image_CreateTexture("***fog***", NULL, IF_CLAMP|IF_NOMIPMAP);
-	Image_Upload(*tex, TF_RGBA32, fogdata, NULL, FOGS, FOGT, IF_CLAMP|IF_NOMIPMAP);
+	Image_Upload(*tex, TF_RGBA32, fogdata, NULL, FOGS, FOGT, 1, IF_CLAMP|IF_NOMIPMAP);
 }
 
 void GLBE_DestroyFBOs(void)
@@ -1648,7 +1606,11 @@ void GLBE_Init(void)
 	shaderstate.identitylighting = 1;
 	shaderstate.identitylightmap = 1;
 	for (i = 0; i < MAXRLIGHTMAPS; i++)
+	{
 		shaderstate.dummybatch.lightmap[i] = -1;
+		shaderstate.dummybatch.lmlightstyle[i] = INVALID_LIGHTSTYLE;
+		shaderstate.dummybatch.vtlightstyle[i] = ~0;
+	}
 
 #ifdef RTLIGHTS
 	Sh_CheckSettings();
@@ -1848,7 +1810,7 @@ static float *tcgen3(const shaderpass_t *pass, int cnt, float *dst, const mesh_t
 		for (i = 0; i < cnt; i++, dst += 3)
 		{
 			dst[0] = src[i][0] - r_refdef.vieworg[0];
-			dst[1] = r_refdef.vieworg[1] - src[i][1];
+			dst[1] = src[i][1] - r_refdef.vieworg[1];
 			dst[2] = src[i][2] - r_refdef.vieworg[2];
 		}
 		return dst-cnt*3;
@@ -3580,6 +3542,13 @@ static void BE_Program_Set_Attributes(const program_t *prog, struct programpermu
 				qglUniformMatrix4fvARB(ph, 1, false, inv);
 			}
 			break;
+		case SP_M_INVMODELVIEW:
+			{
+				float inv[9];
+				Matrix3x4_InvertTo3x3(shaderstate.modelviewmatrix, inv);
+				qglUniformMatrix3fvARB(ph, 1, false, inv);
+			}
+			break;
 		case SP_M_MODEL:
 			qglUniformMatrix4fvARB(ph, 1, false, shaderstate.modelmatrix);
 			break;
@@ -3880,12 +3849,21 @@ static void BE_Program_Set_Attributes(const program_t *prog, struct programpermu
 		case SP_E_TIME:
 			qglUniform1fARB(ph, shaderstate.curtime);
 			break;
-		case SP_CONSTI:
+		case SP_CONST1I:
 		case SP_TEXTURE:
-			qglUniform1iARB(ph, p->ival);
+			qglUniform1iARB(ph, p->ival[0]);
 			break;
-		case SP_CONSTF:
-			qglUniform1fARB(ph, p->fval);
+		case SP_CONST1F:
+			qglUniform1fARB(ph, p->fval[0]);
+			break;
+		case SP_CONST2F:
+			qglUniform3fARB(ph, p->fval[0], p->fval[1], 0);
+			break;
+		case SP_CONST3F:
+			qglUniform3fARB(ph, p->fval[0], p->fval[1], p->fval[2]);
+			break;
+		case SP_CONST4F:
+			qglUniform4fARB(ph, p->fval[0], p->fval[1], p->fval[2], p->fval[3]);
 			break;
 		case SP_CVARI:
 			qglUniform1iARB(ph, ((cvar_t*)p->pval)->ival);
@@ -3894,17 +3872,10 @@ static void BE_Program_Set_Attributes(const program_t *prog, struct programpermu
 			qglUniform1fARB(ph, ((cvar_t*)p->pval)->value);
 			break;
 		case SP_CVAR3F:
-			{
-				cvar_t *var = (cvar_t*)p->pval;
-				char *vs = var->string;
-				vs = COM_Parse(vs);
-				param4[0] = atof(com_token);
-				vs = COM_Parse(vs);
-				param4[1] = atof(com_token);
-				vs = COM_Parse(vs);
-				param4[2] = atof(com_token);
-				qglUniform3fvARB(ph, 1, param4);
-			}
+			qglUniform3fvARB(ph, 1, ((cvar_t*)p->pval)->vec4);
+			break;
+		case SP_CVAR4F:
+			qglUniform3fvARB(ph, 1, ((cvar_t*)p->pval)->vec4);
 			break;
 
 		default:
@@ -3972,7 +3943,7 @@ static void BE_RenderMeshProgram(const shader_t *shader, const shaderpass_t *pas
 	BE_SendPassBlendDepthMask(pass->shaderbits);
 
 #ifndef GLSLONLY
-	if (!p->nofixedcompat)
+	if (p->calcgens)
 	{
 		GenerateColourMods(pass);
 		for (i = 0; i < pass->numMergedPasses; i++)
@@ -3980,11 +3951,6 @@ static void BE_RenderMeshProgram(const shader_t *shader, const shaderpass_t *pas
 			Shader_BindTextureForPass(i, pass+i);
 			BE_GeneratePassTC(pass+i, i);
 		}
-		for (; i < shaderstate.lastpasstmus; i++)
-		{
-			GL_LazyBind(i, 0, r_nulltex);
-		}
-		shaderstate.lastpasstmus = pass->numMergedPasses;
 	}
 	else
 #endif
@@ -3993,21 +3959,22 @@ static void BE_RenderMeshProgram(const shader_t *shader, const shaderpass_t *pas
 		{
 			Shader_BindTextureForPass(i, pass+i);
 		}
-#if MAXRLIGHTMAPS > 1
-		if (perm & PERMUTATION_LIGHTSTYLES)
-		{
-			GL_LazyBind(i++, GL_TEXTURE_2D, shaderstate.curbatch->lightmap[1]>=0?lightmap[shaderstate.curbatch->lightmap[1]]->lightmap_texture:r_nulltex);
-			GL_LazyBind(i++, GL_TEXTURE_2D, shaderstate.curbatch->lightmap[2]>=0?lightmap[shaderstate.curbatch->lightmap[2]]->lightmap_texture:r_nulltex);
-			GL_LazyBind(i++, GL_TEXTURE_2D, shaderstate.curbatch->lightmap[3]>=0?lightmap[shaderstate.curbatch->lightmap[3]]->lightmap_texture:r_nulltex);
-			GL_LazyBind(i++, GL_TEXTURE_2D, (shaderstate.curbatch->lightmap[1]>=0&&lightmap[shaderstate.curbatch->lightmap[1]]->hasdeluxe)?lightmap[shaderstate.curbatch->lightmap[1]+1]->lightmap_texture:missing_texture_normal);
-			GL_LazyBind(i++, GL_TEXTURE_2D, (shaderstate.curbatch->lightmap[2]>=0&&lightmap[shaderstate.curbatch->lightmap[2]]->hasdeluxe)?lightmap[shaderstate.curbatch->lightmap[2]+1]->lightmap_texture:missing_texture_normal);
-			GL_LazyBind(i++, GL_TEXTURE_2D, (shaderstate.curbatch->lightmap[3]>=0&&lightmap[shaderstate.curbatch->lightmap[3]]->hasdeluxe)?lightmap[shaderstate.curbatch->lightmap[3]+1]->lightmap_texture:missing_texture_normal);
-		}
-#endif
-		while (shaderstate.lastpasstmus > i)
-			GL_LazyBind(--shaderstate.lastpasstmus, 0, r_nulltex);
-		shaderstate.lastpasstmus = i;	//in case it was already lower
 	}
+#if MAXRLIGHTMAPS > 1
+	if (perm & PERMUTATION_LIGHTSTYLES)
+	{
+		GL_LazyBind(i++, GL_TEXTURE_2D, shaderstate.curbatch->lightmap[1]>=0?lightmap[shaderstate.curbatch->lightmap[1]]->lightmap_texture:r_nulltex);
+		GL_LazyBind(i++, GL_TEXTURE_2D, shaderstate.curbatch->lightmap[2]>=0?lightmap[shaderstate.curbatch->lightmap[2]]->lightmap_texture:r_nulltex);
+		GL_LazyBind(i++, GL_TEXTURE_2D, shaderstate.curbatch->lightmap[3]>=0?lightmap[shaderstate.curbatch->lightmap[3]]->lightmap_texture:r_nulltex);
+		GL_LazyBind(i++, GL_TEXTURE_2D, (shaderstate.curbatch->lightmap[1]>=0&&lightmap[shaderstate.curbatch->lightmap[1]]->hasdeluxe)?lightmap[shaderstate.curbatch->lightmap[1]+1]->lightmap_texture:missing_texture_normal);
+		GL_LazyBind(i++, GL_TEXTURE_2D, (shaderstate.curbatch->lightmap[2]>=0&&lightmap[shaderstate.curbatch->lightmap[2]]->hasdeluxe)?lightmap[shaderstate.curbatch->lightmap[2]+1]->lightmap_texture:missing_texture_normal);
+		GL_LazyBind(i++, GL_TEXTURE_2D, (shaderstate.curbatch->lightmap[3]>=0&&lightmap[shaderstate.curbatch->lightmap[3]]->hasdeluxe)?lightmap[shaderstate.curbatch->lightmap[3]+1]->lightmap_texture:missing_texture_normal);
+	}
+#endif
+	while (shaderstate.lastpasstmus > i)
+		GL_LazyBind(--shaderstate.lastpasstmus, 0, r_nulltex);
+	shaderstate.lastpasstmus = i;
+
 	BE_EnableShaderAttributes(permu->attrmask, shaderstate.sourcevbo->vao);
 	BE_SubmitMeshChain(permu->h.glsl.usetesselation);
 }
@@ -4205,6 +4172,8 @@ void GLBE_SelectEntity(entity_t *ent)
 		nd = 1;
 	if (shaderstate.depthrange != nd)
 	{
+		shaderstate.depthrange = nd;
+
 		if (nd < 1)
 			memcpy(shaderstate.projectionmatrix, r_refdef.m_projection_view, sizeof(shaderstate.projectionmatrix));
 		else
@@ -4215,12 +4184,6 @@ void GLBE_SelectEntity(entity_t *ent)
 			qglLoadMatrixf(shaderstate.projectionmatrix);
 			qglMatrixMode(GL_MODELVIEW);
 		}
-
-		shaderstate.depthrange = nd;
-//		if (qglDepthRange)
-//			qglDepthRange (gldepthmin, gldepthmin + shaderstate.depthrange*(gldepthmax-gldepthmin));
-//		else if (qglDepthRangef)
-//			qglDepthRangef (gldepthmin, gldepthmin + shaderstate.depthrange*(gldepthmax-gldepthmin));
 	}
 
 	shaderstate.lastuniform = 0;
@@ -5570,10 +5533,21 @@ void GLBE_SubmitMeshes (batch_t **worldbatches, int start, int stop)
 	}
 }
 
-static void BE_UpdateLightmaps(void)
+#if (defined(GLQUAKE) || defined(VKQUAKE)) && defined(MULTITHREAD)
+#define THREADEDWORLD
+#endif
+
+void GLBE_UpdateLightmaps(void)
 {
 	lightmapinfo_t *lm;
 	int lmidx;
+
+#ifdef THREADEDWORLD
+	extern int webo_blocklightmapupdates;
+	if (webo_blocklightmapupdates == 3)
+		return;	//we've not had a new scene to render yet. don't bother uploading while something's still painting, its going to be redundant.
+	webo_blocklightmapupdates |= 2;	//FIXME: round-robin it? one lightmap per frame?
+#endif
 
 	for (lmidx = 0; lmidx < numlightmaps; lmidx++)
 	{
@@ -5597,7 +5571,20 @@ static void BE_UpdateLightmaps(void)
 				GL_MTBind(0, GL_TEXTURE_2D, lm->lightmap_texture);
 				qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 				qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-				qglTexImage2D(GL_TEXTURE_2D, 0, gl_config.formatinfo[lm->fmt].internalformat,	lm->width, lm->height, 0, gl_config.formatinfo[lm->fmt].format, gl_config.formatinfo[lm->fmt].type,	lm->lightmaps);
+				if (qglTexStorage2D && gl_config.formatinfo[lm->fmt].sizedformat)
+				{
+					qglTexStorage2D(GL_TEXTURE_2D, 1, gl_config.formatinfo[lm->fmt].sizedformat, lm->width, lm->height);
+					if (lm->pbo_handle)
+					{
+						qglBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, lm->pbo_handle);
+						qglTexSubImage2D(GL_TEXTURE_2D, 0, 0, t, lm->width, b-t, gl_config.formatinfo[lm->fmt].format, gl_config.formatinfo[lm->fmt].type, (char*)NULL + t*lm->width*lm->pixbytes);
+						qglBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, 0);
+					}
+					else
+						qglTexSubImage2D(GL_TEXTURE_2D, 0, 0, t, lm->width, b-t, gl_config.formatinfo[lm->fmt].format, gl_config.formatinfo[lm->fmt].type, lm->lightmaps+t*lm->width*lm->pixbytes);
+				}
+				else
+					qglTexImage2D(GL_TEXTURE_2D, 0, gl_config.formatinfo[lm->fmt].internalformat,	lm->width, lm->height, 0, gl_config.formatinfo[lm->fmt].format, gl_config.formatinfo[lm->fmt].type,	lm->lightmaps);
 
 				if (gl_config.glversion >= (gl_config.gles?3.0:3.3))
 				{
@@ -5606,14 +5593,30 @@ static void BE_UpdateLightmaps(void)
 					qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, gl_config.formatinfo[lm->fmt].swizzle_b);
 					qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, gl_config.formatinfo[lm->fmt].swizzle_a);
 				}
+
+				//for completeness.
+				lm->lightmap_texture->format = lm->fmt;
+				lm->lightmap_texture->width = lm->width;
+				lm->lightmap_texture->height = lm->height;
+				lm->lightmap_texture->depth = 1;
+				lm->lightmap_texture->status = TEX_LOADED;
 			}
 			else
 			{
 				GL_MTBind(0, GL_TEXTURE_2D, lm->lightmap_texture);
+
+
 #ifdef __ANDROID__
             if (gl_config.formatinfo[lm->fmt].type) // BGRX format is invalid
 #endif
-				qglTexSubImage2D(GL_TEXTURE_2D, 0, 0, t, lm->width, b-t, gl_config.formatinfo[lm->fmt].format, gl_config.formatinfo[lm->fmt].type, lm->lightmaps+t*lm->width*lm->pixbytes);
+				if (lm->pbo_handle)
+				{
+					qglBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, lm->pbo_handle);
+					qglTexSubImage2D(GL_TEXTURE_2D, 0, 0, t, lm->width, b-t, gl_config.formatinfo[lm->fmt].format, gl_config.formatinfo[lm->fmt].type, (char*)NULL + t*lm->width*lm->pixbytes);
+					qglBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, 0);
+				}
+				else
+					qglTexSubImage2D(GL_TEXTURE_2D, 0, 0, t, lm->width, b-t, gl_config.formatinfo[lm->fmt].format, gl_config.formatinfo[lm->fmt].type, lm->lightmaps+t*lm->width*lm->pixbytes);
 			}
 			lm->modified = false;
 			lm->rectchange.l = lm->width;
@@ -5671,10 +5674,7 @@ void GLBE_RenderToTextureUpdate2d(qboolean destchanged)
 		shaderstate.tex_sourcecol = R2D_RT_GetTexture(r_refdef.rt_sourcecolour.texname, &width, &height);
 		shaderstate.tex_sourcedepth = R2D_RT_GetTexture(r_refdef.rt_depth.texname, &width, &height);
 
-		if (*r_refdef.nearenvmap.texname)
-			shaderstate.tex_reflectcube = Image_GetTexture(r_refdef.nearenvmap.texname, NULL, IF_TEXTYPE_CUBE, NULL, NULL, 0, 0, TF_INVALID);
-		else
-			shaderstate.tex_reflectcube = r_nulltex;
+		shaderstate.tex_reflectcube = R_GetDefaultEnvmap();
 	}
 }
 void GLBE_FBO_Sources(texid_t sourcecolour, texid_t sourcedepth)
@@ -5792,7 +5792,7 @@ int GLBE_BeginRenderBuffer_DepthOnly(texid_t depthtexture)
 //state->colour is created if usedepth is set and it doesn't previously exist
 int GLBE_FBO_Update(fbostate_t *state, unsigned int enables, texid_t *destcol, int mrt, texid_t destdepth, int width, int height, int layer)
 {
-	GLenum allcolourattachments[] ={GL_COLOR_ATTACHMENT0_EXT,GL_COLOR_ATTACHMENT1_EXT,GL_COLOR_ATTACHMENT2_EXT,GL_COLOR_ATTACHMENT3_EXT,
+	static GLenum allcolourattachments[] ={GL_COLOR_ATTACHMENT0_EXT,GL_COLOR_ATTACHMENT1_EXT,GL_COLOR_ATTACHMENT2_EXT,GL_COLOR_ATTACHMENT3_EXT,
 									GL_COLOR_ATTACHMENT4_EXT,GL_COLOR_ATTACHMENT5_EXT,GL_COLOR_ATTACHMENT6_EXT,GL_COLOR_ATTACHMENT7_EXT};
 	int i;
 	int old;
@@ -6321,7 +6321,7 @@ void GLBE_DrawWorld (batch_t **worldbatches)
 //	else
 //		shaderstate.updatetime = cl.servertime;
 
-	BE_UpdateLightmaps();
+	GLBE_UpdateLightmaps();
 	if (worldbatches)
 	{
 		if (worldbatches[SHADER_SORT_SKY] && r_refdef.skyroom_enabled)

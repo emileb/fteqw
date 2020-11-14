@@ -1584,7 +1584,7 @@ static qboolean FSZIP_ReadCentralEntry(zipfile_t *zip, qbyte *data, struct zipce
 	entry->gflags = LittleU2FromPtr(data+8);
 	entry->cmethod = LittleU2FromPtr(data+10);
 	entry->lastmodfiletime = LittleU2FromPtr(data+12);
-	entry->lastmodfiledate = LittleU2FromPtr(data+12);
+	entry->lastmodfiledate = LittleU2FromPtr(data+14);
 	entry->crc32 = LittleU4FromPtr(data+16);
 	entry->csize = LittleU4FromPtr(data+20);
 	entry->usize = LittleU4FromPtr(data+24);
@@ -1669,6 +1669,19 @@ static qboolean FSZIP_ReadCentralEntry(zipfile_t *zip, qbyte *data, struct zipce
 					entry->mtime = LittleU4FromPtr(extra+1);
 				//access and creation do NOT exist in the central header.
 				extra += extrachunk_len;
+				break;
+			case 0x7075:	//unicode (utf-8) filename replacements.
+				if (extra[0] == 1)	//version
+				{
+					//if (LittleU4FromPtr(extra+1) == qcrc32(?,entry->fname, entry->fnane_len))
+					{
+						entry->fname = extra+5;
+						entry->fnane_len = extrachunk_len-5;
+						extra += extrachunk_len;
+
+						entry->gflags |= (1u<<11);	//just set that flag. we don't support comments anyway.
+					}
+				}
 				break;
 			default:
 /*				Con_Printf("Unknown chunk %x\n", extrachunk_tag);

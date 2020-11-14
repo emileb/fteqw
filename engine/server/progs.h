@@ -29,7 +29,13 @@ void SVQ1_CvarChanged(cvar_t *var);
 void Q_SetProgsParms(qboolean forcompiler);
 void PR_Deinit(void);	//server shutting down
 void PR_LoadGlabalStruct(qboolean muted);
-void Q_InitProgs(qboolean cinematic);
+enum initprogs_e
+{
+	INITPROGS_NORMAL	= 0,
+	INITPROGS_EDITOR	= 1<<0,
+	INITPROGS_REQUIRE	= 1<<1,
+};
+void Q_InitProgs(enum initprogs_e flags);
 void PR_SpawnInitialEntities(const char *file);
 void PR_RegisterFields(void);
 void PR_Init(void);
@@ -53,7 +59,7 @@ extern int compileactive;
 typedef enum {PROG_NONE, PROG_QW, PROG_NQ, PROG_H2, PROG_PREREL, PROG_TENEBRAE, PROG_UNKNOWN} progstype_t;	//unknown obtains NQ behaviour
 extern progstype_t progstype;
 
-#include "progslib.h"
+#include "../qclib/progslib.h"
 
 typedef struct edict_s
 {

@@ -14,7 +14,7 @@ Decal functions
 #define MAXFRAGMENTVERTS 360
 int Fragment_ClipPolyToPlane(float *inverts, float *outverts, int incount, float *plane, float planedist)
 {
-#define C 4
+#define C (sizeof(vecV_t)/sizeof(vec_t))
 	float dotv[MAXFRAGMENTVERTS+1];
 	char keep[MAXFRAGMENTVERTS+1];
 #define KEEP_KILL 0
@@ -94,7 +94,7 @@ size_t Fragment_ClipPlaneToBrush(vecV_t *points, size_t maxpoints, void *planes,
 	vec3_t right, forward;
 	double t;
 	float *plane;
-	
+
 //	if (face[2] != 1)
 //		return 0;
 
@@ -142,7 +142,7 @@ size_t Fragment_ClipPlaneToBrush(vecV_t *points, size_t maxpoints, void *planes,
 				numverts = Fragment_ClipPolyToPlane((float*)verts, (float*)verts2, numverts, norm, -plane[3]);
 			else
 				numverts = Fragment_ClipPolyToPlane((float*)verts2, (float*)verts, numverts, norm, -plane[3]);
-	
+
 			if (numverts < 3)	//totally clipped.
 				return 0;
 		}
@@ -619,15 +619,16 @@ void Mod_ClipDecal(struct model_s *mod, vec3_t center, vec3_t normal, vec3_t tan
 
 	sh_shadowframe++;
 
-	if (!mod || mod->loadstate != MLS_LOADED || mod->type != mod_brush)
-	{
-	}
+	if (!mod || mod->loadstate != MLS_LOADED)
+		return;
+	else if (mod->type != mod_brush)
+		;
 #ifdef Q1BSPS
 	else if (mod->fromgame == fg_quake || mod->fromgame == fg_halflife)
 		Q1BSP_ClipDecalToNodes(mod, &dec, mod->rootnode);
 #endif
 #ifdef Q3BSPS
-	else if (cl.worldmodel->fromgame == fg_quake3)
+	else if (mod->fromgame == fg_quake3)
 	{
 		if (mod->submodelof)
 		{
@@ -641,7 +642,7 @@ void Mod_ClipDecal(struct model_s *mod, vec3_t center, vec3_t normal, vec3_t tan
 #endif
 
 #ifdef TERRAIN
-	if (cl.worldmodel && cl.worldmodel->terrain)
+	if (mod->terrain)
 		Terrain_ClipDecal(&dec, center, dec.radius, mod);
 #endif
 }
@@ -1498,7 +1499,7 @@ void Q1BSP_LoadBrushes(model_t *model, bspx_header_t *bspx, void *mod_base)
 				brush->planes[brush->numplanes].dist = -perbrush->mins[pl];
 				brush->numplanes++;
 			}
-			
+
 			/*link it in to the bsp tree*/
 			Q1BSP_InsertBrush(rootnode, brush, perbrush->mins, perbrush->maxs);
 
@@ -1727,7 +1728,7 @@ Rendering functions (Client only)
 extern int	r_dlightframecount;
 
 //goes through the nodes marking the surfaces near the dynamic light as lit.
-void Q1BSP_MarkLights (dlight_t *light, int bit, mnode_t *node)
+void Q1BSP_MarkLights (dlight_t *light, dlightbitmask_t bit, mnode_t *node)
 {
 	mplane_t	*splitplane;
 	float		dist;
@@ -1807,7 +1808,7 @@ static qbyte *Q1BSP_ClusterPVS (model_t *model, int cluster, pvsbuffer_t *buffer
 static void SV_Q1BSP_AddToFatPVS (model_t *mod, const vec3_t org, mnode_t *node, pvsbuffer_t *pvsbuffer)
 {
 	mplane_t	*plane;
-	float	d; 
+	float	d;
 
 	while (1)
 	{
@@ -2760,7 +2761,7 @@ void Mod_FindCubemaps_f(void)
 		size_t	nenvmap = 0;
 		unsigned int *envmapidx = NULL;	//*numsurfaces
 		size_t nenvmapidx = 0, i;
-		
+
 		//find targetnames, and store their origins so that we can deal with spotlights.
 		for (lmp = entlump; ;)
 		{
@@ -2808,7 +2809,7 @@ void Mod_FindCubemaps_f(void)
 				else if (!strcmp("size", key))
 					sscanf(value, "%f", &size);
 			}
-			
+
 			if (isenvmap)
 			{
 				int e = nenvmap;

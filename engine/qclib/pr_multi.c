@@ -27,7 +27,7 @@ pbool PR_SwitchProgs(progfuncs_t *progfuncs, progsnum_t type)
 			current_progstate = NULL;
 			return true;
 		}
-		PR_RunError(&progfuncs->funcs, "QCLIB: Bad prog type - %i", type);
+		PR_RunError(&progfuncs->funcs, "QCLIB: Bad prog type - %"pPRIi, type);
 //		Sys_Error("Bad prog type - %i", type);
 	}
 
@@ -47,7 +47,7 @@ pbool PR_SwitchProgsParms(progfuncs_t *progfuncs, progsnum_t newpr)	//from 2 to 
 	unsigned int a;
 	progstate_t *np;
 	progstate_t *op;
-	int oldpr = prinst.pr_typecurrent;
+	progsnum_t oldpr = prinst.pr_typecurrent;
 
 	if (newpr == oldpr)
 	{
@@ -60,7 +60,7 @@ pbool PR_SwitchProgsParms(progfuncs_t *progfuncs, progsnum_t newpr)	//from 2 to 
 
 	if ((unsigned)newpr >= prinst.maxprogs || !np->globals)
 	{
-		externs->Printf("QCLIB: Bad prog type - %i", newpr);
+		externs->Printf("QCLIB: Bad prog type - %"pPRIi, newpr);
 		return false;
 	}
 	if ((unsigned)oldpr >= prinst.maxprogs || !op->globals)	//startup?
@@ -244,7 +244,7 @@ int PDECL QC_RegisterFieldVar(pubprogfuncs_t *ppf, unsigned int type, const char
 			prinst.reorganisefields = 2;
 		else if (engineofs)
 		{
-			progfuncs->funcs.fieldadjust = prinst.fields_size/4;
+			progfuncs->funcs.fieldadjust = prinst.fields_size/sizeof(pvec_t);
 #ifdef MAPPING_DEBUG
 			externs->Printf("FIELD ADJUST: %i %i %i\n", progfuncs->funcs.fieldadjust, prinst.fields_size, (int)prinst.fields_size/4);
 #endif
@@ -329,7 +329,7 @@ int PDECL QC_RegisterFieldVar(pubprogfuncs_t *ppf, unsigned int type, const char
 	}
 	else
 	{	//we just found a new fieldname inside a progs
-		prinst.field[fnum].ofs = ofs = prinst.fields_size/4;	//add on the end
+		prinst.field[fnum].ofs = ofs = prinst.fields_size/sizeof(pvec_t);	//add on the end
 
 		//if the progs field offset matches annother offset in the same progs, make it match up with the earlier one.
 		if (progsofs>=0)
@@ -368,8 +368,11 @@ int PDECL QC_RegisterFieldVar(pubprogfuncs_t *ppf, unsigned int type, const char
 		}
 	}
 //	if (type != ev_vector)
-		if (prinst.fields_size < (ofs+type_size[type])*4)
-			prinst.fields_size = (ofs+type_size[type])*4;
+		if (prinst.fields_size < (ofs+type_size[type])*sizeof(pvec_t))
+		{
+			prinst.fields_size = (ofs+type_size[type])*sizeof(pvec_t);
+			progfuncs->funcs.activefieldslots = prinst.fields_size/sizeof(pvec_t);
+		}
 
 	if (prinst.max_fields_size && prinst.fields_size > prinst.max_fields_size)
 		externs->Sys_Error("Allocated too many additional fields after ents were inited.");
@@ -475,6 +478,7 @@ void PDECL QC_AddSharedFieldVar(pubprogfuncs_t *ppf, int num, char *stringtable)
 		return;
 	case PST_FTE32:
 	case PST_QTEST:
+	case PST_UHEXEN2:
 		{
 			ddef32_t *gd = pr_globaldefs32;
 			ddef32_t *fld = pr_fielddefs32;

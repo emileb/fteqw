@@ -10,12 +10,12 @@ COMPILE_SYS:=$(shell uname -o 2>&1)
 
 #canonicalize the source path. except emscripten warns about that like crazy. *sigh*
 ifeq ($(FTE_TARGET),web)
-	BASE_DIR:=.
+    BASE_DIR:=.
 else ifeq ($(FTE_TARGET),droid)
 	#android tools suck, but plugins need to find the engine directory.
-	BASE_DIR:=../engine
+    BASE_DIR:=../engine
 else
-	BASE_DIR:=$(realpath .)
+    BASE_DIR:=$(realpath .)
 endif
 
 ifeq ($(SVNREVISION),)
@@ -75,12 +75,12 @@ DEBUG_DIR=$(BASE_DIR)/debug
 PROFILE_DIR=$(BASE_DIR)/profile
 NATIVE_ABSBASE_DIR:=$(realpath $(BASE_DIR))
 ifeq ($(COMPILE_SYS),Cygwin)
-	OUT_DIR?=.
-	NATIVE_OUT_DIR:=$(shell cygpath -m $(OUT_DIR))
-	NATIVE_BASE_DIR:=$(shell cygpath -m $(BASE_DIR))
-	NATIVE_RELEASE_DIR:=$(shell cygpath -m $(RELEASE_DIR))
-	NATIVE_DEBUG_DIR:=$(shell cygpath -m $(DEBUG_DIR))
-	NATIVE_ABSBASE_DIR:=$(shell cygpath -m $(NATIVE_ABSBASE_DIR))
+    OUT_DIR?=.
+    NATIVE_OUT_DIR:=$(shell cygpath -m $(OUT_DIR))
+    NATIVE_BASE_DIR:=$(shell cygpath -m $(BASE_DIR))
+    NATIVE_RELEASE_DIR:=$(shell cygpath -m $(RELEASE_DIR))
+    NATIVE_DEBUG_DIR:=$(shell cygpath -m $(DEBUG_DIR))
+    NATIVE_ABSBASE_DIR:=$(shell cygpath -m $(NATIVE_ABSBASE_DIR))
 endif
 NATIVE_OUT_DIR?=$(OUT_DIR)
 NATIVE_BASE_DIR?=$(BASE_DIR)
@@ -91,56 +91,56 @@ EXE_NAME=fteqw
 
 #include the appropriate games.
 ifneq (,$(BRANDING))
-	BRANDFLAGS+=-DBRANDING_INC=../game_$(BRANDING).h
-	-include game_$(BRANDING).mak
+    BRANDFLAGS+=-DBRANDING_INC=../game_$(BRANDING).h
+    -include game_$(BRANDING).mak
 endif
 FTE_CONFIG?=fteqw
 ifneq ($(FTE_TARGET),vc)
 ifeq (,$(FTE_CONFIG_EXTRA))
-	export FTE_CONFIG_EXTRA := $(shell $(CC) -xc -E -P -DFTE_TARGET_$(FTE_TARGET) -DCOMPILE_OPTS common/config_$(FTE_CONFIG).h)
+    export FTE_CONFIG_EXTRA := $(shell $(CC) -xc -E -P -DFTE_TARGET_$(FTE_TARGET) -DCOMPILE_OPTS common/config_$(FTE_CONFIG).h)
 endif
 endif
 BRANDFLAGS+=-DCONFIG_FILE_NAME=config_$(FTE_CONFIG).h $(FTE_CONFIG_EXTRA)
 EXE_NAME=$(FTE_CONFIG)
 ifeq (,$(findstring DNO_SPEEX,$(FTE_CONFIG_EXTRA)))
-	USE_SPEEX?=1
+    USE_SPEEX?=1
 endif
 ifeq (,$(findstring DNO_OPUS,$(FTE_CONFIG_EXTRA)))
-	USE_OPUS=1
+    USE_OPUS=1
 endif
 ifeq (,$(findstring DNO_BOTLIB,$(FTE_CONFIG_EXTRA)))
-	USE_BOTLIB=1
+    USE_BOTLIB=1
 endif
 ifeq (,$(findstring DNO_VORBISFILE,$(FTE_CONFIG_EXTRA)))
-	USE_VORBISFILE=1
+    USE_VORBISFILE=1
 endif
 ifneq (,$(findstring DLINK_FREETYPE,$(FTE_CONFIG_EXTRA)))
-	LINK_FREETYPE=1
-	LINK_ZLIB=1
-	LINK_PNG=1
+    LINK_FREETYPE=1
+    LINK_ZLIB=1
+    LINK_PNG=1
 endif
 ifneq (,$(findstring DLINK_JPEG,$(FTE_CONFIG_EXTRA)))
-	LINK_JPEG=1
+    LINK_JPEG=1
 endif
 ifneq (,$(findstring DLINK_PNG,$(FTE_CONFIG_EXTRA)))
-	LINK_ZLIB=1
-	LINK_PNG=1
+    LINK_ZLIB=1
+    LINK_PNG=1
 endif
 ifneq (,$(findstring -Os,$(FTE_CONFIG_EXTRA)))
-	CPUOPTIMIZATIONS+=-Os
-	BRANDFLAGS:=$(filter-out -O%,$(BRANDFLAGS))
+    CPUOPTIMIZATIONS+=-Os
+    BRANDFLAGS:=$(filter-out -O%,$(BRANDFLAGS))
 endif
 ifneq (,$(findstring DLINK_INTERNAL_BULLET,$(FTE_CONFIG_EXTRA)))
-	INTERNAL_BULLET=1	#bullet plugin will be built into the exe itself
+    INTERNAL_BULLET=1	#bullet plugin will be built into the exe itself
 endif
 
 ifeq ($(BITS),64)
-	CC:=$(CC) -m64
-	CXX:=$(CXX) -m64
+    CC:=$(CC) -m64
+    CXX:=$(CXX) -m64
 endif
 ifeq ($(BITS),32)
-	CC:=$(CC) -m32
-	CXX:=$(CXX) -m32
+    CC:=$(CC) -m32
+    CXX:=$(CXX) -m32
 endif
 
 #correct the gcc build when cross compiling
@@ -196,7 +196,7 @@ ifneq (,$(findstring win64,$(FTE_TARGET)))
 endif
 
 ifeq ($(FTE_TARGET),win32_sdl)
-	FTE_TARGET=win32_SDL
+    FTE_TARGET=win32_SDL
 endif
 
 USER_TARGET:=$(FTE_TARGET)
@@ -418,6 +418,14 @@ ifeq ($(FTE_TARGET),linux32)
 	STRIP=strip
 	BITS=32
 endif
+ifeq ($(FTE_TARGET),linuxx86)
+	FTE_TARGET=linux
+	CC=i686-linux-gnu-gcc
+	PKGCONFIG=i686-linux-gnu-pkg-config
+	CXX=i686-linux-gnu-g++
+	STRIP=i686-linux-gnu-strip
+	BITS=32
+endif
 ifeq ($(FTE_TARGET),linuxarmhf)
 	#debian's armhf is armv7, but armv6 works on RPI too.
 	FTE_TARGET=linux
@@ -460,7 +468,9 @@ endif
 ifeq ($(FTE_TARGET),cygwin)
 	FTE_TARGET=cyg
 endif
-
+ifeq ($(shell uname -s),OpenBSD)
+	PKGCONFIG=pkg-config
+endif
 
 ifeq ($(FTE_TARGET),) 	#user didn't specify prefered target
 	ifneq ($(shell uname 2>&1 | grep CYGWIN),)
@@ -628,15 +638,16 @@ else
 	endif
 	#foo:=$(shell echo ARCH is $(ARCH) 1>&2 )
 endif
-ARCHLIBS=$(NATIVE_ABSBASE_DIR)/libs-$(ARCH)
+ARCHLIBS:=$(NATIVE_ABSBASE_DIR)/libs-$(ARCH)
 
 #incase our compiler doesn't support it (mingw)
 ifeq ($(shell LANG=c $(CC) -rdynamic 2>&1 | grep unrecognized),)
 	DEBUG_CFLAGS+= -rdynamic
 endif
 
-PKGCONFIG=$(ARCH)-pkg-config
+PKGCONFIG?=$(ARCH)-pkg-config
 ifeq ($(shell which $(PKGCONFIG) 2> /dev/null),)
+	FFS:=$(shell echo $(PKGCONFIG) not found 1>&2 )
 	PKGCONFIG=/bin/true #don't end up using eg /usr/include when cross-compiling. makelibs is a valid workaround.
 endif
 #try to statically link
@@ -859,6 +870,7 @@ COMMON_OBJS = \
 	huff.o		\
 	md4.o 		\
 	sha1.o		\
+	sha2.o		\
 	log.o 		\
 	net_chan.o 		\
 	net_wins.o 		\
@@ -921,59 +933,75 @@ SERVERLIBFLAGS=$(COMMONLIBFLAGS)
 CLIENTLDDEPS=$(COMMONLDDEPS) $(LIBOPUS_LDFLAGS) $(LIBSPEEX_LDFLAGS) $(OGGVORBISLDFLAGS)
 SERVERLDDEPS=$(COMMONLDDEPS)
 ifeq (1,$(USE_OPUS))
-	LIBOPUS_STATIC=-DOPUS_STATIC
-	LIBOPUS_LDFLAGS=-lopus
-	ALL_CFLAGS+=-I/usr/include/opus
+    LIBOPUS_STATIC=-DOPUS_STATIC
+    LIBOPUS_LDFLAGS=-lopus
+    ALL_CFLAGS+=-I/usr/include/opus
 endif
 ifeq (1,$(USE_SPEEX))
-	LIBSPEEX_STATIC=-DSPEEX_STATIC
-	LIBSPEEX_LDFLAGS=-lspeex -lspeexdsp
+    LIBSPEEX_STATIC=-DSPEEX_STATIC
+    LIBSPEEX_LDFLAGS=-lspeex -lspeexdsp
 endif
 
 ifeq (1,$(USE_VORBISFILE))
-	OGGVORBISFILE_STATIC=-DLIBVORBISFILE_STATIC
+    OGGVORBISFILE_STATIC=-DLIBVORBISFILE_STATIC
 else
-	OGGVORBISLDFLAGS=
-	OGGVORBISFILE_STATIC=
+    OGGVORBISLDFLAGS=
+    OGGVORBISFILE_STATIC=
 endif
+
+#freetype is annoying.
 ifeq (1,$(LINK_FREETYPE))
-	CLIENTLIBFLAGS+=-DFREETYPE_STATIC
-	CLIENTLDDEPS+=-lfreetype
+    CLIENTLIBFLAGS+=-DFREETYPE_STATIC
+    CLIENTLDDEPS+=$(FREETYPE_LDFLAGS)
 endif
-FREETYPE_CFLAGS:=$(shell $(PKGCONFIG) freetype --cflags --silence-errors)
+ifneq ("$(wildcard $(ARCHLIBS))","")
+    #makelibs has been used. we know what to use here.
+    FREETYPE_CFLAGS:=
+    FREETYPE_LDFLAGS:=-lfreetype
+else
+    #we're using system libraries... lets hope pkg-config knows it and can handle any cross compiles.
+    FREETYPE_CFLAGS:=$(shell $(PKGCONFIG) freetype2 --cflags --silence-errors)
+    FREETYPE_LDFLAGS:=$(shell $(PKGCONFIG) freetype2 --libs --silence-errors)
+    ifeq (,$(FREETYPE_CFLAGS))
+        #system freetype headers not installed. don't try to include them!
+        FREETYPE_CFLAGS:=-DNO_FREETYPE
+        FREETYPE_LDFLAGS:=
+    endif
+endif
 ALL_CFLAGS+=$(FREETYPE_CFLAGS)
+
 ifeq (1,$(LINK_PNG))
-	CLIENTLIBFLAGS+=-DLIBPNG_STATIC
-	CLIENTLDDEPS+=-lpng
+    CLIENTLIBFLAGS+=-DLIBPNG_STATIC
+    CLIENTLDDEPS+=-lpng
 endif
 ifeq (1,$(LINK_JPEG))
-	CLIENTLIBFLAGS+=-DLIBJPEG_STATIC
-	CLIENTLDDEPS+=-ljpeg
+    CLIENTLIBFLAGS+=-DLIBJPEG_STATIC
+    CLIENTLDDEPS+=-ljpeg
 endif
 ifeq (1,$(LINK_ZLIB))
-	CLIENTLIBFLAGS+=-DZLIB_STATIC
-	CLIENTLDDEPS+=-lz
+    CLIENTLIBFLAGS+=-DZLIB_STATIC
+    CLIENTLDDEPS+=-lz
 endif
 ifeq (1,$(strip $(INTERNAL_BULLET)))
-	COMMON_OBJS+=com_phys_bullet.o
-	ALL_CFLAGS+=-I/usr/include/bullet -I$(ARCHLIBS)/bullet3-$(BULLETVER)/src
-	COMMONLDDEPS+=-lBulletDynamics -lBulletCollision -lLinearMath
-	LDCC=$(CXX)
-	MAKELIBS+=libs-$(ARCH)/libBulletDynamics.a
+    COMMON_OBJS+=com_phys_bullet.o
+    ALL_CFLAGS+=-I/usr/include/bullet -I$(ARCHLIBS)/bullet3-$(BULLETVER)/src
+    COMMONLDDEPS+=-lBulletDynamics -lBulletCollision -lLinearMath
+    LDCC=$(CXX)
+    MAKELIBS+=libs-$(ARCH)/libBulletDynamics.a
 endif
 
 #the defaults for sdl come first
 #CC_MACHINE:=$(shell $(CC) -dumpmachine)
 ifeq ($(FTE_TARGET),SDL2)
-	SDLCONFIG?=sdl2-config
-	FTE_FULLTARGET?=sdl2$(BITS)
+    SDLCONFIG?=sdl2-config
+    FTE_FULLTARGET?=sdl2$(BITS)
 endif
 ifeq ($(FTE_TARGET),SDL1)
-	SDLCONFIG?=sdl-config
-	FTE_FULLTARGET?=sdl1$(BITS)
+    SDLCONFIG?=sdl-config
+    FTE_FULLTARGET?=sdl1$(BITS)
 endif
 ifeq ($(FTE_TARGET),SDL)
-	FTE_FULLTARGET?=sdl$(BITS)
+    FTE_FULLTARGET?=sdl$(BITS)
 endif
 SDLCONFIG?=sdl-config
 FTE_FULLTARGET?=sdl$(FTE_TARGET)$(BITS)
@@ -989,10 +1017,10 @@ ifdef windir
 	M_LDFLAGS=$(MLDFLAGS) -lmingw32 -lws2_32 `$(SDLCONFIG) --static-libs`
 	SV_LDFLAGS=`$(SDLCONFIG) --static-libs`
 else
-	GL_LDFLAGS=$(GLLDFLAGS) $(IMAGELDFLAGS) `$(SDLCONFIG) --static-libs`
-	VK_LDFLAGS=$(VKLDFLAGS) $(IMAGELDFLAGS) `$(SDLCONFIG) --static-libs`
-	M_LDFLAGS=$(MLDFLAGS) $(IMAGELDFLAGS) `$(SDLCONFIG) --static-libs`
-	SV_LDFLAGS=`$(SDLCONFIG) --static-libs`
+	GL_LDFLAGS=$(GLLDFLAGS) $(IMAGELDFLAGS) `$(SDLCONFIG) --libs`
+	VK_LDFLAGS=$(VKLDFLAGS) $(IMAGELDFLAGS) `$(SDLCONFIG) --libs`
+	M_LDFLAGS=$(MLDFLAGS) $(IMAGELDFLAGS) `$(SDLCONFIG) --libs`
+	SV_LDFLAGS=`$(SDLCONFIG) --libs`
 endif
 GL_CFLAGS=-DFTE_SDL $(GLCFLAGS) `$(SDLCONFIG) --cflags`
 GLB_DIR=gl_$(FTE_FULLTARGET)
@@ -1307,6 +1335,8 @@ ifeq (win,$(findstring win,$(FTE_TARGET))$(findstring _SDL,$(FTE_TARGET)))
 	endif
 	#Note: for deterministic builds, the following line disables timestamps for import/export tables. This is UNSAFE if there are any PE files bound to the compiled PE file. Our plugin dlls are dynamically loaded so this should not be an issue for us.
 	BASELDFLAGS+=-Wl,--no-insert-timestamp
+	DEBUG_LDFLAGS=-Wl,--no-dynamicbase	#debug builds are useful for catching crashes. the resulting stack traces are not very useful if we don't even know what the base address should be.
+	RELEASE_LDFLAGS=-Wl,--dynamicbase	#release builds should attempt to use aslr
 
 	BASELDFLAGS+=-lcomctl32
 	EXEPOSTFIX=.exe
@@ -1392,7 +1422,7 @@ ifeq ($(FTE_TARGET),bsd)
 	GL_EXE_NAME=../$(EXE_NAME)-gl
 	GLCL_EXE_NAME=../$(EXE_NAME)-glcl
 	GL_LDFLAGS= -L/usr/local/lib $(GLLDFLAGS) $(XLDFLAGS) -lpthread
-	GL_CFLAGS=$(GLCFLAGS) -I/usr/local/include -I/usr/X11R6/include -I/usr/X11R6/include/freetype2
+	GL_CFLAGS=$(GLCFLAGS) -I/usr/local/include -I/usr/X11R6/include -I/usr/X11R6/include/freetype2 -DAUDIO_OSS
 	GLB_DIR=gl_bsd
 	GLCL_DIR=glcl_bsd
 
@@ -1400,7 +1430,7 @@ ifeq ($(FTE_TARGET),bsd)
 	M_EXE_NAME=../$(EXE_NAME)
 	MCL_EXE_NAME=../$(EXE_NAME)-cl
 	M_LDFLAGS= -L/usr/local/lib -L/usr/X11R6/lib $(GLLDFLAGS) $(XLDFLAGS) -lpthread
-	M_CFLAGS=$(VKCFLAGS) $(GLCFLAGS) -I/usr/local/include -I/usr/X11R6/include -I/usr/X11R6/include/freetype2 -DMULTITHREAD
+	M_CFLAGS=$(VKCFLAGS) $(GLCFLAGS) -I/usr/local/include -I/usr/X11R6/include -I/usr/X11R6/include/freetype2 -DMULTITHREAD -DAUDIO_OSS
 	MB_DIR=m_bsd
 	MCL_DIR=mcl_bsd
 
@@ -1441,7 +1471,13 @@ ifneq (,$(findstring linux,$(FTE_TARGET)))
 		HAVE_EGL=
 	endif
 
-	CL_CFLAGS=-DMULTITHREAD -DDYNAMIC_SDL $(HAVE_EGL) $(HAVE_WAYLAND) -DX11QUAKE
+	CL_CFLAGS=-DMULTITHREAD -DDYNAMIC_SDL $(HAVE_EGL) $(HAVE_WAYLAND) -DX11QUAKE -DAUDIO_PULSE -DAUDIO_ALSA -DAUDIO_OSS -DAUDIO_SDL
+	BASELDFLAGS+=-Wl,--warn-common
+	
+	ifeq ($(BITS),32)
+		CL_CFLAGS+=-D_LARGEFILE64_SOURCE
+		SV_CFLAGS+=-D_LARGEFILE64_SOURCE
+	endif
 	
 	QCC_DIR=linqcc$(BITS)
 	
@@ -1451,7 +1487,7 @@ ifneq (,$(findstring linux,$(FTE_TARGET)))
 	NPFTE_CFLAGS=$(NPFTECFLAGS) $(W32_CFLAGS) -DMULTITHREAD -fPIC -DDYNAMIC_LIBPNG -DDYNAMIC_LIBJPEG
 	NPFTEB_DIR=npfte_linux$(BITS)
 
-	GLCL_OBJS=$(GL_OBJS) $(D3DGL_OBJS) $(GLQUAKE_OBJS) $(BOTLIB_OBJS) gl_vidlinuxglx.o gl_vidwayland.o gl_videgl.o snd_alsa.o snd_linux.o snd_sdl.o cd_linux.o sys_linux.o sys_linux_threads.o
+	GLCL_OBJS=$(GL_OBJS) $(D3DGL_OBJS) $(GLQUAKE_OBJS) $(BOTLIB_OBJS) gl_vidlinuxglx.o gl_vidwayland.o gl_videgl.o snd_pulse.o snd_alsa.o snd_linux.o snd_sdl.o cd_linux.o sys_linux.o sys_linux_threads.o
 	GL_EXE_NAME=../$(EXE_NAME)-gl$(BITS)
 	GLCL_EXE_NAME=../$(EXE_NAME)-glcl$(BITS)
 	GL_LDFLAGS=$(GLLDFLAGS) $(XLDFLAGS)
@@ -1459,7 +1495,7 @@ ifneq (,$(findstring linux,$(FTE_TARGET)))
 	GLB_DIR=gl_linux$(BITS)
 	GLCL_DIR=glcl_linux$(BITS)
 
-	VKCL_OBJS=$(GL_OBJS) $(D3DGL_OBJS) $(GLQUAKE_OBJS) $(BOTLIB_OBJS) gl_vidlinuxglx.o gl_vidwayland.o gl_videgl.o snd_alsa.o snd_linux.o snd_sdl.o cd_linux.o sys_linux.o sys_linux_threads.o
+	VKCL_OBJS=$(GL_OBJS) $(D3DGL_OBJS) $(GLQUAKE_OBJS) $(BOTLIB_OBJS) gl_vidlinuxglx.o gl_vidwayland.o gl_videgl.o snd_pulse.o snd_alsa.o snd_linux.o snd_sdl.o cd_linux.o sys_linux.o sys_linux_threads.o
 	VK_EXE_NAME=../$(EXE_NAME)-vk$(BITS)
 	VKCL_EXE_NAME=../$(EXE_NAME)-vkcl$(BITS)
 	VK_LDFLAGS=$(GLLDFLAGS) $(XLDFLAGS)
@@ -1467,7 +1503,7 @@ ifneq (,$(findstring linux,$(FTE_TARGET)))
 	VKB_DIR=vk_linux$(BITS)
 	VKCL_DIR=vkcl_linux$(BITS)
 
-	MCL_OBJS=$(D3DGL_OBJS) $(GLQUAKE_OBJS) $(SOFTWARE_OBJS) $(BOTLIB_OBJS) gl_vidlinuxglx.o gl_vidwayland.o gl_videgl.o snd_linux.o snd_sdl.o snd_alsa.o cd_linux.o sys_linux.o sys_linux_threads.o
+	MCL_OBJS=$(D3DGL_OBJS) $(GLQUAKE_OBJS) $(SOFTWARE_OBJS) $(BOTLIB_OBJS) gl_vidlinuxglx.o gl_vidwayland.o gl_videgl.o snd_linux.o snd_sdl.o snd_pulse.o snd_alsa.o cd_linux.o sys_linux.o sys_linux_threads.o
 	M_EXE_NAME=../$(EXE_NAME)$(BITS)
 	MCL_EXE_NAME=../$(EXE_NAME)-cl$(BITS)
 	M_LDFLAGS=$(GL_LDFLAGS)
@@ -1606,7 +1642,7 @@ ifeq ($(FTE_TARGET),cyg)
 	GL_EXE_NAME=../$(EXE_NAME)-cyg-gl$(EXEPOSTFIX)
 	GLCL_EXE_NAME=../$(EXE_NAME)-cyg-glcl$(EXEPOSTFIX)
 	GL_LDFLAGS=$(GLLDFLAGS) $(XLDFLAGS) -lz -lltdl
-	GL_CFLAGS=$(GLCFLAGS) -I/usr/X11R6/include $(CLIENTLIBFLAGS) -DUSE_LIBTOOL
+	GL_CFLAGS=$(GLCFLAGS) -I/usr/X11R6/include $(CLIENTLIBFLAGS) -DUSE_LIBTOOL -DAUDIO_OSS
 	GLB_DIR=gl_cygwin
 	GLCL_DIR=glcl_cygwin
 
@@ -1614,7 +1650,7 @@ ifeq ($(FTE_TARGET),cyg)
 	M_EXE_NAME=../$(EXE_NAME)-cyg$(EXEPOSTFIX)
 	MCL_EXE_NAME=../$(EXE_NAME)-cyg-cl$(EXEPOSTFIX)
 	M_LDFLAGS=$(GLLDFLAGS) $(XLDFLAGS) -lz -lltdl
-	M_CFLAGS=$(GLCFLAGS) $(CLIENTLIBFLAGS) -DUSE_LIBTOOL
+	M_CFLAGS=$(GLCFLAGS) $(CLIENTLIBFLAGS) -DUSE_LIBTOOL -DAUDIO_OSS
 	MB_DIR=m_cygwin
 	MCL_DIR=mcl_cygwin
 
@@ -1663,13 +1699,18 @@ ifeq ($(FTE_TARGET),web)
 #	ASMJS_MEMORY?=1073741824 #1025mb
 #	ASMJS_MEMORY?=2147483648 #2048mb
 	WEB_MEMORY?=$(ASMJS_MEMORY)
-	JSLIBS=--js-library web/ftejslib.js -s LEGACY_GL_EMULATION=0
-	EMCC_ARGS=$(JSLIBS) $(WEB_PREJS) -s ERROR_ON_UNDEFINED_SYMBOLS=1
-	RELEASE_CFLAGS=-DOMIT_QCC -DGL_STATIC -DFTE_TARGET_WEB
-	DEBUG_CFLAGS=-g4 -DOMIT_QCC -DGL_STATIC -DFTE_TARGET_WEB
-	RELEASE_LDFLAGS=-O3	-s TOTAL_MEMORY=$(ASMJS_MEMORY) $(EMCC_ARGS) -s NO_FILESYSTEM=1
-#	RELEASE_LDFLAGS=-O1	-s TOTAL_MEMORY=$(WEB_MEMORY) $(EMCC_ARGS)
-	DEBUG_LDFLAGS=-O0 -g4 -s TOTAL_MEMORY=$(WEB_MEMORY) $(EMCC_ARGS) -s SAFE_HEAP=1 -s ALIASING_FUNCTION_POINTERS=0 -s ASSERTIONS=2 -s NO_FILESYSTEM=1
+	JSLIBS=--js-library web/ftejslib.js
+	EMCC_CFLAGS= -DFTE_TARGET_WEB
+	EMCC_LDFLAGS=$(EMCC_CFLAGS) $(JSLIBS) $(WEB_PREJS)
+	EMCC_CFLAGS+= -s BINARYEN_TRAP_MODE='clamp'		#fix bigfloat->int rounding crashes
+	EMCC_CFLAGS+= -s LEGACY_GL_EMULATION=0			#simplify the opengl wrappers.
+	EMCC_CFLAGS+= -s NO_FILESYSTEM=1				#we have our own.
+   	EMCC_LDFLAGS+=-s ERROR_ON_UNDEFINED_SYMBOLS=1	#fairly obvious. no runtime errors please.
+	RELEASE_CFLAGS=-DOMIT_QCC -DGL_STATIC $(EMCC_CFLAGS)
+	DEBUG_CFLAGS=-g4 -DOMIT_QCC -DGL_STATIC $(EMCC_CFLAGS)
+	RELEASE_LDFLAGS=-O3	-s TOTAL_MEMORY=$(ASMJS_MEMORY) $(EMCC_LDFLAGS)
+#	RELEASE_LDFLAGS=-O1	-s TOTAL_MEMORY=$(WEB_MEMORY) $(EMCC_LDFLAGS)
+	DEBUG_LDFLAGS=-O0 -g4 -s TOTAL_MEMORY=$(WEB_MEMORY) $(EMCC_LDFLAGS) -s SAFE_HEAP=1 -s ALIASING_FUNCTION_POINTERS=0 -s ASSERTIONS=2
 	CC?=emcc
 	CXX?=emcc
 	#BASELDFLAGS=
@@ -1712,9 +1753,9 @@ DEPCXX?=$(CXX)
 ARCH:=$(ARCH)
 BASELDFLAGS:=-L$(ARCHLIBS) $(BASELDFLAGS)
 
+default: help
 -include Makefile_private
 
-.default: help
 all: rel
 rel: sv-rel m-rel qcc-rel
 dbg: sv-dbg m-dbg qcc-dbg
@@ -1977,11 +2018,11 @@ m-profile:
 _qcc-tmp: $(REQDIR)
 	@$(MAKE) $(TYPE) EXE_NAME="$(EXE_NAME)$(EXEPOSTFIX)" PRECOMPHEADERS="" OUT_DIR="$(OUT_DIR)" WCFLAGS="$(CLIENT_ONLY_CFLAGS) $(WCFLAGS)" LDFLAGS="$(LDFLAGS) $(QCC_LDFLAGS)" OBJS="QCC_OBJS SOBJS"
 qcc-rel:
-	@$(MAKE) _qcc-tmp TYPE=_out-rel REQDIR=reldir EXE_NAME="../fteqcc$(BITS)" OUT_DIR="$(RELEASE_DIR)/$(NCDIRPREFIX)$(QCC_DIR)" SOBJS="qcctui.o $(if $(findstring win,$(FTE_TARGET)),fteqcc.o)"
+	@$(MAKE) _qcc-tmp TYPE=_out-rel REQDIR=reldir EXE_NAME="../fteqcc$(BITS)" OUT_DIR="$(RELEASE_DIR)/$(NCDIRPREFIX)$(QCC_DIR)" SOBJS="qcctui.o packager.o $(if $(findstring win,$(FTE_TARGET)),fteqcc.o)"
 qccgui-rel:
 	@$(MAKE) _qcc-tmp TYPE=_out-rel REQDIR=reldir EXE_NAME="../fteqccgui$(BITS)" LTO= OUT_DIR="$(RELEASE_DIR)/$(NCDIRPREFIX)$(QCC_DIR)gui" SOBJS="qccgui.o qccguistuff.o packager.o decomp.o fteqcc.o" LDFLAGS="$(LDFLAGS) -lole32 -lcomdlg32 -lcomctl32 -lshlwapi -mwindows"
 qcc-dbg:
-	@$(MAKE) _qcc-tmp TYPE=_out-dbg REQDIR=debugdir EXE_NAME="../fteqcc$(BITS)" OUT_DIR="$(DEBUG_DIR)/$(NCDIRPREFIX)$(QCC_DIR)" SOBJS="qcctui.o $(if $(findstring win,$(FTE_TARGET)),fteqcc.o)"
+	@$(MAKE) _qcc-tmp TYPE=_out-dbg REQDIR=debugdir EXE_NAME="../fteqcc$(BITS)" OUT_DIR="$(DEBUG_DIR)/$(NCDIRPREFIX)$(QCC_DIR)" SOBJS="qcctui.o packager.o $(if $(findstring win,$(FTE_TARGET)),fteqcc.o)"
 qccgui-dbg:
 	@$(MAKE) _qcc-tmp TYPE=_out-dbg REQDIR=debugdir EXE_NAME="../fteqccgui$(BITS)" LTO= OUT_DIR="$(DEBUG_DIR)/$(NCDIRPREFIX)$(QCC_DIR)gui" SOBJS="qccgui.o qccguistuff.o packager.o decomp.o fteqcc.o" LDFLAGS="$(LDFLAGS) -lole32 -lcomdlg32 -lcomctl32 -lshlwapi -mwindows"
 
@@ -2300,7 +2341,7 @@ libs-$(ARCH)/libspeexdsp.a:
 	-test -f libs-$(ARCH)/libspeexdsp.a || (mkdir -p libs-$(ARCH)/speex && cd libs-$(ARCH) && tar -xvzf ../speexdsp-$(SPEEXDSPVER).tar.gz && cd speexdsp-$(SPEEXDSPVER) && CFLAGS="$(CFLAGS) -Os" $(TOOLOVERRIDES) ./configure $(CONFIGARGS) && $(TOOLOVERRIDES) $(MAKE) && cp libspeexdsp/.libs/libspeexdsp.a ../ && cp -r include/speex/*.h ../speex/)
 
 libs-$(ARCH)/libfreetype.a libs-$(ARCH)/ft2build.h: libs-$(ARCH)/libpng.a libs-$(ARCH)/libpng.pc
-	test -f freetype-$(FREETYPEVER).tar.gz || wget https://download.savannah.gnu.org/releases/freetype/freetype-$(FREETYPEVER).tar.gz
+	test -f freetype-$(FREETYPEVER).tar.gz || wget https://download-mirror.savannah.gnu.org/releases/freetype/freetype-$(FREETYPEVER).tar.gz
 	-test -f libs-$(ARCH)/libfreetype.a || (mkdir -p libs-$(ARCH) && cd libs-$(ARCH) && tar -xvzf ../freetype-$(FREETYPEVER).tar.gz && cd freetype-$(FREETYPEVER) && PKG_CONFIG_LIBDIR=$(NATIVE_ABSBASE_DIR)/libs-$(ARCH) CFLAGS="$(CFLAGS) -Os" $(TOOLOVERRIDES) ./configure CPPFLAGS=-I$(NATIVE_ABSBASE_DIR)/libs-$(ARCH)/ LDFLAGS=-L$(NATIVE_ABSBASE_DIR)/libs-$(ARCH)/ $(CONFIGARGS) --with-zlib=yes --with-png=yes --with-bzip2=no --with-harfbuzz=no && $(TOOLOVERRIDES) $(MAKE) && cp objs/.libs/libfreetype.a ../ && cp -r include/* ../)
 
 libs-$(ARCH)/libBulletDynamics.a:
@@ -2314,9 +2355,13 @@ $(RELEASE_DIR)/httpserver$(BITS)$(EXEPOSTFIX): $(HTTP_OBJECTS)
 	$(CC) -o $@ -Icommon -Iclient -Iqclib -Igl -Iserver -DWEBSERVER -DWEBSVONLY -Dstricmp=strcasecmp -Dstrnicmp=strncasecmp -DNO_PNG $(HTTP_OBJECTS)
 httpserver: $(RELEASE_DIR)/httpserver$(BITS)$(EXEPOSTFIX)
 
-IQM_OBJECTS=../iqm/iqm.cpp
+IQM_OBJECTS=../iqm/iqm.cpp ../imgtool.c client/image.c ../plugins/models/gltf.c
 $(RELEASE_DIR)/iqm$(BITS)$(EXEPOSTFIX): $(IQM_OBJECTS)
-	$(CC) -o $@ $(IQM_OBJECTS) -static -lstdc++ -lm -Os
+ifdef windir
+	$(CC) -o $@ $(IQM_OBJECTS) -Icommon -Iclient -Iqclib -Igl -Iserver $(ALL_CFLAGS) $(CLIENTLIBFLAGS) -DIQMTOOL $(BASELDFLAGS) $(CLIENTLDDEPS) -static -lstdc++ -lm -Os
+else
+	$(CC) -o $@ $(IQM_OBJECTS) -Icommon -Iclient -Iqclib -Igl -Iserver $(ALL_CFLAGS) $(CLIENTLIBFLAGS) -DIQMTOOL $(BASELDFLAGS) $(CLIENTLDDEPS) -lstdc++ -lm -Os
+endif
 iqm-rel: $(RELEASE_DIR)/iqm$(BITS)$(EXEPOSTFIX)
 iqm: iqm-rel
 iqmtool: iqm-rel

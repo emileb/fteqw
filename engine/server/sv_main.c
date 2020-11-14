@@ -31,14 +31,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define INVIS_CHAR2 (char)138
 #define INVIS_CHAR3 (char)160
 
-#ifndef HAVE_CLIENT
-double		host_frametime;
-double		realtime;				// without any filtering or bounding
-qboolean	host_initialized;		// true if into command execution (compatability)
-quakeparms_t host_parms;
-int			host_hunklevel;
-#endif
-
 client_t	*host_client;			// current client
 
 void CvarPostfixKMG(cvar_t *v, char *oldval)
@@ -86,7 +78,8 @@ extern cvar_t	password;
 #endif
 cvar_t	spectator_password			= CVARF("spectator_password", "", CVAR_NOUNSAFEEXPAND);	// password for entering as a sepctator
 
-cvar_t	allow_download				= CVARAD("allow_download", "1", /*q3*/"sv_allowDownload", "If 1, permits downloading. Set to 0 to unconditionally block *ALL* downloads.");
+cvar_t	sv_dlURL					= CVARAFD(/*ioq3*/"sv_dlURL", "", /*dp*/"sv_curl_defaulturl", CVAR_SERVERINFO|CVAR_ARCHIVE, "Provides clients with an external url from which they can obtain pk3s/packages from an external http server instead of having to download over udp.");
+cvar_t	allow_download				= CVARAD("allow_download", "1", /*q3*/"sv_allowDownload", "If 1, permits downloading. Set to 0 to unconditionally block *ALL* downloads from this server. You may wish to set sv_dlURL if you wish clients to still be able to download content.");
 cvar_t	allow_download_skins		= CVARD("allow_download_skins", "1", "0 blocks downloading of any file in the skins/ directory");
 cvar_t	allow_download_models		= CVARD("allow_download_models", "1", "0 blocks downloading of any file in the progs/ or models/ directory");
 cvar_t	allow_download_sounds		= CVARD("allow_download_sounds", "1", "0 blocks downloading of any file in the sound/ directory");
@@ -111,7 +104,15 @@ extern cvar_t sv_allow_splitscreen;
 #ifdef SUPPORT_ICE
 static void QDECL SV_Public_Callback(struct cvar_s *var, char *oldvalue)
 {
-	if (var->ival == 2)
+	char name[64], *e;
+	COM_ParseOut(var->string, name, sizeof(name));
+	strtol(name, &e, 0);
+	if (*name&&e==name)	//failed to read any number out of it.
+	{
+		FTENET_AddToCollection(svs.sockets, var->name, va("/%s", (*name == '/')?name+1:name), NA_INVALID, NP_RTC_TLS);
+		var->value = var->ival = 2;	//so other stuff sees us as holepunched.
+	}
+	else if (var->ival == 2)
 		FTENET_AddToCollection(svs.sockets, var->name, "/", NA_INVALID, NP_RTC_TLS);
 	else
 		FTENET_AddToCollection(svs.sockets, var->name, "", NA_INVALID, NP_INVALID);
@@ -158,11 +159,11 @@ cvar_t sv_masterport			= CVAR("sv_masterport", "0");
 cvar_t	sv_reliable_sound		= CVARFD("sv_reliable_sound", "0",  0, "Causes all sounds to be sent reliably, so they will not be missed due to packetloss. However, this will cause them to be delayed somewhat, and slightly bursty. This can be overriden using the 'rsnd' userinfo setting (either forced on or forced off). Note: this does not affect sounds attached to particle effects.");
 cvar_t	sv_gamespeed		= CVARAF("sv_gamespeed", "1", "slowmo", 0);
 cvar_t	sv_csqcdebug		= CVARD("sv_csqcdebug", "0", "Inject packet size information for data directed to csqc.");
-cvar_t	sv_csqc_progname	= CVAR("sv_csqc_progname", "csprogs.dat");
+cvar_t	sv_csqc_progname	= CVARAF("sv_csqc_progname", "csprogs.dat", /*dp*/"csqc_progname", 0);
 cvar_t pausable				= CVAR("pausable", "");
 cvar_t sv_banproxies		= CVARD("sv_banproxies", "0", "If enabled, anyone connecting via known proxy software will be refused entry. This should aid with blocking aimbots, but is only reliable for certain public proxies.");
 cvar_t	sv_specprint		= CVARD("sv_specprint", "3",	"Bitfield that controls which player events spectators see when tracking that player.\n&1: spectators will see centerprints.\n&2: spectators will see sprints (pickup messages etc).\n&4: spectators will receive console commands, this is potentially risky.\nIndividual spectators can use 'setinfo sp foo' to limit this setting.");
-
+cvar_t	sv_protocol				= CVARD("sv_protocol", "", "Specifies which protocol extensions to force. recognised values: csqc");
 
 //
 // game rules mirrored in svs.info
@@ -186,7 +187,7 @@ cvar_t	skill			= CVARF("skill",			"" ,	CVAR_SERVERINFO);			// 0, 1, 2 or 3
 cvar_t	spawn			= CVARF("spawn",			"" ,	CVAR_SERVERINFO);
 cvar_t	watervis		= CVARF("watervis",		"" ,	CVAR_SERVERINFO);
 #pragma warningmsg("Remove this some time")
-cvar_t	allow_skybox	= CVARF("allow_skybox",	"",		CVAR_SERVERINFO);
+cvar_t	allow_skybox	= CVARFD("allow_skybox",	"",		CVAR_SERVERINFO, "This setting says whether clients should skip writing skybox depth when rendering skyboxes/skydomes. Skipping depth writes is required for halflife, quake2, and quake3 compat, but q1 content generally requires depth masking. Empty uses format-specific defaults.");
 cvar_t	sv_allow_splitscreen = CVARFD("allow_splitscreen","",CVAR_SERVERINFO, "Specifies whether clients can use splitscreen extensions to dynamically add additional clients. This only affects remote clients and not the built-in client.\nClients may need to reconnect in order to add seats when this is changed.");
 cvar_t	fbskins			= CVARF("fbskins",			"",	CVAR_SERVERINFO);	//to get rid of lame fuhquake fbskins
 
@@ -213,6 +214,7 @@ vfsfile_t	*sv_fraglogfile;
 
 void SV_AcceptClient (netadr_t *adr, int userid, char *userinfo);
 void PRH2_SetPlayerClass(client_t *cl, int classnum, qboolean fromqc);
+void SV_DeDupeName(const char *val, client_t *cl, char *newname, size_t newnamesize);
 
 int	nextuserid;
 
@@ -287,7 +289,7 @@ void SV_Shutdown (void)
 #endif
 	Mod_Shutdown(true);
 #ifdef PACKAGEMANAGER
-	PM_Shutdown();
+	PM_Shutdown(false);
 #endif
 	COM_DestroyWorkerThread();
 	FS_Shutdown();
@@ -562,43 +564,7 @@ void SV_DropClient (client_t *drop)
 	case GT_PROGS:
 		if (svprogfuncs)
 		{
-			if (drop->spawned && host_initialized)
-			{
-#ifdef VM_Q1
-				if (svs.gametype == GT_Q1QVM)
-				{
-					Q1QVM_DropClient(drop);
-				}
-				else
-#endif
-				{
-					if (!drop->spectator)
-					{
-					// call the prog function for removing a client
-					// this will set the body to a dead frame, among other things
-						pr_global_struct->self = EDICT_TO_PROG(svprogfuncs, drop->edict);
-						if (pr_global_ptrs->ClientDisconnect)
-							PR_ExecuteProgram (svprogfuncs, pr_global_struct->ClientDisconnect);
-						sv.spawned_client_slots--;
-					}
-					else
-					{
-						// call the prog function for removing a client
-						// this will set the body to a dead frame, among other things
-						pr_global_struct->self = EDICT_TO_PROG(svprogfuncs, drop->edict);
-						if (SpectatorDisconnect)
-							PR_ExecuteProgram (svprogfuncs, SpectatorDisconnect);
-						sv.spawned_observer_slots--;
-					}
-				}
-
-				if (progstype == PROG_NQ)
-					ED_Clear(svprogfuncs, drop->edict);
-			}
-			drop->spawned = false;
-
-			if (svprogfuncs && drop->edict && drop->edict->v)
-				drop->edict->v->frags = 0;
+			SV_DespawnClient(drop);
 			drop->edict = NULL;
 
 			if (drop->spawninfo)
@@ -1979,6 +1945,56 @@ void SV_ClientProtocolExtensionsChanged(client_t *client)
 	extern cvar_t pr_maxedicts;
 	client_t *seat;
 
+	extern cvar_t sv_protocol;
+	char *s = sv_protocol.string;
+	while ((s = COM_Parse(s)))
+	{
+		if (!strcasecmp(com_token, "fte2"))
+		{	//fancy stuff
+			client->fteprotocolextensions
+					|= PEXT_CSQC				/*mods break without*/
+					 | PEXT_CHUNKEDDOWNLOADS	/*much faster downloads+redirects*/
+					 ;
+			client->fteprotocolextensions2
+					|= PEXT2_PRYDONCURSOR		/*mods might break without*/
+//					 | PEXT2_VOICECHAT			/*entirely optional*/
+					 | PEXT2_SETANGLEDELTA		/*mostly just nice to have*/
+					 | PEXT2_REPLACEMENTDELTAS	/*carries quite a bit of extra info*/
+					 | PEXT2_MAXPLAYERS			/*not supporting the extra players is bad*/
+					 | PEXT2_PREDINFO			/*fixes some repdelta issues (especially for nq)*/
+					 | PEXT2_NEWSIZEENCODING	/*more accurate sizes, for awkward mods*/
+					 | PEXT2_INFOBLOBS			/*allows mods to send infoblobs to csqc (for avatar images or whatever)*/
+					 ;
+		}
+		if (!strcasecmp(com_token, "fte1"))
+		{	//older stuff. most of this was replaced by replacementdeltas.
+			client->fteprotocolextensions
+					|= PEXT_SETVIEW
+					 | PEXT_SCALE
+					 | PEXT_TRANS
+					 | PEXT_ACCURATETIMINGS
+					 | PEXT_SOUNDDBL
+					 | PEXT_MODELDBL
+					 | PEXT_ENTITYDBL
+					 | PEXT_ENTITYDBL2
+					 | PEXT_FLOATCOORDS
+					 | PEXT_COLOURMOD
+					 | PEXT_SPAWNSTATIC2
+					 | PEXT_256PACKETENTITIES
+					 | PEXT_SETATTACHMENT
+					 | PEXT_CHUNKEDDOWNLOADS
+					 | PEXT_CSQC
+					 | PEXT_DPFLAGS
+					 ;
+		}
+		if (!strcasecmp(com_token, "csqc"))
+		{	//JUST csqc.
+			client->fteprotocolextensions
+					|= PEXT_CSQC
+					;
+		}
+	}
+
 	client->fteprotocolextensions  &= Net_PextMask(PROTOCOL_VERSION_FTE1, ISNQCLIENT(client));
 	client->fteprotocolextensions2 &= Net_PextMask(PROTOCOL_VERSION_FTE2, ISNQCLIENT(client));
 	client->ezprotocolextensions1  &= Net_PextMask(PROTOCOL_VERSION_EZQUAKE1, ISNQCLIENT(client)) & EZPEXT1_SERVERADVERTISE;
@@ -2218,7 +2234,8 @@ client_t *SV_AddSplit(client_t *controller, char *info, int id)
 	int i, j;
 	int curclients;
 	qboolean loadgame;
-	const char *name;
+//	const char *name;
+	char newname[80];
 	unsigned int clients = 0, spectators = 0;
 	qboolean asspec;
 
@@ -2268,12 +2285,12 @@ client_t *SV_AddSplit(client_t *controller, char *info, int id)
 		}
 */
 
-	name = Info_ValueForKey(info, "name");
+	SV_DeDupeName(Info_ValueForKey(info, "name"), cl, newname, sizeof(newname));
 	for (i=0,cl=svs.clients ; i<sv.allocated_client_slots ; i++,cl++)
 	{
 		if (cl->state == cs_loadzombie && !controller->spectator)
 		{	//if this is a loadzombie with the same name as the new seat is trying to use then lets use that slot.
-			if (!strcmp(cl->name, name))
+			if (!strcmp(cl->name, newname))
 				break;
 		}
 	}
@@ -2312,6 +2329,27 @@ client_t *SV_AddSplit(client_t *controller, char *info, int id)
 	{
 		SV_PrintToClient(controller, PRINT_HIGH, "Server full, cannot add new seat\n");
 		return NULL;
+	}
+
+
+	{	//save off anything we might want to preserve
+		qboolean tobeloaded = cl->istobeloaded;
+		qboolean spawned = cl->spawned;
+		unsigned int userid = cl->userid;
+		float	spawn_parms[NUM_SPAWN_PARMS];
+		memcpy(spawn_parms, cl->spawn_parms, sizeof(spawn_parms));
+
+		//now actually wipe the player slot
+		memset(cl, 0, sizeof(*cl));
+
+		//and restore preserved stuff, if its appropriate.
+		if (loadgame)
+		{
+			cl->istobeloaded = tobeloaded;
+			cl->spawned = spawned;
+			cl->userid = userid;
+			memcpy(cl->spawn_parms, spawn_parms, sizeof(cl->spawn_parms));
+		}
 	}
 
 	cl->spectator = asspec;
@@ -2636,6 +2674,7 @@ void SV_DoDirectConnect(svconnectinfo_t *fte_restrict info)
 					newcl = cl;
 					preserveparms = true;
 					temp.istobeloaded = cl->istobeloaded;
+					temp.spawned = cl->spawned;
 					memcpy(temp.spawn_parms, cl->spawn_parms, sizeof(temp.spawn_parms));
 					if (cl->userid)
 						temp.userid = cl->userid;
@@ -2647,12 +2686,34 @@ void SV_DoDirectConnect(svconnectinfo_t *fte_restrict info)
 
 	if (!newcl)	//client has no slot. It's possible to bipass this if server is loading a game. (or a duplicated qsocket)
 	{
+#ifdef SUBSERVERS
 		if (SSV_IsSubServer())
 		{
-			SV_RejectMessage (info->protocol, "Direct connections are not permitted.\n");
-			Con_TPrintf ("* rejected direct connection\n");
-			return;
+			if (1)
+			{
+				sizebuf_t s;
+				qbyte send[8192];
+
+				memset(&s, 0, sizeof(s));
+				s.data = send;
+				s.maxsize = sizeof(send);
+				s.cursize = 2;
+
+				MSG_WriteByte(&s, ccmd_foundplayer);
+				MSG_WriteString(&s, name);
+				MSG_WriteString(&s, NET_AdrToString (adrbuf, sizeof(adrbuf), &info->adr));
+				MSG_WriteString(&s, info->guid);
+				SSV_InstructMaster(&s);
+				return;
+			}
+			else
+			{
+				SV_RejectMessage (info->protocol, "Direct connections are not permitted.\n");
+				Con_TPrintf ("* rejected direct connection\n");
+				return;
+			}
 		}
+#endif
 
 		/*single player logic*/
 		if (sv.allocated_client_slots == 1 && info->adr.type == NA_LOOPBACK)
@@ -2760,7 +2821,7 @@ void SV_DoDirectConnect(svconnectinfo_t *fte_restrict info)
 	case GT_PROGS:
 		if (info->protocol == SCP_QUAKE2)
 		{
-			SV_RejectMessage(info->protocol, "This is a Quake server.");
+			SV_RejectMessage(info->protocol, "This is a %s server.", fs_manifest->formalname);
 			Con_DPrintf ("* Rejected q2 client.\n");
 			return;
 		}
@@ -2790,7 +2851,7 @@ void SV_DoDirectConnect(svconnectinfo_t *fte_restrict info)
 	case GT_QUAKE2:
 		if (info->protocol != SCP_QUAKE2)
 		{
-			SV_RejectMessage(info->protocol, "This is a Quake2 server.");
+			SV_RejectMessage(info->protocol, "This is a %s server.", fs_manifest->formalname);
 			Con_DPrintf ("* Rejected non-q2 client.\n");
 			return;
 		}
@@ -3056,11 +3117,6 @@ void SV_DoDirectConnect(svconnectinfo_t *fte_restrict info)
 	if (!sv_allow_splitscreen.ival && newcl->netchan.remote_address.type != NA_LOOPBACK)
 		newcl->fteprotocolextensions &= ~PEXT_SPLITSCREEN;
 	newcl->controller = NULL;
-
-#ifdef PEXT_CSQC
-	if (sv.csqcchecksum && !(newcl->fteprotocolextensions & PEXT_CSQC) && !ISDPCLIENT(newcl))
-		SV_PrintToClient(newcl, PRINT_HIGH, "This server is using CSQC - you are missing out due to your choice of outdated client / protocol!\n");
-#endif
 
 	if (!redirect)
 	{
@@ -3502,11 +3558,13 @@ static qboolean Rcon_Validate (void)
 		intptr_t timediff;
 		qbyte b;
 
+		const hashfunc_t *hashfunc = &hash_sha1;
+		void *hashctx = alloca(hashfunc->contextsize);
+
 		const size_t digestsize = 20;
 		size_t i, k;
 		unsigned char digest[512];
 		const unsigned char **tokens = alloca(sizeof(*tokens)*(Cmd_Argc()*2+5));	//overallocation in case argc is 0.
-		size_t *toksizes = alloca(sizeof(*toksizes)*(Cmd_Argc()*2+5));	//overallocation in case argc is 0.
 		if (strlen(pass) > digestsize*2)
 		{
 			for (i = 0; pass[digestsize*2+i] && i < sizeof(time_t)*2; i++)
@@ -3531,20 +3589,20 @@ static qboolean Rcon_Validate (void)
 					tokens[5+i*2+0] = Cmd_Argv(i+2);
 					tokens[5+i*2+1] = " ";	//a trailing space is required.
 				}
+				hashfunc->init(hashctx);
 				for (k = 0; k < 5+i*2; k++)
-					toksizes[k] = strlen(tokens[k]);
-				if (digestsize > 0 && digestsize == SHA1_m(digest, sizeof(digest), k, tokens, toksizes))
+					hashfunc->process(hashctx, tokens[k], strlen(tokens[k]));
+				hashfunc->terminate(digest, hashctx);
+
+				for (i = 0;;i++)
 				{
-					for (i = 0;;i++)
-					{
-						if (i == digestsize)
-							return true;
-						if (!pass[i*2+0] || !pass[i*2+1])
-							break;	//premature termination
-						b = dehex(pass[i*2+0])*16+dehex(pass[i*2+1]);
-						if (b != digest[i])
-							break;
-					}
+					if (i == digestsize)
+						return true;
+					if (!pass[i*2+0] || !pass[i*2+1])
+						break;	//premature termination
+					b = dehex(pass[i*2+0])*16+dehex(pass[i*2+1]);
+					if (b != digest[i])
+						break;
 				}
 			}
 		}
@@ -3843,7 +3901,10 @@ qboolean SV_ConnectionlessPacket (void)
 		Con_Printf("%s: %s\n", NET_AdrToString (adr, sizeof(adr), &net_from), s);
 
 	if (!strcmp(c, "ping") || ( c[0] == A2A_PING && (c[1] == 0 || c[1] == '\n')) )
-		SVC_Ping ();
+	{	//only continue respond to these if we're actually public. qwfwd likes spamming us endlessly even if we stop heartbeating (which leaves us discoverable to others, too).
+		if (sv_public.ival >= 0)
+			SVC_Ping ();
+	}
 	else if (c[0] == A2A_ACK && (c[1] == 0 || c[1] == '\n') )
 		SVC_ACK ();
 	else if (!strcmp(c,"status"))
@@ -3912,7 +3973,9 @@ qboolean SV_ConnectionlessPacket (void)
 #ifdef HAVE_DTLS
 		if (net_from.prot == NP_DGRAM && (net_enable_dtls.ival /*|| !*net_enable_dtls.ival*/))
 		{
-			if (SV_ChallengePasses(atoi(Cmd_Argv(1))))
+			if (*Cmd_Argv(2))
+				SV_RejectMessage (SCP_QUAKEWORLD, "Proxying not enabled.\n");	//server would be expected to getchallenge+dtlsconnect the target server (or respond with a no-dtls challenge response...)
+			else if (SV_ChallengePasses(atoi(Cmd_Argv(1))))
 			{
 				char *banreason = SV_BannedReason(&net_from);
 				if (banreason)
@@ -4052,7 +4115,7 @@ qboolean SVNQ_ConnectionlessPacket(void)
 						if (msg_readcount+17 <= net_message.cursize && !strncmp("challengeconnect ", &net_message.data[msg_readcount], 17))
 						{
 							if (sv_showconnectionlessmessages.ival)
-								Con_Printf("CCREQ_CONNECT_COOKIE\n");
+								Con_Printf("%s: CCREQ_CONNECT_COOKIE\n", NET_AdrToString (com_token, sizeof(com_token), &net_from));
 							Cmd_TokenizeString(MSG_ReadStringLine(), false, false);
 							/*okay, so this is a reliable packet from a client, containing a 'cmd challengeconnect $challenge' response*/
 							str = va("connect %i %i %s \"\\name\\unconnected\\mod\\%s\\modver\\%s\\flags\\%s\\password\\%s\"", NQ_NETCHAN_VERSION, 0, Cmd_Argv(1), Cmd_Argv(2), Cmd_Argv(3), Cmd_Argv(4), Cmd_Argv(5));
@@ -4119,7 +4182,7 @@ qboolean SVNQ_ConnectionlessPacket(void)
 	{
 	case CCREQ_CONNECT:
 		if (sv_showconnectionlessmessages.ival)
-			Con_Printf("CCREQ_CONNECT\n");
+			Con_Printf("%s: CCREQ_CONNECT\n", NET_AdrToString (com_token, sizeof(com_token), &net_from));
 
 		sb.maxsize = sizeof(buffer);
 		sb.data = buffer;
@@ -4215,7 +4278,7 @@ qboolean SVNQ_ConnectionlessPacket(void)
 		return true;
 	case CCREQ_SERVER_INFO:
 		if (sv_showconnectionlessmessages.ival)
-			Con_Printf("CCREQ_SERVER_INFO\n");
+			Con_Printf("%s: CCREQ_SERVER_INFO\n", NET_AdrToString (com_token, sizeof(com_token), &net_from));
 		if (sv_public.ival < 0)
 			return false;
 		if (SV_BannedReason (&net_from))
@@ -4247,7 +4310,7 @@ qboolean SVNQ_ConnectionlessPacket(void)
 		return true;
 	case CCREQ_PLAYER_INFO:
 		if (sv_showconnectionlessmessages.ival)
-			Con_Printf("CCREQ_PLAYER_INFO\n");
+			Con_Printf("%s: CCREQ_PLAYER_INFO\n", NET_AdrToString (com_token, sizeof(com_token), &net_from));
 		if (sv_public.ival < 0)
 			return false;
 		if (SV_BannedReason (&net_from))
@@ -4281,7 +4344,7 @@ qboolean SVNQ_ConnectionlessPacket(void)
 		return true;
 	case CCREQ_RULE_INFO:
 		if (sv_showconnectionlessmessages.ival)
-			Con_Printf("CCREQ_RULE_INFO\n");
+			Con_Printf("%s: CCREQ_RULE_INFO\n", NET_AdrToString (com_token, sizeof(com_token), &net_from));
 		if (sv_public.ival < 0)
 			return false;
 		if (SV_BannedReason (&net_from))
@@ -4384,6 +4447,189 @@ void SV_OpenRoute_f(void)
 }
 
 //============================================================================
+static int inboundsequence;	//so we can detect frames when we didn't get any packets, even when packets come from epoll
+void SV_ReadPacket(void)
+{
+	int			i;
+	client_t	*cl;
+	int			qport;
+	char		*banreason;
+
+	// check for connectionless packet (0xffffffff) first
+	if (*(unsigned int *)net_message.data == ~0)
+	{
+		banreason = SV_BannedReason (&net_from);
+		if (banreason)
+		{
+			static unsigned int lt;
+			unsigned int ct = Sys_Milliseconds();
+			if (ct - lt > 5*1000)
+			{
+				if (*banreason)
+					Netchan_OutOfBandTPrintf(NS_SERVER, &net_from, com_language, "You are banned: %s\n", banreason);
+				else
+					Netchan_OutOfBandTPrintf(NS_SERVER, &net_from, com_language, "You are banned\n");
+			}
+			return;
+		}
+
+		SV_ConnectionlessPacket();
+		return;
+	}
+#ifdef HAVE_DTLS
+	else
+	{
+		if (NET_DTLS_Decode(svs.sockets))
+		{
+			if (!net_message.cursize)
+				return;
+			if (*(unsigned int *)net_message.data == ~0)
+			{
+				SV_ConnectionlessPacket();
+				return;
+			}
+		}
+	}
+#endif
+
+#ifdef Q3SERVER
+	if (svs.gametype == GT_QUAKE3)
+	{
+		if (SVQ3_HandleClient())
+			inboundsequence++;
+		else if (NET_WasSpecialPacket(svs.sockets))
+			return;
+		return;
+	}
+#endif
+
+	// read the qport out of the message so we can fix up
+	// stupid address translating routers
+	MSG_BeginReading (svs.netprim);
+	MSG_ReadLong ();		// sequence number
+	MSG_ReadLong ();		// sequence number
+	qport = MSG_ReadShort () & 0xffff;
+
+	// check for packets from connected clients
+	for (i=0, cl=svs.clients ; i<svs.allocated_client_slots ; i++,cl++)
+	{
+		if (cl->state == cs_free)
+			continue;
+		if (!NET_CompareBaseAdr (&net_from, &cl->netchan.remote_address))
+			continue;
+#ifdef NQPROT
+		if (ISNQCLIENT(cl) && cl->netchan.remote_address.port == net_from.port)
+		{
+			if (cl->state >= cs_connected)
+			{
+				if (cl->delay > 0)
+					goto dominping;
+
+				if (NQNetChan_Process(&cl->netchan))
+				{
+					inboundsequence++;
+					svs.stats.packets++;
+					SVNQ_ExecuteClientMessage(cl);
+				}
+			}
+			break;
+		}
+#endif
+
+#ifdef Q3SERVER
+		if (ISQ3CLIENT(cl))
+			continue;
+#endif
+
+		if (cl->netchan.qport != qport)
+			continue;
+		if (cl->netchan.remote_address.port != net_from.port)
+		{
+			Con_DPrintf ("SV_ReadPackets: fixing up a translated port\n");
+			cl->netchan.remote_address.port = net_from.port;
+		}
+
+		if (cl->delay > 0)
+		{
+#ifdef NQPROT
+dominping:
+#endif
+			if (cl->state < cs_connected)
+				break;
+			if (net_message.cursize > sizeof(svs.free_lagged_packet->data))
+			{
+				Con_Printf("packet too large for minping\n");
+				cl->delay -= 0.001;
+				break;	//drop this packet
+			}
+
+			if (!svs.free_lagged_packet)	//kinda nasty
+				svs.free_lagged_packet = Z_Malloc(sizeof(*svs.free_lagged_packet));
+
+			if (!cl->laggedpacket)
+				cl->laggedpacket_last = cl->laggedpacket = svs.free_lagged_packet;
+			else
+			{
+				cl->laggedpacket_last->next = svs.free_lagged_packet;
+				cl->laggedpacket_last = cl->laggedpacket_last->next;
+			}
+			svs.free_lagged_packet = svs.free_lagged_packet->next;
+			cl->laggedpacket_last->next = NULL;
+
+			cl->laggedpacket_last->time = realtime + cl->delay;
+			memcpy(cl->laggedpacket_last->data, net_message.data, net_message.cursize);
+			cl->laggedpacket_last->length = net_message.cursize;
+			break;
+		}
+
+
+		if (Netchan_Process(&cl->netchan))
+		{	// this is a valid, sequenced packet, so process it
+			inboundsequence++;
+			svs.stats.packets++;
+			if (cl->state >= cs_connected)
+			{
+				if (cl->send_message)
+					cl->chokecount++;
+				else
+					cl->send_message = true;	// reply at end of frame
+
+#ifdef Q2SERVER
+				if (cl->protocol == SCP_QUAKE2)
+					SVQ2_ExecuteClientMessage(cl);
+				else
+#endif
+					SV_ExecuteClientMessage (cl);
+			}
+		}
+		break;
+	}
+
+	if (i != svs.allocated_client_slots)
+		return;
+
+#ifdef QWOVERQ3
+	if (sv_listen_q3.ival && SVQ3_HandleClient())
+	{
+		received++;
+		continue;
+	}
+#endif
+
+#ifdef NQPROT
+	if (SVNQ_ConnectionlessPacket())
+		return;
+#endif
+	if (SV_BannedReason (&net_from))
+		return;
+
+	if (NET_WasSpecialPacket(svs.sockets))
+		return;
+
+	// packet is not from a known client
+	if (sv_showconnectionlessmessages.ival)
+		Con_Printf ("%s:sequenced packet without connection\n", NET_AdrToString (com_token, sizeof(com_token), &net_from));	//hack: com_token cos we need some random temp buffer.
+}
 
 /*
 =================
@@ -4399,12 +4645,9 @@ qboolean SV_ReadPackets (float *delay)
 {
 	int			i;
 	client_t	*cl;
-	int			qport;
 	laggedpacket_t *lp;
-	char		*banreason;
-	qboolean	received = false;
-	int			giveup = 5000; /*we're fucked if we need this to be this high, but at least we can retain some clients if we're really running that slow*/
-	int			cookie = 0;
+
+	static int oldinboundsequence;
 
 	SV_KillExpiredBans();
 
@@ -4443,7 +4686,7 @@ qboolean SV_ReadPackets (float *delay)
 					{
 						if (NQNetChan_Process(&cl->netchan))
 						{
-							received++;
+							inboundsequence++;
 							svs.stats.packets++;
 							SVNQ_ExecuteClientMessage(cl);
 						}
@@ -4455,7 +4698,7 @@ qboolean SV_ReadPackets (float *delay)
 					/*QW*/
 					if (Netchan_Process(&cl->netchan))
 					{	// this is a valid, sequenced packet, so process it
-						received++;
+						inboundsequence++;
 						svs.stats.packets++;
 						if (cl->state >= cs_connected)
 						{	//make sure they didn't already disconnect
@@ -4477,194 +4720,17 @@ qboolean SV_ReadPackets (float *delay)
 		}
 	}
 
-#ifdef SERVER_DEMO_PLAYBACK
-	while (giveup-- > 0 && SV_GetPacket()>=0)
-#else
-	while (giveup-- > 0 && (cookie=NET_GetPacket (svs.sockets, cookie)) >= 0)
-#endif
-	{
-		// check for connectionless packet (0xffffffff) first
-		if (*(unsigned int *)net_message.data == ~0)
-		{
-			banreason = SV_BannedReason (&net_from);
-			if (banreason)
-			{
-				static unsigned int lt;
-				unsigned int ct = Sys_Milliseconds();
-				if (ct - lt > 5*1000)
-				{
-					if (*banreason)
-						Netchan_OutOfBandTPrintf(NS_SERVER, &net_from, com_language, "You are banned: %s\n", banreason);
-					else
-						Netchan_OutOfBandTPrintf(NS_SERVER, &net_from, com_language, "You are banned\n");
-				}
-				continue;
-			}
-
-			SV_ConnectionlessPacket();
-			continue;
-		}
-#ifdef HAVE_DTLS
-		else
-		{
-			if (NET_DTLS_Decode(svs.sockets))
-			{
-				if (!net_message.cursize)
-					continue;
-				if (*(unsigned int *)net_message.data == ~0)
-				{
-					SV_ConnectionlessPacket();
-					continue;
-				}
-			}
-		}
-#endif
-
-#ifdef Q3SERVER
-		if (svs.gametype == GT_QUAKE3)
-		{
-			received++;
-			if (SVQ3_HandleClient())
-				;
-			else if (NET_WasSpecialPacket(svs.sockets))
-				continue;
-			continue;
-		}
-#endif
-
-		// read the qport out of the message so we can fix up
-		// stupid address translating routers
-		MSG_BeginReading (svs.netprim);
-		MSG_ReadLong ();		// sequence number
-		MSG_ReadLong ();		// sequence number
-		qport = MSG_ReadShort () & 0xffff;
-
-		// check for packets from connected clients
-		for (i=0, cl=svs.clients ; i<svs.allocated_client_slots ; i++,cl++)
-		{
-			if (cl->state == cs_free)
-				continue;
-			if (!NET_CompareBaseAdr (&net_from, &cl->netchan.remote_address))
-				continue;
-#ifdef NQPROT
-			if (ISNQCLIENT(cl) && cl->netchan.remote_address.port == net_from.port)
-			{
-				if (cl->state >= cs_connected)
-				{
-					if (cl->delay > 0)
-						goto dominping;
-
-					if (NQNetChan_Process(&cl->netchan))
-					{
-						received++;
-						svs.stats.packets++;
-						SVNQ_ExecuteClientMessage(cl);
-					}
-				}
-				break;
-			}
-#endif
-
-#ifdef Q3SERVER
-			if (ISQ3CLIENT(cl))
-				continue;
-#endif
-
-			if (cl->netchan.qport != qport)
-				continue;
-			if (cl->netchan.remote_address.port != net_from.port)
-			{
-				Con_DPrintf ("SV_ReadPackets: fixing up a translated port\n");
-				cl->netchan.remote_address.port = net_from.port;
-			}
-
-			if (cl->delay > 0)
-			{
-#ifdef NQPROT
-dominping:
-#endif
-				if (cl->state < cs_connected)
-					break;
-				if (net_message.cursize > sizeof(svs.free_lagged_packet->data))
-				{
-					Con_Printf("packet too large for minping\n");
-					cl->delay -= 0.001;
-					break;	//drop this packet
-				}
-
-				if (!svs.free_lagged_packet)	//kinda nasty
-					svs.free_lagged_packet = Z_Malloc(sizeof(*svs.free_lagged_packet));
-
-				if (!cl->laggedpacket)
-					cl->laggedpacket_last = cl->laggedpacket = svs.free_lagged_packet;
-				else
-				{
-					cl->laggedpacket_last->next = svs.free_lagged_packet;
-					cl->laggedpacket_last = cl->laggedpacket_last->next;
-				}
-				svs.free_lagged_packet = svs.free_lagged_packet->next;
-				cl->laggedpacket_last->next = NULL;
-
-				cl->laggedpacket_last->time = realtime + cl->delay;
-				memcpy(cl->laggedpacket_last->data, net_message.data, net_message.cursize);
-				cl->laggedpacket_last->length = net_message.cursize;
-				break;
-			}
-
-
-			if (Netchan_Process(&cl->netchan))
-			{	// this is a valid, sequenced packet, so process it
-				received++;
-				svs.stats.packets++;
-				if (cl->state >= cs_connected)
-				{
-					if (cl->send_message)
-						cl->chokecount++;
-					else
-						cl->send_message = true;	// reply at end of frame
-
-#ifdef Q2SERVER
-					if (cl->protocol == SCP_QUAKE2)
-						SVQ2_ExecuteClientMessage(cl);
-					else
-#endif
-						SV_ExecuteClientMessage (cl);
-				}
-			}
-			break;
-		}
-
-		if (i != svs.allocated_client_slots)
-			continue;
-
-#ifdef QWOVERQ3
-		if (sv_listen_q3.ival && SVQ3_HandleClient())
-		{
-			received++;
-			continue;
-		}
-#endif
-
-#ifdef NQPROT
-		if (SVNQ_ConnectionlessPacket())
-			continue;
-#endif
-		if (SV_BannedReason (&net_from))
-			continue;
-
-		if (NET_WasSpecialPacket(svs.sockets))
-			continue;
-
-		// packet is not from a known client
-		if (sv_showconnectionlessmessages.ival)
-			Con_Printf ("%s:sequenced packet without connection\n", NET_AdrToString (com_token, sizeof(com_token), &net_from));	//hack: com_token cos we need some random temp buffer.
-	}
+	NET_ReadPackets(svs.sockets);
 
 #ifdef HAVE_DTLS
 	NET_DTLS_Timeouts(svs.sockets);
 #endif
 
-	return received;
+
+	if (inboundsequence == oldinboundsequence)
+		return false;	//nothing new.
+	oldinboundsequence = inboundsequence;
+	return true;
 }
 
 /*
@@ -5275,6 +5341,11 @@ float SV_Frame (void)
 static void SV_InfoChanged(void *context, const char *key)
 {
 	size_t i;
+
+#ifdef Q3SERVER
+	SVQ3_ServerinfoChanged(key);
+#endif
+
 	if (context != &svs.info && *key == '_')
 		return;	//these keys are considered private to originating client/server, and are not broadcast to anyone else
 
@@ -5387,6 +5458,7 @@ void SV_InitLocal (void)
 	if (isDedicated)
 		sv_public.enginevalue = "1";
 
+	Cvar_Register (&sv_protocol,	cvargroup_servercontrol);
 	Cvar_Register (&sv_guidhash,	cvargroup_servercontrol);
 	Cvar_Register (&sv_serverip,	cvargroup_servercontrol);
 	Cvar_Register (&sv_public,	cvargroup_servercontrol);
@@ -5415,6 +5487,7 @@ void SV_InitLocal (void)
 
 	Cvar_Register (&filterban,	cvargroup_servercontrol);
 
+	Cvar_Register (&sv_dlURL,	cvargroup_serverpermissions);
 	Cvar_Register (&allow_download,	cvargroup_serverpermissions);
 	Cvar_Register (&allow_download_skins,	cvargroup_serverpermissions);
 	Cvar_Register (&allow_download_models,	cvargroup_serverpermissions);
@@ -5476,6 +5549,7 @@ void SV_InitLocal (void)
 	Cmd_AddCommandAD ("loadgame", SV_Loadgame_f, SV_Savegame_c, "Loads an existing saved game.");
 	Cmd_AddCommandAD ("save", SV_Savegame_f, SV_Savegame_c, "Saves the game to the named location.");
 	Cmd_AddCommandAD ("load", SV_Loadgame_f, SV_Savegame_c, "Loads an existing saved game.");
+	Cmd_AddCommandAD ("unsavegame", SV_DeleteSavegame_f, SV_Savegame_c, "Wipes an existing saved game from disk.");
 #endif
 
 #ifdef MVD_RECORDING
@@ -5566,6 +5640,70 @@ void SV_FixupName(const char *in, char *out, unsigned int outlen)
 	p[1] = 0;
 }
 
+void SV_DeDupeName(const char *val, client_t *cl, char *newname, size_t newnamesize)
+{
+	int		i;
+	client_t	*client;
+	int		dupc = 1;
+	char	basic[80];
+	const char *p;
+	if (!val)
+		val = "";
+	//we block large names here because a) they're unwieldly. b) they might cause players to be invisible to older clients/server browsers/etc.
+	//bots with no name skip the fixup, to avoid default names(they're expected to be given a name eventually, so are allowed to be invisible for now)
+	if (cl && cl->protocol == SCP_BAD && !*val)
+		newname[0] = 0;
+	else
+	{
+		SV_FixupName(val, newname, newnamesize);
+		if (strlen(newname) > 40)
+			newname[40] = 0;
+	}
+
+	//strip weirdness
+	deleetstring(basic, newname);
+
+
+	if (!cl || cl->protocol != SCP_BAD)
+	{	//don't bother validating bot names. The gamecode is expected to not be stupid.
+		if (!basic[0] || strstr(basic, "console"))
+			strcpy(newname, "unnamed");
+
+		// check to see if another user by the same name exists
+		while (1)
+		{
+			for (i=0, client = svs.clients ; i<svs.allocated_client_slots ; i++, client++)
+			{
+				if (client->state < cs_connected || client == cl)
+					continue;
+				if (!stricmp(client->name, newname))
+					break;
+			}
+			if (i != svs.allocated_client_slots)
+			{ // dup name
+				char tmpname[80];
+				if (strlen(newname) > sizeof(cl->namebuf) - 1)
+					newname[sizeof(cl->namebuf) - 4] = 0;
+				p = newname;
+
+				if (newname[0] == '(')
+				{
+					if (newname[2] == ')')
+						p = newname + 3;
+					else if (val[3] == ')')
+						p = newname + 4;
+				}
+
+				memcpy(tmpname, p, strlen(p)+1);
+
+				Q_snprintfz(newname, newnamesize, "(%d)%-.40s", dupc++, tmpname);
+			}
+			else
+				break;
+		}
+	}
+}
+
 
 qboolean ReloadRanking(client_t *cl, const char *newname)
 {
@@ -5632,10 +5770,7 @@ into a more C freindly form.
 void SV_ExtractFromUserinfo (client_t *cl, qboolean verbose)
 {
 	const char	*val, *p;
-	int		i;
-	client_t	*client;
-	int		dupc = 1;
-	char	newname[80], basic[80];
+	char	newname[80];
 #ifdef SVRANKING
 	extern cvar_t rank_filename;
 #endif
@@ -5659,57 +5794,10 @@ void SV_ExtractFromUserinfo (client_t *cl, qboolean verbose)
 
 	// name for C code
 	val = InfoBuf_BlobForKey (&cl->userinfo, "name", &blobsize, &large);
-	if (!val)
+	if (large)	//don't allow it if there's even anything weird in there (simplies the necessary qc).
 		val = "";
-	//we block large names here because a) they're unwieldly. b) they might cause players to be invisible to older clients/server browsers/etc.
-	//bots with no name skip the fixup, to avoid default names(they're expected to be given a name eventually, so are allowed to be invisible for now)
-	if (large || (cl->protocol == SCP_BAD && !*val))
-		newname[0] = 0;
-	else
-	{
-		SV_FixupName(val, newname, sizeof(newname));
-		if (strlen(newname) > 40)
-			newname[40] = 0;
-	}
-
-	deleetstring(basic, newname);
-	if (cl->protocol != SCP_BAD)
-	{	//don't bother validating bot names. The gamecode is expected to not be stupid.
-		if (!basic[0] || strstr(basic, "console"))
-			strcpy(newname, "unnamed");
-
-		// check to see if another user by the same name exists
-		while (1)
-		{
-			for (i=0, client = svs.clients ; i<svs.allocated_client_slots ; i++, client++)
-			{
-				if (client->state < cs_connected || client == cl)
-					continue;
-				if (!stricmp(client->name, newname))
-					break;
-			}
-			if (i != svs.allocated_client_slots)
-			{ // dup name
-				if (strlen(newname) > sizeof(cl->namebuf) - 1)
-					newname[sizeof(cl->namebuf) - 4] = 0;
-				p = newname;
-
-				if (newname[0] == '(')
-				{
-					if (newname[2] == ')')
-						p = newname + 3;
-					else if (val[3] == ')')
-						p = newname + 4;
-				}
-
-				memmove(newname+10, p, strlen(p)+1);
-
-				sprintf(newname, "(%d)%-.40s", dupc++, newname+10);
-			}
-			else
-				break;
-		}
-	}
+	//fixup and dedupe
+	SV_DeDupeName(val, cl, newname, sizeof(newname));
 
 	if (!cl->drop && strncmp(newname, cl->name, sizeof(cl->namebuf)-1))
 	{
@@ -6007,12 +6095,7 @@ void SV_Init (quakeparms_t *parms)
 
 		manarg = COM_CheckParm("-manifest");
 		if (manarg && manarg < com_argc-1 && com_argv[manarg+1])
-		{
-			char *man = FS_MallocFile(com_argv[manarg+1], FS_SYSTEM, NULL);
-
-			FS_ChangeGame(FS_Manifest_Parse(NULL, man), true, true);
-			BZ_Free(man);
-		}
+			FS_ChangeGame(FS_Manifest_ReadSystem(com_argv[manarg+1], NULL), true, true);
 		else
 			FS_ChangeGame(NULL, true, true);
 
@@ -6021,7 +6104,7 @@ void SV_Init (quakeparms_t *parms)
 
 		Menu_Download_Update();
 
-#ifdef WEBCLIENT
+#ifdef MANIFESTDOWNLOADS
 		if (Sys_RunInstaller())
 			Sys_Quit();
 #endif

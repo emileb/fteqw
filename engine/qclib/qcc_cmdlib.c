@@ -19,7 +19,7 @@ const char **myargv;
 char	qcc_token[1024];
 int		qcc_eof;
 
-const unsigned int		type_size[12] = {1,	//void
+const unsigned int		type_size[] = {1,	//void
 						sizeof(string_t)/4,	//string
 						1,	//float
 						3,	//vector
@@ -28,11 +28,17 @@ const unsigned int		type_size[12] = {1,	//void
 						sizeof(func_t)/4,//function
 						1,  //pointer (its an int index)
 						1,	//integer
+						1,	//uint
+						2,	//long
+						2,	//ulong
+						2,	//double
 						3,	//fixme: how big should a variant be?
 						0,	//ev_struct. variable sized.
-						0	//ev_union. variable sized.
+						0,	//ev_union. variable sized.
+						0,	//ev_accessor...
+						0,	//ev_enum...
+						1,	//ev_bool...
 						};
-
 
 char *basictypenames[] = {
 	"void",
@@ -44,11 +50,16 @@ char *basictypenames[] = {
 	"function",
 	"pointer",
 	"integer",
+	"uint",
+	"long",
+	"ulong",
+	"double",
 	"variant",
 	"struct",
 	"union",
 	"accessor",
-	"enum"
+	"enum",
+	"bool"
 };
 
 /*
@@ -68,7 +79,7 @@ float   (*PRLittleFloat) (float l);
 
 static short   QCC_SwapShort (short l)
 {
-	qbyte    b1,b2;
+	pbyte    b1,b2;
 
 	b1 = l&255;
 	b2 = (l>>8)&255;
@@ -84,12 +95,12 @@ static short   QCC_Short (short l)
 
 static int    QCC_SwapLong (int l)
 {
-	qbyte    b1,b2,b3,b4;
+	pbyte    b1,b2,b3,b4;
 
-	b1 = (qbyte)l;
-	b2 = (qbyte)(l>>8);
-	b3 = (qbyte)(l>>16);
-	b4 = (qbyte)(l>>24);
+	b1 = (pbyte)l;
+	b2 = (pbyte)(l>>8);
+	b3 = (pbyte)(l>>16);
+	b4 = (pbyte)(l>>24);
 
 	return ((int)b1<<24) + ((int)b2<<16) + ((int)b3<<8) + b4;
 }
@@ -102,7 +113,7 @@ static int    QCC_Long (int l)
 
 static float	QCC_SwapFloat (float l)
 {
-	union {qbyte b[4]; float f;} in, out;
+	union {pbyte b[4]; float f;} in, out;
 
 	in.f = l;
 	out.b[0] = in.b[3];
@@ -120,7 +131,7 @@ static float	QCC_Float (float l)
 
 void SetEndian(void)
 {
-	union {qbyte b[2]; unsigned short s;} ed;
+	union {pbyte b[2]; unsigned short s;} ed;
 	ed.s = 255;
 	if (ed.b[0] == 255)
 	{
@@ -291,10 +302,7 @@ skipwhite:
 	while ((c = *data) && qcc_iswhite(c))
 		data++;
 	if (!c)
-	{
-		qcc_eof = true;
 		return NULL;
-	}
 
 // skip // comments
 	if (c=='/' && data[1] == '/')
@@ -415,10 +423,7 @@ skipwhite:
 	while ((c = *data) && qcc_iswhite(c))
 		data++;
 	if (!c)
-	{
-		qcc_eof = true;
 		return NULL;
-	}
 
 // skip // comments
 	if (c=='/' && data[1] == '/')

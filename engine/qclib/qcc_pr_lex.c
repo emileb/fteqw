@@ -17,6 +17,7 @@ void QCC_FreeDef(QCC_def_t *def);
 
 extern pbool	destfile_explicit;
 extern char		destfile[1024];
+//static const QCC_sref_t nullsref = {0};
 
 #define MAXINCLUDEDIRS 8
 char	qccincludedir[MAXINCLUDEDIRS][256];	//the -src path, for #includes
@@ -40,7 +41,7 @@ token_type_t	pr_token_type;
 int				pr_token_line;
 int				pr_token_line_last;
 QCC_type_t		*pr_immediate_type;
-QCC_evalstorage_t		pr_immediate;
+QCC_eval_t		pr_immediate;
 
 char	pr_immediate_string[8192];
 size_t	pr_immediate_strlen;
@@ -54,7 +55,7 @@ extern pbool expandedemptymacro;
 extern unsigned int locals_end, locals_start;
 extern QCC_type_t *pr_classtype;
 QCC_function_t *QCC_PR_ParseImmediateStatements (QCC_def_t *def, QCC_type_t *type, pbool dowrap);
-
+QCC_type_t *QCC_PR_FieldType (QCC_type_t *pointsto);
 
 static void Q_strlcpy(char *dest, const char *src, int sizeofdest)
 {
@@ -71,28 +72,34 @@ static void Q_strlcpy(char *dest, const char *src, int sizeofdest)
 
 char	*pr_punctuation[] =
 // longer symbols must be before a shorter partial match
-{"&&", "||", "<=", ">=","==", "!=", "/=", "*=", "+=", "-=", "(+)", "(-)", "|=", "&~=", "&=", "++", "--", "->", "^=", "::", ";", ",", "!", "*^", "*", "/", "(", ")", "-", "+", "=", "[", "]", "{", "}", "...", "..", ".", "><", "<<=", "<<", "<", ">>=", ">>", ">" , "?", "#" , "@", "&" , "|", "%", "^^", "^", "~", ":", NULL};
+{"&&", "||", "<=>", "<=", ">=","==", "!=", "/=", "*=", "+=", "-=", "(+)", "(-)", "|=", "&~=", "&=", "++", "--", "->", "^=", "::", ";", ",", "!", "*^", "*", "/", "(", ")", "-", "+", "=", "[", "]", "{", "}", "...", "..", ".", "><", "<<=", "<<", "<", ">>=", ">>", ">" , "?", "#" , "@", "&" , "|", "%", "^^", "^", "~", ":", NULL};
 
 char *pr_punctuationremap[] =	//a nice bit of evilness.
 //(+) -> |=
 //-> -> .
 //(-) -> &~=
-{"&&", "||", "<=", ">=","==", "!=", "/=", "*=", "+=", "-=", "|=",  "&~=", "|=", "&~=", "&=", "++", "--", ".",  "^=", "::", ";", ",", "!", "*^", "*", "/", "(", ")", "-", "+", "=", "[", "]", "{", "}", "...", "..", ".", "><", "<<=", "<<", "<", ">>=", ">>", ">" , "?", "#" , "@", "&" , "|", "%", "^^", "^", "~", ":", NULL};
+{"&&", "||", "<=>", "<=", ">=","==", "!=", "/=", "*=", "+=", "-=", "|=",  "&~=", "|=", "&~=", "&=", "++", "--", ".",  "^=", "::", ";", ",", "!", "*^", "*", "/", "(", ")", "-", "+", "=", "[", "]", "{", "}", "...", "..", ".", "><", "<<=", "<<", "<", ">>=", ">>", ">" , "?", "#" , "@", "&" , "|", "%", "^^", "^", "~", ":", NULL};
 
 // simple types.  function types are dynamically allocated
 QCC_type_t	*type_void;				//void
 QCC_type_t	*type_string;			//string
 QCC_type_t	*type_float;			//float
+QCC_type_t	*type_double;			//double
 QCC_type_t	*type_vector;			//vector
 QCC_type_t	*type_entity;			//entity
 QCC_type_t	*type_field;			//.void
 QCC_type_t	*type_function;			//void()
 QCC_type_t	*type_floatfunction;	//float()
 QCC_type_t	*type_pointer;			//??? * - careful with this one
-QCC_type_t	*type_integer;			//int
+QCC_type_t	*type_integer;			//int32
+QCC_type_t	*type_uint;				//uint32
+QCC_type_t	*type_int64;				//int64
+QCC_type_t	*type_uint64;			//uint64
 QCC_type_t	*type_variant;			//__variant
 QCC_type_t	*type_floatpointer;		//float *
 QCC_type_t	*type_intpointer;		//int *
+QCC_type_t	*type_bint;				//int (0 or 1)
+QCC_type_t	*type_bfloat;			//float (0.0 or 1.0, and never -0.0)
 
 QCC_type_t	*type_floatfield;// = {ev_field/*, &def_field*/, NULL, &type_float};
 
@@ -1305,59 +1312,18 @@ static pbool QCC_PR_Precompiler(void)
 			}
 			else if (!QC_strcasecmp(qcc_token, "sourcefile"))
 			{
-	#define MAXSOURCEFILESLIST 8
-	extern char sourcefileslist[MAXSOURCEFILESLIST][1024];
-	extern int numsourcefiles;
-
-				int i;
-
-				QCC_COM_Parse(msg);
-
-				for (i = 0; i < numsourcefiles; i++)
-				{
-					if (!strcmp(sourcefileslist[i], qcc_token))
-						break;
-				}
-				if (i == numsourcefiles && numsourcefiles < MAXSOURCEFILESLIST)
-					strcpy(sourcefileslist[numsourcefiles++], qcc_token);
+				char *s = msg;
+				while ((s = QCC_COM_Parse(s)))
+					QCC_RegisterSourceFile(qcc_token);
 			}
 			else if (!QC_strcasecmp(qcc_token, "TARGET"))
 			{
-				int newtype = qcc_targetformat;
 				QCC_COM_Parse(msg);
-				if (!QC_strcasecmp(qcc_token, "H2") || !QC_strcasecmp(qcc_token, "HEXEN2"))
-					newtype = QCF_HEXEN2;
-				else if (!QC_strcasecmp(qcc_token, "KK7"))
-					newtype = QCF_KK7;
-				else if (!QC_strcasecmp(qcc_token, "DP") || !QC_strcasecmp(qcc_token, "DARKPLACES"))
-					newtype = QCF_DARKPLACES;
-				else if (!QC_strcasecmp(qcc_token, "FTEDEBUG"))
-					newtype = QCF_FTEDEBUG;
-				else if (!QC_strcasecmp(qcc_token, "FTE"))
-					newtype = QCF_FTE;
-				else if (!QC_strcasecmp(qcc_token, "FTEH2"))
-					newtype = QCF_FTEH2;
-				else if (!QC_strcasecmp(qcc_token, "STANDARD") || !QC_strcasecmp(qcc_token, "ID"))
-					newtype = QCF_STANDARD;
-				else if (!QC_strcasecmp(qcc_token, "DEBUG"))
-					newtype = QCF_FTEDEBUG;
-				else if (!QC_strcasecmp(qcc_token, "QTEST"))
-					newtype = QCF_QTEST;
-				else
+				if (!QCC_OPCodeSetTargetName(qcc_token))
 					QCC_PR_ParseWarning(WARN_BADTARGET, "Unknown target \'%s\'. Ignored.\nValid targets are: ID, HEXEN2, FTE, FTEH2, KK7, DP(patched)", qcc_token);
-
-				if (numstatements > 1)
-				{
-					if ((qcc_targetformat == QCF_HEXEN2 || qcc_targetformat == QCF_FTEH2) && (newtype != QCF_HEXEN2 && newtype != QCF_FTEH2))
-						QCC_PR_ParseWarning(WARN_BADTARGET, "Cannot switch from hexen2 target \'%s\' after the first statement. Ignored.", msg);
-					if ((newtype == QCF_HEXEN2 || newtype == QCF_FTEH2) && (qcc_targetformat != QCF_HEXEN2 && qcc_targetformat != QCF_FTEH2))
-						QCC_PR_ParseWarning(WARN_BADTARGET, "Cannot switch to hexen2 target \'%s\' after the first statement. Ignored.", msg);
-				}
-
-				qcc_targetformat = newtype;
 			}
 			else if (!QC_strcasecmp(qcc_token, "PROGS_SRC"))
-			{	//doesn't make sence, but silenced if you are switching between using a certain precompiler app used with CuTF.
+			{	//doesn't make sense, but silenced if you are switching between using a certain precompiler app used with CuTF.
 			}
 			else if (!QC_strcasecmp(qcc_token, "PROGS_DAT"))
 			{	//doesn't make sence, but silenced if you are switching between using a certain precompiler app used with CuTF.
@@ -1370,6 +1336,41 @@ static pbool QCC_PR_Precompiler(void)
 
 				if (strcmp(destfile, olddest))
 					externs->Printf("Outputfile: %s\n", destfile);
+			}
+			else if (!QC_strcasecmp(qcc_token, "opcode"))
+			{
+				int st;
+				char *s = QCC_COM_Parse(msg);
+				if (!QC_strcasecmp(qcc_token, "enable") || !QC_strcasecmp(qcc_token, "on"))
+					st = 1;
+				else if (!QC_strcasecmp(qcc_token, "disable") || !QC_strcasecmp(qcc_token, "off"))
+					st = 0;
+				else
+				{
+					QCC_PR_ParseWarning(WARN_BADPRAGMA, "opcode state not recognised");
+					st = -1;
+				}
+
+				if (st >= 0)
+				{
+					int f;
+					while ((s = QCC_COM_Parse(s)))
+					{
+						for (f = 0; pr_opcodes[f].opname; f++)
+						{
+							if (!QC_strcasecmp(pr_opcodes[f].opname, qcc_token))
+							{
+								if (st)
+									pr_opcodes[f].flags |= OPF_VALID;
+								else
+									pr_opcodes[f].flags &= ~OPF_VALID;
+								break;
+							}
+						}
+						if (!pr_opcodes[f].opname)
+							QCC_PR_ParseWarning(WARN_BADPRAGMA, "opcode %s not recognised", qcc_token);
+					}
+				}
 			}
 			else if (!QC_strcasecmp(qcc_token, "keyword") || !QC_strcasecmp(qcc_token, "flag"))
 			{
@@ -1385,31 +1386,29 @@ static pbool QCC_PR_Precompiler(void)
 					QCC_PR_ParseWarning(WARN_BADPRAGMA, "compiler flag state not recognised");
 					st = -1;
 				}
-				if (st < 0)
-					QCC_PR_ParseWarning(WARN_BADPRAGMA, "warning id not recognised");
-				else
+				if (st >= 0)
 				{
 					int f;
-					s = QCC_COM_Parse(s);
-
-					for (f = 0; compiler_flag[f].enabled; f++)
+					while ((s = QCC_COM_Parse(s)))
 					{
-						if (!QC_strcasecmp(compiler_flag[f].abbrev, qcc_token))
+						for (f = 0; compiler_flag[f].enabled; f++)
 						{
-							if (compiler_flag[f].flags & FLAG_MIDCOMPILE)
+							if (!QC_strcasecmp(compiler_flag[f].abbrev, qcc_token))
 							{
-								*compiler_flag[f].enabled = st;
-								if (compiler_flag[f].enabled == &flag_cpriority)
-									QCC_PrioritiseOpcodes();
+								if (compiler_flag[f].flags & FLAG_MIDCOMPILE)
+								{
+									*compiler_flag[f].enabled = st;
+									if (compiler_flag[f].enabled == &flag_cpriority)
+										QCC_PrioritiseOpcodes();
+								}
+								else
+									QCC_PR_ParseWarning(WARN_BADPRAGMA, "Cannot enable/disable keyword/flag via a pragma");
+								break;
 							}
-							else
-								QCC_PR_ParseWarning(WARN_BADPRAGMA, "Cannot enable/disable keyword/flag via a pragma");
-							break;
 						}
+						if (!compiler_flag[f].enabled)
+							QCC_PR_ParseWarning(WARN_BADPRAGMA, "keyword/flag %s not recognised", qcc_token);
 					}
-					if (!compiler_flag[f].enabled)
-						QCC_PR_ParseWarning(WARN_BADPRAGMA, "keyword/flag %s not recognised", qcc_token);
-
 				}
 			}
 			else if (!QC_strcasecmp(qcc_token, "warning"))
@@ -1433,21 +1432,28 @@ static pbool QCC_PR_Precompiler(void)
 				if (st>=0)
 				{
 					int wn;
-					s = QCC_COM_Parse(s);
-					wn = QCC_WarningForName(qcc_token);
-					if (wn < 0)
-						QCC_PR_ParseWarning(WARN_BADPRAGMA, "warning id not recognised");
-					else
+					while ((s = QCC_COM_Parse(s)))
 					{
-						if (st == 3)	//toggle
-							qccwarningaction[wn] = !!qccwarningaction[wn];
+						wn = QCC_WarningForName(qcc_token);
+						if (wn < 0)
+							QCC_PR_ParseWarning(WARN_BADPRAGMA, "warning id not recognised");
 						else
-							qccwarningaction[wn] = st;
+						{
+							if (st == 3)	//toggle
+								qccwarningaction[wn] = !!qccwarningaction[wn];
+							else
+								qccwarningaction[wn] = st;
+						}
 					}
 				}
 			}
 			else
+			{
+				QCC_PR_SkipToEndOfLine(false);
 				QCC_PR_ParseWarning(WARN_BADPRAGMA, "Unknown pragma \'%s\'", qcc_token);
+			}
+
+			QCC_PR_SkipToEndOfLine(true);
 		}
 		return true;
 	}
@@ -1486,98 +1492,154 @@ PR_LexString
 Parses a quoted string
 ==============
 */
-#if 0
-void QCC_PR_LexString (void)
-{
-	int		c;
-	int		len;
-	char tmpbuf[2048];
-
-	char *text;
-	char *oldf;
-	int oldline;
-
-	bool fromfile = true;
-
-	len = 0;
-
-	text = pr_file_p;
-	do
+int QCC_PR_LexEscapedCodepoint(void)
+{	//for "\foo" or '\foo' handling.
+	//caller will have read the \ already.
+	int t;
+	int c = *pr_file_p++;
+	if (!c)
+		QCC_PR_ParseError (ERR_EOF, "EOF inside quote");
+	if (c == 'n')
+		c = '\n';
+	else if (c == 'r')
+		c = '\r';
+	else if (c == '#')	//avoid preqcc expansion in strings.
+		c = '#';
+	else if (c == '"')
+		c = '"';
+	else if (c == 't')
+		c = '\t';	//tab
+	else if (c == 'a')
+		c = '\a';	//bell
+	else if (c == 'v')
+		c = '\v';	//vertical tab
+	else if (c == 'f')
+		c = '\f';	//form feed
+//	else if (c == 's' || c == 'b')
+//		c = 0;	//invalid...
+	//else if (c == 'b')
+	//	c = '\b';
+	else if (c == '[')
+		c = 0xe010;	//quake specific
+	else if (c == ']')
+		c = 0xe011;	//quake specific
+	else if (c == '{')
 	{
-		QCC_COM_Parse(text);
-//		print("Next token is \"%s\"\n", com_token);
-		if (*text == '\"')
+		int d;
+		c = 0;
+		if (*pr_file_p == 'x')
 		{
-			text++;
-			if (fromfile) pr_file_p++;
-		}
-		do
-		{
-			c = *text++;
-			if (fromfile) pr_file_p++;
-			if (!c)
-				QCC_PR_ParseError ("EOF inside quote");
-			if (c=='\n')
-				QCC_PR_ParseError ("newline inside quote");
-			if (c=='\\')
-			{	// escape char
-				c = *text++;
-				if (fromfile) pr_file_p++;
-				if (!c)
-					QCC_PR_ParseError ("EOF inside quote");
-				if (c == 'n')
-					c = '\n';
-				else if (c == '"')
-					c = '"';
-				else if (c == '\\')
-					c = '\\';
-				else
-					QCC_PR_ParseError ("Unknown escape char");
-			}
-			else if (c=='\"')
+			pr_file_p++;
+			while ((d = *pr_file_p++) != '}')
 			{
-				if (fromfile) pr_file_p++;
-				break;
+				if (d >= '0' && d <= '9')
+					c = c * 16 + d - '0';
+				else if (d >= 'a' && d <= 'f')
+					c = c * 16 + 10+d - 'a';
+				else if (d >= 'A' && d <= 'F')
+					c = c * 16 + 10+d - 'A';
+				else
+					QCC_PR_ParseError(ERR_BADCHARACTERCODE, "Bad character code");
 			}
-			tmpbuf[len] = c;
-			len++;
-		} while (1);
-		tmpbuf[len] = 0;
-//		if (fromfile) pr_file_p++;
-
-		pr_immediate_type=NULL;
-		oldline=pr_source_line;
-		oldf=pr_file_p;
-		QCC_PR_Lex();
-		if (pr_immediate_type == &type_string)
-		{
-//			print("Appending \"%s\" to \"%s\"\n", pr_immediate_string, tmpbuf);
-			strcat(tmpbuf, pr_immediate_string);
-			len+=strlen(pr_immediate_string);
 		}
 		else
 		{
-			pr_source_line = oldline;
-			pr_file_p = oldf-1;
-			QCC_PR_LexWhitespace();
-			if (*pr_file_p != '\"')	//annother string
-				break;
+			while ((d = *pr_file_p++) != '}')
+			{
+				if (d >= '0' && d <= '9')
+					c = c * 10 + d - '0';
+				else
+					QCC_PR_ParseError(ERR_BADCHARACTERCODE, "Bad character code");
+			}
 		}
+	}
+	else if (c == '.')
+		c = 0xe01c;
+	else if (c == '<')
+		c = 0xe01d;	//separator start
+	else if (c == '-')
+		c = 0xe01e;	//separator middle
+	else if (c == '>')
+		c = 0xe01f;	//separator end
+	else if (c == '(')
+		c = 0xe080;	//slider start
+	else if (c == '=')
+		c = 0xe081;	//slider middle
+	else if (c == ')')
+		c = 0xe082;	//slider end
+	else if (c == '+')
+		c = 0xe083;	//slider box
+	else if (c == 'u' || c == 'U')
+	{
+		//lower case u specifies exactly 4 nibbles.
+		//upper case U specifies exactly 8 nibbles.
+		unsigned int nibbles = (c=='u')?4:8;
+		c = 0;
+		while (nibbles --> 0)
+		{
+			t = (unsigned char)*pr_file_p;
+			if (t >= '0' && t <= '9')
+				c = (c*16) + (t - '0');
+			else if (t >= 'A' && t <= 'F')
+				c = (c*16) + (t - 'A') + 10;
+			else if (t >= 'a' && t <= 'f')
+				c = (c*16) + (t - 'a') + 10;
+			else
+				break;
+			pr_file_p++;
+		}
+		if (nibbles)
+			QCC_PR_ParseWarning(ERR_BADCHARACTERCODE, "Unicode character terminated unexpectedly");
+	}
+	else if (c == 'x' || c == 'X')
+	{
+		int d;
+		c = 0;
 
-		QCC_PR_LexWhitespace();
-		text = pr_file_p;
+		d = (unsigned char)*pr_file_p++;
+		if (d >= '0' && d <= '9')
+			c += d - '0';
+		else if (d >= 'A' && d <= 'F')
+			c += d - 'A' + 10;
+		else if (d >= 'a' && d <= 'f')
+			c += d - 'a' + 10;
+		else
+			QCC_PR_ParseError(ERR_BADCHARACTERCODE, "Bad character code");
 
-	} while (1);
+		c *= 16;
 
-	strcpy(pr_token, tmpbuf);
-	pr_token_type = tt_immediate;
-	pr_immediate_type = &type_string;
-	strcpy (pr_immediate_string, pr_token);
-	pr_immediate_strlen = strlen(pr_immediate_string);
+		d = (unsigned char)*pr_file_p++;
+		if (d >= '0' && d <= '9')
+			c += d - '0';
+		else if (d >= 'A' && d <= 'F')
+			c += d - 'A' + 10;
+		else if (d >= 'a' && d <= 'f')
+			c += d - 'a' + 10;
+		else
+			QCC_PR_ParseError(ERR_BADCHARACTERCODE, "Bad character code");
+	}
+	else if (c == '\\')
+		c = '\\';
+	else if (c == '\'')
+		c = '\'';
+	else if (c >= '0' && c <= '9')	//WARNING: This is not octal, but uses 'yellow' numbers instead (as on hud).
+		c = 0xe012 + c - '0';
+	else if (c == '\r')
+	{	//sigh
+		c = *pr_file_p++;
+		if (c != '\n')
+			QCC_PR_ParseWarning(WARN_HANGINGSLASHR, "Hanging \\\\\r");
+		pr_source_line++;
+	}
+	else if (c == '\n')
+	{	//sigh
+		pr_source_line++;
+	}
+	else
+		QCC_PR_ParseError (ERR_INVALIDSTRINGIMMEDIATE, "Unknown escape char %c", c);
 
-//	print("Found \"%s\"\n", pr_immediate_string);
+	return c;
 }
-#else
 void QCC_PR_LexString (void)
 {
 	unsigned int	c, t;
@@ -1652,7 +1714,7 @@ void QCC_PR_LexString (void)
 		}
 		else if ((*pr_file_p == 'U' || *pr_file_p == 'u' || *pr_file_p == 'L') && pr_file_p[1] == '\"')
 		{	//unicode string, char32_t, char16_t, wchar_t respectively. we spit out utf-8 regardless.
-			QCC_PR_ParseWarning(WARN_NOTUTF8, "interpretting char32_t/char16_t/wchar_t as utf-8");
+			QCC_PR_ParseWarning(WARN_NOTUTF8, "char32_t/char16_t/wchar_t strings are not supported, treating as u8 prefix (as utf-8)");
 			stringtype = 2;
 			pr_file_p+=2;
 		}
@@ -1703,134 +1765,36 @@ void QCC_PR_LexString (void)
 					QCC_PR_ParseError (ERR_INVALIDSTRINGIMMEDIATE, "newline inside quote");
 				if (c=='\\')
 				{	// escape char
-					c = *pr_file_p++;
-					if (!c)
-						QCC_PR_ParseError (ERR_EOF, "EOF inside quote");
-					if (c == 'n')
-						c = '\n';
-					else if (c == 'r')
-						c = '\r';
-					else if (c == '#')	//avoid preqcc expansion in strings.
-						c = '#';
-					else if (c == '"')
-						c = '"';
-					else if (c == 't')
-						c = '\t';	//tab
-					else if (c == 'a')
-						c = '\a';	//bell
-					else if (c == 'v')
-						c = '\v';	//vertical tab
-					else if (c == 'f')
-						c = '\f';	//form feed
-					else if (c == 's' || c == 'b')
+					c = *pr_file_p;	//peek at it, for our hacks.
+					if (c == 's' || c == 'b')
 					{
+						pr_file_p++;
 						texttype ^= 0xe080;
 						continue;
 					}
-					//else if (c == 'b')
-					//	c = '\b';
-					else if (c == '[')
-						c = 0xe010;	//quake specific
-					else if (c == ']')
-						c = 0xe011;	//quake specific
-					else if (c == '{')
-					{
-						int d;
-						c = 0;
-						while ((d = *pr_file_p++) != '}')
-						{
-							c = c * 10 + d - '0';
-							if (d < '0' || d > '9' || c > 255)
-								QCC_PR_ParseError(ERR_BADCHARACTERCODE, "Bad character code");
-						}
-					}
 					else if (c == '.')
-						c = 0xe01c | texttype;
-					else if (c == '<')
-						c = 0xe01d;	//separator start
-					else if (c == '-')
-						c = 0xe01e;	//separator middle
-					else if (c == '>')
-						c = 0xe01f;	//separator end
-					else if (c == '(')
-						c = 0xe080;	//slider start
-					else if (c == '=')
-						c = 0xe081;	//slider middle
-					else if (c == ')')
-						c = 0xe082;	//slider end
-					else if (c == '+')
-						c = 0xe083;	//slider box
-					else if (c == 'u' || c == 'U')
 					{
-						//lower case u specifies exactly 4 nibbles.
-						//upper case U specifies exactly 8 nibbles.
-						unsigned int nibbles = (c=='u')?4:8;
-						c = 0;
-						while (nibbles --> 0)
-						{
-							t = (unsigned char)*pr_file_p;
-							if (t >= '0' && t <= '9')
-								c = (c*16) + (t - '0');
-							else if (t >= 'A' && t <= 'F')
-								c = (c*16) + (t - 'A') + 10;
-							else if (t >= 'a' && t <= 'f')
-								c = (c*16) + (t - 'a') + 10;
-							else
-								break;
-							pr_file_p++;
-						}
-						if (nibbles)
-							QCC_PR_ParseWarning(ERR_BADCHARACTERCODE, "Unicode character terminated unexpectedly");
-
+						pr_file_p++;
+						c = 0xe01c | texttype;
+					}
+					else if (c == 'u' || c == 'U')
+					{	//special hack, \u is a utf-8 code regardless of output encoding...
+						c = QCC_PR_LexEscapedCodepoint();
 						goto forceutf8;
 					}
 					else if (c == 'x' || c == 'X')
-					{
-						int d;
-						c = 0;
-
-						d = (unsigned char)*pr_file_p++;
-						if (d >= '0' && d <= '9')
-							c += d - '0';
-						else if (d >= 'A' && d <= 'F')
-							c += d - 'A' + 10;
-						else if (d >= 'a' && d <= 'f')
-							c += d - 'a' + 10;
-						else
-							QCC_PR_ParseError(ERR_BADCHARACTERCODE, "Bad character code");
-
-						c *= 16;
-
-						d = (unsigned char)*pr_file_p++;
-						if (d >= '0' && d <= '9')
-							c += d - '0';
-						else if (d >= 'A' && d <= 'F')
-							c += d - 'A' + 10;
-						else if (d >= 'a' && d <= 'f')
-							c += d - 'a' + 10;
-						else
-							QCC_PR_ParseError(ERR_BADCHARACTERCODE, "Bad character code");
+					{	//special hack, \xXX in a string is an explicit byte regardless of encoding.
+						c = QCC_PR_LexEscapedCodepoint();
+//						if (c > 0xff)
+//							QCC_PR_ParseWarning(ERR_BADCHARACTERCODE, "Bad unicode character code - codepoint %#x is above 0xFF", c);
 						goto forcebyte;
 					}
-					else if (c == '\\')
-						c = '\\';
-					else if (c == '\'')
-						c = '\'';
-					else if (c >= '0' && c <= '9')	//WARNING: This is not octal, but uses 'yellow' numbers instead (as on hud).
-						c = 0xe012 + c - '0';
-					else if (c == '\r')
-					{	//sigh
-						c = *pr_file_p++;
-						if (c != '\n')
-							QCC_PR_ParseWarning(WARN_HANGINGSLASHR, "Hanging \\\\\r");
-						pr_source_line++;
-					}
-					else if (c == '\n')
-					{	//sigh
-						pr_source_line++;
-					}
 					else
-						QCC_PR_ParseError (ERR_INVALIDSTRINGIMMEDIATE, "Unknown escape char %c", c);
+					{
+						c = QCC_PR_LexEscapedCodepoint();
+//						if (stringtype != 2 && c > 0xff)
+//							QCC_PR_ParseWarning(ERR_BADCHARACTERCODE, "Bad legacy character code - codepoint %#x is above 0xFF", c);
+					}
 				}
 				else if (c=='\"')
 				{
@@ -2010,7 +1974,6 @@ forcebyte:
 		}
 	}*/
 }
-#endif
 
 /*
 ==============
@@ -2072,6 +2035,15 @@ static void QCC_PR_LexNumber (void)
 		pr_token[tokenlen++] = '0';
 		pr_token[tokenlen++] = 'x';
 	}
+	else if (pr_file_p[0] == '0')
+	{
+		pr_file_p++;
+		if (*pr_file_p >= '0' && *pr_file_p <= '9')
+			QCC_PR_ParseWarning(WARN_GMQCC_SPECIFIC, "A leading 0 is interpreted as base-8.");
+		base = 8;
+
+		pr_token[tokenlen++] = '0';
+	}
 
 	pr_immediate_type = NULL;
 	//assume base 10 if not stated
@@ -2080,7 +2052,7 @@ static void QCC_PR_LexNumber (void)
 
 	while((c = *pr_file_p))
 	{
-		if (c >= '0' && c <= '9')
+		if (c >= '0' && c <= '9' && c < '0'+base)
 		{
 			pr_token[tokenlen++] = c;
 			num*=base;
@@ -2102,7 +2074,7 @@ static void QCC_PR_LexNumber (void)
 		{
 			pr_token[tokenlen++] = c;
 			pr_file_p++;
-			pr_immediate_type = type_float;
+			pr_immediate_type = flag_assume_double?type_double:type_float;
 			while(1)
 			{
 				c = *pr_file_p;
@@ -2110,8 +2082,14 @@ static void QCC_PR_LexNumber (void)
 				{
 					pr_token[tokenlen++] = c;
 				}
-				else if (c == 'f')
+				else if (c == 'f' || c == 'F')
 				{
+					pr_file_p++;
+					break;
+				}
+				else if (c == 'd' || c == 'D')
+				{
+					pr_immediate_type = type_double;
 					pr_file_p++;
 					break;
 				}
@@ -2122,10 +2100,13 @@ static void QCC_PR_LexNumber (void)
 				pr_file_p++;
 			}
 			pr_token[tokenlen++] = 0;
-			pr_immediate._float = (float)atof(pr_token);
-			return;
+			if (pr_immediate_type == type_double)
+				pr_immediate._double = atof(pr_token);
+			else
+				pr_immediate._float = (float)atof(pr_token);
+			goto checkjunk;
 		}
-		else if (c == 'f')
+		else if (c == 'f' || c == 'F')
 		{
 			pr_token[tokenlen++] = c;
 			pr_token[tokenlen++] = 0;
@@ -2136,23 +2117,71 @@ static void QCC_PR_LexNumber (void)
 			num*=sign;
 			if ((longlong)pr_immediate._float != (longlong)num)
 				QCC_PR_ParseWarning(WARN_OVERFLOW, "numerical overflow");
-			return;
+			goto checkjunk;
 		}
-		else if (c == 'i' || c == 'u')
-		{
+		else if (c == 'd' || c == 'D')
+		{	//note: conflicts with hex. add a dot before it or something.
 			pr_token[tokenlen++] = c;
 			pr_token[tokenlen++] = 0;
 			pr_file_p++;
-			pr_immediate_type = type_integer;
-			pr_immediate._int = num*sign;
+			pr_immediate_type = type_double;
+			pr_immediate._double = num*sign;
 
 			num*=sign;
-			if ((longlong)pr_immediate._int != (longlong)num)
-			{
-				if (((longlong)pr_immediate._int & LL(0xffffffff80000000)) != LL(0xffffffff80000000))
-					QCC_PR_ParseWarning(WARN_OVERFLOW, "numerical overflow");
+			if ((longlong)pr_immediate._double != (longlong)num)
+				QCC_PR_ParseWarning(WARN_OVERFLOW, "numerical overflow");
+			goto checkjunk;
+		}
+		else if (c == 'i' || c == 'u' || c == 'l' || c == 'I' || c == 'U' || c == 'L')
+		{	//length and sign flags can be any order. LL suffix must have the same case (but not necessarily match the sign suffix)
+			int isunsigned;
+			int islong = (c == 'l')||(c == 'L');
+			pr_token[tokenlen++] = c;
+			pr_file_p++;
+			if (islong)
+			{	//length suffix was first.
+				//long-long?
+				if (*pr_file_p == c)
+					pr_token[tokenlen++] = *pr_file_p++;
+				//check for signed suffix...
+				c = *pr_file_p;
+				isunsigned = (c == 'u')||(c=='U');
+				if (c == 'i' || c == 'I' || isunsigned)	//ignore an explicit redundant 'i' char, for not-a-float.
+					pr_token[tokenlen++] = *pr_file_p++;
 			}
-			return;
+			else
+			{
+				isunsigned = (c == 'u')||(c=='U');
+				//we already made sure it u or i, and its not an l
+				c = *pr_file_p;
+				if (c == 'l' || c == 'L')
+				{
+					pr_token[tokenlen++] = *pr_file_p++;
+					islong = true;
+					//long-long?
+					if (*pr_file_p == c)
+						pr_token[tokenlen++] = *pr_file_p++;
+				}
+			}
+			pr_token[tokenlen++] = 0;
+			num *= sign;
+			if (islong)
+			{
+				pr_immediate_type = (isunsigned)?type_uint64:type_int64;
+				pr_immediate._int64 = num;
+			}
+			else
+			{
+				pr_immediate_type = (isunsigned)?type_uint:type_integer;
+				pr_immediate._int = num;
+
+				if ((longlong)pr_immediate._int != (longlong)num)
+				{
+					if (((longlong)pr_immediate._int & LL(0xffffffff80000000)) != LL(0xffffffff80000000))
+						QCC_PR_ParseWarning(WARN_OVERFLOW, "numerical overflow");
+				}
+			}
+			goto checkjunk;
 		}
 		else
 			break;
@@ -2199,6 +2228,11 @@ qccxhex:
 		if ((longlong)pr_immediate._float != (longlong)num && base == 16)
 			QCC_PR_ParseWarning(WARN_OVERFLOW, "numerical overflow %lld will be rounded to %f", num, pr_immediate._float);
 	}
+
+checkjunk:
+	c = *pr_file_p;
+	if ( (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || (c >= '0' && c <= '9') || (c & 0x80))
+		QCC_PR_ParseWarning(ERR_NOTANUMBER, "bad suffix on number %s", pr_token);
 }
 
 
@@ -2233,43 +2267,32 @@ static void QCC_PR_LexVector (void)
 {
 	int		i;
 
-	pr_file_p++;
+	pr_file_p++;	//skip the leading ' char
 
 	if (*pr_file_p == '\\')
 	{//extended character constant
+		pr_file_p++;
 		pr_token_type = tt_immediate;
 		pr_immediate_type = type_float;
-		pr_file_p++;
-		switch(*pr_file_p)
-		{
-		case 'n':
-			pr_immediate._float = '\n';
-			break;
-		case 'r':
-			pr_immediate._float = '\r';
-			break;
-		case 't':
-			pr_immediate._float = '\t';
-			break;
-		case '\'':
-			pr_immediate._float = '\'';
-			break;
-		case '\"':
-			pr_immediate._float = '\"';
-			break;
-		case '\\':
-			pr_immediate._float = '\\';
-			break;
-		default:
-			QCC_PR_ParseError (ERR_INVALIDVECTORIMMEDIATE, "Bad character constant");
-		}
-		pr_file_p++;
+		pr_immediate._float = QCC_PR_LexEscapedCodepoint();
 		if (*pr_file_p != '\'')
 			QCC_PR_ParseError (ERR_INVALIDVECTORIMMEDIATE, "Bad character constant");
 		pr_file_p++;
 		return;
 	}
-	if (pr_file_p[1] == '\'')
+	if ((unsigned char)*pr_file_p >= 0x80)
+	{
+		int b = utf8_check(pr_file_p, &pr_immediate._int);	//utf-8 codepoint.
+		pr_token_type = tt_immediate;
+		pr_immediate_type = type_float;
+		if (flag_qccx)
+			QCC_PR_ParseWarning(WARN_DENORMAL, "char constant: denormal");
+		else
+			pr_immediate._float = pr_immediate._int;
+		pr_file_p+=b+1;
+		return;
+	}
+	else if (pr_file_p[1] == '\'')
 	{//character constant
 		pr_token_type = tt_immediate;
 		pr_immediate_type = type_float;
@@ -3890,9 +3913,9 @@ void QCC_PR_ParsePrintDef (int type, QCC_def_t *def)
 			else if (def->isstatic)
 				modifiers = "static ";
 			if (flag_msvcstyle)
-				externs->Printf ("%s%s(%i) :    %s%s%s %s%s%s is defined here\n", col_location, def->filen, def->s_line, col_none, modifiers, TypeName(def->type, tybuffer, sizeof(tybuffer)), col_symbol, def->name, col_none);
+				externs->Printf ("%s%s(%i) :    %s%s%s %s%s%s is defined here\n", col_location, def->filen, def->s_line, col_type, modifiers, TypeName(def->type, tybuffer, sizeof(tybuffer)), col_symbol, def->name, col_none);
 			else
-				externs->Printf ("%s%s:%i:    %s%s%s %s%s%s is defined here\n", col_location, def->filen, def->s_line, col_none, modifiers, TypeName(def->type, tybuffer, sizeof(tybuffer)), col_symbol, def->name, col_none);
+				externs->Printf ("%s%s:%i:    %s%s%s %s%s%s is defined here\n", col_location, def->filen, def->s_line, col_type, modifiers, TypeName(def->type, tybuffer, sizeof(tybuffer)), col_symbol, def->name, col_none);
 		}
 	}
 }
@@ -3953,7 +3976,7 @@ Aborts the current file load
 void editbadfile(const char *file, int line);
 #endif
 //will abort.
-void VARGS QCC_PR_ParseError (int errortype, const char *error, ...)
+NORETURN void VARGS QCC_PR_ParseError (int errortype, const char *error, ...)
 {
 	va_list		argptr;
 	char		string[1024];
@@ -3975,7 +3998,7 @@ void VARGS QCC_PR_ParseError (int errortype, const char *error, ...)
 	longjmp (pr_parse_abort, 1);
 }
 //will abort.
-void VARGS QCC_PR_ParseErrorPrintDef (int errortype, QCC_def_t *def, const char *error, ...)
+NORETURN void VARGS QCC_PR_ParseErrorPrintDef (int errortype, QCC_def_t *def, const char *error, ...)
 {
 	va_list		argptr;
 	char		string[1024];
@@ -3998,7 +4021,7 @@ void VARGS QCC_PR_ParseErrorPrintDef (int errortype, QCC_def_t *def, const char 
 	longjmp (pr_parse_abort, 1);
 }
 
-void VARGS QCC_PR_ParseErrorPrintSRef (int errortype, QCC_sref_t def, const char *error, ...)
+NORETURN void VARGS QCC_PR_ParseErrorPrintSRef (int errortype, QCC_sref_t def, const char *error, ...)
 {
 	va_list		argptr;
 	char		string[1024];
@@ -4625,6 +4648,35 @@ char *TypeName(QCC_type_t *type, char *buffer, int buffersize)
 		Q_strlcat(buffer, "void", buffersize);
 		return buffer;
 	}
+	if (type->type == ev_enum)
+	{
+		if (buffersize < 0)
+			return buffer;
+		*buffer = 0;
+		Q_strlcat(buffer, "enum ", buffersize);
+		Q_strlcat(buffer, type->name, buffersize);
+		Q_strlcat(buffer, ":", buffersize);
+		TypeName(type->aux_type, buffer+strlen(buffer), buffersize-strlen(buffer));
+		return buffer;
+	}
+	if (type->type == ev_struct)
+	{
+		if (buffersize < 0)
+			return buffer;
+		*buffer = 0;
+		Q_strlcat(buffer, "struct ", buffersize);
+		Q_strlcat(buffer, type->name, buffersize);
+		return buffer;
+	}
+	if (type->type == ev_union)
+	{
+		if (buffersize < 0)
+			return buffer;
+		*buffer = 0;
+		Q_strlcat(buffer, "union ", buffersize);
+		Q_strlcat(buffer, type->name, buffersize);
+		return buffer;
+	}
 
 	if (type->type == ev_pointer)
 	{
@@ -4836,7 +4888,7 @@ QCC_type_t *QCC_PR_MakeThiscall(QCC_type_t *orig, QCC_type_t *thistype)
 //expects a ( to have already been parsed.
 QCC_type_t *QCC_PR_ParseFunctionType (int newtype, QCC_type_t *returntype)
 {
-	QCC_type_t	*ftype;
+	QCC_type_t	*ftype, *t;
 	char	*name;
 	int definenames = !recursivefunctiontype;
 	int numparms = 0;
@@ -4862,42 +4914,57 @@ QCC_type_t *QCC_PR_ParseFunctionType (int newtype, QCC_type_t *returntype)
 
 			if (QCC_PR_CheckToken ("..."))
 			{
-				ftype->vargs = true;
-				break;
-			}
-
-			foundinout = false;
-			paramlist[numparms].optional = false;
-			paramlist[numparms].isvirtual = false;
-			paramlist[numparms].out = false;
-
-			while(1)
-			{
-				if (!paramlist[numparms].optional && QCC_PR_CheckKeyword(keyword_optional, "optional"))
-					paramlist[numparms].optional = true;
-				else if (!foundinout && QCC_PR_CheckKeyword(keyword_inout, "inout"))
+				t = QCC_PR_ParseType(false, true);	//the evil things I do...
+				if (!t)
 				{
-					paramlist[numparms].out = true;
-					foundinout = true;
-				}
-				else if (!foundinout && QCC_PR_CheckKeyword(keyword_inout, "out"))
-				{
-					paramlist[numparms].out = 2;	//not really supported, but parsed for readability.
-					foundinout = true;
-				}
-				else if (!foundinout && QCC_PR_CheckKeyword(keyword_inout, "in"))
-				{
-					paramlist[numparms].out = false;
-					foundinout = true;
+					ftype->vargs = true;
+					break;
 				}
 				else
-					break;
+				{	//its a ... followed by a type... don't bug out...
+					t = QCC_PR_FieldType(t);
+					t = QCC_PR_FieldType(t);
+					t = QCC_PR_FieldType(t);
+					paramlist[numparms].type = t;
+					foundinout = false;
+				}
 			}
+			else
+			{
+				foundinout = false;
+				paramlist[numparms].optional = false;
+				paramlist[numparms].isvirtual = false;
+				paramlist[numparms].out = false;
 
+				while(1)
+				{
+					if (!paramlist[numparms].optional && QCC_PR_CheckKeyword(keyword_optional, "optional"))
+						paramlist[numparms].optional = true;
+					else if (!foundinout && QCC_PR_CheckKeyword(keyword_inout, "inout"))
+					{
+						paramlist[numparms].out = true;
+						foundinout = true;
+					}
+					else if (!foundinout && QCC_PR_CheckKeyword(keyword_inout, "out"))
+					{
+						paramlist[numparms].out = 2;	//not really supported, but parsed for readability.
+						foundinout = true;
+					}
+					else if (!foundinout && QCC_PR_CheckKeyword(keyword_inout, "in"))
+					{
+						paramlist[numparms].out = false;
+						foundinout = true;
+					}
+					else
+						break;
+				}
+
+				t = QCC_PR_ParseType(false, false);
+			}
 			paramlist[numparms].defltvalue.cast = NULL;
 			paramlist[numparms].ofs = 0;
 			paramlist[numparms].arraysize = 0;
-			paramlist[numparms].type = QCC_PR_ParseType(false, false);
+			paramlist[numparms].type = t;
 			if (!paramlist[numparms].type)
 				QCC_PR_ParseError(0, "Expected type\n");
 
@@ -4932,8 +4999,18 @@ QCC_type_t *QCC_PR_ParseFunctionType (int newtype, QCC_type_t *returntype)
 
 				if (QCC_PR_CheckToken("["))
 				{
-					QCC_PR_ParseError(0, "Array arguments are not supported\n");
-					QCC_PR_Expect("]");
+					if (QCC_PR_CheckToken("]"))	//length omitted. just treat it as a pointer...?
+					{
+						QCC_PR_ParseError(0, "unsized array argument\n");
+						paramlist[numparms].type = QCC_PointerTypeTo(paramlist[numparms].type);
+					}
+					else
+					{	//proper array
+						paramlist[numparms].arraysize = QCC_PR_IntConstExpr();
+						if (!paramlist[numparms].arraysize)
+							QCC_PR_ParseError(ERR_NOTANAME, "cannot cope with 0-sized arrays");
+						QCC_PR_Expect("]");
+					}
 				}
 			}
 			else if (definenames)
@@ -5062,32 +5139,26 @@ QCC_type_t *QCC_PR_ParseFunctionTypeReacc (int newtype, QCC_type_t *returntype)
 }
 QCC_type_t *QCC_PR_PointerType (QCC_type_t *pointsto)
 {
-	QCC_type_t	*ptype, *e;
+	QCC_type_t	*ptype;
 	char name[128];
 	if (pointsto->ptrto)
 		return pointsto->ptrto;
 	QC_snprintfz(name, sizeof(name), "%s*", pointsto->name);
-	ptype = QCC_PR_NewType(name, ev_pointer, false);
+	ptype = QCC_PR_NewType(strcpy(qccHunkAlloc(strlen(name)+1), name), ev_pointer, false);
 	ptype->aux_type = pointsto;
-	e = QCC_PR_FindType (ptype);
-	if (e == ptype)
-	{
-		char name[128];
-		QC_snprintfz(name, sizeof(name), "ptr to %s", pointsto->name);
-		e->name = strcpy(qccHunkAlloc(strlen(name)+1), name);
-	}
-	pointsto->ptrto = e;
-	return e;
+	return pointsto->ptrto = QCC_PR_FindType (ptype);
 }
 QCC_type_t *QCC_PR_FieldType (QCC_type_t *pointsto)
 {
 	QCC_type_t	*ptype;
 	char name[128];
-	QC_snprintfz(name, sizeof(name), "FIELD_TYPE(%s)", pointsto->name);
-	ptype = QCC_PR_NewType(name, ev_field, false);
+	if (pointsto->fldto)
+		return pointsto->fldto;
+	QC_snprintfz(name, sizeof(name), ".%s", pointsto->name);
+	ptype = QCC_PR_NewType(strcpy(qccHunkAlloc(strlen(name)+1), name), ev_field, false);
 	ptype->aux_type = pointsto;
 	ptype->size = ptype->aux_type->size;
-	return QCC_PR_FindType (ptype);
+	return pointsto->fldto = QCC_PR_FindType (ptype);
 }
 QCC_type_t *QCC_PR_GenFunctionType (QCC_type_t *rettype, struct QCC_typeparam_s *args, int numargs)
 {
@@ -5138,6 +5209,41 @@ QCC_type_t *QCC_PR_ParseType (int newtype, pbool silentfail)
 
 //	int ofs;
 
+	if (QCC_PR_CheckKeyword(keyword_const, "const"))
+	{
+		QCC_PR_ParseWarning (WARN_IGNOREDKEYWORD, "ignoring unsupported const keyword");
+		silentfail = false;	//FIXME
+	}
+
+	if (QCC_PR_PeekToken ("...") )	//this is getting stupid
+	{
+		QCC_PR_LexWhitespace (false);
+		if (*pr_file_p == '(')
+		{	//work around gmqcc's "(...(" being misinterpreted as a cast syntax error, instead abort here so it can be treated as an intrinsic (with args) instead.
+			if (silentfail)
+				return NULL;
+			QCC_PR_ParseError (ERR_NOTATYPE, "\"%s\" is not a type", pr_token);
+		}
+		QCC_PR_Lex ();
+
+		type = QCC_PR_NewType("FIELD_TYPE", ev_field, false);
+		type->aux_type = QCC_PR_ParseType (false, false);
+		type->size = type->aux_type->size;
+
+		newt = QCC_PR_FindType (type);
+		type = QCC_PR_NewType("FIELD_TYPE", ev_field, false);
+		type->aux_type = newt;
+		type->size = type->aux_type->size;
+
+		newt = QCC_PR_FindType (type);
+		type = QCC_PR_NewType("FIELD_TYPE", ev_field, false);
+		type->aux_type = newt;
+		type->size = type->aux_type->size;
+
+		if (newtype)
+			return type;
+		return QCC_PR_FindType (type);
+	}
 	if (QCC_PR_CheckToken (".."))	//so we don't end up with the user specifying '. .vector blah' (hexen2 added the .. token for array ranges)
 	{
 		newt = QCC_PR_NewType("FIELD_TYPE", ev_field, false);
@@ -5194,7 +5300,7 @@ QCC_type_t *QCC_PR_ParseType (int newtype, pbool silentfail)
 //	name = QCC_PR_CheckCompConstString(name);
 
 	//accessors
-	if (QCC_PR_CheckKeyword (keyword_class, "accessor"))
+	if (QCC_PR_CheckKeyword (keyword_accessor, "accessor"))
 	{
 		char parentname[256];
 		char *accessorname;
@@ -5441,9 +5547,9 @@ QCC_type_t *QCC_PR_ParseType (int newtype, pbool silentfail)
 			return newt;
 
 		if (pr_scope)
-			QCC_PR_ParseError(ERR_REDECLARATION, "Declaration of class %s within function", classname);
+			QCC_PR_ParseError(ERR_REDECLARATION, "Declaration of class %s%s%s within function", col_type,classname,col_none);
 		if (redeclaration && fieldtype != newt->parentclass)
-			QCC_PR_ParseError(ERR_REDECLARATION, "Parent class changed on redeclaration of %s", classname);
+			QCC_PR_ParseError(ERR_REDECLARATION, "Parent class changed on redeclaration of %s%s%s", col_type,classname,col_none);
 		newt->parentclass = fieldtype;
 
 		if (QCC_PR_CheckToken(","))
@@ -5535,7 +5641,7 @@ QCC_type_t *QCC_PR_ParseType (int newtype, pbool silentfail)
 			}
 			else
 			{
-				if (isvirt|isnonvirt)
+				if (isvirt||isnonvirt)
 					QCC_Error(ERR_INTERNAL, "virtual keyword on member that is not a function");
 			}
 
@@ -5672,8 +5778,12 @@ QCC_type_t *QCC_PR_ParseType (int newtype, pbool silentfail)
 			//static members are technically just funny-named globals, and do not generate fields.
 			if (isnonvirt || isstatic || (newparm->type == ev_function && !arraysize))
 			{
+				unsigned int fl = 0;
+				if (newparm->type == ev_function && !arraysize)
+					fl = GDF_CONST;
+
 				QC_snprintfz(membername, sizeof(membername), "%s::%s", classname, parmname);
-				QCC_FreeDef(QCC_PR_GetDef(newparm, membername, NULL, true, 0, GDF_CONST));
+				QCC_FreeDef(QCC_PR_GetDef(newparm, membername, NULL, true, 0, fl));
 
 				if (isnonvirt || isstatic)
 					continue;
@@ -5827,20 +5937,13 @@ QCC_type_t *QCC_PR_ParseType (int newtype, pbool silentfail)
 		return NULL;
 	}
 
-	//FIXME: these should be moved into parsetype
 	if (QCC_PR_CheckKeyword(keyword_enum, "enum"))
 	{
-		newt = QCC_PR_ParseEnum(false);
-		if (QCC_PR_CheckToken(";"))
-			return NULL;
-		return newt;
+		return QCC_PR_ParseEnum(false);
 	}
 	if (QCC_PR_CheckKeyword(keyword_enumflags, "enumflags"))
 	{
-		newt = QCC_PR_ParseEnum(true);
-		if (QCC_PR_CheckToken(";"))
-			return NULL;
-		return newt;
+		return QCC_PR_ParseEnum(true);
 	}
 
 	structtype = ev_void;
@@ -5852,8 +5955,13 @@ QCC_type_t *QCC_PR_ParseType (int newtype, pbool silentfail)
 	{
 		struct QCC_typeparam_s *parms = NULL, *oldparm;
 		int numparms = 0;
+		int ofs;
 		unsigned int arraysize;
 		char *parmname;
+
+		pbool isnonvirt = false;
+		pbool isstatic = false;
+		pbool isvirt = false;
 
 		if (QCC_PR_CheckToken("{"))
 		{
@@ -5914,9 +6022,6 @@ QCC_type_t *QCC_PR_ParseType (int newtype, pbool silentfail)
 			//in qc, functions are assignable references like anything else, so no modifiers means the qc will need to assign to it somewhere.
 			//virtual functions are still references, but we initialise them somewhere
 			//nonvirtual functions and static functions are kinda the same thing
-			pbool isnonvirt = false;
-			pbool isstatic = false;
-			pbool isvirt = false;
 			QCC_sref_t defaultval;
 			if (QCC_PR_CheckToken("}"))
 			{
@@ -5933,13 +6038,18 @@ QCC_type_t *QCC_PR_ParseType (int newtype, pbool silentfail)
 			{	//same as last type, unless initial/after-semicolon
 				if (!newparm)
 					QCC_PR_ParseError(ERR_EXPECTED, "element missing type");
-				newparm = QCC_PR_NewType(newparm->name, newparm->type, false);
 			}
 			else
 			{	//new type!
 				if (newparm)
 					QCC_PR_ParseError(ERR_EXPECTED, "missing semi-colon");	//allow a missing semi-colon on functions, for mixed-style functions.
 
+				//reset these...
+				isnonvirt = false;
+				isstatic = false;
+				isvirt = false;
+
+				//parse field modifiers
 				if (QCC_PR_CheckKeyword(1, "public"))
 					/*ispublic = true*/;
 				else if (QCC_PR_CheckKeyword(1, "private"))
@@ -5958,6 +6068,7 @@ QCC_type_t *QCC_PR_ParseType (int newtype, pbool silentfail)
 //				else if (QCC_PR_CheckKeyword(1, "strip"))
 //					isignored = true;
 
+				//now parse the actual type.
 				newparm = QCC_PR_ParseType(false, false);
 			}
 			type = newparm;
@@ -5983,6 +6094,15 @@ QCC_type_t *QCC_PR_ParseType (int newtype, pbool silentfail)
 						QCC_PR_ParseError(ERR_NOTANAME, "cannot cope with 0-sized arrays");
 					QCC_PR_Expect("]");
 				}
+				while (QCC_PR_CheckToken("["))
+				{
+					int nsize=QCC_PR_IntConstExpr();
+					if (!nsize)
+						QCC_PR_ParseError(ERR_NOTANAME, "cannot cope with 0-sized arrays");
+					QCC_PR_Expect("]");
+					arraysize *= nsize;
+					QCC_PR_ParseWarning(WARN_IGNOREDKEYWORD, "multi-dimensional arrays are not supported. flattening to single array.");
+				}
 
 				if (QCC_PR_CheckToken("("))
 					type = QCC_PR_ParseFunctionType(false, type);
@@ -5992,6 +6112,12 @@ QCC_type_t *QCC_PR_ParseType (int newtype, pbool silentfail)
 			{
 				QCC_PR_ParseWarning(ERR_NOTANAME, "type %s not fully defined yet", type->name);
 				continue;
+			}
+
+			if (QCC_PR_CheckToken(":"))
+			{
+				QCC_PR_IntConstExpr();
+				QCC_PR_ParseWarning(WARN_IGNOREDKEYWORD, "bitfields are not supported");
 			}
 
 			if ((isnonvirt || isvirt) && type->type != ev_function)
@@ -6033,12 +6159,12 @@ QCC_type_t *QCC_PR_ParseType (int newtype, pbool silentfail)
 				if (QCC_PR_CheckToken("="))
 				{
 					defaultval = QCC_PR_ParseDefaultInitialiser(type);
-					QCC_PR_ParseWarning(ERR_INTERNAL, "TODO: initialised struct members are not implemented yet", type->name);
+					QCC_PR_ParseWarning(ERR_INTERNAL, "TODO: pre-initialised struct members are not implemented yet", type->name);
 				}
 			}
 
-			parms = realloc(parms, sizeof(*parms) * (numparms+1));
-			oldparm = QCC_PR_FindStructMember(newt, parmname, &parms[numparms].ofs);
+			parms = realloc(parms, sizeof(*parms) * (numparms+4));
+			oldparm = QCC_PR_FindStructMember(newt, parmname, &ofs);
 			if (oldparm && oldparm->arraysize == arraysize && !typecmp_lax(oldparm->type, type))
 			{
 				if (!isvirt)
@@ -6046,16 +6172,17 @@ QCC_type_t *QCC_PR_ParseType (int newtype, pbool silentfail)
 			}
 			else if (structtype == ev_union)
 			{
-				parms[numparms].ofs = 0;
+				ofs = 0;
 				if (type->size*(arraysize?arraysize:1) > newt->size)
 					newt->size = type->size*(arraysize?arraysize:1);
 			}
 			else
 			{
-				parms[numparms].ofs = newt->size;
+				ofs = newt->size;
 				newt->size += type->size*(arraysize?arraysize:1);
 			}
 
+			parms[numparms].ofs = ofs;
 			parms[numparms].arraysize = arraysize;
 			parms[numparms].out = false;
 			parms[numparms].optional = false;
@@ -6064,6 +6191,24 @@ QCC_type_t *QCC_PR_ParseType (int newtype, pbool silentfail)
 			parms[numparms].type = type;
 			parms[numparms].defltvalue = defaultval;
 			numparms++;
+
+			/*if (type->type == ev_vector && arraysize == 0)
+			{	//add in vec_x/y/z members too.
+				int c;
+				for (c = 0; c < 3; c++)
+				{
+					parms[numparms].ofs = ofs + c;
+					parms[numparms].arraysize = arraysize;
+					parms[numparms].out = false;
+					parms[numparms].optional = true;
+					parms[numparms].isvirtual = isvirt;
+					parms[numparms].paramname = qccHunkAlloc(strlen(parmname)+3);
+					sprintf(parms[numparms].paramname, "%s_%c", parmname, 'x'+c);
+					parms[numparms].type = type_float;
+					parms[numparms].defltvalue = nullsref;
+					numparms++;
+				}
+			}*/
 		}
 		if (!numparms)
 			QCC_PR_ParseError(ERR_NOTANAME, "%s %s has no members", structtype==ev_union?"union":"struct", newt->name);
@@ -6100,6 +6245,78 @@ QCC_type_t *QCC_PR_ParseType (int newtype, pbool silentfail)
 			type = type_function;
 		else
 		{
+			//try and handle C's types, which have weird and obtuse combinations (like long long, long int, short int).
+			pbool isokay = false;
+			pbool issigned = false;
+			pbool isunsigned = false;
+			pbool islong = false;
+			pbool isfloat = false;
+			int bits = 0;
+
+			while(true)
+			{
+				if (!isunsigned && !issigned && QCC_PR_CheckKeyword(keyword_signed, "signed"))
+					issigned = isokay = true;
+				else if (!issigned && !isunsigned && QCC_PR_CheckKeyword(keyword_unsigned, "unsigned"))
+					isunsigned = isokay = true;
+				else if (!bits && QCC_PR_CheckKeyword(keyword_long, "long"))
+				{
+					if (islong)
+						bits = 128;
+					islong = isokay = true;
+				}
+				else if ((!bits || bits==16) && (QCC_PR_CheckKeyword(keyword_int, "int") || QCC_PR_CheckKeyword(keyword_integer, "integer")))
+				{	//long int, short int, etc are allowed
+					if (!bits)
+						bits = 32;
+					isokay = true;
+				}
+				else if (!bits && QCC_PR_CheckKeyword(keyword_short, "short"))
+					bits = 16, isokay = true;
+				else if (!bits && QCC_PR_CheckKeyword(keyword_char, "char"))
+					bits = 8, isokay = true;
+				else if (!bits && QCC_PR_CheckKeyword(keyword_int, "_Bool"))	//c99
+					bits = 1, isokay = true;
+
+				else if (!bits && !islong && QCC_PR_CheckKeyword(keyword_float, "float"))
+					bits = 32, isfloat = isokay = true;
+				else if ((!bits||islong) && QCC_PR_CheckKeyword(keyword_double, "double"))
+					bits = islong?128:64, islong=false, isfloat = isokay = true;
+				else
+					break;
+			}
+			if (isokay)
+			{
+				if (!bits)
+					bits = islong?64:32;	//<signed|unsigned|long> [int]
+				if (isfloat)
+				{
+					if (isunsigned)
+						QCC_PR_ParseWarning (WARN_IGNOREDKEYWORD, "ignoring unsupported unsigned keyword, type will be signed");
+					if (bits > 64)
+						type = type_double, QCC_PR_ParseWarning (WARN_IGNOREDKEYWORD, "long doubles are not supported, using double");	//permitted
+					else if (bits == 64)
+						type = type_double;
+					else
+						type = type_float;
+				}
+				else
+				{
+					if (bits > 64)
+						type = (isunsigned?type_uint64:type_int64), QCC_PR_ParseWarning (WARN_IGNOREDKEYWORD, "long longs are not supported, using long");	//permitted
+					else if (bits == 64)
+						type = (isunsigned?type_uint64:type_int64);
+					else if (bits == 16)
+						type = (isunsigned?type_uint:type_integer), QCC_PR_ParseWarning (WARN_IGNOREDKEYWORD, "shorts are not supported, using int");	//permitted
+					else if (bits == 8)
+						type = (isunsigned?type_uint:type_integer), QCC_PR_ParseWarning (WARN_IGNOREDKEYWORD, "chars are not supported, using int");	//permitted
+					else
+						type = (isunsigned?type_uint:type_integer);
+				}
+				goto wasctype;
+			}
+
+
 			if (silentfail)
 				return NULL;
 
@@ -6108,11 +6325,16 @@ QCC_type_t *QCC_PR_ParseType (int newtype, pbool silentfail)
 		}
 	}
 	QCC_PR_Lex ();
+wasctype:
 
 	while (QCC_PR_CheckToken("*"))
+	{
+		if (QCC_PR_CheckKeyword(keyword_const, "const"))
+			QCC_PR_ParseWarning (WARN_IGNOREDKEYWORD, "ignoring unsupported const keyword");
 		type = QCC_PointerTypeTo(type);
+	}
 
-	if (QCC_PR_CheckToken ("("))	//this is followed by parameters. Must be a function.
+	if (flag_qcfuncs && QCC_PR_CheckToken ("("))	//this is followed by parameters. Must be a function.
 	{
 		type_inlinefunction = true;
 		type = QCC_PR_ParseFunctionType(newtype, type);

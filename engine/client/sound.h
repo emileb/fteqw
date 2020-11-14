@@ -22,6 +22,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifndef __SOUND__
 #define __SOUND__
 
+//#define MIXER_F32
 #define MAXSOUNDCHANNELS 8	//on a per device basis
 
 //pitch/rate changes require that we track stuff with subsample precision.
@@ -31,10 +32,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define PITCHSHIFT 6	/*max audio file length = ((1<<32)>>PITCHSHIFT)/KHZ*/
 
 struct sfx_s;
-typedef struct
-{
-	int s[MAXSOUNDCHANNELS];
-} portable_samplegroup_t;
 
 typedef struct {
 	struct sfxcache_s *(QDECL *decodedata) (struct sfx_s *sfx, struct sfxcache_s *buf, ssamplepos_t start, int length);	//return true when done.
@@ -63,12 +60,27 @@ typedef struct sfx_s
 	int loopstart;	//-1 or sample index to begin looping at once the sample ends
 } sfx_t;
 
+typedef enum
+{
+#ifdef FTE_TARGET_WEB
+		QAF_BLOB=0,
+#endif
+		QAF_S8=1,
+		//QAF_U8=0x80|1,
+		QAF_S16=2,
+		//QAF_S32=4,
+#ifdef MIXER_F32
+		QAF_F32=0x80|4,
+#endif
+#define QAF_BYTES(v) (v&0x7f)	//to make memory allocation easier.
+} qaudiofmt_t;
+
 // !!! if this is changed, it much be changed in asm_i386.h too !!!
 typedef struct sfxcache_s
 {
 	usamplepos_t length;	//sample count
 	unsigned int speed;
-	unsigned int width;
+	qaudiofmt_t format;
 	unsigned int numchannels;
 	usamplepos_t soundoffset;	//byte index into the sound
 	qbyte	*data;		// variable sized
@@ -119,7 +131,7 @@ typedef struct
 typedef struct
 {
 	sfx_t	*sfx;			// sfx number
-	int		vol[MAXSOUNDCHANNELS];		// volume, .8 fixed point.
+	int		vol[MAXSOUNDCHANNELS];		// volume, 0.8 fixed point.
 	ssamplepos_t pos;		// sample position in sfx, <0 means delay sound start (shifted up by PITCHSHIFT)
 	int		rate;			// fixed point rate scaling
 	int		flags;			// cf_ flags
@@ -250,7 +262,7 @@ qboolean S_IsPlayingSomewhere(sfx_t *s);
 // picks a channel based on priorities, empty slots, number of channels
 channel_t *SND_PickChannel(soundcardinfo_t *sc, int entnum, int entchannel);
 
-void SND_ResampleStream (void *in, int inrate, int inwidth, int inchannels, int insamps, void *out, int outrate, int outwidth, int outchannels, int resampstyle);
+void SND_ResampleStream (void *in, int inrate, qaudiofmt_t inwidth, int inchannels, int insamps, void *out, int outrate, qaudiofmt_t outwidth, int outchannels, int resampstyle);
 
 // restart entire sound subsystem (doesn't flush old sounds, so make sure that happens)
 void S_DoRestart (qboolean onlyifneeded);
@@ -258,7 +270,7 @@ void S_DoRestart (qboolean onlyifneeded);
 void S_Restart_f (void);
 
 //plays streaming audio
-void S_RawAudio(int sourceid, qbyte *data, int speed, int samples, int channels, int width, float volume);
+void S_RawAudio(int sourceid, qbyte *data, int speed, int samples, int channels, qaudiofmt_t width, float volume);
 
 void CLVC_Poll (void);
 
@@ -292,10 +304,11 @@ extern int				snd_speed;
 
 extern cvar_t snd_nominaldistance;
 
-extern	cvar_t loadas8bit;
+extern	cvar_t snd_loadas8bit;
 extern	cvar_t bgmvolume;
 extern	cvar_t volume, mastervolume;
 extern	cvar_t snd_capture;
+extern	cvar_t nosound;
 
 extern float voicevolumemod;
 

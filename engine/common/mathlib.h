@@ -94,7 +94,7 @@ extern vec3_t vec3_origin;
 #define Vector4Copy(a,b) do{(b)[0]=(a)[0];(b)[1]=(a)[1];(b)[2]=(a)[2];(b)[3]=(a)[3];}while(0)
 #define Vector4Scale(in,scale,out)		((out)[0]=(in)[0]*scale,(out)[1]=(in)[1]*scale,(out)[2]=(in)[2]*scale,(out)[3]=(in)[3]*scale)
 #define Vector4Add(a,b,c)		((c)[0]=(((a[0])+(b[0]))),(c)[1]=(((a[1])+(b[1]))),(c)[2]=(((a[2])+(b[2]))),(c)[3]=(((a[3])+(b[3]))))
-#define Vector4Set(r,x,y,z,w) {(r)[0] = x; (r)[1] = y;(r)[2] = z;(r)[3]=w;}
+#define Vector4Set(r,x,y,z,w) (r)[0] = x, (r)[1] = y, (r)[2] = z, (r)[3]=w
 #define Vector4Interpolate(a, bness, b, c) FloatInterpolate((a)[0], bness, (b)[0], (c)[0]),FloatInterpolate((a)[1], bness, (b)[1], (c)[1]),FloatInterpolate((a)[2], bness, (b)[2], (c)[2]),FloatInterpolate((a)[3], bness, (b)[3], (c)[3])
 #define Vector4MA(a,s,b,c) do{(c)[0] = (a)[0] + (s)*(b)[0];(c)[1] = (a)[1] + (s)*(b)[1];(c)[2] = (a)[2] + (s)*(b)[2];(c)[3] = (a)[3] + (s)*(b)[3];}while(0)
 
@@ -129,6 +129,7 @@ typedef struct {
 void		AddPointToBounds (const vec3_t v, vec3_t mins, vec3_t maxs);
 float		anglemod (float a);
 void		QDECL AngleVectors (const vec3_t angles, vec3_t forward, vec3_t right, vec3_t up);
+void		QDECL AngleVectorsMesh (const vec3_t angles, vec3_t forward, vec3_t right, vec3_t up);
 void		QDECL VectorAngles (const float *forward, const float *up, float *angles, qboolean meshpitch);	//up may be NULL
 void VARGS	BOPS_Error (void);
 int VARGS	BoxOnPlaneSide (const vec3_t emins, const vec3_t emaxs, const struct mplane_s *plane);
@@ -191,6 +192,7 @@ void QuaternionSlerp(const vec4_t p, vec4_t q, float t, vec4_t qt);
 //projection matricies of different types... gesh
 void		Matrix4x4_CM_Orthographic (float *proj, float xmin, float xmax, float ymax, float ymin, float znear, float zfar);
 void Matrix4x4_CM_OrthographicD3D(float *proj, float xmin, float xmax, float ymax, float ymin, float znear, float zfar);
+void		Matrix4x4_CM_Projection_Offset(float *proj, float fovl, float fovr, float fovu, float fovd, float neard, float fard, qboolean d3d);
 void		Matrix4x4_CM_Projection_Far(float *proj, float fovx, float fovy, float neard, float fard, qboolean d3d);
 void		Matrix4x4_CM_Projection2 (float *proj, float fovx, float fovy, float neard);
 void		Matrix4x4_CM_Projection_Inf(float *proj, float fovx, float fovy, float neard, qboolean d3d);

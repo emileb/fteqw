@@ -48,6 +48,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <math.h>
+#include <time.h>
 
 #ifndef _VM_H
 	#if __STDC_VERSION__ >= 199901L || defined(__GNUC__)
@@ -181,7 +182,8 @@ struct wstats_s;
 
 
 #define F(t, n, args) t (QDECL *n) args
-
+#define dllhandle_t void
+struct dllfunction_s;
 typedef struct	//core stuff
 {
 	//Basic builtins:
@@ -192,6 +194,9 @@ typedef struct	//core stuff
 	F(void,		Print,				(const char *message));	//print on (main) console.
 	F(void,		Error,				(const char *message));	//abort the entire engine.
 	F(quintptr_t,GetMilliseconds,	(void));
+	F(dllhandle_t*,LoadDLL,			(const char *modulename, struct dllfunction_s *funcs));
+	F(void*,	GetDLLSymbol,		(dllhandle_t *handle, const char *symbolname));
+	F(void,		CloseDLL,			(dllhandle_t *handle));	//not guarenteed to actually do anything, of course.
 #define plugcorefuncs_name "Core"
 } plugcorefuncs_t;
 

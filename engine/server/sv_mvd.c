@@ -85,6 +85,8 @@ int demomsgtype;
 int demomsgto;
 static char demomsgbuf[MAX_OVERALLMSGLEN];
 
+static void SV_MVD_Stopped(void);
+
 static mvddest_t *singledest;	//used when a stream is starting up so redundant data doesn't get dumped into other streams
 static struct reversedest_s
 {
@@ -449,7 +451,7 @@ int SV_MVD_GotQTVRequest(vfsfile_t *clientstream, char *headerstart, char *heade
 				int digest[5];
 
 				Q_snprintfz(hash, sizeof(hash), "%s%s", p->challenge, qtv_password.string);
-				SHA1((char*)digest, sizeof(digest), hash, strlen(hash));
+				CalcHash(&hash_sha1, (char*)digest, sizeof(digest), hash, strlen(hash));
 				Q_snprintfz(hash, sizeof(hash), "%08X%08X%08X%08X%08X", digest[0], digest[1], digest[2], digest[3], digest[4]);
 				p->hasauthed = !strcmp(password, hash);
 			}
@@ -557,7 +559,8 @@ hashedpassword:
 	{
 		if (p->hasauthed == true)
 		{
-			SV_MVD_Record(SV_MVD_InitStream(clientstream, userinfo));
+			if (!SV_MVD_Record(SV_MVD_InitStream(clientstream, userinfo)))
+				return QTV_ERROR;
 			return QTV_ACCEPT;
 		}
 	}
@@ -573,7 +576,8 @@ hashedpassword:
 			e = NULL;
 			dst = SV_MVD_InitStream(clientstream, userinfo);
 			dst->droponmapchange = p->isreverse;
-			SV_MVD_Record(dst);
+			if (!SV_MVD_Record(dst))
+				return QTV_ERROR;
 			return QTV_ACCEPT;
 		}
 		else
@@ -1531,7 +1535,7 @@ void SV_MVDStop (enum mvdclosereason_e reason, qboolean mvdonly)
 		// stop and remove
 
 		if (!demo.dest)
-			sv.mvdrecording = false;
+			SV_MVD_Stopped();
 
 		if (reason == MVD_CLOSE_DISCONNECTED)
 			SV_BroadcastPrintf (PRINT_CHAT, "QTV disconnected\n");
@@ -1554,7 +1558,7 @@ void SV_MVDStop (enum mvdclosereason_e reason, qboolean mvdonly)
 	DestCloseAllFlush(reason, mvdonly);
 
 	if (!demo.dest)	//might still be streaming qtv.
-		sv.mvdrecording = false;
+		SV_MVD_Stopped();
 
 	Cvar_ForceSet(Cvar_Get("serverdemo", "", CVAR_NOSET, ""), "");
 }
@@ -1707,6 +1711,17 @@ qboolean SV_MVD_Record (mvddest_t *dest)
 
 	SV_MVD_SendInitialGamestate(dest);
 	return true;
+}
+
+static void SV_MVD_Stopped(void)
+{	//all recording has stopped. clean up any demo.recorder state
+	if (demo.recorder.frameunion.frames)
+	{
+		Z_Free(demo.recorder.frameunion.frames);
+		demo.recorder.frameunion.frames = NULL;
+	}
+	sv.mvdrecording = false;
+	memset(&demo, 0, sizeof(demo));
 }
 
 void SV_EnableClientsCSQC(void);
@@ -2213,7 +2228,7 @@ void SV_MVD_QTVReverse_f (void)
 	if (sv.state<ss_loading)
 		return;
 
-	f = FS_OpenTCP(ip, 27599);
+	f = FS_OpenTCP(ip, 27599, false);
 	if (!f)
 		return;
 
@@ -2410,6 +2425,39 @@ int	Dem_CountTeamPlayers (char *t)
 	return count;
 }
 
+//takes a quake-mark-up string (subject to com_parseutf and ^ etc) and spits out a usable utf-8 name
+//in and out may overlap.
+static char *FS_UTF8FromQuakeFilename(const char *in, qboolean dequake, qboolean keepmarkup, qboolean blockdirsep, char *out, size_t outsize)
+{
+	conchar_t cline[8192], *c;
+	char *outend = out+outsize-1;	//-1 for our null
+	unsigned int charflags, codepoint;
+
+	COM_ParseFunString(CON_WHITEMASK, in, cline, sizeof(cline), keepmarkup);
+	for (c = cline; *c; )
+	{
+		c = Font_Decode(c, &charflags, &codepoint);
+		if (charflags & CON_HIDDEN)
+			continue;
+		if (dequake)
+			codepoint = COM_DeQuake(codepoint);
+
+		if (codepoint == '/' && blockdirsep) codepoint = '-';	//spreading across multiple dirs is just awkward
+		else if (codepoint <  ' ' )	codepoint = '-';	//C0 chars are all kinds of problematic
+		else if (codepoint == '\\')	codepoint = '-';	//windows sucks. or string escapes do.
+		else if (codepoint == ':' )	codepoint = '-';	//drives, or Alternative Data Streams (read: often hidden)
+		else if (codepoint == '\"')	codepoint = '-';	//erk! escapes necessitate escapes...
+		else if (codepoint == '<' )	codepoint = '-';	//pipe stuff sucks
+		else if (codepoint == '>' )	codepoint = '-';	//pipe stuff sucks
+		else if (codepoint == '|' )	codepoint = '-';	//pipe stuff sucks
+		else if (codepoint == '?' )	codepoint = '-';	//wildcards complicate things
+		else if (codepoint == '*' )	codepoint = '-';	//wildcards complicate things
+
+		out += utf8_encode(out, codepoint, outend-out);
+	}
+	*out = 0;
+	return out;
+}
 // <-
 
 void SV_MVDEasyRecord_f (void)
@@ -2439,10 +2487,8 @@ void SV_MVDEasyRecord_f (void)
 
 	if (c == 2)
 	{
-		char *c;
 		Q_strncpyz (name, Cmd_Argv(1), sizeof(name));
-		while((c = strchr(name, ':')))
-			*c = '-';
+		FS_UTF8FromQuakeFilename(name, true, false, false, name, sizeof(name));
 	}
 	else
 	{
@@ -2478,6 +2524,9 @@ void SV_MVDEasyRecord_f (void)
 				snprintf (name, sizeof(name), "ffa_%s(%d)", svs.name, i);
 			}
 		}
+
+		//convert to utf-8, so its readable on most systems (we convert utf-8 to utf-16 for windows, while linux tends to just use utf-8 in the first place)
+		FS_UTF8FromQuakeFilename(name, true, false, true, name, sizeof(name));
 	}
 
 	// <-

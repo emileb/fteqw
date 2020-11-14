@@ -202,8 +202,8 @@ void(float seat, vector minpos, vector size) mitem_desktop::drawgame_helper =
 	if (mouseinbox(minpos, size))
 	{
 		ui.havemouseworld = TRUE;
-		ui.mouseworldnear = unproject([ui.mousepos[0], ui.mousepos[1], 0]);
-		ui.mouseworldfar = unproject([ui.mousepos[0], ui.mousepos[1], 100000]);
+//		ui.mouseworldnear = unproject([ui.mousepos[0], ui.mousepos[1], 0]);
+//		ui.mouseworldfar = unproject([ui.mousepos[0], ui.mousepos[1], 100000]);
 	}
 };
 #endif
@@ -263,10 +263,6 @@ void(vector pos) mitem_desktop::item_draw =
 };
 
 
-var string autocvar_cl_cursor = "gfx/cursor.lmp";
-var float autocvar_cl_cursorsize = 32;
-var float autocvar_cl_cursorbias = 4;
-
 static var float oldgrabstate;	//to work around a DP bug (as well as unnecessary spam)
 
 void(float force) items_updategrabs =
@@ -278,11 +274,14 @@ void(float force) items_updategrabs =
 			oldgrabstate = TRUE;
 #ifdef MENU
 			setkeydest(2);
-			setmousetarget(2);
-#else
-			setcursormode(TRUE);
-			//setcursormode(TRUE, autocvar_cl_cursor, autocvar_cl_cursorbias*'1 1', autocvar_cl_cursorscale);
+			if (!checkbuiltin(setcursormode))
+				setmousetarget(2);	//legacy junk
+			else
 #endif
+			if (checkextension("FTE_QC_HARDWARECURSORS"))
+				setcursormode(TRUE, autocvar(cl_cursor, "gfx/cursor.lmp"), autocvar(cl_cursorbias, 4.0)*'1 1', autocvar(cl_cursorscale, 1.0));	//because we can
+			else
+				setcursormode(TRUE);	//because DP sucks.
 		}
 	}
 	else if (oldgrabstate || force)
@@ -290,15 +289,17 @@ void(float force) items_updategrabs =
 		oldgrabstate = FALSE;
 #ifdef MENU
 		setkeydest(0);
-		setmousetarget(1);
-#else
-		setcursormode(FALSE);
+		if (!checkbuiltin(setcursormode))
+			setmousetarget(1);
+		else
 #endif
+			setcursormode(FALSE);
 	}
 };
 
-void(mitem_desktop desktop) items_draw =
+void(mitem_desktop desktop, vector screensize) items_draw =
 {
+	ui.screensize = screensize;
 	queryscreensize();
 
 #ifdef MENU
@@ -321,10 +322,11 @@ void(mitem_desktop desktop) items_draw =
 	items_updategrabs(FALSE);
 	if (dp_workarounds && oldgrabstate)
 	{
-		if (drawgetimagesize(autocvar_cl_cursor) == '0 0')
+//		//hopefully dp isn't broken and reports zero sizes for files that failed...
+//		if (drawgetimagesize(autocvar_cl_cursor) == '0 0')
+//			ui.drawpic(ui.mousepos - autocvar_cl_cursorbias*'1 1', autocvar_cl_cursor, autocvar_cl_cursorsize*'1 1', '1 1 1', 1, 0);
+//		else
 			ui.drawcharacter(ui.mousepos - [stringwidth("+", TRUE, '4 4')*0.5, 4], '+', '8 8', '1 1 1', 1, 0);
-		else
-			ui.drawpic(ui.mousepos - autocvar_cl_cursorbias*'1 1', autocvar_cl_cursor, autocvar_cl_cursorsize*'1 1', '1 1 1', 1, 0);
 	}
 
 #ifndef MENU
@@ -334,19 +336,26 @@ void(mitem_desktop desktop) items_draw =
 	ui.oldmousepos = ui.mousepos;
 };
 
-#ifdef CSQC
-//items_keypress has quite strong dimorphism. These are meant to tailored to the target's available event notifications, rather than being really rather annoying.
-csqconly float(mitem_desktop desktop, float evtype, float scanx, float chary, float devid) items_keypress =
+float(mitem_desktop desktop, float evtype, float scanx, float chary, float devid) items_keypress =
 {
 	local float result = FALSE;
 	vector pos;
 	mitem p;
+
 	switch(evtype)
 	{
+#define IE_PASTE 8
+	case IE_PASTE: //down, with JUST char info.
 	case IE_KEYDOWN:
 	case IE_KEYUP:
-		if (scanx == K_SHIFT)
-			ui.shiftheld = evtype==IE_KEYDOWN;
+		if (scanx == K_LCTRL)
+			ui.ctrlheld = ((evtype==IE_KEYDOWN)?ui.ctrlheld|1:ui.ctrlheld&~1);
+		if (scanx == K_RCTRL)
+			ui.ctrlheld = ((evtype==IE_KEYDOWN)?ui.ctrlheld|2:ui.ctrlheld&~2);
+		if (scanx == K_LSHIFT)
+			ui.shiftheld = ((evtype==IE_KEYDOWN)?ui.shiftheld|1:ui.shiftheld&~1);
+		if (scanx == K_RSHIFT)
+			ui.shiftheld = ((evtype==IE_KEYDOWN)?ui.shiftheld|2:ui.shiftheld&~2);
 #ifdef HEIRACHYDEBUG
 		if (scanx == K_F1 && evtype == IE_KEYDOWN)
 		{
@@ -376,13 +385,13 @@ csqconly float(mitem_desktop desktop, float evtype, float scanx, float chary, fl
 				pos = '0 0 0';
 				for (p = ui.kgrabs; p; p = p.item_parent)
 					pos += p.item_position;
-				result = ui.kgrabs.item_keypress(pos, scanx, chary, (evtype == IE_KEYDOWN)|2);
+				result = ui.kgrabs.item_keypress(pos, scanx, chary, (evtype == IE_KEYDOWN||evtype == IE_PASTE)|2);
 				if (result & 2)
 					return result & 1;
 			}
 		}
 		if (desktop && desktop.item_keypress)
-			result = desktop.item_keypress(desktop.item_position, scanx, chary, evtype == IE_KEYDOWN);
+			result = desktop.item_keypress(desktop.item_position, scanx, chary, evtype == IE_KEYDOWN||evtype == IE_PASTE);
 		if (scanx >= K_MOUSE1 && scanx <= K_MOUSE5)
 		{
 			if (evtype == IE_KEYDOWN)
@@ -409,57 +418,5 @@ csqconly float(mitem_desktop desktop, float evtype, float scanx, float chary, fl
 	}
 	return result;
 };
-#endif
-
-#ifdef MENU
-menuonly float(mitem_desktop desktop, float scan, float char, float down) items_keypress =
-{
-	local float result = FALSE;
-	local vector pos;
-	local mitem p;
-	ui.mousepos = getmousepos();
-	queryscreensize();
-#ifdef HEIRACHYDEBUG
-	if (scan == K_F1 && down)
-	{
-		mitem_printtree(desktop, "items_keypress", __LINE__);
-		return TRUE;
-	}
-#endif
-
-	if (scan >= K_MOUSE1 && scan <= K_MOUSE5)
-	{
-		if (ui.mgrabs)
-		{
-			pos = '0 0 0';
-			for (p = ui.mgrabs; p; p = p.item_parent)
-				pos += p.item_position;
-			result = ui.mgrabs.item_keypress(pos, scan, char, (down)|2);
-			if (result & 2)
-			{
-				ui.mousedown = 0;
-				return result & 1;
-			}
-		}
-	}
-	else
-	{
-		if (ui.kgrabs)
-		{
-			pos = '0 0 0';
-			for (p = ui.kgrabs; p; p = p.item_parent)
-				pos += p.item_position;
-			result = ui.kgrabs.item_keypress(pos, scan, char, (down)|2);
-			if (result & 2)
-				return result & 1;
-		}
-	}
-	
-	if (desktop && desktop.item_keypress)
-		result = desktop.item_keypress(desktop.item_position, scan, char, down);
-
-	return result;
-};
-#endif
 
 

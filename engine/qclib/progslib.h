@@ -8,8 +8,13 @@
 	#define VARGS __cdecl
 #endif
 #if (__GNUC__ > 3 || (__GNUC__ == 3 && __GNUC_MINOR__ >= 1))
-	#ifdef _WIN32
-		#define LIKEPRINTF(x) __attribute__((format(ms_printf,x,x+1)))
+	#if defined(_WIN32)
+		#include <stdio.h>
+		#ifdef __MINGW_PRINTF_FORMAT
+			#define LIKEPRINTF(x) __attribute__((format(__MINGW_PRINTF_FORMAT,x,x+1)))
+		#else
+			#define LIKEPRINTF(x) __attribute__((format(ms_printf,x,x+1)))
+		#endif
 	#else
 		#define LIKEPRINTF(x) __attribute__((format(printf,x,x+1)))
 	#endif
@@ -67,7 +72,30 @@ typedef struct {
 	int spare[2];
 } evalc_t;
 #define sizeofevalc sizeof(evalc_t)
-typedef enum {ev_void, ev_string, ev_float, ev_vector, ev_entity, ev_field, ev_function, ev_pointer, ev_integer, ev_variant, ev_struct, ev_union, ev_accessor, ev_enum, ev_boolean} etype_t;
+typedef enum {
+//vanilla types
+ev_void,
+ev_string,	//offset into the string table - but if the high bit is set then its probably some special thing.
+ev_float,	//can hold up to 24 bits... sucks, but this is our basic numeric type.
+ev_vector,	//3 floats.
+ev_entity,	//index into the edicts array (vanilla used byte offsets from world).
+ev_field,	//index into the per-entity field table.
+ev_function,//all functions are called via reference.
+ev_pointer,	//exists in vanilla - *(&ent.fld) opcodes are valid there - how else would you store to a field?
+//extended types
+ev_integer,	//our first extended type... probably won't help performance much but at least it doesn't have the imprecision issue of floats.
+ev_uint,	//mostly just reuses int opcodes.
+ev_int64,	//large int type, because we can. might be useful for system handles perhaps? dunno, probably not that useful.
+ev_uint64,	//mostly just reuses int64 opcodes.
+ev_double,	//useful for timers, for the extra precision.
+//qc-only types
+ev_variant,	//used primarily for builtin args, or for type punning casts without using pointers. should never be used for a global.
+ev_struct,	//big complex type
+ev_union,	//not really sure why this is separate from struct
+ev_accessor,//some weird type to provide class-like functions over a basic type.
+ev_enum,	//just a numeric type
+ev_boolean	//exists to optimise if(-0) workarounds.
+} etype_t;
 enum {
 	DEBUG_TRACE_OFF,		//debugging should be off.
 	DEBUG_TRACE_INTO,		//debug into functions
@@ -154,6 +182,8 @@ struct pubprogfuncs_s
 	int stringtablesize;
 	int stringtablemaxsize;
 	int fieldadjust;	//FrikQCC style arrays can cause problems due to field remapping. This causes us to leave gaps but offsets identical. except for system fields, qc-addressable variables use their old offsets, this is the bias so that the offset pokes the correct memory.
+	unsigned int activefieldslots; //f+=fieldadjust; invalidfield = (f<0)||(f+fldsize>=activefieldslots); note that this does NOT apply to 'object' entities which are variable sized, use ed->fieldsize for those.
+
 
 	struct qcthread_s *(PDECL *Fork)			(pubprogfuncs_t *prinst);	//returns a pointer to a thread which can be resumed via RunThread.
 	void	(PDECL *RunThread)					(pubprogfuncs_t *prinst, struct qcthread_s *thread);
@@ -182,7 +212,7 @@ struct pubprogfuncs_s
 	void (PDECL *AddSharedVar)					(pubprogfuncs_t *progfuncs, int start, int size);
 	void (PDECL *AddSharedFieldVar)				(pubprogfuncs_t *progfuncs, int num, char *relstringtable);
 	char *(PDECL *RemoveProgsString)			(pubprogfuncs_t *progfuncs, string_t str);
-	pbool (PDECL *GetFunctionInfo)				(pubprogfuncs_t *progfuncs, func_t func, int *argcount, qbyte **argsizes, int *builtinnum, char *funcname, size_t funcnamesize); //queries the interesting info from a function def
+	pbool (PDECL *GetFunctionInfo)				(pubprogfuncs_t *progfuncs, func_t func, int *argcount, unsigned char **argsizes, int *builtinnum, char *funcname, size_t funcnamesize); //queries the interesting info from a function def
 	void (PDECL *GenerateStatementString)		(pubprogfuncs_t *progfuncs, int statementnum, char *out, int outlen);	//disassembles a specific statement. for debugging reports.
 	fdef_t *(PDECL *FieldInfo)					(pubprogfuncs_t *progfuncs, unsigned int *count);
 	char *(PDECL *UglyValueString)				(pubprogfuncs_t *progfuncs, etype_t type, union eval_s *val);
@@ -239,27 +269,37 @@ typedef struct progexterns_s {
 
 	double *gametime;	//used to prevent the vm from reusing an entity faster than 2 secs.
 
-	struct edict_s **sv_edicts;	//pointer to the engine's reference to world.
-	unsigned int *sv_num_edicts;		//pointer to the engine's edict count.
+	pbool usethreadedgc;
+
+	struct edict_s **edicts;	//pointer to the engine's reference to world.
+	unsigned int *num_edicts;		//pointer to the engine's edict count.
 	int edictsize;	//size of edict_t
 
 	void *user;	/*contains the owner's world reference in FTE*/
 } progparms_t, progexterns_t;
 
 #if defined(QCLIBDLL_EXPORTS)
-__declspec(dllexport)
+	#ifdef _WIN32
+		__declspec(dllexport)
+	#else
+		__attribute__((visibility("default")))
+	#endif
 #endif
 pubprogfuncs_t * PDECL InitProgs(progparms_t *ext);
 
 typedef union eval_s
 {
 	string_t		string;
-	float			_float;
-	float			_vector[3];
-	func_t			function;
-	int				_int;
-	int				edict;
-	float		prog;	//so it can easily be changed
+	pvec_t			_float;
+	pvec_t			_vector[3];
+	func_t			function;	//module=0xff000000, func=0x00ffffff
+	pint_t			_int;
+	puint_t			_uint;
+	pint64_t		_int64;
+	puint64_t		_uint64;
+	double			_double;
+	pint_t			edict;
+	pvec_t			prog;	//so it can easily be changed
 } eval_t;
 
 #define PR_CURRENT	-1
@@ -321,18 +361,22 @@ typedef union eval_s
 #define PR_SetString(pf, s)									(*pf->StringToProgs)		(pf, s)
 
 #define NEXT_EDICT(pf,o)		EDICT_NUM(pf, NUM_FOR_EDICT(pf, o)+1)
-#define	RETURN_EDICT(pf, e) (((int *)pr_globals)[OFS_RETURN] = EDICT_TO_PROG(pf, e))
+#define	RETURN_EDICT(pf, e) (((pint_t *)pr_globals)[OFS_RETURN] = EDICT_TO_PROG(pf, e))
 
 
 //builtin funcs (which operate on globals)
 //To use these outside of builtins, you will likly have to use the 'globals' method.
-#define	G_FLOAT(o) (((float *)pr_globals)[o])
-#define	G_FLOAT2(o) (((float *)pr_globals)[OFS_PARM0 + o*3])
-#define	G_INT(o) (((int *)pr_globals)[o])
+#define	G_FLOAT(o) (((pvec_t *)pr_globals)[o])
+#define	G_FLOAT2(o) (((pvec_t *)pr_globals)[OFS_PARM0 + o*3])
+#define	G_DOUBLE(o) (*(double *)(((pvec_t *)pr_globals+(o))))
+#define	G_INT(o) (((pint_t *)pr_globals)[o])
+#define	G_UINT(o) (((puint_t *)pr_globals)[o])
+#define	G_INT64(o) (*(pint64_t *)((pint_t *)pr_globals+(o)))
+#define	G_UINT64(o) (*(puint64_t *)((puint_t *)pr_globals+(o)))
 #define	G_EDICT(pf, o) PROG_TO_EDICT(pf, G_INT(o)) //((edict_t *)((char *) sv.edicts+ *(int *)&((float *)pr_globals)[o]))
 #define G_EDICTNUM(pf, o) NUM_FOR_EDICT(pf, G_EDICT(pf, o))
-#define	G_VECTOR(o) (&((float *)pr_globals)[o])
-#define	G_FUNCTION(o) (*(func_t *)&((float *)pr_globals)[o])
+#define	G_VECTOR(o) (&((pvec_t *)pr_globals)[o])
+#define	G_FUNCTION(o) (*(func_t *)&((pvec_t *)pr_globals)[o])
 
 /*
 #define PR_GetString(p,s) (s?s + p->stringtable:"")
@@ -350,7 +394,7 @@ typedef union eval_s
 
 #define ev_prog ev_integer
 
-#define E_STRING(o) (char *)(((int *)((char *)ed) + progparms.edictsize)[o])
+#define E_STRING(o) (char *)(((pint_t *)((char *)ed) + progparms.edictsize)[o])
 
 //#define pr_global_struct pr_globals
 

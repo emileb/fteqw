@@ -59,6 +59,7 @@ cvar_t	sv_gameplayfix_multiplethinks		= CVARD( "sv_gameplayfix_multiplethinks", 
 cvar_t	sv_gameplayfix_stepdown				= CVARD( "sv_gameplayfix_stepdown", "0", "Attempt to step down steps, instead of only up them. Affects non-predicted movetype_walk.");
 cvar_t	sv_gameplayfix_bouncedownslopes		= CVARD( "sv_gameplayfix_grenadebouncedownslopes", "0", "MOVETYPE_BOUNCE speeds are calculated relative to the impacted surface, instead of the vertical, reducing the chance of grenades just sitting there on slopes.");
 cvar_t	sv_gameplayfix_trappedwithin		= CVARD( "sv_gameplayfix_trappedwithin", "0", "Blocks further entity movement when an entity is already inside another entity. This ensures that bsp precision issues cannot allow the entity to completely pass through eg the world.");
+//cvar_t	sv_gameplayfix_radialmaxvelocity	= CVARD( "sv_gameplayfix_radialmaxvelocity", "0", "Applies maxvelocity radially instead of axially.");
 #if !defined(CLIENTONLY) && defined(NQPROT) && defined(HAVE_LEGACY)
 cvar_t	sv_gameplayfix_spawnbeforethinks	= CVARD( "sv_gameplayfix_spawnbeforethinks", "0", "Fixes an issue where player thinks (including Pre+Post) can be called before PutClientInServer. Unfortunately at least one mod depends upon PreThink being called first in order to correctly determine spawn positions.");
 #endif
@@ -150,28 +151,52 @@ SV_CheckVelocity
 void WPhys_CheckVelocity (world_t *w, wedict_t *ent)
 {
 	int		i;
+#ifdef HAVE_SERVER
+	extern cvar_t sv_nqplayerphysics;
 
-//
-// bound velocity
-//
-	for (i=0 ; i<3 ; i++)
-	{
-		if (IS_NAN(ent->v->velocity[i]))
+	if (sv_nqplayerphysics.ival)
+	{	//bound axially (like vanilla)
+		for (i=0 ; i<3 ; i++)
 		{
-			Con_DPrintf ("Got a NaN velocity on entity %i (%s)\n", ent->entnum, PR_GetString(w->progs, ent->v->classname));
-			ent->v->velocity[i] = 0;
-		}
-		if (IS_NAN(ent->v->origin[i]))
-		{
-			Con_Printf ("Got a NaN origin on entity %i (%s)\n", ent->entnum, PR_GetString(w->progs, ent->v->classname));
-			ent->v->origin[i] = 0;
+			if (IS_NAN(ent->v->velocity[i]))
+			{
+				Con_DPrintf ("Got a NaN velocity on entity %i (%s)\n", ent->entnum, PR_GetString(w->progs, ent->v->classname));
+				ent->v->velocity[i] = 0;
+			}
+			if (IS_NAN(ent->v->origin[i]))
+			{
+				Con_Printf ("Got a NaN origin on entity %i (%s)\n", ent->entnum, PR_GetString(w->progs, ent->v->classname));
+				ent->v->origin[i] = 0;
+			}
+
+			if (ent->v->velocity[i] > sv_maxvelocity.value)
+				ent->v->velocity[i] = sv_maxvelocity.value;
+			else if (ent->v->velocity[i] < -sv_maxvelocity.value)
+				ent->v->velocity[i] = -sv_maxvelocity.value;
 		}
 	}
+	else
+#endif
+	{	//bound radially (for sanity)
+		for (i=0 ; i<3 ; i++)
+		{
+			if (IS_NAN(ent->v->velocity[i]))
+			{
+				Con_DPrintf ("Got a NaN velocity on entity %i (%s)\n", ent->entnum, PR_GetString(w->progs, ent->v->classname));
+				ent->v->velocity[i] = 0;
+			}
+			if (IS_NAN(ent->v->origin[i]))
+			{
+				Con_Printf ("Got a NaN origin on entity %i (%s)\n", ent->entnum, PR_GetString(w->progs, ent->v->classname));
+				ent->v->origin[i] = 0;
+			}
+		}
 
-	if (Length(ent->v->velocity) > sv_maxvelocity.value)
-	{
-//		Con_DPrintf("Slowing %s\n", PR_GetString(w->progs, ent->v->classname));
-		VectorScale (ent->v->velocity, sv_maxvelocity.value/Length(ent->v->velocity), ent->v->velocity);
+		if (Length(ent->v->velocity) > sv_maxvelocity.value)
+		{
+//			Con_DPrintf("Slowing %s\n", PR_GetString(w->progs, ent->v->classname));
+			VectorScale (ent->v->velocity, sv_maxvelocity.value/Length(ent->v->velocity), ent->v->velocity);
+		}
 	}
 }
 
@@ -324,32 +349,10 @@ static void WPhys_PortalTransform(world_t *w, wedict_t *ent, wedict_t *portal, v
 	if (ent->entnum > 0 && ent->entnum <= svs.allocated_client_slots)
 	{
 		client_t *cl = &svs.clients[ent->entnum-1];
-		int i;
-		vec3_t delta;
 		ent->v->angles[0] *= r_meshpitch.value;
-		if (!cl->lockangles && (cl->fteprotocolextensions2 & PEXT2_SETANGLEDELTA))
-		{
-			cl = ClientReliableWrite_BeginSplit(cl, svcfte_setangledelta, 7);
-
-			VectorSubtract(ent->v->angles, ent->v->v_angle, delta);
-			delta[2] = anglemod(delta[2]);
-			if (delta[2] > 90 && delta[2] < 270)
-			{
-				delta[2] -= 180;
-				delta[1] -= 180;
-				delta[0] -= -180;
-			}
-			for (i=0 ; i < 3 ; i++)
-				ClientReliableWrite_Angle16 (cl, delta[i]);
-		}
-		else
-		{
-			cl = ClientReliableWrite_BeginSplit (cl, svc_setangle, 7);
-			for (i=0 ; i < 3 ; i++)
-				ClientReliableWrite_Angle (cl, ent->v->angles[i]);
-		}
 		VectorCopy(ent->v->angles, ent->v->v_angle);
 		ent->v->angles[0] *= r_meshpitch.value;
+		SV_SendFixAngle(cl, NULL, FIXANGLE_AUTO, true);
 	}
 #endif
 
@@ -2081,30 +2084,35 @@ static void WPhys_WalkMove (world_t *w, wedict_t *ent, const float *gravitydir)
 #ifdef HEXEN2
 void WPhys_MoveChain(world_t *w, wedict_t *ent, wedict_t *movechain, float *initial_origin, float *initial_angle)
 {
-	qboolean callfunc;
-	if ((callfunc=DotProduct(ent->v->origin, initial_origin)) || DotProduct(ent->v->angles, initial_angle))
+	qboolean orgunchanged;
+	vec3_t moveorg, moveang;
+	VectorSubtract(ent->v->origin, initial_origin, moveorg);
+	VectorSubtract(ent->v->angles, initial_angle, moveang);
+	orgunchanged=!DotProduct(moveorg,moveorg);
+	if (!orgunchanged || DotProduct(moveang,moveang))
 	{
-		vec3_t moveang, moveorg;
 		int i;
-		VectorSubtract(ent->v->angles, initial_angle, moveang);
-		VectorSubtract(ent->v->origin, initial_origin, moveorg);
-
-		for(i=16;i && movechain != w->edicts && !ED_ISFREE(movechain);i--, movechain = PROG_TO_WEDICT(w->progs, movechain->xv->movechain))
+		for(i=16; i && movechain != w->edicts && !ED_ISFREE(movechain); i--, movechain = PROG_TO_WEDICT(w->progs, movechain->xv->movechain))
 		{
 			if ((int)movechain->v->flags & FL_MOVECHAIN_ANGLE)
 				VectorAdd(movechain->v->angles, moveang, movechain->v->angles);	//FIXME: axial only
-			VectorAdd(movechain->v->origin, moveorg, movechain->v->origin);
-
-			if (movechain->xv->chainmoved && callfunc)
+			if (!orgunchanged)
 			{
-				*w->g.self = EDICT_TO_PROG(w->progs, movechain);
-				*w->g.other = EDICT_TO_PROG(w->progs, ent);
+				VectorAdd(movechain->v->origin, moveorg, movechain->v->origin);
+				World_LinkEdict(w, movechain, false);
+
+				//chainmoved is called only for origin changes, not angle ones, apparently.
+				if (movechain->xv->chainmoved)
+				{
+					*w->g.self = EDICT_TO_PROG(w->progs, movechain);
+					*w->g.other = EDICT_TO_PROG(w->progs, ent);
 #ifdef VM_Q1
-				if (svs.gametype == GT_Q1QVM && w == &sv.world)
-					Q1QVM_ChainMoved();
-				else
+					if (svs.gametype == GT_Q1QVM && w == &sv.world)
+						Q1QVM_ChainMoved();
+					else
 #endif
-					PR_ExecuteProgram(w->progs, movechain->xv->chainmoved);
+						PR_ExecuteProgram(w->progs, movechain->xv->chainmoved);
+				}
 			}
 		}
 	}
@@ -2141,12 +2149,13 @@ void WPhys_RunEntity (world_t *w, wedict_t *ent)
 		}
 		else
 #endif
+		{
 			if (svs.clients[ent->entnum-1].state < cs_spawned)
-			return;		// unconnected slot
-
+				return;		// unconnected slot
+		}
 
 		if (svs.clients[ent->entnum-1].protocol == SCP_BAD)
-			svent->v->fixangle = 0;	//bots never get fixangle cleared otherwise
+			svent->v->fixangle = FIXANGLE_NO;	//bots never get fixangle cleared otherwise
 
 		host_client = &svs.clients[ent->entnum-1];
 		SV_ClientThink();
@@ -2500,8 +2509,13 @@ qboolean SV_Physics (void)
 	int maxtics;
 	double trueframetime = host_frametime;
 	double maxtic = sv_maxtic.value;
-	if (maxtic < sv_mintic.value)
-		maxtic = sv_mintic.value;
+	double mintic = sv_mintic.value;
+	extern cvar_t sv_nqplayerphysics;
+	if (sv_nqplayerphysics.ival)
+		if (mintic < 0.013)
+			mintic = 0.013;	//NQ physics can't cope with low rates and just generally bugs out.
+	if (maxtic < mintic)
+		maxtic = mintic;
 
 	//keep gravity tracking the cvar properly
 	movevars.gravity = sv_gravity.value;
@@ -2630,9 +2644,9 @@ qboolean SV_Physics (void)
 			sv.world.physicstime = sv.time;
 			break;
 		}
-		if (host_frametime <= 0 || host_frametime < sv_mintic.value)
+		if (host_frametime <= 0 || host_frametime < mintic)
 			break;
-		if (host_frametime > maxtic)
+		if (host_frametime > maxtic && maxtic>0)
 		{
 			if (maxtics-- <= 0)
 			{

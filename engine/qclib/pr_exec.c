@@ -122,6 +122,7 @@ static void PR_PrintStatement (progfuncs_t *progfuncs, int statementnum)
 	}
 
 #if !defined(MINIMAL) && !defined(OMIT_QCC)
+#define TYPEHINT(a) (pr_opcodes[op].type_##a)
 	if ( (unsigned)op < OP_NUMOPS)
 	{
 		int i;
@@ -134,23 +135,27 @@ static void PR_PrintStatement (progfuncs_t *progfuncs, int statementnum)
 #endif
 		externs->Printf ("op%3i ", op);
 
+#ifndef TYPEHINT
+#define TYPEHINT(a) NULL
+#endif
+
 	if (op == OP_IF_F || op == OP_IFNOT_F)
-		externs->Printf ("%sbranch %i",PR_GlobalString(progfuncs, arg[0]),arg[1]);
+		externs->Printf ("%sbranch %i",PR_GlobalString(progfuncs, arg[0], TYPEHINT(a)),arg[1]);
 	else if (op == OP_GOTO)
 	{
 		externs->Printf ("branch %i",arg[0]);
 	}
 	else if ( (unsigned)(op - OP_STORE_F) < 6)
 	{
-		externs->Printf ("%s",PR_GlobalString(progfuncs, arg[0]));
+		externs->Printf ("%s",PR_GlobalString(progfuncs, arg[0], TYPEHINT(a)));
 		externs->Printf ("%s", PR_GlobalStringNoContents(progfuncs, arg[1]));
 	}
 	else
 	{
 		if (arg[0])
-			externs->Printf ("%s",PR_GlobalString(progfuncs, arg[0]));
+			externs->Printf ("%s",PR_GlobalString(progfuncs, arg[0], TYPEHINT(a)));
 		if (arg[1])
-			externs->Printf ("%s",PR_GlobalString(progfuncs, arg[1]));
+			externs->Printf ("%s",PR_GlobalString(progfuncs, arg[1], TYPEHINT(b)));
 		if (arg[2])
 			externs->Printf ("%s", PR_GlobalStringNoContents(progfuncs, arg[2]));
 	}
@@ -233,19 +238,19 @@ void PDECL PR_GenerateStatementString (pubprogfuncs_t *ppf, int statementnum, ch
 
 	if (op == OP_IF_F || op == OP_IFNOT_F || op == OP_IF_I || op == OP_IFNOT_I || op == OP_IF_S || op == OP_IFNOT_S)
 	{
-		QC_snprintfz (out, outlen, "%sbranch %i(%i)",PR_GlobalStringNoContents(progfuncs, arg[0]),(short)arg[1], statementnum+(short)arg[0]);
+		QC_snprintfz (out, outlen, "%sbranch %i(%+i)",PR_GlobalString(progfuncs, arg[0], TYPEHINT(a)),(short)arg[1], statementnum+(short)arg[0]);
 		outlen -= strlen(out);
 		out += strlen(out);
 	}
 	else if (op == OP_GOTO)
 	{
-		QC_snprintfz (out, outlen, "branch %i(%i)",(short)arg[0], statementnum+(short)arg[0]);
+		QC_snprintfz (out, outlen, "branch %i(%+i)",(short)arg[0], statementnum+(short)arg[0]);
 		outlen -= strlen(out);
 		out += strlen(out);
 	}
 	else if ( (unsigned)(op - OP_STORE_F) < 6)
 	{
-		QC_snprintfz (out, outlen, "%s",PR_GlobalStringNoContents(progfuncs, arg[0]));
+		QC_snprintfz (out, outlen, "%s",PR_GlobalString(progfuncs, arg[0], TYPEHINT(a)));
 		outlen -= strlen(out);
 		out += strlen(out);
 		QC_snprintfz (out, outlen, "%s", PR_GlobalStringNoContents(progfuncs, arg[1]));
@@ -256,13 +261,13 @@ void PDECL PR_GenerateStatementString (pubprogfuncs_t *ppf, int statementnum, ch
 	{
 		if (arg[0])
 		{
-			QC_snprintfz (out, outlen, "%s",PR_GlobalStringNoContents(progfuncs, arg[0]));
+			QC_snprintfz (out, outlen, "%s",PR_GlobalString(progfuncs, arg[0], TYPEHINT(a)));
 			outlen -= strlen(out);
 			out += strlen(out);
 		}
 		if (arg[1])
 		{
-			QC_snprintfz (out, outlen, "%s",PR_GlobalStringNoContents(progfuncs, arg[1]));
+			QC_snprintfz (out, outlen, "%s",PR_GlobalString(progfuncs, arg[1], TYPEHINT(b)));
 			outlen -= strlen(out);
 			out += strlen(out);
 		}
@@ -493,7 +498,7 @@ PR_EnterFunction
 Returns the new program statement counter
 ====================
 */
-int ASMCALL PR_EnterFunction (progfuncs_t *progfuncs, mfunction_t *f, int progsnum)
+static int ASMCALL PR_EnterFunction (progfuncs_t *progfuncs, mfunction_t *f, int progsnum)
 {
 	int		i, j, c, o;
 	prstack_t *st;
@@ -557,7 +562,7 @@ int ASMCALL PR_EnterFunction (progfuncs_t *progfuncs, mfunction_t *f, int progsn
 PR_LeaveFunction
 ====================
 */
-int ASMCALL PR_LeaveFunction (progfuncs_t *progfuncs)
+static int ASMCALL PR_LeaveFunction (progfuncs_t *progfuncs)
 {
 	int		i, c;
 	prstack_t *st;
@@ -833,7 +838,7 @@ static const char *PR_ParseCast(const char *key, etype_t *t, pbool *isptr)
 	if (*key == '(')
 	{
 		key++;
-		for (type = 0; type < 10; type++)
+		for (type = 0; type <= ev_variant; type++)
 		{
 			if (!strncmp(key, basictypenames[type], strlen(basictypenames[type])))
 			{
@@ -849,7 +854,7 @@ static const char *PR_ParseCast(const char *key, etype_t *t, pbool *isptr)
 				break;
 			}
 		}
-		if (type == 10)
+		if (type > ev_variant)
 			return NULL;
 
 		while(*key == ' ')
@@ -1033,8 +1038,8 @@ char *PDECL PR_EvaluateDebugString(pubprogfuncs_t *ppf, const char *key)
 		case ev_function:
 			{
 				mfunction_t *func;
-				int i;
-				int progsnum = -1;
+				progsnum_t i;
+				progsnum_t progsnum = -1;
 				if (str[0] && str[1] == ':')
 				{
 					progsnum = atoi(str);
@@ -1192,6 +1197,7 @@ int PDECL PR_ToggleBreakpoint(pubprogfuncs_t *ppf, const char *filename, int lin
 								break;
 							case PST_KKQWSV:
 							case PST_FTE32:
+							case PST_UHEXEN2:
 								op = ((dstatement32_t*)cp->statements + i)->op;
 								break;
 							default:
@@ -1234,6 +1240,7 @@ int PDECL PR_ToggleBreakpoint(pubprogfuncs_t *ppf, const char *filename, int lin
 								break;
 							case PST_KKQWSV:
 							case PST_FTE32:
+							case PST_UHEXEN2:
 								((dstatement32_t*)cp->statements + i)->op = op;
 								break;
 							default:
@@ -1266,6 +1273,7 @@ int PDECL PR_ToggleBreakpoint(pubprogfuncs_t *ppf, const char *filename, int lin
 						break;
 					case PST_KKQWSV:
 					case PST_FTE32:
+					case PST_UHEXEN2:
 						op = ((dstatement32_t*)cp->statements + i)->op;
 						break;
 					default:
@@ -1307,6 +1315,7 @@ int PDECL PR_ToggleBreakpoint(pubprogfuncs_t *ppf, const char *filename, int lin
 						break;
 					case PST_KKQWSV:
 					case PST_FTE32:
+					case PST_UHEXEN2:
 						((dstatement32_t*)cp->statements + i)->op = op;
 						break;
 					default:
@@ -1376,6 +1385,7 @@ static const char *lastfile = NULL;
 			{
 				switch(pr_progstate[pn].structtype)
 				{
+				case PST_UHEXEN2:
 				case PST_FTE32:
 				case PST_KKQWSV:
 					{
@@ -1776,6 +1786,7 @@ static void PR_ExecuteCode (progfuncs_t *progfuncs, int s)
 			continue;
 		case PST_KKQWSV:
 		case PST_FTE32:
+		case PST_UHEXEN2:
 			s = PR_ExecuteCode32(progfuncs, s, &runaway);
 			if (s == -1)
 				return;
@@ -1808,7 +1819,7 @@ void PDECL PR_ExecuteProgram (pubprogfuncs_t *ppf, func_t fnum)
 	{
 		if (newprogs >= prinst.maxprogs || !pr_progstate[newprogs].globals)	//can happen with hexen2...
 		{
-			externs->Printf("PR_ExecuteProgram: tried branching into invalid progs (%#x)\n", fnum);
+			externs->Printf("PR_ExecuteProgram: tried branching into invalid progs (%#"pPRIx")\n", fnum);
 			return;
 		}
 		PR_SwitchProgsParms(progfuncs, newprogs);

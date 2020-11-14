@@ -56,7 +56,11 @@ none of these issues will be fixed by a compositing window manager, because ther
 
 #include "quakedef.h"
 
-#ifndef NO_X11
+#ifdef NO_X11
+	#ifdef VKQUAKE
+		rendererinfo_t vkrendererinfo;
+	#endif
+#else
 
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
@@ -77,6 +81,7 @@ static qboolean XVK_SetupSurface_XCB(void);
 #include "gl_videgl.h"
 #endif
 #include "glquake.h"
+#include "vr.h"
 #endif
 
 #define USE_VMODE
@@ -174,6 +179,7 @@ static struct
 	int	 (*pXGetWindowProperty)(Display *display, Window w, Atom property, long long_offset, long long_length, Bool delete, Atom req_type, Atom *actual_type_return, int *actual_format_return, unsigned long *nitems_return, unsigned long *bytes_after_return, unsigned char **prop_return);
 	int	 (*pXGrabKeyboard)(Display *display, Window grab_window, Bool owner_events, int pointer_mode, int keyboard_mode, Time time);
 	int	 (*pXGrabPointer)(Display *display, Window grab_window, Bool owner_events, unsigned int event_mask, int pointer_mode, int keyboard_mode, Window confine_to, Cursor cursor, Time time);
+	Status (*pXInitThreads)(void);
 	Atom 	 (*pXInternAtom)(Display *display, char *atom_name, Bool only_if_exists);
 	KeySym	 (*pXLookupKeysym)(XKeyEvent *key_event, int index);
 	int	 (*pXLookupString)(XKeyEvent *event_struct, char *buffer_return, int bytes_buffer, KeySym *keysym_return, XComposeStatus *status_in_out);
@@ -206,6 +212,7 @@ static struct
 
 
 	qXErrorHandler (*pXSetErrorHandler)(XErrorHandler);
+	int (*pXGetErrorText)(Display *display, int code, char *buffer_return, int length);
 
 	int (*pXGrabServer)(Display *display);
 	int (*pXUngrabServer)(Display *display);
@@ -243,8 +250,8 @@ static struct
 static int X11_ErrorHandler(Display *dpy, XErrorEvent *e)
 {
 	char msg[80];
-//	XGetErrorText(dpy, e->error_code, msg, sizeof(msg));
 	*msg = 0;
+	x11.pXGetErrorText(dpy, e->error_code, msg, sizeof(msg));
 	Con_Printf(CON_ERROR "XLib Error %d (%s): request %d.%d\n", e->error_code, msg, e->request_code, e->minor_code);
 	return 0;	//ignored.
 }
@@ -276,6 +283,7 @@ static qboolean x11_initlib(void)
 		{(void**)&x11.pXGetWindowProperty,	"XGetWindowProperty"},
 		{(void**)&x11.pXGrabKeyboard,		"XGrabKeyboard"},
 		{(void**)&x11.pXGrabPointer,		"XGrabPointer"},
+		{(void**)&x11.pXInitThreads,		"XInitThreads"},
 		{(void**)&x11.pXInternAtom,		"XInternAtom"},
 		{(void**)&x11.pXLookupKeysym,		"XLookupKeysym"},
 		{(void**)&x11.pXLookupString,		"XLookupString"},
@@ -326,8 +334,9 @@ static qboolean x11_initlib(void)
 		if (x11.lib)
 		{
 			x11.pXSetErrorHandler	= Sys_GetAddressForName(x11.lib, "XSetErrorHandler");
+			x11.pXGetErrorText	= Sys_GetAddressForName(x11.lib, "XGetErrorText");
 
-			if (x11.pXSetErrorHandler)
+			if (x11.pXSetErrorHandler && x11.pXGetErrorText)
 				x11.pXSetErrorHandler(X11_ErrorHandler);
 
 			//raw input (yay mouse deltas)
@@ -869,7 +878,7 @@ static void XRandR_RevertMode(void)
 		{
 			x11.pXGrabServer(vid_dpy);
 			if (xrandr.nvidiabug == 1)
-			{
+			{	//attempt to undo at least part of the damage we inflicted to work around nvidia's defects.
 				if (Success == xrandr.pSetCrtcConfig(vid_dpy, xrandr.res, xrandr.crtc, CurrentTime, c->x, c->y, None, c->rotation, NULL, 0))
 					xrandr.pSetScreenSize(vid_dpy, DefaultRootWindow(vid_dpy), xrandr.origscreenwidth, xrandr.origscreenheight, xrandr.origscreenwidthmm, xrandr.origscreenheightmm);
 			}
@@ -1134,13 +1143,13 @@ static void XRandR_SelectMode(const char *devicename, int *x, int *y, int *width
 
 			if (xrandr.nvidiabug && (c->x != 0 || c->y != 0 || c->noutput>1))
 			{
-				Con_Printf("Nvidia and multimonitor detected. XRandR cannot be used safely under in this situation.\n");
+				Con_Printf("Nvidia and multimonitor detected. XRandR cannot be used safely in this situation.\n");
 				xrandr.crtcmode = NULL;
 			}
 			else
 			{
 				if (xrandr.nvidiabug)
-					Con_Printf(CON_ERROR "Attempting NVIDIA panning workaround. Try 'xrandr --output foo --auto' to fix if this goes south..\n");
+					Con_Printf(CON_ERROR "Attempting NVIDIA panning workaround. Try 'xrandr --output foo --auto' to fix if this breaks things.\n");
 
 				fullscreenflags |= FULLSCREEN_XRANDR;
 				if (XRandR_ApplyMode())
@@ -2004,7 +2013,7 @@ static GLXFBConfig GLX_GetFBConfig(rendererstate_t *info)
 			}
 		}
 		//attrib[n++] = GLX_ALPHA_SIZE;		attrib[n++] = GLX_DONT_CARE;
-		attrib[n++] = GLX_DEPTH_SIZE;		attrib[n++] = 16;
+		attrib[n++] = GLX_DEPTH_SIZE;		attrib[n++] = info->depthbits?info->depthbits:16;
 		attrib[n++] = GLX_STENCIL_SIZE;		attrib[n++] = (i&16)?0:4;
 
 		if (!(i&8))
@@ -2102,6 +2111,19 @@ static qboolean GLX_Init(rendererstate_t *info, GLXFBConfig fbconfig, XVisualInf
 //	extern cvar_t	vid_gl_context_selfreset;
 	extern cvar_t	vid_gl_context_noerror;
 
+	vrsetup_t setup = {sizeof(setup)};
+	setup.vrplatform = VR_X11_GLX;
+	setup.x11_glx.display = vid_dpy;
+	setup.x11_glx.visualid = visinfo->visualid;
+	setup.x11_glx.glxfbconfig = fbconfig;
+	setup.x11_glx.drawable = vid_window;
+
+	if (info->vr && !info->vr->Prepare(&setup))
+	{
+		info->vr->Shutdown();
+		info->vr = NULL;
+	}
+
 	if (fbconfig && glx.CreateContextAttribs)
 	{
 		unsigned int majorver=1, minorver=1;
@@ -2122,6 +2144,12 @@ static qboolean GLX_Init(rendererstate_t *info, GLXFBConfig fbconfig, XVisualInf
 			minorver = strtoul(ver+1, &ver, 10);
 		else
 			minorver = 0;
+
+		if (majorver < setup.minver.major || (majorver == setup.minver.major && minorver < setup.minver.minor))
+		{	//if vr stuff requires a minimum version then try and ask for that now
+			majorver = setup.minver.major;
+			minorver = setup.minver.minor;
+		}
 
 		//some weirdness for you:
 		//3.0 simply marked stuff as deprecated, without removing it.
@@ -2190,6 +2218,15 @@ static qboolean GLX_Init(rendererstate_t *info, GLXFBConfig fbconfig, XVisualInf
 		Con_Printf("glXMakeCurrent failed\n");
 		return false;
 	}
+
+
+	setup.x11_glx.glxcontext = ctx;
+	if (info->vr && !info->vr->Init(&setup, info))
+	{
+		info->vr->Shutdown();
+		return false;
+	}
+	vid.vr = info->vr;
 
 	//okay, we have a context, now init OpenGL-proper.
 	return GL_Init(info, &GLX_GetSymbol);
@@ -2546,28 +2583,20 @@ static void X_KeyEvent(XKeyEvent *ev, qboolean pressed, qboolean filtered)
 		case XK_Tab:			key = K_TAB;			 break;
 
 		case XK_F1:				key = K_F1;				break;
-
 		case XK_F2:				key = K_F2;				break;
-
 		case XK_F3:				key = K_F3;				break;
-
 		case XK_F4:				key = K_F4;				break;
-
 		case XK_F5:				key = K_F5;				break;
-
 		case XK_F6:				key = K_F6;				break;
-
 		case XK_F7:				key = K_F7;				break;
-
 		case XK_F8:				key = K_F8;				break;
-
 		case XK_F9:				key = K_F9;				break;
-
 		case XK_F10:			key = K_F10;			 break;
-
 		case XK_F11:			key = K_F11;			 break;
-
 		case XK_F12:			key = K_F12;			 break;
+		case XK_F13:			key = K_F13;			 break;
+		case XK_F14:			key = K_F14;			 break;
+		case XK_F15:			key = K_F15;			 break;
 
 		case XK_BackSpace:		key = K_BACKSPACE; break;
 
@@ -2587,6 +2616,7 @@ static void X_KeyEvent(XKeyEvent *ev, qboolean pressed, qboolean filtered)
 		case XK_Meta_L:			key = K_LALT;			break;
 		case XK_Alt_R:			key = K_RALT;			break;
 		case XK_Meta_R:			key = K_RALT;			break;
+		case XK_Menu:			key = K_APP;			break;
 
 		case XK_KP_Begin:		key = K_KP_5;	break;
 
@@ -3106,6 +3136,11 @@ static void GetEvent(void)
 						Cmd_ExecuteString("quit", RESTRICT_LOCAL);
 					x11.pXSetInputFocus(vid_dpy, vid_window, RevertToParent, CurrentTime);
 				}
+				else if (!strcmp(protname, "_NET_WM_PING"))
+				{
+					event.xclient.window = vid_root;
+					x11.pXSendEvent(vid_dpy, vid_root, false, SubstructureNotifyMask|SubstructureRedirectMask, &event);
+				}
 				else
 					Con_DPrintf("Got unknown x11wm message %s\n", protname);
 				x11.pXFree(protname);
@@ -3363,7 +3398,6 @@ static void GLVID_Shutdown(void)
 #ifdef USE_EGL
 	case PSL_EGL:
 		EGL_Shutdown();
-		EGL_UnloadLibrary();
 		GL_ForgetPointers();
 		break;
 #endif
@@ -3407,10 +3441,24 @@ static void GLVID_Shutdown(void)
 		vm.modes = NULL;
 		vm.num_modes = 0;
 #endif
+		x11.pXCloseDisplay(vid_dpy);
 	}
-	x11.pXCloseDisplay(vid_dpy);
 	vid_dpy = NULL;
 	vid_window = (Window)NULL;
+
+	switch(currentpsl)
+	{
+#ifdef GLQUAKE
+#ifdef USE_EGL
+	case PSL_EGL:
+		EGL_UnloadLibrary();
+		break;
+#endif
+#endif
+	default:
+		break;
+	}
+
 	currentpsl = PSL_NONE;
 }
 
@@ -3602,6 +3650,7 @@ static qboolean XCursor_Init(void)
 #else
 static qboolean XCursor_Init(void)
 {
+	return false;
 }
 #endif
 
@@ -3801,6 +3850,26 @@ static void X_StoreIcon(Window wnd)
 	}
 }
 
+static void X_StorePID(Window wnd)
+{
+	Atom net_wm_pid  = x11.pXInternAtom(vid_dpy, "_NET_WM_PID", false);
+	Atom wm_client_machine = x11.pXInternAtom(vid_dpy, "WM_CLIENT_MACHINE", false);
+	Atom cardinal = x11.pXInternAtom(vid_dpy, "CARDINAL", false);
+	Atom string = x11.pXInternAtom(vid_dpy, "STRING", false);
+	long pid = getpid();
+	#ifndef HOST_NAME_MAX
+	#define HOST_NAME_MAX 255
+	#endif
+	char hostname[HOST_NAME_MAX+1];
+	*hostname = 0;
+	if (gethostname(hostname, sizeof(hostname)) < 0)
+		return;	//just give up. if the hostname isn't valid then the pid won't be useful anyway.
+	hostname[countof(hostname)-1] = 0;	//make sure its null terminated... *sigh*
+
+	x11.pXChangeProperty(vid_dpy, wnd, wm_client_machine, string, 8, PropModeReplace, hostname, strlen(hostname));
+	x11.pXChangeProperty(vid_dpy, wnd, net_wm_pid, cardinal, 32, PropModeReplace, (void*)&pid, 1);
+}
+
 void X_GoFullscreen(void)
 {
 	XEvent xev;
@@ -3927,7 +3996,7 @@ static Window X_CreateWindow(rendererstate_t *info, qboolean override, XVisualIn
 	XSetWindowAttributes attr;
 	XSizeHints szhints;
 	unsigned int mask;
-	Atom prots[1];
+	Atom prots[2];
 
 	/* window attributes */
 	attr.background_pixel = 0;
@@ -3983,12 +4052,14 @@ static Window X_CreateWindow(rendererstate_t *info, qboolean override, XVisualIn
 						visinfo->visual, mask, &attr);
 	/*ask the window manager to stop triggering bugs in Xlib*/
 	prots[0] = x11.pXInternAtom(vid_dpy, "WM_DELETE_WINDOW", False);
-	x11.pXSetWMProtocols(vid_dpy, wnd, prots, sizeof(prots)/sizeof(prots[0]));
+	prots[1] = x11.pXInternAtom(vid_dpy, "_NET_WM_PING", False);
+	x11.pXSetWMProtocols(vid_dpy, wnd, prots, countof(prots));
 	x11.pXSetWMNormalHints(vid_dpy, wnd, &szhints);
 	/*set caption*/
 	x11.pXStoreName(vid_dpy, wnd, "FTE QuakeWorld");
 	x11.pXSetIconName(vid_dpy, wnd, "FTEQW");
 	X_StoreIcon(wnd);
+	X_StorePID(wnd);
 	/*make it visible*/
 	x11.pXMapWindow(vid_dpy, wnd);
 
@@ -4063,6 +4134,9 @@ static qboolean X11VID_Init (rendererstate_t *info, unsigned char *palette, int 
 					return false;
 				}
 			}
+
+			//"Some implementations may require threads to implement some presentation modes so applications must call XInitThreads() before calling any other Xlib functions."
+			x11.pXInitThreads();
 		}
 		break;
 #endif
@@ -4323,7 +4397,7 @@ static qboolean X11VID_Init (rendererstate_t *info, unsigned char *palette, int 
 				break;
 		}
 #endif
-		Con_Printf(CON_ERROR "Failed to create a vulkan context.\n");
+		//Con_Printf(CON_ERROR "Failed to create a vulkan context.\n");
 		GLVID_Shutdown();
 		return false;
 #endif
@@ -4447,7 +4521,7 @@ rendererinfo_t eglrendererinfo =
 	GLBE_Init,
 	GLBE_GenBrushModelVBO,
 	GLBE_ClearVBO,
-	GLBE_UploadAllLightmaps,
+	GLBE_UpdateLightmaps,
 	GLBE_SelectEntity,
 	GLBE_SelectDLight,
 	GLBE_Scissor,
@@ -4553,14 +4627,14 @@ rendererinfo_t vkrendererinfo =
 #endif
 
 #if 1
-static void (*paste_callback)(void *cb, char *utf8);
+static void (*paste_callback)(void *cb, const char *utf8);
 static void *pastectx;
 static struct {
 	Atom clipboard;
 	Atom prop;
 	Atom owner;
 } x11paste;
-void Sys_Clipboard_PasteText(clipboardtype_t clipboardtype, void (*callback)(void *cb, char *utf8), void *ctx)
+void Sys_Clipboard_PasteText(clipboardtype_t clipboardtype, void (*callback)(void *ctx, const char *utf8), void *ctx)
 {
 	//if there's a paste already pending, cancel the callback to ensure it always gets called.
 	if (paste_callback)

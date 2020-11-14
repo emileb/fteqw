@@ -50,7 +50,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define BZ_Malloc malloc
 #define BZ_Free free
 #define Z_Free BZ_Free
-vec3_t vec3_origin;
 #define VectorCompare VectorComparestatic
 static int VectorCompare (const vec3_t v1, const vec3_t v2)
 {
@@ -65,6 +64,7 @@ static int VectorCompare (const vec3_t v1, const vec3_t v2)
 
 static rbeplugfuncs_t *rbefuncs;
 cvar_t r_meshpitch;
+cvar_t r_meshroll;
 
 //============================================================================
 // physics engine support
@@ -2739,6 +2739,7 @@ static void QDECL World_ODE_Start(world_t *world)
 	world->rbe = &ctx->pub;
 
 	r_meshpitch.value = cvarfuncs->GetFloat("r_meshpitch");
+	r_meshroll.value = cvarfuncs->GetFloat("r_meshroll");
 
 	VectorAvg(world->worldmodel->mins, world->worldmodel->maxs, center);
 	VectorSubtract(world->worldmodel->maxs, center, extents);
@@ -2835,12 +2836,13 @@ qboolean Plug_Init(void)
 	CHECKBUILTIN(Sys_CloseLibrary);
 #endif
 
-	rbefuncs = plugfuncs->GetEngineInterface("RBE", sizeof(rbeplugfuncs_t));
-	if (rbefuncs && rbefuncs->version < RBEPLUGFUNCS_VERSION)
+	rbefuncs = plugfuncs->GetEngineInterface("RBE", sizeof(*rbefuncs));
+	if (rbefuncs && (	rbefuncs->version < RBEPLUGFUNCS_VERSION ||
+						rbefuncs->wedictsize != sizeof(wedict_t)))
 		rbefuncs = NULL;
 	if (!rbefuncs)
 	{
-		Con_Printf("ODE plugin failed: Engine does not support external rigid body engines.\n");
+		Con_Printf("ODE plugin failed: Engine is incompatible.\n");
 		return false;
 	}
 #ifndef ODE_STATIC

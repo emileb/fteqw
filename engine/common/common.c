@@ -26,13 +26,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include <errno.h>
 
 qboolean sys_nounload;
-#ifndef HAVE_CLIENT
 double		host_frametime;
 double		realtime;				// without any filtering or bounding
 qboolean	host_initialized;		// true if into command execution (compatability)
 quakeparms_t host_parms;
-int			host_hunklevel;
-#endif
 
 
 //by adding 'extern' to one definition of a function in a translation unit, then the definition in that TU is NOT considered an inline definition. meaning non-inlined references in other TUs can link to it instead of their own if needed.
@@ -89,24 +86,26 @@ cvar_t	developer = CVAR("developer","1");
 cvar_t	developer = CVARD("developer","0", "Enables the spewing of additional developer/debugging messages. 2 will give even more spam, much of it unwanted.");
 #endif
 
-cvar_t	registered = CVARD("registered","0","Set if quake's pak1.pak is available");
-cvar_t	gameversion = CVARFD("gameversion","", CVAR_SERVERINFO, "gamecode version for server browsers");
-cvar_t	gameversion_min = CVARD("gameversion_min","", "gamecode version for server browsers");
-cvar_t	gameversion_max = CVARD("gameversion_max","", "gamecode version for server browsers");
-cvar_t	fs_gamename = CVARAD("com_fullgamename", NULL, "fs_gamename", "The filesystem is trying to run this game");
-cvar_t	com_protocolname = CVARAD("com_protocolname", NULL, "com_gamename", "The protocol game name used for dpmaster queries. For compatibility with DP, you can set this to 'DarkPlaces-Quake' in order to be listed in DP's master server, and to list DP servers.");
-cvar_t	com_protocolversion = CVARAD("com_protocolversion", "3", NULL, "The protocol version used for dpmaster queries.");	//3 by default, for compat with DP/NQ, even if our QW protocol uses different versions entirely. really it only matters for master servers.
-cvar_t	com_parseutf8 = CVARD("com_parseutf8", "1", "Interpret console messages/playernames/etc as UTF-8. Requires special fonts. -1=iso 8859-1. 0=quakeascii(chat uses high chars). 1=utf8, revert to ascii on decode errors. 2=utf8 ignoring errors");	//1 parse. 2 parse, but stop parsing that string if a char was malformed.
-#ifdef HAVE_LEGACY
-cvar_t	ezcompat_markup = CVARD("ezcompat_markup", "1", "Attempt compatibility with ezquake's text markup.0: disabled.\n1: Handle markup ampersand markup.\n2: Handle chevron markup (only in echo commands, for config compat, because its just too unreliable otherwise).");
+cvar_t	registered				= CVARD("registered","0","Set if quake's pak1.pak is available");
+cvar_t	gameversion				= CVARFD("gameversion","", CVAR_SERVERINFO, "gamecode version for server browsers");
+cvar_t	gameversion_min			= CVARD("gameversion_min","", "gamecode version for server browsers");
+cvar_t	gameversion_max			= CVARD("gameversion_max","", "gamecode version for server browsers");
+#ifndef SVNREVISION
+static cvar_t	pr_engine		= CVARFD("pr_engine",DISTRIBUTION" -", CVAR_NOSAVE, "This cvar exists so that the menuqc is able to determine which engine-specific settings/values to list/suggest. It must not be used to detect formal QC extensions/builtins. Use checkextension/checkbuiltin/checkcommand for that.");
+#else
+static cvar_t	pr_engine		= CVARFD("pr_engine",DISTRIBUTION" "STRINGIFY(SVNREVISION), CVAR_NOSAVE, "This cvar exists so that the menuqc is able to determine which engine-specific settings/values to list/suggest. It must not be used to detect formal QC extensions/builtins. Use checkextension/checkbuiltin/checkcommand for that.");
 #endif
-cvar_t	com_highlightcolor = CVARD("com_highlightcolor", STRINGIFY(COLOR_RED), "ANSI colour to be used for highlighted text, used when com_parseutf8 is active.");
-cvar_t	com_nogamedirnativecode =  CVARFD("com_nogamedirnativecode", "1", CVAR_NOTFROMSERVER, FULLENGINENAME" blocks all downloads of files with a .dll or .so extension, however other engines (eg: ezquake and fodquake) do not - this omission can be used to trigger delayed eremote exploits in any engine (including "DISTRIBUTION") which is later run from the same gamedir.\nQuake2, Quake3(when debugging), and KTX typically run native gamecode from within gamedirs, so if you wish to run any of these games you will need to ensure this cvar is changed to 0, as well as ensure that you don't run unsafe clients.");
-cvar_t	sys_platform = CVAR("sys_platform", PLATFORM);
-cvar_t	pkg_downloads_url = CVARFD("pkg_downloads_url", NULL, CVAR_NOTFROMSERVER|CVAR_NOSAVE|CVAR_NOSET, "The URL of a package updates list.");	//read from the default.fmf
-cvar_t	pkg_autoupdate = CVARFD("pkg_autoupdate", "-1", CVAR_NOTFROMSERVER|CVAR_NOSAVE|CVAR_NOSET, "Controls autoupdates, can only be changed via the downloads menu.\n0: off.\n1: enabled (stable only).\n2: enabled (unstable).\nNote that autoupdate will still prompt the user to actually apply the changes."); //read from the package list only.
+cvar_t	fs_gamename				= CVARAD("com_fullgamename", NULL, "fs_gamename", "The filesystem is trying to run this game");
+cvar_t	com_protocolname		= CVARAD("com_protocolname", NULL, "com_gamename", "The protocol game name used for dpmaster queries. For compatibility with DP, you can set this to 'DarkPlaces-Quake' in order to be listed in DP's master server, and to list DP servers.");
+cvar_t	com_protocolversion		= CVARAD("com_protocolversion", "3", NULL, "The protocol version used for dpmaster queries.");	//3 by default, for compat with DP/NQ, even if our QW protocol uses different versions entirely. really it only matters for master servers.
+cvar_t	com_parseutf8			= CVARD("com_parseutf8", "1", "Interpret console messages/playernames/etc as UTF-8. Requires special fonts. -1=iso 8859-1. 0=quakeascii(chat uses high chars). 1=utf8, revert to ascii on decode errors. 2=utf8 ignoring errors");	//1 parse. 2 parse, but stop parsing that string if a char was malformed.
+cvar_t	com_highlightcolor		= CVARD("com_highlightcolor", STRINGIFY(COLOR_RED), "ANSI colour to be used for highlighted text, used when com_parseutf8 is active.");
+cvar_t	com_nogamedirnativecode	= CVARFD("com_nogamedirnativecode", "1", CVAR_NOTFROMSERVER, FULLENGINENAME" blocks all downloads of files with a .dll or .so extension, however other engines (eg: ezquake and fodquake) do not - this omission can be used to trigger delayed eremote exploits in any engine (including "DISTRIBUTION") which is later run from the same gamedir.\nQuake2, Quake3(when debugging), and KTX typically run native gamecode from within gamedirs, so if you wish to run any of these games you will need to ensure this cvar is changed to 0, as well as ensure that you don't run unsafe clients.");
+cvar_t	sys_platform			= CVAR("sys_platform", PLATFORM);
+cvar_t	host_mapname			= CVARAFD("mapname", "", "host_mapname", 0, "Cvar that holds the short name of the current map, for scripting type stuff");
 #ifdef HAVE_LEGACY
-cvar_t	pm_noround = CVARD("pm_noround", "0", "Disables player prediction snapping, in a way that cannot be reliably predicted but may be needed to avoid map bugs.");
+cvar_t	ezcompat_markup			= CVARD("ezcompat_markup", "1", "Attempt compatibility with ezquake's text markup.0: disabled.\n1: Handle markup ampersand markup.\n2: Handle chevron markup (only in echo commands, for config compat, because its just too unreliable otherwise).");
+cvar_t	pm_noround				= CVARD("pm_noround", "0", "Disables player prediction snapping, in a way that cannot be reliably predicted but may be needed to avoid map bugs.");
 #endif
 
 qboolean	com_modified;	// set true if using non-id files
@@ -888,7 +887,7 @@ void MSG_WriteByte (sizebuf_t *sb, int c)
 #endif
 
 	buf = (qbyte*)SZ_GetSpace (sb, 1);
-	buf[0] = c;
+	buf[0] = c&0xff;
 }
 
 void MSG_WriteShort (sizebuf_t *sb, int c)
@@ -902,7 +901,7 @@ void MSG_WriteShort (sizebuf_t *sb, int c)
 
 	buf = (qbyte*)SZ_GetSpace (sb, 2);
 	buf[0] = c&0xff;
-	buf[1] = c>>8;
+	buf[1] = (c>>8)&0xff;
 }
 
 void MSG_WriteLong (sizebuf_t *sb, int c)
@@ -913,7 +912,21 @@ void MSG_WriteLong (sizebuf_t *sb, int c)
 	buf[0] = c&0xff;
 	buf[1] = (c>>8)&0xff;
 	buf[2] = (c>>16)&0xff;
-	buf[3] = c>>24;
+	buf[3] = (c>>24)&0xff;
+}
+void MSG_WriteInt64 (sizebuf_t *sb, qint64_t c)
+{
+	qbyte	*buf;
+
+	buf = (qbyte*)SZ_GetSpace (sb, 8);
+	buf[0] = c&0xff;
+	buf[1] = (c>>8)&0xff;
+	buf[2] = (c>>16)&0xff;
+	buf[3] = (c>>24)&0xff;
+	buf[4] = (c>>32)&0xff;
+	buf[5] = (c>>40)&0xff;
+	buf[6] = (c>>48)&0xff;
+	buf[7] = (c>>52)&0xff;
 }
 
 void MSG_WriteFloat (sizebuf_t *sb, float f)
@@ -930,6 +943,17 @@ void MSG_WriteFloat (sizebuf_t *sb, float f)
 
 	SZ_Write (sb, &dat.l, 4);
 }
+void MSG_WriteDouble (sizebuf_t *sb, double f)
+{
+	union
+	{
+		double		f;
+		qint64_t	l;
+	} dat;
+
+	dat.f = f;
+	MSG_WriteInt64(sb, dat.l);
+}
 
 void MSG_WriteString (sizebuf_t *sb, const char *s)
 {
@@ -939,7 +963,7 @@ void MSG_WriteString (sizebuf_t *sb, const char *s)
 		SZ_Write (sb, s, Q_strlen(s)+1);
 }
 
-float MSG_FromCoord(coorddata c, int type)
+vec_t MSG_FromCoord(coorddata c, int type)
 {
 	switch(type)
 	{
@@ -1023,7 +1047,7 @@ coorddata MSG_ToAngle(float f, int bytes)	//return value is NOT byteswapped.
 void MSG_WriteCoord (sizebuf_t *sb, float f)
 {
 	coorddata i = MSG_ToCoord(f, sb->prim.coordtype);
-	SZ_Write (sb, (void*)&i, sb->prim.coordtype&0xf);
+	SZ_Write (sb, (void*)&i, sb->prim.coordtype&COORDTYPE_SIZE_MASK);
 }
 
 void MSG_WriteAngle16 (sizebuf_t *sb, float f)
@@ -1587,6 +1611,36 @@ int MSG_ReadLong (void)
 
 	return c;
 }
+qint64_t MSG_ReadInt64 (void)
+{
+	qint64_t c;
+
+	if (net_message.packing!=SZ_RAWBYTES)
+	{
+		c = (unsigned int)MSG_ReadBits(32)
+		  | ((qint64_t)(unsigned int)MSG_ReadBits(32)<<32);
+		return c;
+	}
+
+	if (msg_readcount+4 > net_message.cursize)
+	{
+		msg_badread = true;
+		return -1;
+	}
+
+	c = (net_message.data[msg_readcount+0]<<0)
+	  | (net_message.data[msg_readcount+1]<<8)
+	  | (net_message.data[msg_readcount+2]<<16)
+	  | (net_message.data[msg_readcount+3]<<24)
+	  | ((qint64_t)net_message.data[msg_readcount+5]<<32)
+	  | ((qint64_t)net_message.data[msg_readcount+6]<<40)
+	  | ((qint64_t)net_message.data[msg_readcount+7]<<48)
+	  | ((qint64_t)net_message.data[msg_readcount+8]<<52);
+
+	msg_readcount += 8;
+
+	return c;
+}
 
 float MSG_ReadFloat (void)
 {
@@ -1615,9 +1669,20 @@ float MSG_ReadFloat (void)
 	dat.b[3] =	net_message.data[msg_readcount+3];
 	msg_readcount += 4;
 
-	dat.l = LittleLong (dat.l);
+	if (bigendian)
+		dat.l = LittleLong (dat.l);
 
 	return dat.f;
+}
+double MSG_ReadDouble (void)
+{	//type-pun it as an int64 over the network for easier handling of endian.
+	union
+	{
+		double		d;
+		qint64_t	l;
+	} dat;
+	dat.l = MSG_ReadInt64();
+	return dat.d;
 }
 
 char *MSG_ReadStringBuffer (char *out, size_t outsize)
@@ -1685,13 +1750,13 @@ float MSG_ReadCoord (void)
 	coorddata c = {{0}};
 	if (net_message.prim.coordtype == COORDTYPE_UNDEFINED)
 		net_message.prim.coordtype = COORDTYPE_FIXED_13_3;
-	MSG_ReadData(&c, net_message.prim.coordtype&0xf);
+	MSG_ReadData(c.b, net_message.prim.coordtype&COORDTYPE_SIZE_MASK);
 	return MSG_FromCoord(c, net_message.prim.coordtype);
 }
 float MSG_ReadCoordFloat (void)
 {
 	coorddata c = {{0}};
-	MSG_ReadData(&c, COORDTYPE_FLOAT_32&0xf);
+	MSG_ReadData(c.b, COORDTYPE_FLOAT_32&COORDTYPE_SIZE_MASK);
 	return MSG_FromCoord(c, COORDTYPE_FLOAT_32);
 }
 
@@ -4288,6 +4353,12 @@ skipwhite:
 			len++;
 		}
 	}
+	if (c == '\\' && data[1] == '\"')
+	{
+		if (tokentype)
+			*tokentype = TTP_STRING;
+		return COM_ParseCString(data+1, token, tokenlen, NULL);
+	}
 
 // parse single characters
 	if (strchr(punctuation, c))
@@ -4950,7 +5021,7 @@ static void COM_Version_f (void)
 #endif
 
 	//print out which libraries are disabled
-	Con_Printf("^3Compression:^7\n");
+	Con_Printf("^3Compression:^7");
 #ifdef AVAIL_ZLIB
 	Con_Printf(" zlib^h("
 #ifdef ZLIB_STATIC
@@ -5183,6 +5254,7 @@ static cvar_t worker_sleeptime = CVARFD("worker_sleeptime", "0", CVAR_NOTFROMSER
 void *com_resourcemutex;
 static int com_liveworkers[WG_COUNT];
 static void *com_workercondition[WG_COUNT];
+int com_hadwork[WG_COUNT];
 static volatile int com_workeracksequence;
 static struct com_worker_s
 {
@@ -5327,6 +5399,7 @@ qboolean COM_DoWork(int tg, qboolean leavelocked)
 
 	if (work)
 	{
+		com_hadwork[tg]++;
 //		Sys_Printf("%x: Doing work %p (%s)\n", thread, work->ctx, work->ctx?(char*)work->ctx:"?");
 		Sys_UnlockConditional(com_workercondition[tg]);
 
@@ -5406,6 +5479,8 @@ static int COM_WorkerThread(void *arg)
 	{
 		while(COM_DoWork(group, true))
 		{
+			if (thread->request == WR_DIE)
+				break;
 			if (worker_sleeptime.value)
 			{
 				Sys_UnlockConditional(com_workercondition[group]);
@@ -5506,6 +5581,51 @@ void COM_DestroyWorkerThread(void)
 
 	Sys_DestroyMutex(com_resourcemutex);
 	com_resourcemutex = NULL;
+}
+
+//Dangerous: stops workers WITHOUT flushing their queue. Be SURE to 'unlock' to start them up again.
+void COM_WorkerLock(void)
+{
+	int i;
+	if (!com_liveworkers[WG_LOADER])
+		return;	//nothing to do.
+
+	//add a fake worker and ask workers to die
+	Sys_LockConditional(com_workercondition[WG_LOADER]);
+	com_liveworkers[WG_LOADER] += 1;
+	for (i = 0; i < WORKERTHREADS; i++)
+		com_worker[i].request = WR_DIE;	//flag them all to die
+	Sys_ConditionBroadcast(com_workercondition[WG_LOADER]);	//and make sure they ALL wake up to check their new death values.
+	Sys_UnlockConditional(com_workercondition[WG_LOADER]);
+
+	//wait for the workers to stop (leaving their work, because of our fake worker)
+	while(com_liveworkers[WG_LOADER]>1)
+	{
+		if (!COM_DoWork(WG_MAIN, false))	//need to check this to know they're done.
+			COM_DoWork(WG_LOADER, false);	//might as well, while we're waiting.
+	}
+
+	//remove our fake worker now...
+	Sys_LockConditional(com_workercondition[WG_LOADER]);
+	com_liveworkers[WG_LOADER] -= 1;
+	Sys_UnlockConditional(com_workercondition[WG_LOADER]);
+}
+//called after COM_WorkerLock
+void COM_WorkerUnlock(void)
+{
+	int i;
+	for (i = 0; i < WORKERTHREADS; i++)
+	{
+		if (i >= worker_count.ival)
+			continue;	//worker stays dead
+
+		//lower thread indexes need to be (re)created
+		if (!com_worker[i].thread)
+		{
+			com_worker[i].request = WR_NONE;
+			com_worker[i].thread = Sys_CreateThread(va("loadworker_%i", i), COM_WorkerThread, &com_worker[i], 0, 256*1024);
+		}
+	}
 }
 
 //fully flushes ALL pending work.
@@ -5686,7 +5806,7 @@ static void QDECL COM_WorkerCount_Change(cvar_t *var, char *oldvalue)
 
 	if (!*var->string)
 	{
-		count = 4;
+		count = var->ival = 4;
 	}
 
 	//try to respond to any kill requests now, so we don't get surprised by the cvar changing too often.
@@ -5796,8 +5916,10 @@ void COM_Init (void)
 #endif
 	COM_InitFilesystem ();
 
+	Cvar_Register (&host_mapname, "Scripting");
 	Cvar_Register (&developer, "Debugging");
 	Cvar_Register (&sys_platform, "Gamecode");
+	Cvar_Register (&pr_engine, "Gamecode");
 	Cvar_Register (&registered, "Copy protection");
 	Cvar_Register (&gameversion, "Gamecode");
 	Cvar_Register (&gameversion_min, "Gamecode");
@@ -6040,6 +6162,99 @@ static int Base64_Decode(char inp)
 	//if (inp == '=') //padding char
 	return 0;	//invalid
 }
+
+size_t Base64_EncodeBlock(const qbyte *in, size_t length, char *out, size_t outsize)
+{
+	char *start = out;
+	char *end = out+outsize-1;
+	unsigned int v;
+	while(length > 0)
+	{
+		v = 0;
+		if (length > 0)
+			v |= in[0]<<16;
+		if (length > 1)
+			v |= in[1]<<8;
+		if (length > 2)
+			v |= in[2]<<0;
+
+		if (out < end) *out++ = (length>=1)?Base64_Encode((v>>18)&63):'=';
+		if (out < end) *out++ = (length>=1)?Base64_Encode((v>>12)&63):'=';
+		if (out < end) *out++ = (length>=2)?Base64_Encode((v>>6)&63):'=';
+		if (out < end) *out++ = (length>=3)?Base64_Encode((v>>0)&63):'=';
+
+		in+=3;
+		if (length <= 3)
+			break;
+		length -= 3;
+	}
+	end++;
+	if (out < end)
+		*out = 0;
+	return out-start;
+}
+size_t Base64_DecodeBlock(const char *in, const char *in_end, qbyte *out, size_t outsize)
+{
+	qbyte *start = out;
+	unsigned int v;
+	if (!in_end)
+		in_end = in + strlen(in);
+	if (!out)
+		return ((in_end-in+3)/4)*3 + 1;	//upper estimate, with null terminator for convienience.
+
+	for (; outsize > 1;)
+	{
+		while(*in > 0 && *in < ' ')
+			in++;
+		if (in >= in_end || !*in || outsize < 1)
+			break;	//end of message when EOF, otherwise error
+		v  = Base64_Decode(*in++)<<18;
+		while(*in > 0 && *in < ' ')
+			in++;
+		if (in >= in_end || !*in || outsize < 1)
+			break;	//some kind of error
+		v |= Base64_Decode(*in++)<<12;
+		*out++ = (v>>16)&0xff;
+		if (in >= in_end || *in == '=' || !*in || outsize < 2)
+			break;	//end of message when '=', otherwise error
+		v |= Base64_Decode(*in++)<<6;
+		*out++ = (v>>8)&0xff;
+		if (in >= in_end || *in == '=' || !*in || outsize < 3)
+			break;	//end of message when '=', otherwise error
+		v |= Base64_Decode(*in++)<<0;
+		*out++ = (v>>0)&0xff;
+		outsize -= 3;
+	}
+	return out-start;	//total written (no null, output is considered binary)
+}
+size_t Base16_DecodeBlock(const char *in, qbyte *out, size_t outsize)
+{
+	qbyte *start = out;
+	if (!out)
+		return ((strlen(in)+1)/2) + 1;
+
+	for (; ishexcode(in[0]) && ishexcode(in[1]) && outsize > 0; outsize--, in+=2)
+		*out++ = (dehex(in[0])<<4) | dehex(in[1]);
+	return out-start;
+}
+size_t Base16_EncodeBlock(const char *in, size_t length, qbyte *out, size_t outsize)
+{
+	const char tab[16] = "0123456789abcdef";
+	qbyte *start = out;
+	if (!out)
+		return (length*2) + 1;
+
+	if (outsize > length*2)
+		*out = 0;
+	while (length --> 0)
+	{
+		*out++ = tab[(*in>>4)&0xf];
+		*out++ = tab[(*in>>0)&0xf];
+		in++;
+	}
+	return out-start;
+}
+
 /*
   Info Buffers
 */
@@ -6452,6 +6667,9 @@ void InfoBuf_FromString(infobuf_t *info, const char *infostring, qboolean append
 {
 	if (!append)
 		InfoBuf_Clear(info, true);
+	if (*infostring && *infostring != '\\')
+		Con_Printf("InfoBuf_FromString: invalid infostring \"%s\"\n", infostring);
+
 	//all keys must start with a backslash
 	while (*infostring++ == '\\')
 	{
@@ -7625,7 +7843,7 @@ void Con_TPrintf (translation_t stringnum, ...)
 
 	if (!Sys_IsMainThread())
 	{	//shouldn't be redirected anyway...
-		fmt = langtext(stringnum,com_language);
+		fmt = localtext(stringnum);
 		va_start (argptr,stringnum);
 		vsnprintf (msg,sizeof(msg)-1, fmt,argptr);
 		va_end (argptr);
@@ -7649,7 +7867,7 @@ void Con_TPrintf (translation_t stringnum, ...)
 	}
 #endif
 
-	fmt = langtext(stringnum,com_language);
+	fmt = localtext(stringnum);
 
 	va_start (argptr,stringnum);
 	vsnprintf (msg,sizeof(msg)-1, fmt,argptr);

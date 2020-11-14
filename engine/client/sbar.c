@@ -208,7 +208,7 @@ void Draw_AltFunString(float x, float y, const void *str)
 }
 
 //Draws a marked up string no wider than $width virtual pixels.
-void Draw_FunStringWidth(float x, float y, const void *str, int width, int rightalign, qboolean highlight)
+void Draw_FunStringWidthFont(struct font_s *font, float x, float y, const void *str, int width, int rightalign, qboolean highlight)
 {
 	conchar_t buffer[2048];
 	conchar_t *w;
@@ -224,7 +224,7 @@ void Draw_FunStringWidth(float x, float y, const void *str, int width, int right
 		codeflags |= CON_BLINKTEXT;
 	COM_ParseFunString(codeflags, str, buffer, sizeof(buffer), false);
 
-	Font_BeginString(font_default, x, y, &px, &py);
+	Font_BeginString(font, x, y, &px, &py);
 	if (rightalign)
 	{
 		for (w = buffer; *w; )
@@ -258,7 +258,7 @@ void Draw_FunStringWidth(float x, float y, const void *str, int width, int right
 			return;
 		px = Font_DrawChar(px, py, codeflags, codepoint);
 	}
-	Font_EndString(font_default);
+	Font_EndString(font);
 }
 #ifdef QUAKEHUD
 
@@ -2397,18 +2397,6 @@ static void Sbar_Hexen2DrawExtra (playerview_t *pv)
 		"Demoness"
 	};
 
-	if (pv->sb_hexen2_infoplaque)
-	{
-		int i;
-		Con_Printf("Objectives:\n");
-		for (i = 0; i < 64; i++)
-		{
-			if (pv->stats[STAT_H2_OBJECTIVE1 + i/32] & (1<<(i&31)))
-				Con_Printf("%s\n", T_GetInfoString(i));
-		}
-		pv->sb_hexen2_infoplaque = false;
-	}
-
 	if (!pv->sb_hexen2_extra_info)
 	{
 		sbar_rect.y -= 46-SBAR_HEIGHT;
@@ -2877,6 +2865,19 @@ void Sbar_Draw (playerview_t *pv)
 	if (sbar_hexen2)
 	{
 		//hexen2 hud
+
+		if (pv->sb_hexen2_infoplaque)
+		{
+			int i;
+			Con_Printf("Objectives:\n");
+			for (i = 0; i < 64; i++)
+			{
+				if (pv->stats[STAT_H2_OBJECTIVE1 + i/32] & (1<<(i&31)))
+					Con_Printf("%s\n", T_GetInfoString(i));
+			}
+			pv->sb_hexen2_infoplaque = false;
+		}
+
 		if (sb_lines > 24 || pv->sb_hexen2_extra_info)
 		{
 			Sbar_Hexen2DrawExtra(pv);
@@ -3020,7 +3021,7 @@ void Sbar_IntermissionNumber (float x, float y, int num, int digits, int color, 
 		else
 			frame = *ptr -'0';
 
-		R2D_ScalePicAtlas (x,y, 16, 24, sb_nums[color][frame]);
+		R2D_ScalePicAtlas (x,y, 24, 24, sb_nums[color][frame]);
 		x += 24;
 		ptr++;
 	}
@@ -3800,17 +3801,17 @@ void Sbar_CoopIntermission (playerview_t *pv)
 	dig = cl.completed_time/60;
 	Sbar_IntermissionNumber ((sbar_rect.width - 320)/2 + 230 - 24*4, (sbar_rect.height - 200)/2 + 64, dig, 4, 0, false);
 	num = cl.completed_time - dig*60;
-	R2D_ScalePicAtlas ((sbar_rect.width - 320)/2 + 230,(sbar_rect.height - 200)/2 + 64, 16, 24, sb_colon);
-	R2D_ScalePicAtlas ((sbar_rect.width - 320)/2 + 254,(sbar_rect.height - 200)/2 + 64, 16, 26, sb_nums[0][num/10]);
-	R2D_ScalePicAtlas ((sbar_rect.width - 320)/2 + 278,(sbar_rect.height - 200)/2 + 64, 16, 24, sb_nums[0][num%10]);
+	R2D_ScalePicAtlas ((sbar_rect.width - 320)/2 + 230,(sbar_rect.height - 200)/2 + 64, 24, 24, sb_colon);
+	R2D_ScalePicAtlas ((sbar_rect.width - 320)/2 + 254,(sbar_rect.height - 200)/2 + 64, 24, 24, sb_nums[0][num/10]);
+	R2D_ScalePicAtlas ((sbar_rect.width - 320)/2 + 278,(sbar_rect.height - 200)/2 + 64, 24, 24, sb_nums[0][num%10]);
 
 //it is assumed that secrits/monsters are going to be constant for any player...
 	Sbar_IntermissionNumber ((sbar_rect.width - 320)/2 + 230 - 24*4, (sbar_rect.height - 200)/2 + 104, pv->stats[STAT_SECRETS], 4, 0, false);
-	R2D_ScalePicAtlas ((sbar_rect.width - 320)/2 + 230, (sbar_rect.height - 200)/2 + 104, 16, 24, sb_slash);
+	R2D_ScalePicAtlas ((sbar_rect.width - 320)/2 + 230, (sbar_rect.height - 200)/2 + 104, 24, 24, sb_slash);
 	Sbar_IntermissionNumber ((sbar_rect.width - 320)/2 + 254, (sbar_rect.height - 200)/2 + 104, pv->stats[STAT_TOTALSECRETS], 4, 0, true);
 
 	Sbar_IntermissionNumber ((sbar_rect.width - 320)/2 + 230 - 24*4, (sbar_rect.height - 200)/2 + 144, pv->stats[STAT_MONSTERS], 4, 0, false);
-	R2D_ScalePicAtlas ((sbar_rect.width - 320)/2 + 230,(sbar_rect.height - 200)/2 + 144, 16, 24, sb_slash);
+	R2D_ScalePicAtlas ((sbar_rect.width - 320)/2 + 230,(sbar_rect.height - 200)/2 + 144, 24, 24, sb_slash);
 	Sbar_IntermissionNumber ((sbar_rect.width - 320)/2 + 254, (sbar_rect.height - 200)/2 + 144, pv->stats[STAT_TOTALMONSTERS], 4, 0, true);
 }
 /*

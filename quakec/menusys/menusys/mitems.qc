@@ -1,5 +1,3 @@
-/*all these .funcs etc need self assigned properly first, as is customary with qc*/
-
 #ifdef MENU
 #define cltime time
 #endif
@@ -121,6 +119,7 @@ typedef struct uiinfo_s
 	mitem kgrabs;		//kfocused or mfocused or both or none to say what sort of grabs is in effect.
 	mitem mgrabs;		//says who has stolen all input events.
 
+	float ctrlheld;		//ctrl is held.
 	float shiftheld;	//shift is held.
 	float mousedown;	//which mouse buttons are currently held.
 	vector oldmousepos;	//old mouse position, to track whether its moved.
@@ -158,9 +157,7 @@ void() queryscreensize =
 	ui.screensize[2] = 0;
 #endif
 #ifdef CSQC
-	#ifdef CSQC_SIMPLE
-		ui.screensize = screensize;
-	#else
+	#ifndef CSQC_SIMPLE
 		//make sure the screensize is set.
 		normalize('0 0 1');	//when getproperty fails to return a meaningful value, make sure that we don't read some random stale value.
 		ui.screensize = (vector)getproperty(VF_SCREENVSIZE);
@@ -190,50 +187,7 @@ float(vector minp, vector sz) mouseinbox =
 };
 
 
-void(mitem ch, vector parentsize) mitem_parentresized =
-{
-	float f = ch.resizeflags;
-
-	if (f & RS_X_FRACTION)
-		ch.item_position[0] = parentsize[0] * ch.mins[0];
-	else if (f & RS_X_MIN_PARENT_MAX)
-		ch.item_position[0] = parentsize[0] + ch.mins[0];
-	else if (f & RS_X_MIN_PARENT_MID)
-		ch.item_position[0] = parentsize[0]/2 + ch.mins[0];
-	else //if (f & RS_X_MIN_PARENT_MIN)
-		ch.item_position[0] = ch.mins[0];
-
-	if (f & RS_X_FRACTION)
-		ch.item_position[0] = parentsize[0] * ch.maxs[0];
-	else if (f & RS_X_MAX_PARENT_MIN)
-		ch.item_size[0] = ch.maxs[0] - ch.item_position[0];
-	else if (f & RS_X_MAX_PARENT_MID)
-		ch.item_size[0] = ch.maxs[0]+parentsize[0]/2 - ch.item_position[0];
-	else if (f & RS_X_MAX_PARENT_MAX)
-		ch.item_size[0] = ch.maxs[0]+parentsize[0] - ch.item_position[0];
-	else //if (f & RS_X_MAX_OWN_MIN)
-		ch.item_size[0] = ch.maxs[0];
-
-	if (f & RS_Y_FRACTION)
-		ch.item_position[1] = parentsize[1] * ch.mins[1];
-	else if (f & RS_Y_MIN_PARENT_MAX)
-		ch.item_position[1] = parentsize[1] + ch.mins[1];
-	else if (f & RS_Y_MIN_PARENT_MID)
-		ch.item_position[1] = parentsize[1]/2 + ch.mins[1];
-	else //if (f & RS_Y_MIN_PARENT_MIN)
-		ch.item_position[1] = ch.mins[1];
-
-	if (f & RS_Y_FRACTION)
-		ch.item_position[1] = parentsize[1] * ch.maxs[1];
-	else if (f & RS_Y_MAX_PARENT_MIN)
-		ch.item_size[1] = ch.maxs[1] - ch.item_position[1];
-	else if (f & RS_Y_MAX_PARENT_MID)
-		ch.item_size[1] = ch.maxs[1]+parentsize[1]/2 - ch.item_position[1];
-	else if (f & RS_Y_MAX_PARENT_MAX)
-		ch.item_size[1] = ch.maxs[1]+parentsize[1] - ch.item_position[1];
-	else //if (f & RS_Y_MAX_OWN_MIN)
-		ch.item_size[1] = ch.maxs[1];
-};
+void(mitem ch, vector parentsize) mitem_parentresized;
 
 #include "mitem_frame.qc"
 void() mitem::item_resized =

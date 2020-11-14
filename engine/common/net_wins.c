@@ -105,6 +105,10 @@ FTE_ALIGN(4) qbyte		net_message_buffer[MAX_OVERALLMSGLEN];
 //	#undef HAVE_HTTPSV
 //#endif
 
+#ifdef HAVE_EPOLL
+static int epoll_fd = -1;
+#endif
+
 void NET_GetLocalAddress (int socket, netadr_t *out);
 //int TCP_OpenListenSocket (const char *localip, int port);
 #ifdef HAVE_IPV6
@@ -121,11 +125,14 @@ static cvar_t net_dns_ipv6		= CVARD("net_dns_ipv6",				"1", "If 0, disables dns 
 cvar_t	net_enabled				= CVARD("net_enabled",				"1", "If 0, disables all network access, including name resolution and socket creation. Does not affect loopback/internal connections.");
 #if defined(HAVE_SSL)
 cvar_t	tls_ignorecertificateerrors	= CVARFD("tls_ignorecertificateerrors", "0", CVAR_NOTFROMSERVER|CVAR_NOSAVE|CVAR_NOUNSAFEEXPAND|CVAR_NOSET, "This should NEVER be set to 1!");
+static cvar_t	tls_provider	= CVARFD("tls_provider", "0", CVAR_NOTFROMSERVER, "Controls which TLS provider to use.\n0: Auto.\n1: GNUTLS\n2: OpenSSL\n3: SSPI");
 #endif
 #if defined(TCPCONNECT) && (defined(HAVE_SERVER) || defined(HAVE_HTTPSV))
 #ifdef HAVE_SERVER
-cvar_t	net_enable_qizmo		= CVARD("net_enable_qizmo",			"1", "Enables compatibility with qizmo's tcp connections serverside. Frankly, using sv_port_tcp without this is a bit pointless.");
-cvar_t	net_enable_qtv			= CVARD("net_enable_qtv",			"1", "Listens for qtv proxies, or clients using the qtvplay command.");
+cvar_t	net_enable_qizmo		= CVARD("net_enable_qizmo",			"1", "Enables serverside support for 'connect tcp://foo' or 'connect tls://foo' (with net_enable_tls), as well as qizmo's tcp connections and compatibles.");
+#endif
+#ifdef MVD_RECORDING
+cvar_t	net_enable_qtv			= CVARD("net_enable_qtv",			"2", "Controls whether inbound qtv requests will be honoured (both proxies and clients using qtvplay).\n0: Don't accept qtv connections.\n1: Accept connections.\n2: Accept qtv connections only from host-scopped addresses (read: 127.*.*.*, ::1, or unix sockets).");
 #endif
 #if defined(HAVE_SSL)
 cvar_t	net_enable_tls			= CVARD("net_enable_tls",			"0", "If enabled, binary data sent to a non-tls tcp port will be interpretted as a tls handshake (enabling https or wss over the same tcp port.");
@@ -1075,7 +1082,27 @@ size_t NET_StringToSockaddr2 (const char *s, int defaultport, netadrtype_t afhin
 		if (!strncmp(site, oldprefix, strlen(oldprefix)))
 		{
 			if (!strcmp(s+8,site+strlen(oldprefix)))
+			{
+#ifdef HAVE_IPV4
+				struct sockaddr_in *a = (struct sockaddr_in*)sadr;
+				qbyte *ip = (qbyte*)&a->sin_addr;
+				memset (a, 0, sizeof(*sadr));
+				a->sin_family = AF_INET;
+				ip[0] = 213;
+				ip[1] = 219;
+				ip[2] = 36;
+				ip[3] = 248;
+				a->sin_port = htons(defaultport);
+
+				if (addrsize)
+					*addrsize = sizeof(*a);
+				if (addrfamily)
+					*addrfamily = AF_INET;
+				return 1;
+#else
 				s += 8;
+#endif
+			}
 		}
 	}
 #endif
@@ -2174,6 +2201,49 @@ qboolean	NET_IsLoopBackAddress (netadr_t *adr)
 
 
 #ifdef HAVE_SSL
+void *Auth_GetKnownCertificate(const char *certname, size_t *size)
+{	//our 'code signing' certs
+	//we only allow packages to be installed into the root dir (or with dll/so/exe extensions) when their signature is signed by one of these certificates
+	static struct
+	{
+		const char *name;
+		qbyte *cert;
+	} certs[] =
+	{	//the contents of a -pubcert FILE
+		{"Spike",	"-----BEGIN CERTIFICATE-----\n"
+					"MIIDnTCCAgUCCjE1ODQ4ODg2OTEwDQYJKoZIhvcNAQELBQAwEDEOMAwGA1UEAxMF\n"
+					"U3Bpa2UwHhcNMjAwMzIyMTQ1MTMwWhcNMzAwMzIwMTQ1MTMxWjAQMQ4wDAYDVQQD\n"
+					"EwVTcGlrZTCCAaIwDQYJKoZIhvcNAQEBBQADggGPADCCAYoCggGBAN07KHTPc0Pn\n"
+					"lC8MlQNiI+OEUEJBakTjfNq+IJzJ6oTWXxfQbHrN+UpKXwxploDbeyxTE1Fniisi\n"
+					"nLWhOkW/XQqyXLXAv/3lxiSwe4QcVMOhQlw5U05VrdB7xHvFMShLsyc12sNvBiIa\n"
+					"Vw05wFJgIXYTd9nJfm9x3kpxRoTJBvdDbYl8OagT6SxzJfHkdmfI2TYVYxGUH9nX\n"
+					"R9zvwXTIXvV47cko2ON8scH9QQ6KgwMfcwyIBL74Btvl4ye+TrL2srj38FBxyyPG\n"
+					"SSdKPk4LN2zsfNsJm31hzWrdLEkl3CTOX5gHHSweOKpuPwmX/GPd1xo0nIMwDou4\n"
+					"BsMMBAhK/JSyLpUUzk5gbRmy4PwFccktHdFW6LF8ZvPY7e7LEiD5KOWZ7a7c1WR/\n"
+					"4oJrjo0t+7OugVADolxzLXFrq9ACBGrD8r6QlsGC8O7WqpKGQCT+4q3tUup9tPkh\n"
+					"3dhjC0jEkKljS+39uukbisV702bHwoEZPzjMpz4O9bHf6JbIJLlQzQIDAQABMA0G\n"
+					"CSqGSIb3DQEBCwUAA4IBgQC5rj7R7a9LLnqgiXMUITGnygK1lp0EV2BdnIrg/MHr\n"
+					"y+Gk9BA+XgFSI4W9odiG/hJnA7aQ0S2kk1GNYQ+NNzU2bQIMkaobaZApV9ojD4lL\n"
+					"s33Qbgt/Ocpadtpj8EiMInjLkn1B+wnqcX3S76Zcrf8RT4WP2A4klxcN3zBNBiBL\n"
+					"DAJ3SrH8hZ9wmruwAY5tMZhQzDHkeK8uaDb7nE0HA5GXeT4QYA/L7Ys2nGYgxj1O\n"
+					"L5YlGddBcX3O6XyJpSeCO2Z2kwl4qg8oiM+Y546lILotuL5qD/+FTDeX3dGd8nyD\n"
+					"e1g/7xd0V4IyKUjii8Vu2V1F7t0xVTPWEe13TqU/JTfKX4zvQnMF7zxgGFIwabHX\n"
+					"lzk2olte4rPp+iQzPmnynLiUrdkxGXLnE0V545VO+iGO8+bwclbJ+7SG6N5l8xox\n"
+					"WjGunhXXkEjitAk+ssBjbEh8kIfpFdVA09v60rMdm7BdfO3//QOsjwiwKkBOXcYW\n"
+					"QGE0Ue4J7anLVAKiQq4n1aU=\n"
+					"-----END CERTIFICATE-----\n"},
+	};
+	size_t i;
+	for (i = 0; i < countof(certs); i++)
+	{
+		if (!strcmp(certname, certs[i].name))
+		{
+			*size = strlen(certs[i].cert);
+			return certs[i].cert;
+		}
+	}
+	return NULL;
+}
 void *TLS_GetKnownCertificate(const char *certname, size_t *size)
 {
 	//Note: This is XORed because of shitty scanners flagging binaries through false positive, flagging the sites that they were downloaded from, flagging binaries that contain references to those sites, and flagging any site that contains binaries.
@@ -2225,6 +2295,9 @@ vfsfile_t *FS_OpenSSL(const char *peername, vfsfile_t *source, qboolean isserver
 	vfsfile_t *f = NULL;
 	char hostname[MAX_OSPATH];
 
+	if (!source)
+		return NULL;	//can happen if socket() fails.
+
 	if (peername)
 	{
 		//clean up the name, stripping any port or other weirdness.
@@ -2247,17 +2320,19 @@ vfsfile_t *FS_OpenSSL(const char *peername, vfsfile_t *source, qboolean isserver
 		*hostname = 0;
 
 #ifdef HAVE_GNUTLS
-	if (!f)
+	if (!f && (!tls_provider.ival || tls_provider.ival==1))
 		f = GNUTLS_OpenVFS(hostname, source, isserver);
 #endif
 #ifdef HAVE_OPENSSL
-	if (!f)
+	if (!f && (!tls_provider.ival || tls_provider.ival==2))
 		f = OSSL_OpenVFS(hostname, source, isserver);
 #endif
 #ifdef HAVE_WINSSPI
-	if (!f)
+	if (!f && (!tls_provider.ival || tls_provider.ival==3))
 		f = SSPI_OpenVFS(hostname, source, isserver);
 #endif
+	if (!f)	//it all failed.
+		VFS_CLOSE(source);
 	return f;
 }
 int TLS_GetChannelBinding(vfsfile_t *stream, qbyte *data, size_t *datasize)
@@ -2284,7 +2359,7 @@ int TLS_GetChannelBinding(vfsfile_t *stream, qbyte *data, size_t *datasize)
 
 #if defined(HAVE_SERVER) && defined(HAVE_CLIENT)
 
-qboolean	NET_GetLoopPacket (int sock, netadr_t *from, sizebuf_t *message)
+static qboolean	NET_GetLoopPacket (int sock, netadr_t *from, sizebuf_t *message)
 {
 	int		i;
 	loopback_t	*loop;
@@ -2322,7 +2397,7 @@ qboolean	NET_GetLoopPacket (int sock, netadr_t *from, sizebuf_t *message)
 }
 
 
-neterr_t NET_SendLoopPacket (int sock, int length, const void *data, netadr_t *to)
+static neterr_t NET_SendLoopPacket (int sock, int length, const void *data, netadr_t *to)
 {
 	int		i;
 	loopback_t	*loop;
@@ -2352,7 +2427,7 @@ neterr_t NET_SendLoopPacket (int sock, int length, const void *data, netadr_t *t
 	return NETERR_SENT;
 }
 
-int FTENET_Loop_GetLocalAddresses(struct ftenet_generic_connection_s *con, unsigned int *adrflags, netadr_t *addresses, const char **adrparams, int maxaddresses)
+static int FTENET_Loop_GetLocalAddresses(struct ftenet_generic_connection_s *con, unsigned int *adrflags, netadr_t *addresses, const char **adrparams, int maxaddresses)
 {
 	if (maxaddresses)
 	{
@@ -2365,20 +2440,20 @@ int FTENET_Loop_GetLocalAddresses(struct ftenet_generic_connection_s *con, unsig
 	return 0;
 }
 
-qboolean FTENET_Loop_GetPacket(ftenet_generic_connection_t *con)
+static qboolean FTENET_Loop_GetPacket(ftenet_generic_connection_t *con)
 {
 	return NET_GetLoopPacket(con->thesocket, &net_from, &net_message);
 }
 
-#ifdef HAVE_PACKET
+#if defined(HAVE_PACKET) && !defined(HAVE_EPOLL)
 //just a null function so we don't pass bad things to select.
-int FTENET_Loop_SetFDSets(ftenet_generic_connection_t *gcon, fd_set *readfdset, fd_set *writefdset)
+static int FTENET_Loop_SetFDSets(ftenet_generic_connection_t *gcon, fd_set *readfdset, fd_set *writefdset)
 {
 	return 0;
 }
 #endif
 
-neterr_t FTENET_Loop_SendPacket(ftenet_generic_connection_t *con, int length, const void *data, netadr_t *to)
+static neterr_t FTENET_Loop_SendPacket(ftenet_generic_connection_t *con, int length, const void *data, netadr_t *to)
 {
 	if (to->type == NA_LOOPBACK)
 	{
@@ -2388,7 +2463,7 @@ neterr_t FTENET_Loop_SendPacket(ftenet_generic_connection_t *con, int length, co
 	return NETERR_NOROUTE;
 }
 
-void FTENET_Loop_Close(ftenet_generic_connection_t *con)
+static void FTENET_Loop_Close(ftenet_generic_connection_t *con)
 {
 	int i;
 	int sock = con->thesocket;
@@ -2405,7 +2480,7 @@ void FTENET_Loop_Close(ftenet_generic_connection_t *con)
 	Z_Free(con);
 }
 
-static ftenet_generic_connection_t *FTENET_Loop_EstablishConnection(qboolean isserver, const char *address, netadr_t adr)
+static ftenet_generic_connection_t *FTENET_Loop_EstablishConnection(ftenet_connections_t *col, const char *address, netadr_t adr)
 {
 	ftenet_generic_connection_t *newcon;
 	int sock;
@@ -2424,11 +2499,11 @@ static ftenet_generic_connection_t *FTENET_Loop_EstablishConnection(qboolean iss
 		newcon->GetPacket = FTENET_Loop_GetPacket;
 		newcon->SendPacket = FTENET_Loop_SendPacket;
 		newcon->Close = FTENET_Loop_Close;
-#ifdef HAVE_PACKET
+#if defined(HAVE_PACKET) && !defined(HAVE_EPOLL)
 		newcon->SetFDSets = FTENET_Loop_SetFDSets;
 #endif
 
-		newcon->islisten = isserver;
+		newcon->islisten = col->islisten;
 		newcon->addrtype[0] = NA_LOOPBACK;
 		newcon->addrtype[1] = NA_INVALID;
 
@@ -2439,30 +2514,31 @@ static ftenet_generic_connection_t *FTENET_Loop_EstablishConnection(qboolean iss
 #endif
 //=============================================================================
 
-ftenet_connections_t *FTENET_CreateCollection(qboolean listen)
+ftenet_connections_t *FTENET_CreateCollection(qboolean listen, void(*ReadPacket)(void))
 {
 	ftenet_connections_t *col;
 	col = Z_Malloc(sizeof(*col));
 	col->islisten = listen;
+	col->ReadGamePacket = ReadPacket;
 	return col;
 }
 #if defined(HAVE_CLIENT) && defined(HAVE_SERVER)
-static ftenet_generic_connection_t *FTENET_Loop_EstablishConnection(qboolean isserver, const char *address, netadr_t adr);
+static ftenet_generic_connection_t *FTENET_Loop_EstablishConnection(ftenet_connections_t *col, const char *address, netadr_t adr);
 #endif
 #ifdef HAVE_PACKET
-static ftenet_generic_connection_t *FTENET_Datagram_EstablishConnection(qboolean isserver, const char *address, netadr_t adr);
+static ftenet_generic_connection_t *FTENET_Datagram_EstablishConnection(ftenet_connections_t *col, const char *address, netadr_t adr);
 #endif
 #ifdef TCPCONNECT
-static ftenet_generic_connection_t *FTENET_TCPConnect_EstablishConnection(qboolean isserver, const char *address, netadr_t adr);
+static ftenet_generic_connection_t *FTENET_TCP_EstablishConnection(ftenet_connections_t *col, const char *address, netadr_t adr);
 #endif
 #ifdef HAVE_WEBSOCKCL
-static ftenet_generic_connection_t *FTENET_WebSocket_EstablishConnection(qboolean isserver, const char *address, netadr_t adr);
+static ftenet_generic_connection_t *FTENET_WebSocket_EstablishConnection(ftenet_connections_t *col, const char *address, netadr_t adr);
 #endif
 #ifdef IRCCONNECT
-static ftenet_generic_connection_t *FTENET_IRCConnect_EstablishConnection(qboolean isserver, const char *address, netadr_t adr);
+static ftenet_generic_connection_t *FTENET_IRCConnect_EstablishConnection(ftenet_connections_t *col, const char *address, netadr_t adr);
 #endif
 #ifdef HAVE_NATPMP
-static ftenet_generic_connection_t *FTENET_NATPMP_EstablishConnection(qboolean isserver, const char *address, netadr_t adr);
+static ftenet_generic_connection_t *FTENET_NATPMP_EstablishConnection(ftenet_connections_t *col, const char *address, netadr_t adr);
 #endif
 
 #ifdef HAVE_NATPMP
@@ -2700,7 +2776,7 @@ void FTENET_NATPMP_Close(struct ftenet_generic_connection_s *con)
 	Z_Free(con);
 }
 //qboolean Net_OpenUDPPort(char *privateip, int privateport, char *publicip, size_t publiciplen, int *publicport);
-ftenet_generic_connection_t *FTENET_NATPMP_EstablishConnection(qboolean isserver, const char *address, netadr_t pmpadr)
+ftenet_generic_connection_t *FTENET_NATPMP_EstablishConnection(ftenet_connections_t *col, const char *address, netadr_t pmpadr)
 {
 	pmpcon_t *pmp;
 
@@ -2765,15 +2841,15 @@ const dtlsfuncs_t *DTLS_InitServer(void)
 {
 	const dtlsfuncs_t *f = NULL;
 #ifdef HAVE_GNUTLS
-	if (!f)
+	if (!f && (!tls_provider.ival || tls_provider.ival==1))
 		f = GNUDTLS_InitServer();
 #endif
 #ifdef HAVE_OPENSSL
-	if (!f)
+	if (!f && (!tls_provider.ival || tls_provider.ival==2))
 		f = OSSL_InitServer();
 #endif
 #ifdef HAVE_WINSSPI
-	if (!f)
+	if (!f && (!tls_provider.ival || tls_provider.ival==3))
 		f = SSPI_DTLS_InitServer();
 #endif
 	return f;
@@ -2781,17 +2857,17 @@ const dtlsfuncs_t *DTLS_InitServer(void)
 const dtlsfuncs_t *DTLS_InitClient(void)
 {
 	const dtlsfuncs_t *f = NULL;
-#ifdef HAVE_WINSSPI
-	if (!f)
-		f = SSPI_DTLS_InitClient();
-#endif
 #ifdef HAVE_GNUTLS
-	if (!f)
+	if (!f && (!tls_provider.ival || tls_provider.ival==1))
 		f = GNUDTLS_InitClient();
 #endif
 #ifdef HAVE_OPENSSL
-	if (!f)
+	if (!f && (!tls_provider.ival || tls_provider.ival==2))
 		f = OSSL_InitClient();
+#endif
+#ifdef HAVE_WINSSPI
+	if (!f && (!tls_provider.ival || tls_provider.ival==3))
+		f = SSPI_DTLS_InitClient();
 #endif
 	return f;
 }
@@ -2958,7 +3034,7 @@ size_t NET_GetConnectionCertificate(struct ftenet_connections_s *col, netadr_t *
 
 
 
-static qboolean FTENET_AddToCollection_Ptr(ftenet_connections_t *col, const char *name, ftenet_generic_connection_t *(*establish)(qboolean isserver, const char *address, netadr_t adr), qboolean islisten, const char *address, netadr_t *adr)
+static qboolean FTENET_AddToCollection_Ptr(ftenet_connections_t *col, const char *name, ftenet_generic_connection_t *(*establish)(ftenet_connections_t *col, const char *address, netadr_t adr), const char *address, netadr_t *adr)
 {
 	int count = 0;
 	int i;
@@ -2973,7 +3049,7 @@ static qboolean FTENET_AddToCollection_Ptr(ftenet_connections_t *col, const char
 			if (col->conn[i])
 			if (*col->conn[i]->name && !strcmp(col->conn[i]->name, name))
 			{
-				if (adr && adr->type != NA_INVALID && islisten)
+				if (adr && adr->type != NA_INVALID && col->islisten)
 				if (col->conn[i]->ChangeLocalAddress)
 				{
 					if (col->conn[i]->ChangeLocalAddress(col->conn[i], address, adr))
@@ -2992,9 +3068,10 @@ static qboolean FTENET_AddToCollection_Ptr(ftenet_connections_t *col, const char
 		{
 			if (!col->conn[i])
 			{
-				col->conn[i] = establish(islisten, address, *adr);
+				col->conn[i] = establish(col, address, *adr);
 				if (!col->conn[i])
 					break;
+				col->conn[i]->connum = i+1;
 				if (name)
 					Q_strncpyz(col->conn[i]->name, name, sizeof(col->conn[i]->name));
 				count++;
@@ -3006,16 +3083,14 @@ static qboolean FTENET_AddToCollection_Ptr(ftenet_connections_t *col, const char
 }
 qboolean FTENET_AddToCollection(ftenet_connections_t *col, const char *name, const char *addresslist, netadrtype_t addrtype, netproto_t addrprot)
 {
-	qboolean islisten;
 	netadr_t adr[8];
-	ftenet_generic_connection_t *(*establish[countof(adr)])(qboolean isserver, const char *address, netadr_t adr);
+	ftenet_generic_connection_t *(*establish[countof(adr)])(ftenet_connections_t *col, const char *address, netadr_t adr);
 	char address[countof(adr)][256];
 	unsigned int i, j;
 	qboolean success = false;
 
 	if (!col)
 		return false;
-	islisten = col->islisten;
 
 	if (name && strchr(name, ':'))
 		return false;
@@ -3060,20 +3135,20 @@ qboolean FTENET_AddToCollection(ftenet_connections_t *col, const char *name, con
 #ifdef UNIXSOCKETS
 		if (adr[i].prot == NP_DGRAM && adr[i].type == NA_UNIX)	establish[i] = FTENET_Datagram_EstablishConnection;	else
 	#if defined(TCPCONNECT)
-		if (adr[i].prot == NP_STREAM&& adr[i].type == NA_UNIX)	establish[i] = FTENET_TCPConnect_EstablishConnection;	else
-		if (adr[i].prot == NP_WS    && adr[i].type == NA_UNIX)	establish[i] = FTENET_TCPConnect_EstablishConnection;	else
-		if (adr[i].prot == NP_TLS    && adr[i].type == NA_UNIX)	establish[i] = FTENET_TCPConnect_EstablishConnection;	else
+		if (adr[i].prot == NP_STREAM&& adr[i].type == NA_UNIX)	establish[i] = FTENET_TCP_EstablishConnection;	else
+		if (adr[i].prot == NP_WS    && adr[i].type == NA_UNIX)	establish[i] = FTENET_TCP_EstablishConnection;	else
+		if (adr[i].prot == NP_TLS    && adr[i].type == NA_UNIX)	establish[i] = FTENET_TCP_EstablishConnection;	else
 	#endif
 #endif
 #if defined(TCPCONNECT) && defined(HAVE_IPV4)
-		if (adr[i].prot == NP_WS	&& adr[i].type == NA_IP)	establish[i] = FTENET_TCPConnect_EstablishConnection;	else
-		if (adr[i].prot == NP_STREAM&& adr[i].type == NA_IP)	establish[i] = FTENET_TCPConnect_EstablishConnection;	else
-		if (adr[i].prot == NP_TLS	&& adr[i].type == NA_IP)	establish[i] = FTENET_TCPConnect_EstablishConnection;	else
+		if (adr[i].prot == NP_WS	&& adr[i].type == NA_IP)	establish[i] = FTENET_TCP_EstablishConnection;	else
+		if (adr[i].prot == NP_STREAM&& adr[i].type == NA_IP)	establish[i] = FTENET_TCP_EstablishConnection;	else
+		if (adr[i].prot == NP_TLS	&& adr[i].type == NA_IP)	establish[i] = FTENET_TCP_EstablishConnection;	else
 #endif
 #if defined(TCPCONNECT) && defined(HAVE_IPV6)
-		if (adr[i].prot == NP_WS	&& adr[i].type == NA_IPV6)	establish[i] = FTENET_TCPConnect_EstablishConnection;	else
-		if (adr[i].prot == NP_STREAM&& adr[i].type == NA_IPV6)	establish[i] = FTENET_TCPConnect_EstablishConnection;	else
-		if (adr[i].prot == NP_TLS	&& adr[i].type == NA_IPV6)	establish[i] = FTENET_TCPConnect_EstablishConnection;	else
+		if (adr[i].prot == NP_WS	&& adr[i].type == NA_IPV6)	establish[i] = FTENET_TCP_EstablishConnection;	else
+		if (adr[i].prot == NP_STREAM&& adr[i].type == NA_IPV6)	establish[i] = FTENET_TCP_EstablishConnection;	else
+		if (adr[i].prot == NP_TLS	&& adr[i].type == NA_IPV6)	establish[i] = FTENET_TCP_EstablishConnection;	else
 #endif
 #ifdef SUPPORT_ICE
 		if (adr[i].prot == NP_RTC_TCP)		establish[i] = FTENET_ICE_EstablishConnection;	else
@@ -3087,19 +3162,19 @@ qboolean FTENET_AddToCollection(ftenet_connections_t *col, const char *name, con
 
 	if (i == 1)
 	{
-		success |= FTENET_AddToCollection_Ptr(col, name, establish[0], islisten, address[0], &adr[0]);
+		success |= FTENET_AddToCollection_Ptr(col, name, establish[0], address[0], &adr[0]);
 		i = 0;
 	}
 	else
-		success |= FTENET_AddToCollection_Ptr(col, name, NULL, islisten, NULL, NULL);
+		success |= FTENET_AddToCollection_Ptr(col, name, NULL, NULL, NULL);
 
 	for (j = 0; j < i; j++)
 	{
-		success |= FTENET_AddToCollection_Ptr(col, va("%s:%i", name, j), establish[j], islisten, address[j], &adr[j]);
+		success |= FTENET_AddToCollection_Ptr(col, va("%s:%i", name, j), establish[j], address[j], &adr[j]);
 	}
 	for (; j < countof(adr); j++)
 	{
-		success |= FTENET_AddToCollection_Ptr(col, va("%s:%i", name, j), NULL, islisten, NULL, NULL);
+		success |= FTENET_AddToCollection_Ptr(col, va("%s:%i", name, j), NULL, NULL, NULL);
 	}
 	return success;
 }
@@ -3118,15 +3193,6 @@ void FTENET_CloseCollection(ftenet_connections_t *col)
 		}
 	}
 	Z_Free(col);
-}
-
-void FTENET_Generic_Close(ftenet_generic_connection_t *con)
-{
-#ifdef HAVE_PACKET
-	if (con->thesocket != INVALID_SOCKET)
-		closesocket(con->thesocket);
-#endif
-	Z_Free(con);
 }
 
 #if defined(_WIN32) && defined(HAVE_PACKET)
@@ -3633,13 +3699,41 @@ static qboolean FTENET_Datagram_ChangeLocalAddress(struct ftenet_generic_connect
 }
 #endif
 
-ftenet_generic_connection_t *FTENET_Datagram_EstablishConnection(qboolean isserver, const char *address, netadr_t adr)
+static void FTENET_Datagram_Close(ftenet_generic_connection_t *con)
+{
+#ifdef HAVE_PACKET
+	if (con->thesocket != INVALID_SOCKET)
+	{
+#ifdef HAVE_EPOLL
+		epoll_ctl(epoll_fd, EPOLL_CTL_DEL, con->thesocket, NULL);
+#endif
+		closesocket(con->thesocket);
+	}
+#endif
+	Z_Free(con);
+}
+
+#ifdef HAVE_EPOLL
+static void FTENET_Datagram_Polled(epollctx_t *ctx, unsigned int events)
+{
+	ftenet_generic_connection_t *con = NULL;
+	con = (ftenet_generic_connection_t *)((qbyte*)ctx - ((qbyte*)&con->epoll-(qbyte*)con));
+	while (FTENET_Datagram_GetPacket(con))
+	{
+		net_from.connum = con->connum;
+		con->owner->ReadGamePacket();
+	}
+}
+#endif
+
+ftenet_generic_connection_t *FTENET_Datagram_EstablishConnection(ftenet_connections_t *col, const char *address, netadr_t adr)
 {
 #ifndef HAVE_PACKET
 	return NULL;
 #else
 	//this is written to support either ipv4 or ipv6, depending on the remote addr.
 	ftenet_generic_connection_t *newcon;
+	qboolean isserver = col->islisten;
 
 	unsigned long _true = true;
 	SOCKET newsocket = INVALID_SOCKET;
@@ -3839,9 +3933,10 @@ ftenet_generic_connection_t *FTENET_Datagram_EstablishConnection(qboolean isserv
 		newcon->GetLocalAddresses = FTENET_Generic_GetLocalAddresses;
 		newcon->GetPacket = FTENET_Datagram_GetPacket;
 		newcon->SendPacket = FTENET_Datagram_SendPacket;
-		newcon->Close = FTENET_Generic_Close;
+		newcon->Close = FTENET_Datagram_Close;
 		newcon->ChangeLocalAddress = FTENET_Datagram_ChangeLocalAddress;
 
+		newcon->owner = col;
 		newcon->islisten = isserver;
 		if (hybrid)
 		{
@@ -3856,6 +3951,18 @@ ftenet_generic_connection_t *FTENET_Datagram_EstablishConnection(qboolean isserv
 
 		newcon->thesocket = newsocket;
 
+#ifdef HAVE_EPOLL
+		{
+			struct epoll_event event = {EPOLLIN|EPOLLET, {&newcon->epoll}};
+			newcon->epoll.Polled = FTENET_Datagram_Polled;
+			if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, newsocket, &event) < 0)
+			{
+				int err = errno;
+				Con_Printf("epoll_ctl failed - errno %i\n", err);
+			}
+		}
+#endif
+
 		return newcon;
 	}
 	else
@@ -3867,22 +3974,28 @@ ftenet_generic_connection_t *FTENET_Datagram_EstablishConnection(qboolean isserv
 }
 
 #ifdef TCPCONNECT
-typedef struct ftenet_tcpconnect_stream_s {
+typedef struct ftenet_tcp_stream_s {
 	vfsfile_t *clientstream;
 	int inlen;
 	int outlen;
 
+#ifdef HAVE_EPOLL
+	epollctx_t epoll;	//so our epoll dispatcher knows which connection/stream
+	struct ftenet_tcp_connection_s *con;
+#endif
+
 	enum
 	{
 		TCPC_UNKNOWN,		//waiting to see what they send us.
+		//TCPC_QTV,			//included for completeness. qtv handles the sockets itself, we just parse initial handshake and then pass it over (as either a tcp or tls vfsfile_t)
 		TCPC_QIZMO,			//'qizmo\n' handshake, followed by packets prefixed with a 16bit packet length.
 #ifdef HAVE_HTTPSV
 		TCPC_WEBSOCKETU,	//utf-8 encoded data.
 		TCPC_WEBSOCKETB,	//binary encoded data (subprotocol = 'binary')
 		TCPC_WEBSOCKETNQ,	//raw nq msg buffers with no encapsulation or handshake
 		TCPC_HTTPCLIENT,	//we're sending a file to this victim.
+		TCPC_WEBRTC_HOST,	//for brokering webrtc connections, doesn't carry any actual game data itself.
 		TCPC_WEBRTC_CLIENT,	//for brokering webrtc connections, doesn't carry any actual game data itself.
-		TCPC_WEBRTC_HOST	//for brokering webrtc connections, doesn't carry any actual game data itself.
 #endif
 	} clienttype;
 	qbyte inbuffer[MAX_OVERALLMSGLEN];
@@ -3891,7 +4004,7 @@ typedef struct ftenet_tcpconnect_stream_s {
 	float timeouttime;
 	qboolean pinging;
 	netadr_t remoteaddr;
-	struct ftenet_tcpconnect_stream_s *next;
+	struct ftenet_tcp_stream_s *next;
 
 	SOCKET socketnum;	//for select. not otherwise used.
 
@@ -3914,15 +4027,15 @@ typedef struct ftenet_tcpconnect_stream_s {
 #endif
 	} webrtc;
 #endif
-} ftenet_tcpconnect_stream_t;
+} ftenet_tcp_stream_t;
 
-typedef struct {
+typedef struct ftenet_tcp_connection_s {
 	ftenet_generic_connection_t generic;
 	qboolean tls;
 
 	int active;
-	ftenet_tcpconnect_stream_t *tcpstreams;
-} ftenet_tcpconnect_connection_t;
+	ftenet_tcp_stream_t *tcpstreams;
+} ftenet_tcp_connection_t;
 
 void tobase64(unsigned char *out, int outlen, unsigned char *in, int inlen)
 {
@@ -3959,7 +4072,7 @@ void tobase64(unsigned char *out, int outlen, unsigned char *in, int inlen)
 	*out = 0;
 }
 
-neterr_t FTENET_TCPConnect_WebSocket_Splurge(ftenet_tcpconnect_stream_t *st, enum websocketpackettype_e packettype, const qbyte *data, unsigned int length)
+neterr_t FTENET_TCP_WebSocket_Splurge(ftenet_tcp_stream_t *st, enum websocketpackettype_e packettype, const qbyte *data, unsigned int length)
 {
 	/*as a server, we don't need the mask stuff*/
 	unsigned short ctrl = 0x8000 | (packettype<<8);
@@ -4067,7 +4180,7 @@ typedef char httparg_t[64];
 #include "resource.h"
 #endif
 void SV_UserCmdMVDList_HTML (vfsfile_t *pipe);
-qboolean FTENET_TCPConnect_HTTPResponse(ftenet_tcpconnect_stream_t *st, httparg_t arg[WCATTR_COUNT], qboolean allowgzip)
+qboolean FTENET_TCP_HTTPResponse(ftenet_tcp_stream_t *st, httparg_t arg[WCATTR_COUNT], qboolean allowgzip)
 {
 	char adr[256];
 	int i;
@@ -4489,11 +4602,11 @@ qboolean FTENET_TCPConnect_HTTPResponse(ftenet_tcpconnect_stream_t *st, httparg_
 	return true;
 }
 
-void FTENET_TCPConnect_WebRTCServerAssigned(ftenet_tcpconnect_stream_t *list, ftenet_tcpconnect_stream_t *client, ftenet_tcpconnect_stream_t *server)
+void FTENET_TCP_WebRTCServerAssigned(ftenet_tcp_stream_t *list, ftenet_tcp_stream_t *client, ftenet_tcp_stream_t *server)
 {
 	qbyte buffer[3];
 	int trynext = 0;
-	ftenet_tcpconnect_stream_t *o;
+	ftenet_tcp_stream_t *o;
 	if (client->webrtc.clientnum < 0)
 		client->webrtc.clientnum = 0;
 	for(;;)
@@ -4515,18 +4628,18 @@ void FTENET_TCPConnect_WebRTCServerAssigned(ftenet_tcpconnect_stream_t *list, ft
 		buffer[2] = (client->webrtc.clientnum>>8)&0xff;
 //		buffer[3] = (client->webrtc.clientnum>>16)&0xff;
 //		buffer[4] = (client->webrtc.clientnum>>24)&0xff;
-		FTENET_TCPConnect_WebSocket_Splurge(server, WS_PACKETTYPE_BINARYFRAME, buffer, 3);
+		FTENET_TCP_WebSocket_Splurge(server, WS_PACKETTYPE_BINARYFRAME, buffer, 3);
 
 		buffer[0] = ICEMSG_NEWPEER;
 		buffer[1] = 0xff;
 		buffer[2] = 0xff;
 //		buffer[3] = 0xff;
 //		buffer[4] = 0xff;
-		FTENET_TCPConnect_WebSocket_Splurge(client, WS_PACKETTYPE_BINARYFRAME, buffer, 3);
+		FTENET_TCP_WebSocket_Splurge(client, WS_PACKETTYPE_BINARYFRAME, buffer, 3);
 	}
 }
 
-qboolean FTENET_TCP_ParseHTTPRequest(ftenet_tcpconnect_connection_t *con, ftenet_tcpconnect_stream_t *st)
+qboolean FTENET_TCP_ParseHTTPRequest(ftenet_tcp_connection_t *con, ftenet_tcp_stream_t *st)
 {
 	char *resp;
 	char adr[256];
@@ -4539,6 +4652,7 @@ qboolean FTENET_TCP_ParseHTTPRequest(ftenet_tcpconnect_connection_t *con, ftenet
 	qboolean acceptsgzip = false;
 	qboolean sendingweirdness = false;
 	char arg[WCATTR_COUNT][64];
+
 
 	if (!net_enable_http.ival && !net_enable_websockets.ival && !net_enable_rtcbroker.ival)
 	{
@@ -4721,7 +4835,7 @@ qboolean FTENET_TCP_ParseHTTPRequest(ftenet_tcpconnect_connection_t *con, ftenet
 
 	if (!headerscomplete)
 	{
-		Con_Printf("http header parsing failed\n");
+		Con_DPrintf("http header parsing failed\n");
 		return false;	//the caller said it was complete! something's fucked if we're here
 	}
 
@@ -4761,8 +4875,32 @@ qboolean FTENET_TCP_ParseHTTPRequest(ftenet_tcpconnect_connection_t *con, ftenet
 	//other fields will be ignored.
 	if (!stricmp(arg[WCATTR_UPGRADE], "websocket") && (!stricmp(arg[WCATTR_CONNECTION], "Upgrade") || !stricmp(arg[WCATTR_CONNECTION], "keep-alive, Upgrade")))
 	{
-		if (!net_enable_websockets.ival && !net_enable_rtcbroker.ival)
-			return false;
+		int cltype;
+		//the choice of protocol affects the type of response that we give rather than anything mystic
+		if (!strcmp(arg[WCATTR_WSPROTO], "quake"))
+			cltype = TCPC_WEBSOCKETNQ;	//raw nq data, all reliable, for compat with webquake
+		else if (!strcmp(arg[WCATTR_WSPROTO], "rtc_client"))
+			cltype = TCPC_WEBRTC_CLIENT;//not a real client.
+		else if (!strcmp(arg[WCATTR_WSPROTO], "rtc_host"))
+			cltype = TCPC_WEBRTC_HOST;//not a real client, but a competing server! oh noes!
+		else if (!strcmp(arg[WCATTR_WSPROTO], "binary"))
+			cltype = TCPC_WEBSOCKETB;	//emscripten's networking libraries insists on 'binary', but we stopped using that a while back because its hostname->ip stuff was flawed.
+		else if (!strcmp(arg[WCATTR_WSPROTO], "fteqw"))
+			cltype = TCPC_WEBSOCKETB;	//specific custom protocol name to avoid ambiguities.
+		else
+			cltype = TCPC_WEBSOCKETU;	//nacl supports only utf-8 encoded data, at least at the time I implemented it.
+
+		if (cltype == TCPC_WEBRTC_CLIENT||cltype==TCPC_WEBRTC_HOST)
+		{
+			if (!net_enable_rtcbroker.ival)
+				return false;
+		}
+		else	//TCPC_WEBSOCKETNQ, TCPC_WEBSOCKETB, TCPC_WEBSOCKETU
+		{
+			if (!net_enable_websockets.ival)
+				return false;
+		}
+
 		if (websocketver != 13)
 		{
 			Con_DPrintf("Outdated websocket request for \"%s\" from \"%s\". got version %i, expected version 13\n", arg[WCATTR_URL], NET_AdrToString (adr, sizeof(adr), &st->remoteaddr), websocketver);
@@ -4783,31 +4921,15 @@ qboolean FTENET_TCP_ParseHTTPRequest(ftenet_tcpconnect_connection_t *con, ftenet
 			char *protoname = "";
 
 			blurgh = va("%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", arg[WCATTR_WSKEY]);
-			tobase64(acceptkey, sizeof(acceptkey), sha1digest, SHA1(sha1digest, sizeof(sha1digest), blurgh, strlen(blurgh)));
+			tobase64(acceptkey, sizeof(acceptkey), sha1digest, CalcHash(&hash_sha1, sha1digest, sizeof(sha1digest), blurgh, strlen(blurgh)));
 
 			if (st->remoteaddr.prot == NP_TLS)
 				st->remoteaddr.prot = NP_WSS;
 			else
 				st->remoteaddr.prot = NP_WS;
 
-			protoname = va("Sec-WebSocket-Protocol: %s\r\n", arg[WCATTR_WSPROTO]);
-
-			//the choice of protocol affects the type of response that we give rather than anything mystic
-			if (!strcmp(arg[WCATTR_WSPROTO], "quake"))
-				st->clienttype = TCPC_WEBSOCKETNQ;	//raw nq data, all reliable, for compat with webquake
-			else if (!strcmp(arg[WCATTR_WSPROTO], "rtc_client"))
-				st->clienttype = TCPC_WEBRTC_CLIENT;//not a real client.
-			else if (!strcmp(arg[WCATTR_WSPROTO], "rtc_host"))
-				st->clienttype = TCPC_WEBRTC_HOST;//not a real client, but a competing server! oh noes!
-			else if (!strcmp(arg[WCATTR_WSPROTO], "binary"))
-				st->clienttype = TCPC_WEBSOCKETB;	//emscripten's networking libraries insists on 'binary', but we stopped using that a while back because its hostname->ip stuff was flawed.
-			else if (!strcmp(arg[WCATTR_WSPROTO], "fteqw"))
-				st->clienttype = TCPC_WEBSOCKETB;	//specific custom protocol name to avoid ambiguities.
-			else
-			{
-				st->clienttype = TCPC_WEBSOCKETU;	//nacl supports only utf-8 encoded data, at least at the time I implemented it.
-				protoname = "";
-			}
+			protoname = (cltype==TCPC_WEBSOCKETU)?"":va("Sec-WebSocket-Protocol: %s\r\n", arg[WCATTR_WSPROTO]);
+			st->clienttype = cltype;
 
 			switch(st->clienttype)
 			{
@@ -4859,11 +4981,11 @@ qboolean FTENET_TCP_ParseHTTPRequest(ftenet_tcpconnect_connection_t *con, ftenet
 				net_message_buffer[0] = ICEMSG_NEWPEER;
 				net_message_buffer[1] = 0xff;
 				net_message_buffer[2] = 0xff;
-				FTENET_TCPConnect_WebSocket_Splurge(st, WS_PACKETTYPE_BINARYFRAME, net_message_buffer, 3);
+				FTENET_TCP_WebSocket_Splurge(st, WS_PACKETTYPE_BINARYFRAME, net_message_buffer, 3);
 			}
 			else if (st->clienttype == TCPC_WEBRTC_HOST || st->clienttype == TCPC_WEBRTC_CLIENT)
 			{
-				ftenet_tcpconnect_stream_t *o;
+				ftenet_tcp_stream_t *o;
 				if (st->clienttype == TCPC_WEBRTC_HOST)
 				{	//if its a server, then let it know its final resource name
 					char *idstart = strchr(st->webrtc.resource, '/');
@@ -4891,13 +5013,13 @@ qboolean FTENET_TCP_ParseHTTPRequest(ftenet_tcpconnect_connection_t *con, ftenet
 					net_message_buffer[1] = 0xff;
 					net_message_buffer[2] = 0xff;
 					strcpy(net_message_buffer+3, st->webrtc.resource);
-					FTENET_TCPConnect_WebSocket_Splurge(st, WS_PACKETTYPE_BINARYFRAME, net_message_buffer, strlen(net_message_buffer));
+					FTENET_TCP_WebSocket_Splurge(st, WS_PACKETTYPE_BINARYFRAME, net_message_buffer, strlen(net_message_buffer));
 
 					//if we have (inactive) clients connected, assign them (and let them know that they need to start handshaking)
 					for (o = con->tcpstreams; o; o = o->next)
 					{
 						if (o->clienttype == TCPC_WEBRTC_CLIENT && !strcmp(st->webrtc.resource, o->webrtc.resource))
-							FTENET_TCPConnect_WebRTCServerAssigned(con->tcpstreams, o, st);
+							FTENET_TCP_WebRTCServerAssigned(con->tcpstreams, o, st);
 					}
 
 #ifdef SV_MASTER
@@ -4912,7 +5034,7 @@ qboolean FTENET_TCP_ParseHTTPRequest(ftenet_tcpconnect_connection_t *con, ftenet
 							break;
 					}
 					//and assign it to this client
-					FTENET_TCPConnect_WebRTCServerAssigned(con->tcpstreams, st, o);
+					FTENET_TCP_WebRTCServerAssigned(con->tcpstreams, st, o);
 				}
 			}
 
@@ -4925,10 +5047,12 @@ qboolean FTENET_TCP_ParseHTTPRequest(ftenet_tcpconnect_connection_t *con, ftenet
 				net_message.packing = SZ_RAWBYTES;
 				net_message.currentbit = 0;
 				net_from = st->remoteaddr;
+				net_from.connum = con->generic.connum;
 				MSG_WriteLong(&net_message, LongSwap(NETFLAG_CTL | (strlen(NQ_NETCHAN_GAMENAME)+7)));
 				MSG_WriteByte(&net_message, CCREQ_CONNECT);
 				MSG_WriteString(&net_message, NQ_NETCHAN_GAMENAME);
 				MSG_WriteByte(&net_message, NQ_NETCHAN_VERSION);
+				con->generic.owner->ReadGamePacket();
 			}
 			return true;
 		}
@@ -4937,7 +5061,7 @@ qboolean FTENET_TCP_ParseHTTPRequest(ftenet_tcpconnect_connection_t *con, ftenet
 	{
 		if (!net_enable_http.ival)
 			return false;
-		return FTENET_TCPConnect_HTTPResponse(st, arg, acceptsgzip);
+		return FTENET_TCP_HTTPResponse(st, arg, acceptsgzip);
 	}
 }
 #endif
@@ -4952,10 +5076,10 @@ static int QDECL TLSPromoteRead (struct vfsfile_s *file, void *buffer, int bytes
 	return bytestoread;
 }
 #endif
-void FTENET_TCPConnect_PrintStatus(ftenet_generic_connection_t *gcon)
+void FTENET_TCP_PrintStatus(ftenet_generic_connection_t *gcon)
 {
-	ftenet_tcpconnect_connection_t *con = (ftenet_tcpconnect_connection_t*)gcon;
-	ftenet_tcpconnect_stream_t *st;
+	ftenet_tcp_connection_t *con = (ftenet_tcp_connection_t*)gcon;
+	ftenet_tcp_stream_t *st;
 	char adr[MAX_QPATH];
 	if (!con->tcpstreams)
 		return;
@@ -4989,23 +5113,619 @@ void FTENET_TCPConnect_PrintStatus(ftenet_generic_connection_t *gcon)
 		}
 	}
 }
-qboolean FTENET_TCPConnect_GetPacket(ftenet_generic_connection_t *gcon)
+
+static qboolean FTENET_TCP_KillStream(ftenet_tcp_connection_t *con, ftenet_tcp_stream_t *st)
+{	//some sort of error. kill the connection info (will be cleaned up later)
+#ifdef HAVE_EPOLL
+	if (st->socketnum != INVALID_SOCKET)
+		epoll_ctl(epoll_fd, EPOLL_CTL_DEL, st->socketnum, NULL);
+#endif
+	if (st->clientstream)
+		VFS_CLOSE(st->clientstream);
+	st->clientstream = NULL;
+
+	if (st->dlfile)
+		VFS_CLOSE(st->dlfile);
+
+#ifdef HAVE_HTTPSV
+	if (st->clienttype == TCPC_WEBRTC_CLIENT)
+	{	//notify its server
+		ftenet_tcp_stream_t *o;
+		for (o = con->tcpstreams; o; o = o->next)
+		{
+			if (o->clienttype == TCPC_WEBRTC_HOST && !strcmp(o->webrtc.resource, st->webrtc.resource))
+			{
+				qbyte msg[3];
+				msg[0] = ICEMSG_PEERDROP;
+				msg[1] = (st->webrtc.clientnum>>0)&0xff;
+				msg[2] = (st->webrtc.clientnum>>8)&0xff;
+
+				FTENET_TCP_WebSocket_Splurge(o, WS_PACKETTYPE_BINARYFRAME, msg, 3);
+				break;	//should only be one.
+			}
+		}
+	}
+	else if (st->clienttype == TCPC_WEBRTC_HOST)
+	{	//we're brokering a client+server. all messages should be unicasts between a client and its host, matched by resource.
+		ftenet_tcp_stream_t *o;
+		for (o = con->tcpstreams; o; o = o->next)
+		{
+			if (o->clienttype == TCPC_WEBRTC_CLIENT && !strcmp(o->webrtc.resource, st->webrtc.resource))
+			{
+				qbyte msg[3];
+				msg[0] = ICEMSG_PEERDROP;
+				msg[1] = (st->webrtc.clientnum>>0)&0xff;
+				msg[2] = (st->webrtc.clientnum>>8)&0xff;
+
+				FTENET_TCP_WebSocket_Splurge(o, WS_PACKETTYPE_BINARYFRAME, msg, 3);
+			}
+		}
+#ifdef SV_MASTER
+		SVM_RemoveBrokerGame(st->webrtc.resource);
+#endif
+	}
+#endif
+
+	return false;
+}
+static void FTENET_TCP_Flush(ftenet_tcp_connection_t *con, ftenet_tcp_stream_t *st)
 {
-	ftenet_tcpconnect_connection_t *con = (ftenet_tcpconnect_connection_t*)gcon;
+	//write after the reads, for slightly faster pings
+	if (st->outlen && st->clientstream)
+	{	/*try and flush any old outgoing data*/
+		int done;
+		done = VFS_WRITE(st->clientstream, st->outbuffer, st->outlen);
+		if (done > 0)
+		{
+			memmove(st->outbuffer, st->outbuffer + done, st->outlen - done);
+			st->outlen -= done;
+			st->timeouttime = Sys_DoubleTime() + 30;
+		}
+		/*else if (done == 0)
+		{
+			Con_DPrintf ("tcp peer %s closed connection\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
+			st->outlen = 0;
+		}*/
+	}
+}
+//returns true if we read a game packet (should re-call in this case.
+static enum{
+	FTETCP_DONE, FTETCP_KILL, FTETCP_RETRY
+} FTENET_TCP_ReadStream(ftenet_tcp_connection_t *con, ftenet_tcp_stream_t *st)
+{
+	char		adr[MAX_ADR_SIZE];
+	if (st->inlen < sizeof(st->inbuffer)-1)
+	{
+		int ret = VFS_READ(st->clientstream, st->inbuffer+st->inlen, sizeof(st->inbuffer)-1-st->inlen);
+		if (ret < 0)
+		{
+			st->outlen = 0;	//don't flush, no point.
+			Con_DPrintf ("tcp peer %s closed connection\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
+			return FTETCP_KILL;
+		}
+		st->inlen += ret;
+	}
+
+	switch(st->clienttype)
+	{
+	case TCPC_UNKNOWN:
+		if (st->inlen < 6)
+			return FTETCP_DONE;
+
+		//so TLS apparently uses a first byte that is always < 64. which is handy to know.
+		if (con->generic.islisten && st->remoteaddr.prot == NP_STREAM && st->clientstream && !((st->inbuffer[0] >= 'a' && st->inbuffer[0] <= 'z') || (st->inbuffer[0] >= 'A' && st->inbuffer[0] <= 'Z')))
+		{
+#if defined(HAVE_SSL) && (defined(HAVE_SERVER) || defined(HAVE_HTTPSV))	//if its non-ascii, then try and upgrade the connection to tls
+			if (net_enable_tls.ival)
+			{
+				//copy off our buffer so we can read it into the tls stream's buffer instead.
+				char tmpbuf[256];
+				vfsfile_t *stream = st->clientstream;
+				int (QDECL *realread) (struct vfsfile_s *file, void *buffer, int bytestoread);
+				if (st->inlen > sizeof(net_message_buffer))
+					return FTETCP_KILL;	//would cause data loss...
+				realread = stream->ReadBytes;
+				stream->ReadBytes = TLSPromoteRead;
+				memcpy(net_message_buffer, st->inbuffer, st->inlen);
+				net_message.cursize = st->inlen;
+				//wrap the stream now
+				st->clientstream = FS_OpenSSL(NULL, st->clientstream, true);
+				st->remoteaddr.prot = NP_TLS;
+				if (st->clientstream)
+				{
+					//try and reclaim it all
+					st->inlen = VFS_READ(st->clientstream, st->inbuffer, sizeof(st->inbuffer)-1);
+					if (st->inlen < 0)
+					{	//okay, something failed...
+						st->inlen = 0;
+						return FTETCP_KILL;
+					}
+					else
+					{
+						//make sure we actually read from the proper stream again
+						stream->ReadBytes = realread;
+					}
+				}
+				if (!st->clientstream || net_message.cursize)
+					return FTETCP_KILL;	//failure, or it didn't read all the data that we buffered for it (error instead of forgetting it).
+				if (developer.ival)
+					Con_Printf("promoted peer to tls: %s\n", NET_AdrToString(tmpbuf, sizeof(tmpbuf), &st->remoteaddr));
+				return FTETCP_RETRY;	//might be a usable packet in there that we now need to make sense of.
+			}
+#endif
+			return FTETCP_KILL;
+		}
+
+		//check if its a qizmo connection (or rather a general qw-over-tcp connection)
+		if (st->inlen >= 6 && !strncmp(st->inbuffer, "qizmo\n", 6))
+		{
+			if (
+#ifdef HAVE_SERVER
+					net_enable_qizmo.ival ||
+#endif
+					!con->generic.islisten)
+			{
+				memmove(st->inbuffer, st->inbuffer+6, st->inlen - (6));
+				st->inlen -= 6;
+				st->clienttype = TCPC_QIZMO;
+				if (con->generic.islisten)
+				{
+					//send the qizmo handshake response.
+					if (VFS_WRITE(st->clientstream, "qizmo\n", 6) != 6)
+						return FTETCP_KILL;	//unable to write for some reason.
+				}
+				return FTETCP_DONE;
+			}
+			return FTETCP_KILL;	//not enabled.
+		}
+
+		//check if we have some http-like protocol with a header that ends with two trailing new lines (carrage returns optional, at least here)
+		//(must have a full request header, meaning double-lineendings somewhere)
+		if (con->generic.islisten)// && !strncmp(st->inbuffer, "GET ", 4))
+		{
+			//qtv or http request header. these terminate with a blank line.
+			int i = 0;
+			qboolean headerscomplete = false;
+
+			for (; i < st->inlen; i++)
+			{
+				//we're at the start of a line, so if its a \r\n or a \n then its a blank line, and the headers are complete
+				if ((i+1 < st->inlen && st->inbuffer[i] == '\r' && st->inbuffer[i+1] == '\n') ||
+					(i < st->inlen && st->inbuffer[i] == '\n'))
+				{
+					if (st->inbuffer[i] == '\n')
+						i++;
+					else
+						i+=2;
+					headerscomplete = true;
+					break;
+				}
+
+				for (; i < st->inlen && st->inbuffer[i] != '\n'; i++)
+					;
+			}
+
+			if (headerscomplete)
+			{
+#if defined(SUBSERVERS) && defined(HAVE_SERVER)
+				//this is a new subserver node...
+				if (!Q_strncasecmp(st->inbuffer, "NODE", 4))
+				{
+					char tmpbuf[256];
+#ifdef HAVE_EPOLL
+					//the tcp connection will be handled elsewhere.
+					//make sure we don't get tcp-handler wakeups from this connection.
+					epoll_ctl(epoll_fd, EPOLL_CTL_DEL, st->socketnum, NULL);
+					st->socketnum = INVALID_SOCKET;
+					st->epoll.Polled = NULL;
+#endif
+					//now try to pass it over
+					MSV_NewNetworkedNode(st->clientstream, st->inbuffer, st->inbuffer+i, st->inlen-i, NET_AdrToString(tmpbuf, sizeof(tmpbuf), &st->remoteaddr));
+					st->clientstream = NULL;	//qtv code took it.
+					return FTETCP_KILL;
+				}
+				else
+#endif
+#ifdef MVD_RECORDING
+				//for QTV connections, we just need the method and a blank line. our qtv parser will parse the actual headers.
+				if (!Q_strncasecmp(st->inbuffer, "QTV", 3))
+				{	//FIXME: make sure its removed from epoll and not killed prematurely
+					int r = -2;
+					const char *desc;
+					if (net_enable_qtv.ival == 2 && NET_ClassifyAddress(&st->remoteaddr, &desc) > ASCOPE_HOST)
+						;
+					else if (net_enable_qtv.ival)
+						r = SV_MVD_GotQTVRequest(st->clientstream, st->inbuffer, st->inbuffer+st->inlen, &st->qtvstate);
+					i = st->inlen;
+					memmove(st->inbuffer, st->inbuffer+i, st->inlen - (i));
+					st->inlen -= i;
+					switch(r)
+					{
+					case -2:
+						VFS_PUTS(st->clientstream, "QTVSV 1\n" "PERROR: net_enable_qtv is disabled on this server\n\n");
+						return FTETCP_KILL;
+					case -1:	//error
+						return FTETCP_KILL;
+					case 0:		//retry
+						return FTETCP_DONE;
+					case 1:		//accepted
+#ifdef HAVE_EPOLL
+						//the tcp connection will now be handled by the dedicated qtv code rather than us.
+						//make sure we don't get tcp-handler wakeups from this connection.
+						epoll_ctl(epoll_fd, EPOLL_CTL_DEL, st->socketnum, NULL);
+						st->socketnum = INVALID_SOCKET;
+						st->epoll.Polled = NULL;
+#endif
+						st->clientstream = NULL;	//qtv code took it.
+						return FTETCP_KILL;
+					}
+				}
+				else
+#endif
+				{
+#ifdef HAVE_HTTPSV
+					if (FTENET_TCP_ParseHTTPRequest(con, st))
+						return FTETCP_RETRY;
+#else
+					Con_DPrintf ("Unknown TCP handshake from %s\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
+#endif
+					return FTETCP_KILL;
+				}
+			}
+			else
+			{
+				//they splurged too much data and we don't even know what they were
+				//either way we're expecting a request header in our buffer that can never be completed
+				if (st->inlen >= sizeof(st->inbuffer)-1)
+					return FTETCP_KILL;
+			}
+		}
+
+		return FTETCP_DONE;
+#ifdef HAVE_HTTPSV
+	case TCPC_HTTPCLIENT:
+		/*try and keep it flushed*/
+		FTENET_TCP_Flush(con, st);
+		if (!st->outlen)
+		{
+			if (st->dlfile)
+				st->outlen = VFS_READ(st->dlfile, st->outbuffer, sizeof(st->outbuffer));
+			else
+				st->outlen = 0;
+			if (st->outlen <= 0)
+			{
+				st->outlen = 0;
+				if (st->dlfile)
+					VFS_CLOSE(st->dlfile);
+				st->dlfile = NULL;
+				st->clienttype = TCPC_UNKNOWN;	//wait for the next request (could potentially be a websocket connection)
+				Con_DPrintf ("Outgoing file transfer complete\n");
+				if (st->httpstate.connection_close)
+					return FTETCP_KILL;
+			}
+			FTENET_TCP_Flush(con, st);
+		}
+		return FTETCP_DONE;
+#endif
+	case TCPC_QIZMO:
+		if (st->inlen < 2)
+			return FTETCP_DONE;
+
+		net_message.cursize = BigShort(*(short*)st->inbuffer);
+		if (net_message.cursize >= sizeof(net_message_buffer) )
+		{
+			Con_TPrintf ("Warning:  Oversize packet from %s\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
+			return FTETCP_KILL;
+		}
+		if (net_message.cursize+2 > st->inlen)
+		{	//not enough buffered to read a packet out of it.
+			return FTETCP_DONE;
+		}
+
+		memcpy(net_message_buffer, st->inbuffer+2, net_message.cursize);
+		memmove(st->inbuffer, st->inbuffer+net_message.cursize+2, st->inlen - (net_message.cursize+2));
+		st->inlen -= net_message.cursize+2;
+
+		net_message.packing = SZ_RAWBYTES;
+		net_message.currentbit = 0;
+		net_from = st->remoteaddr;
+		net_from.connum = con->generic.connum;
+
+		con->generic.owner->ReadGamePacket();
+		return FTETCP_RETRY;
+#ifdef HAVE_HTTPSV
+	case TCPC_WEBSOCKETU:
+	case TCPC_WEBSOCKETB:
+	case TCPC_WEBSOCKETNQ:
+	case TCPC_WEBRTC_HOST:
+	case TCPC_WEBRTC_CLIENT:
+		while (st->inlen >= 2)
+		{
+			unsigned short ctrl = ((unsigned char*)st->inbuffer)[0]<<8 | ((unsigned char*)st->inbuffer)[1];
+			unsigned long paylen;
+			unsigned int payoffs = 2;
+			unsigned int mask = 0;
+//			st->inbuffer[st->inlen]=0;
+			if (ctrl & 0x7000)
+			{
+				Con_Printf ("%s: reserved bits set\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
+				return FTETCP_KILL;
+			}
+			if ((ctrl & 0x7f) == 127)
+			{
+				quint64_t ullpaylen;
+				//as a payload is not allowed to be encoded as too large a type, and quakeworld never used packets larger than 1450 bytes anyway, this code isn't needed (65k is the max even without this)
+				if (sizeof(ullpaylen) < 8)
+				{
+					Con_Printf ("%s: payload frame too large\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
+					return FTETCP_KILL;
+				}
+				else
+				{
+					if (payoffs + 8 > st->inlen)
+						break;
+					ullpaylen =
+						(quint64_t)((unsigned char*)st->inbuffer)[payoffs+0]<<56u |
+						(quint64_t)((unsigned char*)st->inbuffer)[payoffs+1]<<48u |
+						(quint64_t)((unsigned char*)st->inbuffer)[payoffs+2]<<40u |
+						(quint64_t)((unsigned char*)st->inbuffer)[payoffs+3]<<32u |
+						(quint64_t)((unsigned char*)st->inbuffer)[payoffs+4]<<24u |
+						(quint64_t)((unsigned char*)st->inbuffer)[payoffs+5]<<16u |
+						(quint64_t)((unsigned char*)st->inbuffer)[payoffs+6]<< 8u |
+						(quint64_t)((unsigned char*)st->inbuffer)[payoffs+7]<< 0u;
+					if (ullpaylen < 0x10000)
+					{
+						Con_Printf ("%s: payload size (%"PRIu64") encoded badly\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr), ullpaylen);
+						return FTETCP_KILL;
+					}
+					if (ullpaylen > 0x40000)
+					{
+						Con_Printf ("%s: payload size (%"PRIu64") is abusive\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr), ullpaylen);
+						return FTETCP_KILL;
+					}
+					paylen = ullpaylen;
+					payoffs += 8;
+				}
+			}
+			else if ((ctrl & 0x7f) == 126)
+			{
+				if (payoffs + 2 > st->inlen)
+					break;
+				paylen =
+					((unsigned char*)st->inbuffer)[payoffs+0]<<8 |
+					((unsigned char*)st->inbuffer)[payoffs+1]<<0;
+				if (paylen < 126)
+				{
+					Con_Printf ("%s: payload size encoded badly\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
+					return FTETCP_KILL;
+				}
+				payoffs += 2;
+			}
+			else
+			{
+				paylen = ctrl & 0x7f;
+			}
+			if (ctrl & 0x80)
+			{
+				if (payoffs + 4 > st->inlen)
+					break;
+				/*this might read data that isn't set yet, but should be safe*/
+				((unsigned char*)&mask)[0] = ((unsigned char*)st->inbuffer)[payoffs+0];
+				((unsigned char*)&mask)[1] = ((unsigned char*)st->inbuffer)[payoffs+1];
+				((unsigned char*)&mask)[2] = ((unsigned char*)st->inbuffer)[payoffs+2];
+				((unsigned char*)&mask)[3] = ((unsigned char*)st->inbuffer)[payoffs+3];
+				payoffs += 4;
+			}
+			/*if there isn't space, try again next time around*/
+			if (payoffs + paylen > st->inlen)
+			{
+				if (payoffs + paylen >= sizeof(st->inbuffer)-1)
+				{
+					Con_TPrintf ("Warning:  Oversize packet from %s\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
+					return FTETCP_KILL;
+				}
+				break;
+			}
+
+			if (mask)
+			{
+				int i;
+				for (i = 0; i < paylen; i++)
+				{
+					((unsigned char*)st->inbuffer)[i + payoffs] ^= ((unsigned char*)&mask)[i&3];
+				}
+			}
+
+			net_message.cursize = 0;
+
+			switch((ctrl>>8) & 0xf)
+			{
+			case WS_PACKETTYPE_CONTINUATION:	/*continuation*/
+				Con_Printf ("websocket continuation frame from %s\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
+				return FTETCP_KILL;	//can't handle these.
+			case WS_PACKETTYPE_TEXTFRAME:	/*text frame*/
+//				Con_Printf ("websocket text frame from %s\n", NET_AdrToString (adr, sizeof(adr), st->remoteaddr));
+				{
+					/*text frames are pure utf-8 chars, no dodgy encodings or anything, all pre-checked...
+					  except we're trying to send binary data.
+					  so we need to unmask things (char 0 is encoded as 0x100 - truncate it)
+					*/
+					unsigned char *in = st->inbuffer+payoffs, *out = net_message_buffer;
+					int len = paylen;
+					while(len && out < net_message_buffer + sizeof(net_message_buffer))
+					{
+						if ((*in & 0xe0)==0xc0 && len > 1)
+						{
+							*out = ((in[0] & 0x1f)<<6) | ((in[1] & 0x3f)<<0);
+							in+=2;
+							len -= 2;
+						}
+						else if (*in & 0x80)
+						{
+							*out = '?';
+							in++;
+							len -= 1;
+						}
+						else
+						{
+							*out = in[0];
+							in++;
+							len -= 1;
+						}
+						out++;
+					}
+					net_message.cursize = out - net_message_buffer;
+				}
+				break;
+			case WS_PACKETTYPE_BINARYFRAME: /*binary frame*/
+//				Con_Printf ("websocket binary frame from %s\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
+				net_message.cursize = paylen;
+				if (net_message.cursize+8 >= sizeof(net_message_buffer) )
+				{
+					Con_TPrintf ("Warning:  Oversize packet from %s\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
+					return FTETCP_KILL;
+				}
+#ifdef SUPPORT_RTC_ICE
+				if (st->clienttype == TCPC_WEBRTC_CLIENT && !*st->webrtc.resource)
+				{	//this is a client that's connected directly to us via webrtc.
+					//FIXME: we don't support dtls, so browers will bitch about our sdp.
+					if (paylen+1 < sizeof(net_message_buffer))
+					{
+						net_message_buffer[paylen] = 0;
+						memcpy(net_message_buffer, st->inbuffer+payoffs, paylen);
+
+						if (!st->webrtc.ice)	//if the ice state isn't established yet, do that now.
+							st->webrtc.ice = iceapi.ICE_Create(NULL, "test", "rtc://foo", ICEM_ICE, ICEP_QWSERVER);
+						iceapi.ICE_Set(st->webrtc.ice, "sdp", net_message_buffer);
+
+						if (iceapi.ICE_Get(st->webrtc.ice, "sdp", net_message_buffer, sizeof(net_message_buffer)))
+							FTENET_TCP_WebSocket_Splurge(st, WS_PACKETTYPE_BINARYFRAME, net_message_buffer, strlen(net_message_buffer));
+					}
+					net_message.cursize = 0;
+				}
+				else
+#endif
+					 if (st->clienttype == TCPC_WEBRTC_HOST && st->inbuffer[payoffs+0] == ICEMSG_SERVERINFO)
+				{
+#ifdef SV_MASTER
+					qbyte old = st->inbuffer[payoffs+paylen];
+					st->inbuffer[payoffs+paylen] = 0;	//make sure its null terminated...
+					SVM_AddBrokerGame(st->webrtc.resource, st->inbuffer+payoffs+3);
+					st->inbuffer[payoffs+paylen] = old;
+#endif
+				}
+				else if ((st->clienttype == TCPC_WEBRTC_CLIENT || st->clienttype == TCPC_WEBRTC_HOST) && paylen >= 3)
+				{	//we're brokering a client+server. all messages should be unicasts between a client and its host, matched by resource.
+					ftenet_tcp_stream_t *o;
+					short clnum = (st->inbuffer[payoffs+1]<<0)|(st->inbuffer[payoffs+2]<<8);
+					int type = (st->clienttype != TCPC_WEBRTC_CLIENT)?TCPC_WEBRTC_CLIENT:TCPC_WEBRTC_HOST;
+					for (o = con->tcpstreams; o; o = o->next)
+					{
+						if (o->clienttype == type && clnum == o->webrtc.clientnum && !strcmp(o->webrtc.resource, st->webrtc.resource))
+						{
+							st->inbuffer[payoffs+1] = (st->webrtc.clientnum>>0)&0xff;
+							st->inbuffer[payoffs+2] = (st->webrtc.clientnum>>8)&0xff;
+							FTENET_TCP_WebSocket_Splurge(o, WS_PACKETTYPE_BINARYFRAME, st->inbuffer+payoffs, paylen);
+							break;
+						}
+					}
+					if (!o)
+						Con_DPrintf("Unable to relay\n");
+					net_message.cursize = 0;
+				}
+				else
+#ifdef NQPROT
+					if (st->clienttype == TCPC_WEBSOCKETNQ)
+				{	//hack in an 8-byte header
+					payoffs+=1;
+					paylen-=1;
+					memcpy(net_message_buffer+8, st->inbuffer+payoffs, paylen);
+					net_message.cursize=paylen+8;
+					((int*)net_message_buffer)[0] = BigLong(NETFLAG_UNRELIABLE | net_message.cursize);
+					((int*)net_message_buffer)[1] = LongSwap(++st->fakesequence);
+				}
+				else
+#endif
+					memcpy(net_message_buffer, st->inbuffer+payoffs, paylen);
+				break;
+			case WS_PACKETTYPE_CLOSE:	/*connection close*/
+				Con_Printf ("websocket closure %s\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
+				return FTETCP_KILL;
+			case WS_PACKETTYPE_PING:	/*ping*/
+//				Con_Printf ("websocket ping from %s\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
+				if (FTENET_TCP_WebSocket_Splurge(st, WS_PACKETTYPE_PONG, st->inbuffer+payoffs, paylen) != NETERR_SENT)
+					return FTETCP_KILL;
+				break;
+			case WS_PACKETTYPE_PONG: /*pong*/
+				st->timeouttime = Sys_DoubleTime() + 30;
+				st->pinging = false;
+//				Con_Printf ("websocket pong from %s\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
+				break;
+			default:
+				Con_Printf ("Unsupported websocket opcode (%i) from %s\n", (ctrl>>8) & 0xf, NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
+				return FTETCP_KILL;
+			}
+
+			memmove(st->inbuffer, st->inbuffer+payoffs + paylen, st->inlen - (payoffs + paylen));
+			st->inlen -= payoffs + paylen;
+
+			if (net_message.cursize)
+			{
+				net_message.packing = SZ_RAWBYTES;
+				net_message.currentbit = 0;
+				net_from = st->remoteaddr;
+				net_from.connum = con->generic.connum;
+				con->generic.owner->ReadGamePacket();
+				return FTETCP_RETRY;
+			}
+		}
+		return FTETCP_DONE;
+#endif
+	}
+	return FTETCP_DONE;
+}
+
+#ifdef HAVE_EPOLL
+static void FTENET_TCP_Polled(epollctx_t *ctx, unsigned int events)
+{
+	ftenet_tcp_stream_t *st = NULL;
+	st = (ftenet_tcp_stream_t *)((qbyte*)ctx - ((qbyte*)&st->epoll-(qbyte*)st));
+	for(;st->clientstream;)
+	{
+		switch(FTENET_TCP_ReadStream(st->con, st))
+		{
+		case FTETCP_RETRY:
+			continue;
+		case FTETCP_KILL:
+			FTENET_TCP_KillStream(st->con, st);
+			return;
+		case FTETCP_DONE:
+			FTENET_TCP_Flush(st->con, st);
+			return;
+		}
+	}
+}
+#endif
+
+qboolean FTENET_TCP_GetPacket(ftenet_generic_connection_t *gcon)
+{
+	ftenet_tcp_connection_t *con = (ftenet_tcp_connection_t*)gcon;
 	int ret;
 	char		adr[MAX_ADR_SIZE];
 	struct sockaddr_qstorage	from;
 	int fromlen;
 
 	float timeval = Sys_DoubleTime();
-	ftenet_tcpconnect_stream_t *st;
+	ftenet_tcp_stream_t *st;
 	st = con->tcpstreams;
 
-	//remove any stale ones
 	while (con->tcpstreams && con->tcpstreams->clientstream == NULL)
-	{
+	{	//remove initial stale ones
 		st = con->tcpstreams;
 		con->tcpstreams = con->tcpstreams->next;
+#ifdef HAVE_EPOLL
+		st->epoll.Polled = NULL;	//to cause segfaults if we failed somehow.
+#endif
 		BZ_Free(st);
 		con->active--;
 	}
@@ -5014,10 +5734,13 @@ qboolean FTENET_TCPConnect_GetPacket(ftenet_generic_connection_t *gcon)
 	{//client receiving only via tcp
 
 		while (st->next && st->next->clientstream == NULL)
-		{
-			ftenet_tcpconnect_stream_t *temp;
+		{	//remove following stale ones
+			ftenet_tcp_stream_t *temp;
 			temp = st->next;
 			st->next = st->next->next;
+#ifdef HAVE_EPOLL
+			temp->epoll.Polled = NULL;	//to cause segfaults if we failed somehow.
+#endif
 			BZ_Free(temp);
 			con->active--;
 		}
@@ -5032,514 +5755,27 @@ qboolean FTENET_TCPConnect_GetPacket(ftenet_generic_connection_t *gcon)
 				st->timeouttime = timeval + 30;
 				st->pinging = true;
 
-				FTENET_TCPConnect_WebSocket_Splurge(st, WS_PACKETTYPE_PING, "ping", 4);
+				FTENET_TCP_WebSocket_Splurge(st, WS_PACKETTYPE_PING, "ping", 4);
 			}
 			else
 #endif
 			{
 				Con_DPrintf ("tcp peer %s timed out\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
-				goto closesvstream;
+				FTENET_TCP_KillStream(con, st);
+				continue;
 			}
 		}
 
-		if (st->outlen)
-		{	/*try and flush any old outgoing data*/
-			int done;
-			done = VFS_WRITE(st->clientstream, st->outbuffer, st->outlen);
-			if (done > 0)
-			{
-				memmove(st->outbuffer, st->outbuffer + done, st->outlen - done);
-				st->outlen -= done;
-			}
-		}
-
-		ret = VFS_READ(st->clientstream, st->inbuffer+st->inlen, sizeof(st->inbuffer)-1-st->inlen);
-		if (ret < 0)
+		for(;st->clientstream;)
 		{
-			Con_Printf ("tcp peer %s closed connection\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
-closesvstream:
-			if (st->clientstream)
-				VFS_CLOSE(st->clientstream);
-			st->clientstream = NULL;
-			net_message.cursize = 0;
-
-			if (st->clienttype == TCPC_WEBRTC_CLIENT)
-			{	//notify its server
-				ftenet_tcpconnect_stream_t *o;
-				for (o = con->tcpstreams; o; o = o->next)
-				{
-					if (o->clienttype == TCPC_WEBRTC_HOST && !strcmp(o->webrtc.resource, st->webrtc.resource))
-					{
-						adr[0] = ICEMSG_PEERDROP;
-						adr[1] = (st->webrtc.clientnum>>0)&0xff;
-						adr[2] = (st->webrtc.clientnum>>8)&0xff;
-
-						FTENET_TCPConnect_WebSocket_Splurge(o, WS_PACKETTYPE_BINARYFRAME, adr, 3);
-						break;	//should only be one.
-					}
-				}
-			}
-			else if (st->clienttype == TCPC_WEBRTC_HOST)
-			{	//we're brokering a client+server. all messages should be unicasts between a client and its host, matched by resource.
-				ftenet_tcpconnect_stream_t *o;
-				for (o = con->tcpstreams; o; o = o->next)
-				{
-					if (o->clienttype == TCPC_WEBRTC_CLIENT && !strcmp(o->webrtc.resource, st->webrtc.resource))
-					{
-						adr[0] = ICEMSG_PEERDROP;
-						adr[1] = (st->webrtc.clientnum>>0)&0xff;
-						adr[2] = (st->webrtc.clientnum>>8)&0xff;
-
-						FTENET_TCPConnect_WebSocket_Splurge(o, WS_PACKETTYPE_BINARYFRAME, adr, 3);
-					}
-				}
-#ifdef SV_MASTER
-				SVM_RemoveBrokerGame(st->webrtc.resource);
-#endif
-			}
-			continue;
-		}
-		st->inlen += ret;
-
-		switch(st->clienttype)
-		{
-		case TCPC_UNKNOWN:
-			if (st->inlen < 6)
+			ret = FTENET_TCP_ReadStream(con, st);
+			if (ret == FTETCP_RETRY)
 				continue;
-
-			//so TLS apparently uses a first byte that is always < 64. which is handy to know.
-			if (con->generic.islisten && st->remoteaddr.prot == NP_STREAM && st->clientstream && !((st->inbuffer[0] >= 'a' && st->inbuffer[0] <= 'z') || (st->inbuffer[0] >= 'A' && st->inbuffer[0] <= 'Z')))
-			{
-#if defined(HAVE_SSL) && (defined(HAVE_SERVER) || defined(HAVE_HTTPSV))	//if its non-ascii, then try and upgrade the connection to tls
-				if (net_enable_tls.ival)
-				{
-					//copy off our buffer so we can read it into the tls stream's buffer instead.
-					char tmpbuf[256];
-					vfsfile_t *stream = st->clientstream;
-					int (QDECL *realread) (struct vfsfile_s *file, void *buffer, int bytestoread);
-					realread = stream->ReadBytes;
-					stream->ReadBytes = TLSPromoteRead;
-					memcpy(net_message_buffer, st->inbuffer, st->inlen);
-					net_message.cursize = st->inlen;
-					//wrap the stream now
-					st->clientstream = FS_OpenSSL(NULL, st->clientstream, true);
-					st->remoteaddr.prot = NP_TLS;
-					if (st->clientstream)
-					{
-						//try and reclaim it all
-						st->inlen = VFS_READ(st->clientstream, st->inbuffer, sizeof(st->inbuffer)-1);
-						if (st->inlen < 0)
-						{	//okay, something failed...
-							st->inlen = 0;
-							goto closesvstream;
-						}
-						else
-						{
-							//make sure we actually read from the proper stream again
-							stream->ReadBytes = realread;
-						}
-					}
-					if (!st->clientstream || net_message.cursize)
-						goto closesvstream;	//something cocked up. we didn't give the tls stream all the data.
-					if (developer.ival)
-						Con_Printf("promoted peer to tls: %s\n", NET_AdrToString(tmpbuf, sizeof(tmpbuf), &st->remoteaddr));
-					net_message.cursize = 0;
-					continue;
-				}
-#endif
-				goto closesvstream;	//something cocked up. we didn't give the tls stream all the data.
-			}
-
-			if (!strncmp(st->inbuffer, "qizmo\n", 6))
-			{
-				if (
-#ifdef HAVE_SERVER
-						net_enable_qizmo.ival ||
-#endif
-						!con->generic.islisten)
-				{
-					memmove(st->inbuffer, st->inbuffer+6, st->inlen - (6));
-					st->inlen -= 6;
-					st->clienttype = TCPC_QIZMO;
-					if (con->generic.islisten)
-					{
-						//send the qizmo handshake response.
-						VFS_WRITE(st->clientstream, "qizmo\n", 6);
-					}
-				}
-				else
-					goto closesvstream;
-			}else
-#ifdef HAVE_HTTPSV
-			if (con->generic.islisten)// && !strncmp(st->inbuffer, "GET ", 4))
-			{
-				//qtv or http request header. these terminate with a blank line.
-				int i = 0;
-				qboolean headerscomplete = false;
-
-				for (; i < st->inlen; i++)
-				{
-					//we're at the start of a line, so if its a \r\n or a \n then its a blank line, and the headers are complete
-					if ((i+1 < st->inlen && st->inbuffer[i] == '\r' && st->inbuffer[i+1] == '\n') ||
-						(i < st->inlen && st->inbuffer[i] == '\n'))
-					{
-						if (st->inbuffer[i] == '\n')
-							i++;
-						else
-							i+=2;
-						headerscomplete = true;
-						break;
-					}
-
-					for (; i < st->inlen && st->inbuffer[i] != '\n'; i++)
-						;
-				}
-
-				if (headerscomplete)
-				{
-#ifdef MVD_RECORDING
-					//for QTV connections, we just need the method and a blank line. our qtv parser will parse the actual headers.
-					if (!Q_strncasecmp(st->inbuffer, "QTV", 3))
-					{
-						int r = net_enable_qtv.ival?SV_MVD_GotQTVRequest(st->clientstream, st->inbuffer, st->inbuffer+st->inlen, &st->qtvstate):-1;
-						i = st->inlen;
-						memmove(st->inbuffer, st->inbuffer+i, st->inlen - (i));
-						st->inlen -= i;
-						switch(r)
-						{
-						case -1:
-							goto closesvstream;
-						case 0:
-							continue;
-						case 1:
-							st->clientstream = NULL;
-							continue;
-						}
-					}
-					else
-#endif
-					{
-						net_message.cursize = 0;
-						if (!FTENET_TCP_ParseHTTPRequest(con, st))
-							goto closesvstream;
-
-						if (net_message.cursize > 0)
-							return true;
-					}
-					continue;
-				}
-			}else
-#endif
-			{
-				Con_DPrintf ("Unknown TCP handshake from %s\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
-				goto closesvstream;
-			}
-
+			else if (ret == FTETCP_KILL)
+				FTENET_TCP_KillStream(con, st);
 			break;
-#ifdef HAVE_HTTPSV
-		case TCPC_HTTPCLIENT:
-			if (st->outlen)
-			{	/*try and flush the old data*/
-				int done;
-				done = VFS_WRITE(st->clientstream, st->outbuffer, st->outlen);
-				if (done > 0)
-				{
-					memmove(st->outbuffer, st->outbuffer + done, st->outlen - done);
-					st->outlen -= done;
-
-					st->timeouttime = timeval + 30;
-				}
-			}
-			if (!st->outlen)
-			{
-				if (st->dlfile)
-					st->outlen = VFS_READ(st->dlfile, st->outbuffer, sizeof(st->outbuffer));
-				else
-					st->outlen = 0;
-				if (st->outlen <= 0)
-				{
-					if (st->dlfile)
-						VFS_CLOSE(st->dlfile);
-					st->dlfile = NULL;
-					st->clienttype = TCPC_UNKNOWN;
-					Con_DPrintf ("Outgoing file transfer complete\n");
-					if (st->httpstate.connection_close)
-						goto closesvstream;
-				}
-			}
-			continue;
-#endif
-		case TCPC_QIZMO:
-			if (st->inlen < 2)
-				continue;
-
-			net_message.cursize = BigShort(*(short*)st->inbuffer);
-			if (net_message.cursize >= sizeof(net_message_buffer) )
-			{
-				Con_TPrintf ("Warning:  Oversize packet from %s\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
-				goto closesvstream;
-			}
-			if (net_message.cursize+2 > st->inlen)
-			{	//not enough buffered to read a packet out of it.
-				continue;
-			}
-
-			memcpy(net_message_buffer, st->inbuffer+2, net_message.cursize);
-			memmove(st->inbuffer, st->inbuffer+net_message.cursize+2, st->inlen - (net_message.cursize+2));
-			st->inlen -= net_message.cursize+2;
-
-			net_message.packing = SZ_RAWBYTES;
-			net_message.currentbit = 0;
-			net_from = st->remoteaddr;
-
-			return true;
-#ifdef HAVE_HTTPSV
-		case TCPC_WEBSOCKETU:
-		case TCPC_WEBSOCKETB:
-		case TCPC_WEBSOCKETNQ:
-		case TCPC_WEBRTC_HOST:
-		case TCPC_WEBRTC_CLIENT:
-			while (st->inlen >= 2)
-			{
-				unsigned short ctrl = ((unsigned char*)st->inbuffer)[0]<<8 | ((unsigned char*)st->inbuffer)[1];
-				unsigned long paylen;
-				unsigned int payoffs = 2;
-				unsigned int mask = 0;
-//				st->inbuffer[st->inlen]=0;
-				if (ctrl & 0x7000)
-				{
-					Con_Printf ("%s: reserved bits set\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
-					goto closesvstream;
-				}
-				if ((ctrl & 0x7f) == 127)
-				{
-					quint64_t ullpaylen;
-					//as a payload is not allowed to be encoded as too large a type, and quakeworld never used packets larger than 1450 bytes anyway, this code isn't needed (65k is the max even without this)
-					if (sizeof(ullpaylen) < 8)
-					{
-						Con_Printf ("%s: payload frame too large\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
-						goto closesvstream;
-					}
-					else
-					{
-						if (payoffs + 8 > st->inlen)
-							break;
-						ullpaylen =
-							(quint64_t)((unsigned char*)st->inbuffer)[payoffs+0]<<56u |
-							(quint64_t)((unsigned char*)st->inbuffer)[payoffs+1]<<48u |
-							(quint64_t)((unsigned char*)st->inbuffer)[payoffs+2]<<40u |
-							(quint64_t)((unsigned char*)st->inbuffer)[payoffs+3]<<32u |
-							(quint64_t)((unsigned char*)st->inbuffer)[payoffs+4]<<24u |
-							(quint64_t)((unsigned char*)st->inbuffer)[payoffs+5]<<16u |
-							(quint64_t)((unsigned char*)st->inbuffer)[payoffs+6]<< 8u |
-							(quint64_t)((unsigned char*)st->inbuffer)[payoffs+7]<< 0u;
-						if (ullpaylen < 0x10000)
-						{
-							Con_Printf ("%s: payload size (%"PRIu64") encoded badly\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr), ullpaylen);
-							goto closesvstream;
-						}
-						if (ullpaylen > 0x40000)
-						{
-							Con_Printf ("%s: payload size (%"PRIu64") is abusive\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr), ullpaylen);
-							goto closesvstream;
-						}
-						paylen = ullpaylen;
-						payoffs += 8;
-					}
-				}
-				else if ((ctrl & 0x7f) == 126)
-				{
-					if (payoffs + 2 > st->inlen)
-						break;
-					paylen =
-						((unsigned char*)st->inbuffer)[payoffs+0]<<8 |
-						((unsigned char*)st->inbuffer)[payoffs+1]<<0;
-					if (paylen < 126)
-					{
-						Con_Printf ("%s: payload size encoded badly\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
-						goto closesvstream;
-					}
-					payoffs += 2;
-				}
-				else
-				{
-					paylen = ctrl & 0x7f;
-				}
-				if (ctrl & 0x80)
-				{
-					if (payoffs + 4 > st->inlen)
-						break;
-					/*this might read data that isn't set yet, but should be safe*/
-					((unsigned char*)&mask)[0] = ((unsigned char*)st->inbuffer)[payoffs+0];
-					((unsigned char*)&mask)[1] = ((unsigned char*)st->inbuffer)[payoffs+1];
-					((unsigned char*)&mask)[2] = ((unsigned char*)st->inbuffer)[payoffs+2];
-					((unsigned char*)&mask)[3] = ((unsigned char*)st->inbuffer)[payoffs+3];
-					payoffs += 4;
-				}
-				/*if there isn't space, try again next time around*/
-				if (payoffs + paylen > st->inlen)
-				{
-					if (payoffs + paylen >= sizeof(st->inbuffer)-1)
-					{
-						Con_TPrintf ("Warning:  Oversize packet from %s\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
-						goto closesvstream;	//can't ever complete
-					}
-					break;
-				}
-
-				if (mask)
-				{
-					int i;
-					for (i = 0; i < paylen; i++)
-					{
-						((unsigned char*)st->inbuffer)[i + payoffs] ^= ((unsigned char*)&mask)[i&3];
-					}
-				}
-
-				net_message.cursize = 0;
-
-				switch((ctrl>>8) & 0xf)
-				{
-				case WS_PACKETTYPE_CONTINUATION:	/*continuation*/
-					Con_Printf ("websocket continuation frame from %s\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
-					goto closesvstream;	//can't handle these.
-				case WS_PACKETTYPE_TEXTFRAME:	/*text frame*/
-//					Con_Printf ("websocket text frame from %s\n", NET_AdrToString (adr, sizeof(adr), st->remoteaddr));
-					{
-						/*text frames are pure utf-8 chars, no dodgy encodings or anything, all pre-checked...
-						  except we're trying to send binary data.
-						  so we need to unmask things (char 0 is encoded as 0x100 - truncate it)
-						*/
-						unsigned char *in = st->inbuffer+payoffs, *out = net_message_buffer;
-						int len = paylen;
-						while(len && out < net_message_buffer + sizeof(net_message_buffer))
-						{
-							if ((*in & 0xe0)==0xc0 && len > 1)
-							{
-								*out = ((in[0] & 0x1f)<<6) | ((in[1] & 0x3f)<<0);
-								in+=2;
-								len -= 2;
-							}
-							else if (*in & 0x80)
-							{
-								*out = '?';
-								in++;
-								len -= 1;
-							}
-							else
-							{
-								*out = in[0];
-								in++;
-								len -= 1;
-							}
-							out++;
-						}
-						net_message.cursize = out - net_message_buffer;
-					}
-					break;
-				case WS_PACKETTYPE_BINARYFRAME: /*binary frame*/
-//					Con_Printf ("websocket binary frame from %s\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
-					net_message.cursize = paylen;
-					if (net_message.cursize+8 >= sizeof(net_message_buffer) )
-					{
-						Con_TPrintf ("Warning:  Oversize packet from %s\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
-						goto closesvstream;
-					}
-#ifdef SUPPORT_RTC_ICE
-					if (st->clienttype == TCPC_WEBRTC_CLIENT && !*st->webrtc.resource)
-					{	//this is a client that's connected directly to us via webrtc.
-						//FIXME: we don't support dtls, so browers will bitch about our sdp.
-						if (paylen+1 < sizeof(net_message_buffer))
-						{
-							net_message_buffer[paylen] = 0;
-							memcpy(net_message_buffer, st->inbuffer+payoffs, paylen);
-
-							if (!st->webrtc.ice)	//if the ice state isn't established yet, do that now.
-								st->webrtc.ice = iceapi.ICE_Create(NULL, "test", "rtc://foo", ICEM_ICE, ICEP_QWSERVER);
-							iceapi.ICE_Set(st->webrtc.ice, "sdp", net_message_buffer);
-
-							if (iceapi.ICE_Get(st->webrtc.ice, "sdp", net_message_buffer, sizeof(net_message_buffer)))
-								FTENET_TCPConnect_WebSocket_Splurge(st, WS_PACKETTYPE_BINARYFRAME, net_message_buffer, strlen(net_message_buffer));
-						}
-						net_message.cursize = 0;
-					}
-					else
-#endif
-						 if (st->clienttype == TCPC_WEBRTC_HOST && st->inbuffer[payoffs+0] == ICEMSG_SERVERINFO)
-					{
-#ifdef SV_MASTER
-						qbyte old = st->inbuffer[payoffs+paylen];
-						st->inbuffer[payoffs+paylen] = 0;	//make sure its null terminated...
-						SVM_AddBrokerGame(st->webrtc.resource, st->inbuffer+payoffs+3);
-						st->inbuffer[payoffs+paylen] = old;
-#endif
-					}
-					else if ((st->clienttype == TCPC_WEBRTC_CLIENT || st->clienttype == TCPC_WEBRTC_HOST) && paylen >= 3)
-					{	//we're brokering a client+server. all messages should be unicasts between a client and its host, matched by resource.
-						ftenet_tcpconnect_stream_t *o;
-						short clnum = (st->inbuffer[payoffs+1]<<0)|(st->inbuffer[payoffs+2]<<8);
-						int type = (st->clienttype != TCPC_WEBRTC_CLIENT)?TCPC_WEBRTC_CLIENT:TCPC_WEBRTC_HOST;
-						for (o = con->tcpstreams; o; o = o->next)
-						{
-							if (o->clienttype == type && clnum == o->webrtc.clientnum && !strcmp(o->webrtc.resource, st->webrtc.resource))
-							{
-								st->inbuffer[payoffs+1] = (st->webrtc.clientnum>>0)&0xff;
-								st->inbuffer[payoffs+2] = (st->webrtc.clientnum>>8)&0xff;
-								FTENET_TCPConnect_WebSocket_Splurge(o, WS_PACKETTYPE_BINARYFRAME, st->inbuffer+payoffs, paylen);
-								break;
-							}
-						}
-						if (!o)
-							Con_DPrintf("Unable to relay\n");
-						net_message.cursize = 0;
-					}
-					else
-#ifdef NQPROT
-						if (st->clienttype == TCPC_WEBSOCKETNQ)
-					{	//hack in an 8-byte header
-						payoffs+=1;
-						paylen-=1;
-						memcpy(net_message_buffer+8, st->inbuffer+payoffs, paylen);
-						net_message.cursize=paylen+8;
-						((int*)net_message_buffer)[0] = BigLong(NETFLAG_UNRELIABLE | net_message.cursize);
-						((int*)net_message_buffer)[1] = LongSwap(++st->fakesequence);
-					}
-					else
-#endif
-						memcpy(net_message_buffer, st->inbuffer+payoffs, paylen);
-					break;
-				case WS_PACKETTYPE_CLOSE:	/*connection close*/
-					Con_Printf ("websocket closure %s\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
-					goto closesvstream;
-				case WS_PACKETTYPE_PING:	/*ping*/
-//					Con_Printf ("websocket ping from %s\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
-					if (FTENET_TCPConnect_WebSocket_Splurge(st, WS_PACKETTYPE_PONG, st->inbuffer+payoffs, paylen) != NETERR_SENT)
-						goto closesvstream;
-					break;
-				case WS_PACKETTYPE_PONG: /*pong*/
-					st->timeouttime = Sys_DoubleTime() + 30;
-					st->pinging = false;
-//					Con_Printf ("websocket pong from %s\n", NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
-					break;
-				default:
-					Con_Printf ("Unsupported websocket opcode (%i) from %s\n", (ctrl>>8) & 0xf, NET_AdrToString (adr, sizeof(adr), &st->remoteaddr));
-					goto closesvstream;
-				}
-
-				memmove(st->inbuffer, st->inbuffer+payoffs + paylen, st->inlen - (payoffs + paylen));
-				st->inlen -= payoffs + paylen;
-
-				if (net_message.cursize)
-				{
-					net_message.packing = SZ_RAWBYTES;
-					net_message.currentbit = 0;
-					net_from = st->remoteaddr;
-					return true;
-				}
-			}
-			break;
-#endif
 		}
+		FTENET_TCP_Flush(con, st);
 	}
 
 	if (con->generic.thesocket != INVALID_SOCKET && con->active < 256)
@@ -5564,8 +5800,17 @@ closesvstream:
 			st->next = con->tcpstreams;
 			con->tcpstreams = st;
 			st->socketnum = newsock;
-			st->clientstream = FS_OpenTCPSocket(newsock, false, NET_AdrToString(tmpbuf, sizeof(tmpbuf), &st->remoteaddr));
+			st->clientstream = FS_WrapTCPSocket(newsock, false, NET_AdrToString(tmpbuf, sizeof(tmpbuf), &st->remoteaddr));
 			st->inlen = 0;
+
+#ifdef HAVE_EPOLL
+			{
+				struct epoll_event event = {EPOLLIN|EPOLLOUT|EPOLLET, {&st->epoll}};
+				st->con = con;
+				st->epoll.Polled = FTENET_TCP_Polled;
+				epoll_ctl(epoll_fd, EPOLL_CTL_ADD, newsock, &event);
+			}
+#endif
 
 #ifdef HAVE_SSL
 			if (con->tls && st->clientstream)	//if we're meant to be using tls, wrap the stream in a tls connection
@@ -5587,10 +5832,10 @@ closesvstream:
 	return false;
 }
 
-neterr_t FTENET_TCPConnect_SendPacket(ftenet_generic_connection_t *gcon, int length, const void *data, netadr_t *to)
+neterr_t FTENET_TCP_SendPacket(ftenet_generic_connection_t *gcon, int length, const void *data, netadr_t *to)
 {
-	ftenet_tcpconnect_connection_t *con = (ftenet_tcpconnect_connection_t*)gcon;
-	ftenet_tcpconnect_stream_t *st;
+	ftenet_tcp_connection_t *con = (ftenet_tcp_connection_t*)gcon;
+	ftenet_tcp_stream_t *st;
 
 	for (st = con->tcpstreams; st; st = st->next)
 	{
@@ -5612,7 +5857,7 @@ neterr_t FTENET_TCPConnect_SendPacket(ftenet_generic_connection_t *gcon, int len
 						{
 							if (length+sizeof(slen) > sizeof(st->outbuffer))
 								return NETERR_MTU;
-							Con_DPrintf("FTENET_TCPConnect_SendPacket: outgoing overflow\n");
+							Con_DPrintf("FTENET_TCP_SendPacket: outgoing overflow\n");
 							return NETERR_CLOGGED;
 						}
 						else
@@ -5636,7 +5881,7 @@ neterr_t FTENET_TCPConnect_SendPacket(ftenet_generic_connection_t *gcon, int len
 				case TCPC_WEBSOCKETU:
 				case TCPC_WEBSOCKETB:
 					{
-						neterr_t e = FTENET_TCPConnect_WebSocket_Splurge(st, (st->clienttype==TCPC_WEBSOCKETU)?WS_PACKETTYPE_TEXTFRAME:WS_PACKETTYPE_BINARYFRAME, data, length);
+						neterr_t e = FTENET_TCP_WebSocket_Splurge(st, (st->clienttype==TCPC_WEBSOCKETU)?WS_PACKETTYPE_TEXTFRAME:WS_PACKETTYPE_BINARYFRAME, data, length);
 						if (e != NETERR_SENT)
 							return e;
 					}
@@ -5666,9 +5911,9 @@ neterr_t FTENET_TCPConnect_SendPacket(ftenet_generic_connection_t *gcon, int len
 	return NETERR_NOROUTE;
 }
 
-static int FTENET_TCPConnect_GetLocalAddresses(struct ftenet_generic_connection_s *gcon, unsigned int *adrflags, netadr_t *addresses, const char **adrparams, int maxaddresses)
+static int FTENET_TCP_GetLocalAddresses(struct ftenet_generic_connection_s *gcon, unsigned int *adrflags, netadr_t *addresses, const char **adrparams, int maxaddresses)
 {
-	ftenet_tcpconnect_connection_t *con = (ftenet_tcpconnect_connection_t*)gcon;
+	ftenet_tcp_connection_t *con = (ftenet_tcp_connection_t*)gcon;
 	netproto_t prot = con->tls?NP_TLS:NP_STREAM;
 	int i, r = FTENET_Generic_GetLocalAddresses(gcon, adrflags, addresses, adrparams, maxaddresses);
 	for (i = 0; i < r; i++)
@@ -5678,7 +5923,7 @@ static int FTENET_TCPConnect_GetLocalAddresses(struct ftenet_generic_connection_
 	return r;
 }
 
-static qboolean FTENET_TCPConnect_ChangeLocalAddress(struct ftenet_generic_connection_s *con, const char *addressstring, netadr_t *adr)
+static qboolean FTENET_TCP_ChangeLocalAddress(struct ftenet_generic_connection_s *con, const char *addressstring, netadr_t *adr)
 {
 	//if we're a server, we want to try switching listening tcp port without shutting down all other connections.
 	//yes, this might mean we leave a connection active on the old port, but oh well.
@@ -5687,7 +5932,7 @@ static qboolean FTENET_TCPConnect_ChangeLocalAddress(struct ftenet_generic_conne
 	struct sockaddr_qstorage qs;
 	struct sockaddr_qstorage cur;
 	netadr_t n;
-	SOCKET newsocket;
+	SOCKET newsocket = INVALID_SOCKET;
 	unsigned long _true = true;
 	int sysprot;
 
@@ -5729,6 +5974,7 @@ static qboolean FTENET_TCPConnect_ChangeLocalAddress(struct ftenet_generic_conne
 	}
 
 #if defined(HAVE_IPV6) && defined(IPV6_V6ONLY)
+	if (newsocket == INVALID_SOCKET)
 	if (family == AF_INET && net_hybriddualstack.ival && !((struct sockaddr_in*)&qs)->sin_addr.s_addr)
 	{	//hybrid sockets pathway takes over when INADDR_ANY
 		unsigned long _false = false;
@@ -5749,67 +5995,88 @@ static qboolean FTENET_TCPConnect_ChangeLocalAddress(struct ftenet_generic_conne
 				addrsize2 = NetadrToSockadr(&n, &cur);
 
 				if ((bind(newsocket, (struct sockaddr *)&cur, addrsize2) != INVALID_SOCKET) &&
-					(listen(newsocket, 2) != INVALID_SOCKET))
+					(listen(newsocket, 2) != INVALID_SOCKET) &&
+					ioctlsocket (newsocket, FIONBIO, &_true) != -1)
 				{
-					if (ioctlsocket (newsocket, FIONBIO, &_true) != -1)
-					{
-						setsockopt(newsocket, IPPROTO_TCP, TCP_NODELAY, (char *)&_true, sizeof(_true));
+					con->addrtype[0] = NA_IP;
+					con->addrtype[1] = NA_IPV6;
+				}
+				else
+				{
+					closesocket(newsocket);
+					newsocket = INVALID_SOCKET;
+				}
+			}
+			else
+			{
+				closesocket(newsocket);
+				newsocket = INVALID_SOCKET;
+			}
+		}
+	}
+#endif
 
-						con->addrtype[0] = NA_IP;
-						con->addrtype[1] = NA_IPV6;
-						con->thesocket = newsocket;
-						return true;
+	if (newsocket == INVALID_SOCKET)
+	{
+		if ((newsocket = socket (family, SOCK_STREAM, sysprot)) != INVALID_SOCKET)
+		{
+#ifdef UNIXSOCKETS
+			if (family == AF_UNIX)
+			{
+				struct sockaddr_un *un = (struct sockaddr_un *)&qs;
+				struct stat s;
+				if (*un->sun_path)
+				{	//non-abstract sockets don't clean up the filesystem when the socket is closed
+					//and we can't re-bind to it while it still exists.
+					//so standard practise is to delete it before the bind.
+					//we do want to make sure the file is actually a socket before we remove it (so people can't abuse stuffcmds)
+					if (stat(un->sun_path, &s)!=-1)
+					{
+						if ((s.st_mode & S_IFMT) == S_IFSOCK)
+							unlink(un->sun_path);
 					}
 				}
 			}
-			closesocket(newsocket);
+#endif
+
+			if ((bind(newsocket, (struct sockaddr *)&qs, addrsize) != INVALID_SOCKET) &&
+				(listen(newsocket, 2) != INVALID_SOCKET) &&
+				ioctlsocket (newsocket, FIONBIO, &_true) != -1)
+				;
+			else
+			{
+				closesocket(newsocket);
+				newsocket = INVALID_SOCKET;
+			}
 		}
 	}
-#endif
 
-	if ((newsocket = socket (family, SOCK_STREAM, sysprot)) != INVALID_SOCKET)
+
+	if (newsocket != INVALID_SOCKET)
 	{
 #ifdef UNIXSOCKETS
-		if (family == AF_UNIX)
+		if (family != NA_UNIX)
+#endif
+			setsockopt(newsocket, IPPROTO_TCP, TCP_NODELAY, (char *)&_true, sizeof(_true));
+
+		con->thesocket = newsocket;
+
+
+#ifdef HAVE_EPOLL
 		{
-			struct sockaddr_un *un = (struct sockaddr_un *)&qs;
-			struct stat s;
-			if (*un->sun_path)
-			{	//non-abstract sockets don't clean up the filesystem when the socket is closed
-				//and we can't re-bind to it while it still exists.
-				//so standard practise is to delete it before the bind.
-				//we do want to make sure the file is actually a socket before we remove it (so people can't abuse stuffcmds)
-				if (stat(un->sun_path, &s)!=-1)
-				{
-					if ((s.st_mode & S_IFMT) == S_IFSOCK)
-						unlink(un->sun_path);
-				}
-			}
+			struct epoll_event event = {EPOLLIN|EPOLLET, {NULL}};//&newcon->generic.epoll}};
+			//newcon->generic.epoll.Polled = FTENET_TCP_AcceptPolled;
+			epoll_ctl(epoll_fd, EPOLL_CTL_ADD, newsocket, &event);
 		}
 #endif
-
-		if ((bind(newsocket, (struct sockaddr *)&qs, addrsize) != INVALID_SOCKET) &&
-			(listen(newsocket, 2) != INVALID_SOCKET))
-		{
-			if (ioctlsocket (newsocket, FIONBIO, &_true) != -1)
-			{
-#ifdef UNIXSOCKETS
-				if (family != NA_UNIX)
-#endif
-					setsockopt(newsocket, IPPROTO_TCP, TCP_NODELAY, (char *)&_true, sizeof(_true));
-
-				con->thesocket = newsocket;
-				return true;
-			}
-		}
-		closesocket(newsocket);
+		return true;
 	}
 	return false;
 }
-static void FTENET_TCPConnect_Close(ftenet_generic_connection_t *gcon)
+static void FTENET_TCP_Close(ftenet_generic_connection_t *gcon)
 {
-	ftenet_tcpconnect_connection_t *con = (ftenet_tcpconnect_connection_t*)gcon;
-	ftenet_tcpconnect_stream_t *st;
+	ftenet_tcp_connection_t *con = (ftenet_tcp_connection_t*)gcon;
+	ftenet_tcp_stream_t *st;
 
 	st = con->tcpstreams;
 	while (con->tcpstreams)
@@ -5823,15 +6090,15 @@ static void FTENET_TCPConnect_Close(ftenet_generic_connection_t *gcon)
 		BZ_Free(st);
 	}
 
-	FTENET_Generic_Close(gcon);
+	FTENET_Datagram_Close(gcon);
 }
 
-#ifdef HAVE_PACKET
-int FTENET_TCPConnect_SetFDSets(ftenet_generic_connection_t *gcon, fd_set *readfdset, fd_set *writefdset)
+#if defined(HAVE_PACKET) && !defined(HAVE_EPOLL)
+static int FTENET_TCP_SetFDSets(ftenet_generic_connection_t *gcon, fd_set *readfdset, fd_set *writefdset)
 {
-	int maxfd = 0;
-	ftenet_tcpconnect_connection_t *con = (ftenet_tcpconnect_connection_t*)gcon;
-	ftenet_tcpconnect_stream_t *st;
+	int maxfd = -1;
+	ftenet_tcp_connection_t *con = (ftenet_tcp_connection_t*)gcon;
+	ftenet_tcp_stream_t *st;
 
 	for (st = con->tcpstreams; st; st = st->next)
 	{
@@ -5840,7 +6107,7 @@ int FTENET_TCPConnect_SetFDSets(ftenet_generic_connection_t *gcon, fd_set *readf
 		{
 			while(iceapi.ICE_GetLCandidateSDP(st->webrtc.ice, net_message_buffer, sizeof(net_message_buffer)))
 			{
-				FTENET_TCPConnect_WebSocket_Splurge(st, WS_PACKETTYPE_BINARYFRAME, net_message_buffer, strlen(net_message_buffer));
+				FTENET_TCP_WebSocket_Splurge(st, WS_PACKETTYPE_BINARYFRAME, net_message_buffer, strlen(net_message_buffer));
 			}
 			continue;
 		}
@@ -5848,7 +6115,7 @@ int FTENET_TCPConnect_SetFDSets(ftenet_generic_connection_t *gcon, fd_set *readf
 		if (st->clientstream == NULL || st->socketnum == INVALID_SOCKET)
 			continue;
 #ifdef HAVE_HTTPSV
-		if (st->clienttype == TCPC_HTTPCLIENT)
+		if (st->clienttype == TCPC_HTTPCLIENT && st->outlen)
 			FD_SET(st->socketnum, writefdset); // network socket
 #endif
 		FD_SET(st->socketnum, readfdset); // network socket
@@ -5865,10 +6132,11 @@ int FTENET_TCPConnect_SetFDSets(ftenet_generic_connection_t *gcon, fd_set *readf
 }
 #endif
 
-ftenet_generic_connection_t *FTENET_TCPConnect_EstablishConnection(qboolean isserver, const char *address, netadr_t adr)
+ftenet_generic_connection_t *FTENET_TCP_EstablishConnection(ftenet_connections_t *col, const char *address, netadr_t adr)
 {
 	//this is written to support either ipv4 or ipv6, depending on the remote addr.
-	ftenet_tcpconnect_connection_t *newcon;
+	ftenet_tcp_connection_t *newcon;
+	qboolean isserver = col->islisten;
 
 	unsigned long _true = true;
 	SOCKET newsocket;
@@ -5883,8 +6151,7 @@ ftenet_generic_connection_t *FTENET_TCPConnect_EstablishConnection(qboolean isse
 #endif
 
 	newcon = Z_Malloc(sizeof(*newcon));
-	newcon->generic.thesocket = INVALID_SOCKET;
-	newsocket = INVALID_SOCKET;
+	newcon->generic.thesocket = newsocket = INVALID_SOCKET;
 
 	newcon->generic.addrtype[0] = adr.type;
 	newcon->generic.addrtype[1] = NA_INVALID;
@@ -5892,7 +6159,7 @@ ftenet_generic_connection_t *FTENET_TCPConnect_EstablishConnection(qboolean isse
 	if (isserver)
 	{
 #ifdef HAVE_PACKET	//unable to listen on tcp if we have no packet interface
-		if (!FTENET_TCPConnect_ChangeLocalAddress(&newcon->generic, address, &adr))
+		if (!FTENET_TCP_ChangeLocalAddress(&newcon->generic, address, &adr))
 		{
 			Z_Free(newcon);
 			return NULL;
@@ -5923,17 +6190,18 @@ ftenet_generic_connection_t *FTENET_TCPConnect_EstablishConnection(qboolean isse
 		newcon->tls = tls;
 		if (isserver)
 		{
-			newcon->generic.GetLocalAddresses = FTENET_TCPConnect_GetLocalAddresses;
-			newcon->generic.ChangeLocalAddress = FTENET_TCPConnect_ChangeLocalAddress;
+			newcon->generic.GetLocalAddresses = FTENET_TCP_GetLocalAddresses;
+			newcon->generic.ChangeLocalAddress = FTENET_TCP_ChangeLocalAddress;
 		}
-		newcon->generic.GetPacket = FTENET_TCPConnect_GetPacket;
-		newcon->generic.SendPacket = FTENET_TCPConnect_SendPacket;
-		newcon->generic.Close = FTENET_TCPConnect_Close;
-#ifdef HAVE_PACKET
-		newcon->generic.SetFDSets = FTENET_TCPConnect_SetFDSets;
+		newcon->generic.GetPacket = FTENET_TCP_GetPacket;
+		newcon->generic.SendPacket = FTENET_TCP_SendPacket;
+		newcon->generic.Close = FTENET_TCP_Close;
+#if defined(HAVE_PACKET) && !defined(HAVE_EPOLL)
+		newcon->generic.SetFDSets = FTENET_TCP_SetFDSets;
 #endif
-		newcon->generic.PrintStatus = FTENET_TCPConnect_PrintStatus;
+		newcon->generic.PrintStatus = FTENET_TCP_PrintStatus;
 
+		newcon->generic.owner = col;
 		newcon->generic.islisten = isserver;
 
 		newcon->active = 0;
@@ -5944,7 +6212,7 @@ ftenet_generic_connection_t *FTENET_TCPConnect_EstablishConnection(qboolean isse
 			newcon->tcpstreams = Z_Malloc(sizeof(*newcon->tcpstreams));
 			newcon->tcpstreams->next = NULL;
 			newcon->tcpstreams->socketnum = newsocket;
-			newcon->tcpstreams->clientstream = FS_OpenTCPSocket(newsocket, true, address);
+			newcon->tcpstreams->clientstream = FS_WrapTCPSocket(newsocket, true, address);
 			newcon->tcpstreams->inlen = 0;
 
 			newcon->tcpstreams->remoteaddr = adr;
@@ -6837,8 +7105,9 @@ int FTENET_WebRTC_GetAddresses(struct ftenet_generic_connection_s *con, unsigned
 	return 0;
 }
 
-static ftenet_generic_connection_t *FTENET_WebSocket_EstablishConnection(qboolean isserver, const char *address, netadr_t adr)
+static ftenet_generic_connection_t *FTENET_WebSocket_EstablishConnection(ftenet_connections_t *col, const char *address, netadr_t adr)
 {
+	qboolean isserver = col->islisten;
 	ftenet_websocket_connection_t *newcon;
 
 	int brokersocket = INVALID_SOCKET;
@@ -7142,8 +7411,9 @@ static neterr_t FTENET_NaClWebSocket_SendPacket(ftenet_generic_connection_t *gco
 }
 
 /*nacl websockets implementation...*/
-static ftenet_generic_connection_t *FTENET_WebSocket_EstablishConnection(qboolean isserver, const char *address, netadr_t adr)
+static ftenet_generic_connection_t *FTENET_WebSocket_EstablishConnection(ftenet_connections_t *col, const char *address, netadr_t adr)
 {
+	qboolean isserver = col->islisten;
 	ftenet_websocket_connection_t *newcon;
 
 	PP_Resource newsocket;
@@ -7249,14 +7519,14 @@ qboolean NET_UpdateRates(ftenet_connections_t *collection, qboolean inbound, siz
 }
 #endif
 
-/*firstsock is a cookie*/
-int NET_GetPacket (ftenet_connections_t *collection, int firstsock)
+void NET_ReadPackets (ftenet_connections_t *collection)
 {
 	struct ftenet_delayed_packet_s *p;
 	unsigned int ctime;
+	size_t c = 0;
 
 	if (!collection)
-		return -1;
+		return;
 
 	while ((p = collection->delayed_packets) && (int)(Sys_Milliseconds()-p->sendtime) > 0)
 	{
@@ -7270,10 +7540,11 @@ int NET_GetPacket (ftenet_connections_t *collection, int firstsock)
 		Z_Free(p);
 	}
 
-	while (firstsock < MAX_CONNECTIONS)
+	for (c = 0; c < MAX_CONNECTIONS; c++)
 	{
-		if (collection->conn[firstsock])
-			if (collection->conn[firstsock]->GetPacket(collection->conn[firstsock]))
+		if (collection->conn[c])
+		{
+			while (collection->conn[c]->GetPacket(collection->conn[c]))
 			{
 				if (net_fakeloss.value)
 				{
@@ -7283,11 +7554,10 @@ int NET_GetPacket (ftenet_connections_t *collection, int firstsock)
 
 				collection->bytesin += net_message.cursize;
 				collection->packetsin += 1;
-				net_from.connum = firstsock+1;
-				return firstsock;
+				net_from.connum = c+1;
+				collection->ReadGamePacket();
 			}
-
-		firstsock += 1;
+		}
 	}
 
 	ctime = Sys_Milliseconds();
@@ -7304,8 +7574,6 @@ int NET_GetPacket (ftenet_connections_t *collection, int firstsock)
 		collection->bytesout = 0;
 		collection->timemark = ctime;
 	}
-
-	return -1;
 }
 
 int NET_LocalAddressForRemote(ftenet_connections_t *collection, netadr_t *remote, netadr_t *local, int idx)
@@ -7427,6 +7695,9 @@ qboolean NET_EnsureRoute(ftenet_connections_t *collection, char *routename, char
 	case NP_DGRAM:
 		if (NET_SendPacketCol(collection, 0, NULL, adr) != NETERR_NOROUTE)
 			return true;
+		if (!FTENET_AddToCollection(collection, routename, "0", adr->type, adr->prot))
+			return false;
+		break;
 	case NP_WS:
 	case NP_WSS:
 	case NP_TLS:
@@ -7483,44 +7754,44 @@ int NET_EnumerateAddresses(ftenet_connections_t *collection, struct ftenet_gener
 	return found;
 }
 
-static enum addressscope_e NET_ClassifyAddressipv4(int ip, char **outdesc)
+static enum addressscope_e NET_ClassifyAddressipv4(int ip, const char **outdesc)
 {
 	int scope = ASCOPE_NET;
-	char *desc = NULL;
+	const char *desc = NULL;
 	if ((ip&BigLong(0xffff0000)) == BigLong(0xA9FE0000))	//169.254.x.x/16
-		scope = ASCOPE_LINK, desc = "link-local";
+		scope = ASCOPE_LINK, desc = localtext("link-local");
 	else if ((ip&BigLong(0xff000000)) == BigLong(0x0a000000))	//10.x.x.x/8
-		scope = ASCOPE_LAN, desc = "private";
+		scope = ASCOPE_LAN, desc = localtext("private");
 	else if ((ip&BigLong(0xff000000)) == BigLong(0x7f000000))	//127.x.x.x/8
 		scope = ASCOPE_HOST, desc = "localhost";
 	else if ((ip&BigLong(0xfff00000)) == BigLong(0xac100000))	//172.16.x.x/12
-		scope = ASCOPE_LAN, desc = "private";
+		scope = ASCOPE_LAN, desc = localtext("private");
 	else if ((ip&BigLong(0xffff0000)) == BigLong(0xc0a80000))	//192.168.x.x/16
-		scope = ASCOPE_LAN, desc = "private";
+		scope = ASCOPE_LAN, desc = localtext("private");
 	else if ((ip&BigLong(0xffc00000)) == BigLong(0x64400000))	//100.64.x.x/10
-		scope = ASCOPE_LAN, desc = "CGNAT";
+		scope = ASCOPE_LAN, desc = localtext("CGNAT");
 	else if (ip == BigLong(0x00000000))	//0.0.0.0/32
 		scope = ASCOPE_LAN, desc = "any";
 
 	*outdesc = desc;
 	return scope;
 }
-enum addressscope_e NET_ClassifyAddress(netadr_t *adr, char **outdesc)
+enum addressscope_e NET_ClassifyAddress(netadr_t *adr, const char **outdesc)
 {
 	int scope = ASCOPE_NET;
-	char *desc = NULL;
+	const char *desc = NULL;
 
 	if (adr->type == NA_LOOPBACK)
 	{
 		//we don't list 127.0.0.1 or ::1, so don't bother with this either. its not interesting.
-		scope = ASCOPE_PROCESS, desc = "internal";
+		scope = ASCOPE_PROCESS, desc = localtext("internal");
 	}
 	else if (adr->type == NA_IPV6)
 	{
 		if ((*(int*)adr->address.ip6&BigLong(0xffc00000)) == BigLong(0xfe800000))	//fe80::/10
-			scope = ASCOPE_LINK, desc = "link-local";
+			scope = ASCOPE_LINK, desc = localtext("link-local");
 		else if ((*(int*)adr->address.ip6&BigLong(0xfe000000)) == BigLong(0xfc00000))	//fc::/7
-			scope = ASCOPE_LAN, desc = "ULA/private";
+			scope = ASCOPE_LAN, desc = localtext("ULA/private");
 		else if (*(int*)adr->address.ip6 == BigLong(0x20010000)) //2001::/32
 			scope = ASCOPE_NET, desc = "toredo";
 		else if ((*(int*)adr->address.ip6&BigLong(0xffff0000)) == BigLong(0x20020000)) //2002::/16
@@ -7533,9 +7804,15 @@ enum addressscope_e NET_ClassifyAddress(netadr_t *adr, char **outdesc)
 		{
 			scope = NET_ClassifyAddressipv4(*(int*)(adr->address.ip6+12), &desc);
 			if (!desc)
-				desc = "vp-mapped";
+				desc = localtext("v4-mapped");
 		}
 	}
+#ifdef UNIXSOCKETS
+	else if (adr->type == NA_UNIX)
+	{
+		scope = ASCOPE_HOST, desc = "unix";
+	}
+#endif
 	else if (adr->type == NA_IP)
 		scope = NET_ClassifyAddressipv4(*(int*)adr->address.ip, &desc);
 	if (outdesc)
@@ -7555,7 +7832,7 @@ void NET_PrintAddresses(ftenet_connections_t *collection)
 	const char *params[sizeof(addr)/sizeof(addr[0])];
 	qboolean	warn = true;
 	static const char *scopes[] = {"process", "local", "link", "lan", "net"};
-	char *desc;
+	const char *desc;
 
 	if (!collection)
 		return;
@@ -7573,25 +7850,27 @@ void NET_PrintAddresses(ftenet_connections_t *collection)
 				if ((addr[i].prot == NP_RTC_TCP || addr[i].prot == NP_RTC_TLS) && params[i])
 				{
 					if (addr[i].type == NA_INVALID)
-						Con_Printf("%s address (%s): /%s\n", scopes[scope], con[i]->name, params[i]);
+						Con_TPrintf("%s address (%s): /%s\n", scopes[scope], con[i]->name, params[i]);
 					else
-						Con_Printf("%s address (%s): %s/%s\n", scopes[scope], con[i]->name, NET_AdrToString(adrbuf, sizeof(adrbuf), &addr[i]), params[i]);
+						Con_TPrintf("%s address (%s): %s/%s\n", scopes[scope], con[i]->name, NET_AdrToString(adrbuf, sizeof(adrbuf), &addr[i]), params[i]);
 				}
 				else if (desc)
-					Con_Printf("%s address (%s): %s (%s)\n", scopes[scope], con[i]->name, NET_AdrToString(adrbuf, sizeof(adrbuf), &addr[i]), desc);
+					Con_TPrintf("%s address (%s): %s (%s)\n", scopes[scope], con[i]->name, NET_AdrToString(adrbuf, sizeof(adrbuf), &addr[i]), desc);
 				else
-					Con_Printf("%s address (%s): %s\n", scopes[scope], con[i]->name, NET_AdrToString(adrbuf, sizeof(adrbuf), &addr[i]));
+					Con_TPrintf("%s address (%s): %s\n", scopes[scope], con[i]->name, NET_AdrToString(adrbuf, sizeof(adrbuf), &addr[i]));
 			}
 		}
 	}
 
 	if (warn)
-		Con_Printf("net address: no public addresses\n");
+		Con_TPrintf("net address: no public addresses\n");
 }
 
 void NET_PrintConnectionsStatus(ftenet_connections_t *collection)
 {
 	unsigned int i;
+	if (!collection)
+		return;
 	for (i = 0; i < MAX_CONNECTIONS; i++)
 	{
 		if (!collection->conn[i])
@@ -7648,8 +7927,9 @@ int TCP_OpenStream (netadr_t *remoteaddr)
 		sysprot = NSPROTO_IPX;
 		break;
 #endif
+	//case NA_UNIX:
 	default:
-		sysprot = 0;
+		sysprot = 0;	//'auto'
 		break;
 	}
 	temp = NetadrToSockadr(remoteaddr, &qs);
@@ -7713,7 +7993,7 @@ int UDP_OpenSocket (int port)
 	struct sockaddr_in address;
 	unsigned long _true = true;
 	int i;
-int maxport = port + 100;
+	int maxport = port + 100;
 
 	if ((newsocket = socket (PF_INET, SOCK_CLOEXEC|SOCK_DGRAM, IPPROTO_UDP)) == INVALID_SOCKET)
 		return (int)INVALID_SOCKET;
@@ -7875,6 +8155,54 @@ void IPX_CloseSocket (int socket)
 }
 #endif
 
+#ifdef HAVE_EPOLL
+static qboolean stdin_ready;
+static void StdIn_Now_Ready (struct epollctx_s *ctx, unsigned int events)
+{
+	stdin_ready = true;
+}
+qboolean NET_Sleep(float seconds, qboolean stdinissocket)
+{
+	int waitms;
+	struct epoll_event waitevents[256];
+	static int stdinadded = false;
+	int n, i;
+	if (stdinadded != stdinissocket)
+	{
+		static epollctx_t stdinctx = {StdIn_Now_Ready};
+		struct epoll_event event = {EPOLLIN, {&stdinctx}};
+		stdinadded = stdinissocket;
+		if (stdinissocket)
+			epoll_ctl(epoll_fd, EPOLL_CTL_ADD, STDIN_FILENO, &event);
+		else
+			epoll_ctl(epoll_fd, EPOLL_CTL_DEL, STDIN_FILENO, &event);
+	}
+
+	waitms = bound(0, (int)(seconds*1000), 4*1000);
+	n = epoll_wait(epoll_fd, waitevents, countof(waitevents), waitms);
+	if (n < 0)
+	{
+		int err = errno;
+		switch(err)
+		{
+		case EINTR:
+			break;
+		default:
+			Con_Printf("EPoll error: %i\n", err);
+			break;
+		}
+	}
+	for (i = 0; i < n; i++)
+	{
+		struct epoll_event *ev = &waitevents[i];
+		struct epollctx_s *ctx = ev->data.ptr;
+		if (ctx)
+			ctx->Polled(ctx, ev->events);
+		//else edge-triggered events can be processed as part of the main loop
+	}
+	return stdin_ready;
+}
+#else
 // sleeps msec or until net socket is ready
 //stdin can sometimes be a socket. As a result,
 //we give the option to select it for nice console imput with timeouts.
@@ -7891,12 +8219,14 @@ qboolean NET_Sleep(float seconds, qboolean stdinissocket)
 	FD_ZERO(&readfdset);
 	FD_ZERO(&writefdset);
 
+#ifndef _WIN32
 	if (stdinissocket)
 	{
-		sock = 0;	//stdin tends to be socket/filehandle 0 in unix
+		sock = STDIN_FILENO;	//stdin tends to be socket/filehandle 0 in unix
 		FD_SET(sock, &readfdset);
 		maxfd = sock;
 	}
+#endif
 
 #ifdef SV_MASTER
 	{
@@ -7950,8 +8280,7 @@ qboolean NET_Sleep(float seconds, qboolean stdinissocket)
 	}
 #endif
 
-	if (seconds > 4.0)	//realy? oh well.
-		seconds = 4.0;
+	seconds = bound(0.0, seconds, 4.0);	//realy? oh well.
 	if (maxfd == -1)
 		Sys_Sleep(seconds);
 	else
@@ -7963,11 +8292,14 @@ qboolean NET_Sleep(float seconds, qboolean stdinissocket)
 		select(maxfd+1, &readfdset, &writefdset, NULL, &timeout);
 	}
 
+#ifndef _WIN32
 	if (stdinissocket)
-		return FD_ISSET(0, &readfdset);
+		return FD_ISSET(STDIN_FILENO, &readfdset);
+#endif
 #endif
 	return true;
 }
+#endif
 
 //this function is used to determine the 'default' local address.
 //this is used for compat with gamespy which insists on sending us a packet via that interface and not something more sensible like 127.0.0.1
@@ -8057,7 +8389,7 @@ void SVNET_AddPort_f(void)
 	//just in case
 	if (!svs.sockets)
 	{
-		svs.sockets = FTENET_CreateCollection(true);
+		svs.sockets = FTENET_CreateCollection(true, SV_ReadPacket);
 #ifdef HAVE_CLIENT
 		FTENET_AddToCollection(svs.sockets, "SVLoopback", STRINGIFY(PORT_DEFAULTSERVER), NA_LOOPBACK, NP_DGRAM);
 #endif
@@ -8104,6 +8436,10 @@ NET_Init
 */
 void NET_Init (void)
 {
+#ifdef HAVE_EPOLL
+	epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+#endif
+
 	Cvar_Register(&net_enabled, "networking");
 	Cvar_Register(&net_dns_ipv4, "networking");
 	Cvar_Register(&net_dns_ipv6, "networking");
@@ -8136,11 +8472,14 @@ void NET_Init (void)
 #if defined(TCPCONNECT) && (defined(HAVE_SERVER) || defined(HAVE_HTTPSV))
 #ifdef HAVE_SERVER
 	Cvar_Register(&net_enable_qizmo, "networking");
+#endif
+#ifdef MVD_RECORDING
 	Cvar_Register(&net_enable_qtv, "networking");
 #endif
 #if defined(HAVE_SSL)
 	Cvar_Register(&net_enable_tls, "networking");
 	Cvar_Register(&tls_ignorecertificateerrors, "networking");
+	Cvar_Register(&tls_provider, "networking");
 #endif
 #ifdef HAVE_HTTPSV
 	Cvar_Register(&net_enable_http, "networking");
@@ -8179,6 +8518,23 @@ void NET_Init (void)
 #if defined(HAVE_CLIENT)||defined(HAVE_SERVER)
 	Net_Master_Init();
 #endif
+
+#if defined(SUBSERVERS) && defined(HAVE_SERVER)
+	if (isDedicated && !SSV_IsSubServer())
+	{	//-clusterhost address:port password
+		//connects this server to a remote control/gateway server.
+		int i = COM_CheckParm("-clusterhost");
+		if (i && i+2 < com_argc)
+		{
+			vfsfile_t *f = FS_OpenTCP(com_argv[i+1], PORT_DEFAULTSERVER, true);
+			if (!f)
+				Sys_Error("Unable to resolve/connect to cluster host address \"%s\"\n", com_argv[i+1]);
+			VFS_PRINTF(f, "NODE\r\nPassword: \"%s\"\r\n", com_argv[i+2]);
+			SSV_SetupControlPipe(f);
+			return;
+		}
+	}
+#endif
 }
 #ifdef HAVE_CLIENT
 void NET_CloseClient(void)
@@ -8204,7 +8560,7 @@ void NET_InitClient(qboolean loopbackonly)
 	}
 
 	if (!cls.sockets)
-		cls.sockets = FTENET_CreateCollection(false);
+		cls.sockets = FTENET_CreateCollection(false, CL_ReadPacket);
 #ifdef HAVE_SERVER
 	FTENET_AddToCollection(cls.sockets, "CLLoopback", "1", NA_LOOPBACK, NP_DGRAM);
 #endif
@@ -8368,7 +8724,7 @@ void NET_InitServer(void)
 	{
 		if (!svs.sockets)
 		{
-			svs.sockets = FTENET_CreateCollection(true);
+			svs.sockets = FTENET_CreateCollection(true, SV_ReadPacket);
 #ifdef HAVE_CLIENT
 			FTENET_AddToCollection(svs.sockets, "SVLoopback", STRINGIFY(PORT_DEFAULTSERVER), NA_LOOPBACK, NP_DGRAM);
 #endif
@@ -8413,7 +8769,7 @@ void NET_InitServer(void)
 		NET_CloseServer();
 
 #ifdef HAVE_CLIENT
-		svs.sockets = FTENET_CreateCollection(true);
+		svs.sockets = FTENET_CreateCollection(true, SV_ReadPacket);
 		FTENET_AddToCollection(svs.sockets, "SVLoopback", STRINGIFY(PORT_DEFAULTSERVER), NA_LOOPBACK, NP_DGRAM);
 #endif
 	}
@@ -8442,6 +8798,12 @@ void	NET_Shutdown (void)
 #endif
 
 
+#ifdef HAVE_EPOLL
+	close(epoll_fd);
+	epoll_fd = -1;
+#endif
+
+
 #if defined(_WIN32) && defined(HAVE_PACKET)
 #ifdef SERVERTONLY
 	if (!serverthreadID)	//running as subsystem of client. Don't close all of it's sockets too.
@@ -8461,19 +8823,13 @@ typedef struct {
 
 	SOCKET sock;
 	qboolean conpending;
+	int readaborted;	//some kind of error. don't spam
+	int writeaborted;	//some kind of error. don't spam
 
 	char readbuffer[65536];
 	int readbuffered;
 	char peer[1];
 } tcpfile_t;
-static void VFSTCP_Error(tcpfile_t *f)
-{
-	if (f->sock != INVALID_SOCKET)
-	{
-		closesocket(f->sock);
-		f->sock = INVALID_SOCKET;
-	}
-}
 int QDECL VFSTCP_ReadBytes (struct vfsfile_s *file, void *buffer, int bytestoread)
 {
 	tcpfile_t *tf = (tcpfile_t*)file;
@@ -8496,7 +8852,7 @@ int QDECL VFSTCP_ReadBytes (struct vfsfile_s *file, void *buffer, int bytestorea
 		tf->conpending = false;
 	}
 
-	if (tf->sock != INVALID_SOCKET)
+	if (!tf->readaborted)
 	{
 		trying = sizeof(tf->readbuffer) - tf->readbuffered;
 		if (bytestoread > 1500)
@@ -8513,21 +8869,26 @@ int QDECL VFSTCP_ReadBytes (struct vfsfile_s *file, void *buffer, int bytestorea
 		if (len == -1)
 		{
 			int e = neterrno();
-			if (e != NET_EWOULDBLOCK)
+			if (e != NET_EWOULDBLOCK && e != NET_EINTR)
 			{
+				tf->readaborted = VFS_ERROR_UNSPECIFIED;
 				switch(e)
 				{
 				case NET_ENOTCONN:
 					Con_Printf("connection to \"%s\" failed\n", tf->peer);
+					tf->readaborted = VFS_ERROR_NORESPONSE;
 					break;
 				case NET_ECONNABORTED:
 					Con_DPrintf("connection to \"%s\" aborted\n", tf->peer);
+					tf->readaborted = VFS_ERROR_NORESPONSE;
 					break;
 				case NET_ETIMEDOUT:
 					Con_Printf("connection to \"%s\" timed out\n", tf->peer);
+					tf->readaborted = VFS_ERROR_NORESPONSE;
 					break;
 				case NET_ECONNREFUSED:
 					Con_DPrintf("connection to \"%s\" refused\n", tf->peer);
+					tf->readaborted = VFS_ERROR_NORESPONSE;
 					break;
 				case NET_ECONNRESET:
 					Con_DPrintf("connection to \"%s\" reset\n", tf->peer);
@@ -8535,14 +8896,13 @@ int QDECL VFSTCP_ReadBytes (struct vfsfile_s *file, void *buffer, int bytestorea
 				default:
 					Con_Printf("tcp socket error %i (%s)\n", e, tf->peer);
 				}
-				VFSTCP_Error(tf);
 			}
 			//fixme: figure out wouldblock or error
 		}
 		else if (len == 0 && trying != 0)
 		{
 			//peer disconnected
-			VFSTCP_Error(tf);
+			tf->readaborted = VFS_ERROR_EOF;
 		}
 		else
 		{
@@ -8554,7 +8914,7 @@ int QDECL VFSTCP_ReadBytes (struct vfsfile_s *file, void *buffer, int bytestorea
 	if (bytestoread > tf->readbuffered)
 		bytestoread = tf->readbuffered;
 	if (bytestoread < 0)
-		VFSTCP_Error(tf);
+		return VFS_ERROR_UNSPECIFIED;	//caller error...
 
 	if (bytestoread > 0)
 	{
@@ -8563,22 +8923,15 @@ int QDECL VFSTCP_ReadBytes (struct vfsfile_s *file, void *buffer, int bytestorea
 		memmove(tf->readbuffer, tf->readbuffer+bytestoread, tf->readbuffered);
 		return bytestoread;
 	}
-	else
-	{
-		if (tf->sock == INVALID_SOCKET)
-		{
-			return -1;	//signal an error
-		}
-		return 0;	//signal nothing available
-	}
+	else return tf->readaborted;
 }
 int QDECL VFSTCP_WriteBytes (struct vfsfile_s *file, const void *buffer, int bytestoread)
 {
 	tcpfile_t *tf = (tcpfile_t*)file;
 	int len;
 
-	if (tf->sock == INVALID_SOCKET)
-		return -1;
+	if (tf->writeaborted)
+		return VFS_ERROR_UNSPECIFIED;	//a previous write failed.
 
 	if (tf->conpending)
 	{
@@ -8590,6 +8943,7 @@ int QDECL VFSTCP_WriteBytes (struct vfsfile_s *file, const void *buffer, int byt
 		FD_SET(tf->sock, &fdw);
 		FD_ZERO(&fdx);
 		FD_SET(tf->sock, &fdx);
+		//check if we can actually write to it yet, without generating weird errors...
 		if (!select((int)tf->sock+1, NULL, &fdw, &fdx, &timeout))
 			return 0;
 		tf->conpending = false;
@@ -8598,20 +8952,26 @@ int QDECL VFSTCP_WriteBytes (struct vfsfile_s *file, const void *buffer, int byt
 	len = send(tf->sock, buffer, bytestoread, 0);
 	if (len == -1 || len == 0)
 	{
-		int e = neterrno();
+		int reason = VFS_ERROR_UNSPECIFIED;
+		int e = (len==0)?NET_ECONNABORTED:neterrno();
 		switch(e)
 		{
+		case NET_EINTR:
 		case NET_EWOULDBLOCK:
 			return 0;	//nothing available yet.
 		case NET_ETIMEDOUT:
 			Con_Printf("connection to \"%s\" timed out\n", tf->peer);
-			return -1;	//don't bother trying to read if we never connected.
+			return VFS_ERROR_NORESPONSE;	//don't bother trying to read if we never connected.
+		case NET_ECONNABORTED:
+			Con_Printf("connection to \"%s\" aborted\n", tf->peer);
+			reason = len?VFS_ERROR_NORESPONSE:VFS_ERROR_EOF;
+			break;
 		case NET_ENOTCONN:
 #ifdef __unix__
 		case EPIPE:
 #endif
 			Con_Printf("connection to \"%s\" failed\n", tf->peer);
-			return -1;	//don't bother trying to read if we never connected.
+			return VFS_ERROR_NORESPONSE;	//don't bother trying to read if we never connected.
 		default:
 			Sys_Printf("tcp socket error %i (%s)\n", e, tf->peer);
 			break;
@@ -8619,18 +8979,17 @@ int QDECL VFSTCP_WriteBytes (struct vfsfile_s *file, const void *buffer, int byt
 //		don't destroy it on write errors, because that prevents us from reading anything that was sent to us afterwards.
 //		instead let the read handling kill it if there's nothing new to be read
 		VFSTCP_ReadBytes(file, NULL, 0);
-		return -1;
+		tf->writeaborted = true;
+		return reason;
 	}
 	return len;
 }
 qboolean QDECL VFSTCP_Seek (struct vfsfile_s *file, qofs_t pos)
 {
-	VFSTCP_Error((tcpfile_t*)file);
 	return false;
 }
 static qofs_t QDECL VFSTCP_Tell (struct vfsfile_s *file)
 {
-	VFSTCP_Error((tcpfile_t*)file);
 	return 0;
 }
 static qofs_t QDECL VFSTCP_GetLen (struct vfsfile_s *file)
@@ -8641,12 +9000,16 @@ static qboolean QDECL VFSTCP_Close (struct vfsfile_s *file)
 {
 	tcpfile_t *f = (tcpfile_t *)file;
 	qboolean success = f->sock != INVALID_SOCKET;
-	VFSTCP_Error(f);
+	if (f->sock != INVALID_SOCKET)
+	{
+		closesocket(f->sock);
+		f->sock = INVALID_SOCKET;
+	}
 	Z_Free(f);
 	return success;
 }
 
-vfsfile_t *FS_OpenTCPSocket(SOCKET sock, qboolean conpending, const char *peername)
+vfsfile_t *FS_WrapTCPSocket(SOCKET sock, qboolean conpending, const char *peername)
 {
 	tcpfile_t *newf;
 	if (sock == INVALID_SOCKET)
@@ -8667,12 +9030,23 @@ vfsfile_t *FS_OpenTCPSocket(SOCKET sock, qboolean conpending, const char *peerna
 
 	return &newf->funcs;
 }
-vfsfile_t *FS_OpenTCP(const char *name, int defaultport)
+vfsfile_t *FS_OpenTCP(const char *name, int defaultport, qboolean assumetls)
 {
 	netadr_t adr = {0};
 	if (NET_StringToAdr(name, defaultport, &adr))
 	{
-		return FS_OpenTCPSocket(TCP_OpenStream(&adr), true, name);
+		qboolean wanttls = (adr.prot == NP_TLS || (adr.prot != NP_STREAM && assumetls));
+		vfsfile_t *f;
+#ifndef HAVE_SSL
+		if (wanttls)
+			return NULL;	//don't even make the connection if we can't satisfy it.
+#endif
+		f = FS_WrapTCPSocket(TCP_OpenStream(&adr), true, name);
+#ifdef HAVE_SSL
+		if (f && wanttls)
+			f = FS_OpenSSL(name, f, false);
+#endif
+		return f;
 	}
 	else
 		return NULL;
@@ -8934,7 +9308,7 @@ vfsfile_t *FS_OpenTCP(const char *name, int defaultport)
 	return NULL;
 }
 #else
-vfsfile_t *FS_OpenTCP(const char *name, int defaultport)
+vfsfile_t *FS_OpenTCP(const char *name, int defaultport, qboolean assumetls)
 {
 	return NULL;
 }

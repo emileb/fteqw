@@ -348,10 +348,10 @@ void GL_SetupFormats(void)
 	}
 	if (bc45)
 	{
-		glfmtb(PTI_BC4_R8,				GL_COMPRESSED_RED_RGTC1);
-		glfmtb(PTI_BC4_R8_SNORM,		GL_COMPRESSED_SIGNED_RED_RGTC1);
-		glfmtb(PTI_BC5_RG8,				GL_COMPRESSED_RG_RGTC2);
-		glfmtb(PTI_BC5_RG8_SNORM,		GL_COMPRESSED_SIGNED_RG_RGTC2);
+		glfmtb(PTI_BC4_R,				GL_COMPRESSED_RED_RGTC1);
+		glfmtb(PTI_BC4_R_SNORM,			GL_COMPRESSED_SIGNED_RED_RGTC1);
+		glfmtb(PTI_BC5_RG,				GL_COMPRESSED_RG_RGTC2);
+		glfmtb(PTI_BC5_RG_SNORM,		GL_COMPRESSED_SIGNED_RG_RGTC2);
 	}
 	if (bc67)
 	{
@@ -472,6 +472,41 @@ void GL_SetupFormats(void)
 		glfmtb(PTI_ASTC_12X10_HDR,		GL_COMPRESSED_RGBA_ASTC_12x10_KHR);
 		glfmtb(PTI_ASTC_12X12_HDR,		GL_COMPRESSED_RGBA_ASTC_12x12_KHR);
 	}
+#ifdef ASTC3D
+	if (sh_config.hw_astc >= 3)
+	{	//the full profile gives 3d texture support too
+		glfmtb(PTI_ASTC_3X3X3_LDR,		GL_COMPRESSED_RGBA_ASTC_3x3x3_OES);
+		glfmtb(PTI_ASTC_4X3X3_LDR,		GL_COMPRESSED_RGBA_ASTC_4x3x3_OES);
+		glfmtb(PTI_ASTC_4X4X3_LDR,		GL_COMPRESSED_RGBA_ASTC_4x4x3_OES);
+		glfmtb(PTI_ASTC_4X4X4_LDR,		GL_COMPRESSED_RGBA_ASTC_4x4x4_OES);
+		glfmtb(PTI_ASTC_5X4X4_LDR,		GL_COMPRESSED_RGBA_ASTC_5x4x4_OES);
+		glfmtb(PTI_ASTC_5X5X4_LDR,		GL_COMPRESSED_RGBA_ASTC_5x5x4_OES);
+		glfmtb(PTI_ASTC_5X5X5_LDR,		GL_COMPRESSED_RGBA_ASTC_5x5x5_OES);
+		glfmtb(PTI_ASTC_6X5X5_LDR,		GL_COMPRESSED_RGBA_ASTC_6x5x5_OES);
+		glfmtb(PTI_ASTC_6X6X5_LDR,		GL_COMPRESSED_RGBA_ASTC_6x6x5_OES);
+		glfmtb(PTI_ASTC_6X6X6_LDR,		GL_COMPRESSED_RGBA_ASTC_6x6x6_OES);
+		glfmtb(PTI_ASTC_3X3X3_SRGB,		GL_COMPRESSED_SRGB8_ALPHA8_ASTC_3x3x3_OES);
+		glfmtb(PTI_ASTC_4X3X3_SRGB,		GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x3x3_OES);
+		glfmtb(PTI_ASTC_4X4X3_SRGB,		GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4x3_OES);
+		glfmtb(PTI_ASTC_4X4X4_SRGB,		GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4x4_OES);
+		glfmtb(PTI_ASTC_5X4X4_SRGB,		GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x4x4_OES);
+		glfmtb(PTI_ASTC_5X5X4_SRGB,		GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5x4_OES);
+		glfmtb(PTI_ASTC_5X5X5_SRGB,		GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5x5_OES);
+		glfmtb(PTI_ASTC_6X5X5_SRGB,		GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x5x5_OES);
+		glfmtb(PTI_ASTC_6X6X5_SRGB,		GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6x5_OES);
+		glfmtb(PTI_ASTC_6X6X6_SRGB,		GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6x6_OES);
+		glfmtb(PTI_ASTC_3X3X3_HDR,		GL_COMPRESSED_RGBA_ASTC_3x3x3_OES);
+		glfmtb(PTI_ASTC_4X3X3_HDR,		GL_COMPRESSED_RGBA_ASTC_4x3x3_OES);
+		glfmtb(PTI_ASTC_4X4X3_HDR,		GL_COMPRESSED_RGBA_ASTC_4x4x3_OES);
+		glfmtb(PTI_ASTC_4X4X4_HDR,		GL_COMPRESSED_RGBA_ASTC_4x4x4_OES);
+		glfmtb(PTI_ASTC_5X4X4_HDR,		GL_COMPRESSED_RGBA_ASTC_5x4x4_OES);
+		glfmtb(PTI_ASTC_5X5X4_HDR,		GL_COMPRESSED_RGBA_ASTC_5x5x4_OES);
+		glfmtb(PTI_ASTC_5X5X5_HDR,		GL_COMPRESSED_RGBA_ASTC_5x5x5_OES);
+		glfmtb(PTI_ASTC_6X5X5_HDR,		GL_COMPRESSED_RGBA_ASTC_6x5x5_OES);
+		glfmtb(PTI_ASTC_6X6X5_HDR,		GL_COMPRESSED_RGBA_ASTC_6x6x5_OES);
+		glfmtb(PTI_ASTC_6X6X6_HDR,		GL_COMPRESSED_RGBA_ASTC_6x6x6_OES);
+	}
+#endif
 }
 
 /*
@@ -739,7 +774,7 @@ qboolean GL_LoadTextureMips(texid_t tex, const struct pendingtextureinfo *mips)
 	uploadfmt_t encoding = mips->encoding;
 	qboolean compress;
 	qboolean storage = true;
-	unsigned int bb, bw, bh;
+	unsigned int bb, bw, bh, bd;
 	int levels = 0, genlevels;
 	int ttype = (tex->flags & IF_TEXTYPEMASK)>>IF_TEXTYPESHIFT;
 
@@ -837,7 +872,7 @@ qboolean GL_LoadTextureMips(texid_t tex, const struct pendingtextureinfo *mips)
 		{
 			if (mips->mip[i].width != max(1,(mips->mip[i-1].width>>1)) ||
 				mips->mip[i].height != max(1,(mips->mip[i-1].height>>1)))
-			{	//okay, this mip looks like it was sized wrongly. this can easily happen with npot dds files made for direct3d.
+			{	//okay, this mip looks like it was sized wrongly. I've seen this happen with some dds files.
 				nummips = i;
 				break;
 			}
@@ -908,7 +943,7 @@ qboolean GL_LoadTextureMips(texid_t tex, const struct pendingtextureinfo *mips)
 		qglTexParameteri(targ, GL_TEXTURE_SWIZZLE_A, gl_config.formatinfo[encoding].swizzle_a);
 	}
 
-	Image_BlockSizeForEncoding(encoding, &bb, &bw, &bh);
+	Image_BlockSizeForEncoding(encoding, &bb, &bw, &bh, &bd);
 	switch(bb)
 	{
 	case 3:
@@ -1063,10 +1098,10 @@ qboolean GL_LoadTextureMips(texid_t tex, const struct pendingtextureinfo *mips)
 		case GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT:		out.encoding = PTI_BC1_RGBA_SRGB;		break;
 		case GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT:		out.encoding = PTI_BC2_RGBA_SRGB;		break;
 		case GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT:		out.encoding = PTI_BC3_RGBA_SRGB;		break;
-		case GL_COMPRESSED_RED_RGTC1:						out.encoding = PTI_BC4_R8;				break;
-		case GL_COMPRESSED_SIGNED_RED_RGTC1:				out.encoding = PTI_BC4_R8_SNORM;		break;
-		case GL_COMPRESSED_RG_RGTC2:						out.encoding = PTI_BC5_RG8;				break;
-		case GL_COMPRESSED_SIGNED_RG_RGTC2:					out.encoding = PTI_BC5_RG8_SNORM;		break;
+		case GL_COMPRESSED_RED_RGTC1:						out.encoding = PTI_BC4_R;				break;
+		case GL_COMPRESSED_SIGNED_RED_RGTC1:				out.encoding = PTI_BC4_R_SNORM;			break;
+		case GL_COMPRESSED_RG_RGTC2:						out.encoding = PTI_BC5_RG;				break;
+		case GL_COMPRESSED_SIGNED_RG_RGTC2:					out.encoding = PTI_BC5_RG_SNORM;		break;
 		case GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT_ARB:		out.encoding = PTI_BC6_RGB_UFLOAT;		break;
 		case GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT_ARB:		out.encoding = PTI_BC6_RGB_SFLOAT;		break;
 		case GL_COMPRESSED_RGBA_BPTC_UNORM_ARB:				out.encoding = PTI_BC7_RGBA;			break;

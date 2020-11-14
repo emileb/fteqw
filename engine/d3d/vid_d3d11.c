@@ -6,6 +6,7 @@
 #include "shader.h"
 #include "renderque.h"
 #include "resource.h"
+#include "vr.h"
 
 #define FUCKDXGI
 
@@ -72,25 +73,17 @@ IDXGIOutput *d3dscreen;
 
 ID3D11RenderTargetView *fb_backbuffer;
 ID3D11DepthStencilView *fb_backdepthstencil;
+static DXGI_FORMAT	depthformat;
 
 void *d3d11mod;
 static unsigned int d3d11multisample_count, d3d11multisample_quality;
 
-qboolean vid_initializing;
+static qboolean vid_initializing;
 
 extern qboolean		scr_initialized;                // ready to draw
 extern qboolean		scr_drawloading;
 extern qboolean		scr_con_forcedraw;
 static qboolean d3d_resized;
-
-
-//sound/error code needs this
-HWND mainwindow;
-
-//input code needs these
-int		window_center_x, window_center_y;
-RECT		window_rect;
-int window_x, window_y;
 
 static void released3dbackbuffer(void);
 static qboolean resetd3dbackbuffer(int width, int height);
@@ -216,6 +209,7 @@ static void D3DVID_UpdateWindowStatus (HWND hWnd)
 {
 	POINT p;
 	RECT nr;
+	int window_x, window_y;
 	int window_width, window_height;
 	GetClientRect(hWnd, &nr);
 
@@ -660,7 +654,7 @@ static qboolean resetd3dbackbuffer(int width, int height)
 	t2ddesc.Height = height;
 	t2ddesc.MipLevels = 1;
 	t2ddesc.ArraySize = 1;
-	t2ddesc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+	t2ddesc.Format = depthformat;
 	t2ddesc.SampleDesc.Count = d3d11multisample_count;
 	t2ddesc.SampleDesc.Quality = d3d11multisample_quality;
 	t2ddesc.Usage = D3D11_USAGE_DEFAULT;
@@ -721,6 +715,13 @@ static qboolean D3D11_VID_Init(rendererstate_t *info, unsigned char *palette)
 	IUnknown *window = RT_GetCoreWindow(&info->width, &info->height);
 
 	modestate = MS_FULLSCREEN;
+
+	if (info->depthbits == 16)
+		depthformat = DXGI_FORMAT_D16_UNORM;
+	else if (info->depthbits == 32)
+		depthformat = DXGI_FORMAT_D32_FLOAT;
+	else
+		depthformat = DXGI_FORMAT_D24_UNORM_S8_UINT;
 
 	//fill scd
 	scd.Width = info->width;
@@ -796,6 +797,13 @@ static qboolean initD3D11Device(HWND hWnd, rendererstate_t *info, PFN_D3D11_CREA
 		drivertype = D3D_DRIVER_TYPE_UNKNOWN;
 	else
 		drivertype = adapt?D3D_DRIVER_TYPE_UNKNOWN:D3D_DRIVER_TYPE_HARDWARE;
+
+	if (info->depthbits == 16)
+		depthformat = DXGI_FORMAT_D16_UNORM;
+	else if (info->depthbits == 32)
+		depthformat = DXGI_FORMAT_D32_FLOAT;
+	else
+		depthformat = DXGI_FORMAT_D24_UNORM_S8_UINT;
 
 	//for stereo support, we would have to rewrite all of this in a way that would make us dependant upon windows 8 or 7+platform update, which would exclude vista.
 	scd.BufferDesc.Width = info->width;
@@ -925,13 +933,13 @@ static qboolean initD3D11Device(HWND hWnd, rendererstate_t *info, PFN_D3D11_CREA
 	if (SUCCEEDED(ID3D11Device_CheckFormatSupport(pD3DDev11, DXGI_FORMAT_BC3_UNORM_SRGB, &support)))
 		sh_config.texfmt[PTI_BC3_RGBA_SRGB] = !!(support & D3D11_FORMAT_SUPPORT_TEXTURE2D);
 	if (SUCCEEDED(ID3D11Device_CheckFormatSupport(pD3DDev11, DXGI_FORMAT_BC4_UNORM, &support)))
-		sh_config.texfmt[PTI_BC4_R8] = !!(support & D3D11_FORMAT_SUPPORT_TEXTURE2D);
+		sh_config.texfmt[PTI_BC4_R] = !!(support & D3D11_FORMAT_SUPPORT_TEXTURE2D);
 	if (SUCCEEDED(ID3D11Device_CheckFormatSupport(pD3DDev11, DXGI_FORMAT_BC4_SNORM, &support)))
-		sh_config.texfmt[PTI_BC4_R8_SNORM] = !!(support & D3D11_FORMAT_SUPPORT_TEXTURE2D);
+		sh_config.texfmt[PTI_BC4_R_SNORM] = !!(support & D3D11_FORMAT_SUPPORT_TEXTURE2D);
 	if (SUCCEEDED(ID3D11Device_CheckFormatSupport(pD3DDev11, DXGI_FORMAT_BC5_UNORM, &support)))
-		sh_config.texfmt[PTI_BC5_RG8] = !!(support & D3D11_FORMAT_SUPPORT_TEXTURE2D);
+		sh_config.texfmt[PTI_BC5_RG] = !!(support & D3D11_FORMAT_SUPPORT_TEXTURE2D);
 	if (SUCCEEDED(ID3D11Device_CheckFormatSupport(pD3DDev11, DXGI_FORMAT_BC5_SNORM, &support)))
-		sh_config.texfmt[PTI_BC5_RG8_SNORM] = !!(support & D3D11_FORMAT_SUPPORT_TEXTURE2D);
+		sh_config.texfmt[PTI_BC5_RG_SNORM] = !!(support & D3D11_FORMAT_SUPPORT_TEXTURE2D);
 	if (SUCCEEDED(ID3D11Device_CheckFormatSupport(pD3DDev11, DXGI_FORMAT_BC6H_UF16, &support)))
 		sh_config.texfmt[PTI_BC6_RGB_UFLOAT] = !!(support & D3D11_FORMAT_SUPPORT_TEXTURE2D);
 	if (SUCCEEDED(ID3D11Device_CheckFormatSupport(pD3DDev11, DXGI_FORMAT_BC6H_SF16, &support)))
@@ -981,6 +989,7 @@ static void initD3D11(HWND hWnd, rendererstate_t *info)
 	static IID factiid = {0x770aae78, 0xf26f, 0x4dba, {0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87}};
 	IDXGIFactory1 *fact = NULL;
 	IDXGIAdapter *adapt = NULL;
+	vrsetup_t vrsetup = {sizeof(vrsetup)};
 	dllfunction_t d3d11funcs[] =
 	{
 		{(void**)&fnc, "D3D11CreateDeviceAndSwapChain"},
@@ -1000,6 +1009,7 @@ static void initD3D11(HWND hWnd, rendererstate_t *info)
 	if (!d3d11mod)
 		return;
 
+	vrsetup.vrplatform = VR_D3D11;
 	if (pCreateDXGIFactory1)
 	{
 		HRESULT hr;
@@ -1008,9 +1018,34 @@ static void initD3D11(HWND hWnd, rendererstate_t *info)
 			Con_Printf("CreateDXGIFactory1 failed: %s\n", D3D_NameForResult(hr));
 		if (fact)
 		{
-			IDXGIFactory1_EnumAdapters(fact, 0, &adapt);
+			if (info->vr)
+			{
+				if (!info->vr->Prepare(&vrsetup))
+				{
+					info->vr->Shutdown();
+					info->vr = NULL;
+				}
+				else
+				{
+					int id = 0;
+					while (S_OK==IDXGIFactory1_EnumAdapters(fact, id++, &adapt))
+					{
+						DXGI_ADAPTER_DESC desc;
+						IDXGIAdapter_GetDesc(adapt, &desc);
+						if (desc.AdapterLuid.LowPart == vrsetup.deviceid[0] && desc.AdapterLuid.HighPart == vrsetup.deviceid[1])
+							break;
+						IDXGIAdapter_Release(adapt);
+						adapt = NULL;
+					}
+				}
+			}
+
+			if (!adapt)
+				IDXGIFactory1_EnumAdapters(fact, 0, &adapt);
 		}
 	}
+	else
+		info->vr = NULL;	//o.O
 
 	
 	initD3D11Device(hWnd, info, fnc, adapt);

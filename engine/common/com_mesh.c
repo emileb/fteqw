@@ -22,6 +22,8 @@ extern cvar_t r_noframegrouplerp;
 cvar_t r_lerpmuzzlehack						= CVARF  ("r_lerpmuzzlehack", "1", CVAR_ARCHIVE);
 #ifdef MD1MODELS
 cvar_t mod_h2holey_bugged					= CVARD ("mod_h2holey_bugged", "0", "Hexen2's holey-model flag uses index 0 as transparent (and additionally 255 in gl, due to a bug). GLQuake engines tend to have bugs that use ONLY index 255, resulting in a significant compatibility issue that can be resolved only with this shitty cvar hack.");
+cvar_t mod_halftexel						= CVARD ("mod_halftexel", "1", "Offset texture coords by a half-texel, for compatibility with glquake and the majority of engine forks.");
+cvar_t mod_nomipmap							= CVARD ("mod_nomipmap", "0", "Disables the use of mipmaps on quake1 mdls, consistent with its original software renderer.");
 #endif
 static void QDECL r_meshpitch_callback(cvar_t *var, char *oldvalue)
 {
@@ -37,6 +39,7 @@ cvar_t r_meshpitch							= CVARCD	("r_meshpitch", "1", r_meshpitch_callback, "Sp
 #else
 cvar_t r_meshpitch							= CVARCD	("r_meshpitch", "-1", r_meshpitch_callback, "Specifies the direction of the pitch angle on mesh models formats, Quake compatibility requires -1.");
 #endif
+cvar_t r_meshroll							= CVARCD	("r_meshroll", "1", r_meshpitch_callback, "Specifies the direction of the roll angle on mesh models formats, also affects gamecode, so do not change from its default.");
 cvar_t dpcompat_skinfiles					= CVARD	("dpcompat_skinfiles", "0", "When set, uses a nodraw shader for any unmentioned surfaces.");
 
 #ifdef HAVE_CLIENT
@@ -246,7 +249,7 @@ void QDECL Mod_NormaliseTextureVectors(vec3_t *n, vec3_t *s, vec3_t *t, int v, q
 
 #ifdef SKELETALMODELS
 
-/*like above, but guess the quat.w*/
+/*like GenMatrixPosQuat4Scale, but guess the quat.w*/
 static void GenMatrixPosQuat3Scale(vec3_t const pos, vec3_t const quat3, vec3_t const scale, float result[12])
 {
 	vec4_t quat4;
@@ -1368,11 +1371,51 @@ static void Alias_BuildSkeletalMesh(mesh_t *mesh, framestate_t *framestate, gali
 {
 	boneidx_t *fte_restrict bidx = inf->ofs_skel_idx[0];
 	float *fte_restrict weight = inf->ofs_skel_weight[0];
+	const float *morphweights;
 
 	if (meshcache.bonecachetype != SKEL_INVERSE_ABSOLUTE)
 		meshcache.usebonepose = Alias_GetBoneInformation(inf, framestate, meshcache.bonecachetype=SKEL_INVERSE_ABSOLUTE, meshcache.boneposebuffer1, meshcache.boneposebuffer2, MAX_BONES);
 
-	if ((1))
+	morphweights = inf->AnimateMorphs?inf->AnimateMorphs(inf, framestate):NULL;
+	if (morphweights)
+	{
+		size_t m,v;
+		float w;
+		vecV_t *xyz = alloca(sizeof(*xyz)*inf->numverts), *inxyz;
+		vec3_t *norm = alloca(sizeof(*norm)*inf->numverts), *innorm;
+		vec3_t *sdir = alloca(sizeof(*sdir)*inf->numverts), *insdir;
+		vec3_t *tdir = alloca(sizeof(*tdir)*inf->numverts), *intdir;
+		memcpy(xyz, inf->ofs_skel_xyz, sizeof(*xyz)*inf->numverts);
+		memcpy(norm, inf->ofs_skel_norm, sizeof(*norm)*inf->numverts);
+		memcpy(sdir, inf->ofs_skel_svect, sizeof(*sdir)*inf->numverts);
+		memcpy(tdir, inf->ofs_skel_tvect, sizeof(*tdir)*inf->numverts);
+		for (m = 0; m < inf->nummorphs; m++)
+		{
+			if (morphweights[m] <= 0)
+				continue;
+			inxyz = inf->ofs_skel_xyz + (m+1)*inf->numverts;
+			innorm = inf->ofs_skel_norm + (m+1)*inf->numverts;
+			insdir = inf->ofs_skel_svect + (m+1)*inf->numverts;
+			intdir = inf->ofs_skel_tvect + (m+1)*inf->numverts;
+			w = morphweights[m];
+			for (v = 0; v < inf->numverts; v++)
+			{
+				VectorMA(xyz[v], w, inxyz[v], xyz[v]);
+				VectorMA(norm[v], w, innorm[v], norm[v]);
+				VectorMA(sdir[v], w, insdir[v], sdir[v]);
+				VectorMA(tdir[v], w, intdir[v], tdir[v]);
+			}
+		}
+
+		//right, now do the bones thing.
+		Alias_TransformVerticies_VNST(meshcache.usebonepose, inf->numverts, bidx, weight,
+				xyz[0], mesh->xyz_array[0],
+				norm[0], mesh->normals_array[0],
+				sdir[0], mesh->snormals_array[0],
+				tdir[0], mesh->tnormals_array[0]
+				);
+	}
+	else if ((1))
 		Alias_TransformVerticies_VNST(meshcache.usebonepose, inf->numverts, bidx, weight, 
 				inf->ofs_skel_xyz[0], mesh->xyz_array[0],
 				inf->ofs_skel_norm[0], mesh->normals_array[0],
@@ -1385,19 +1428,6 @@ static void Alias_BuildSkeletalMesh(mesh_t *mesh, framestate_t *framestate, gali
 				inf->ofs_skel_norm[0], mesh->normals_array[0]
 				);
 }
-
-#if !defined(SERVERONLY)
-static void Alias_BuildSkeletalVerts(float *xyzout, framestate_t *framestate, galiasinfo_t *inf)
-{
-	float buffer[MAX_BONES*12];
-	float bufferalt[MAX_BONES*12];
-	boneidx_t *fte_restrict bidx = inf->ofs_skel_idx[0];
-	float *fte_restrict weight = inf->ofs_skel_weight[0];
-	const float *bonepose = Alias_GetBoneInformation(inf, framestate, SKEL_INVERSE_ABSOLUTE, buffer, bufferalt, MAX_BONES);
-
-	Alias_TransformVerticies_V(bonepose, inf->numverts, bidx, weight, inf->ofs_skel_xyz[0], xyzout);
-}
-#endif
 
 #if defined(MD5MODELS) || defined(ZYMOTICMODELS) || defined(DPMMODELS)
 static int QDECL sortweights(const void *v1, const void *v2)	//helper for Alias_BuildGPUWeights
@@ -1695,7 +1725,7 @@ qboolean Alias_GAliasBuildMesh(mesh_t *mesh, vbo_t **vbop, galiasinfo_t *inf, in
 		usebones = false;
 	else if (inf->ofs_skel_xyz && !inf->ofs_skel_weight)
 		usebones = false;
-	else if (e->fatness || !inf->ofs_skel_idx || (!inf->mappedbones && inf->numbones > sh_config.max_gpu_bones))
+	else if (e->fatness || !inf->ofs_skel_idx || (!inf->mappedbones && inf->numbones > sh_config.max_gpu_bones) || inf->nummorphs)
 #endif
 		usebones = false;
 
@@ -1897,7 +1927,7 @@ qboolean Alias_GAliasBuildMesh(mesh_t *mesh, vbo_t **vbop, galiasinfo_t *inf, in
 		//float fg2time;
 		static float printtimer;
 
-#if FRAME_BLENDS != 2
+#if defined(_DEBUG) && FRAME_BLENDS != 2
 		if (e->framestate.g[FS_REG].lerpweight[2] || e->framestate.g[FS_REG].lerpweight[3])
 			Con_ThrottlePrintf(&printtimer, 1, "Alias_GAliasBuildMesh(%s): non-skeletal animation only supports two animations\n", e->model->name);
 #endif
@@ -1977,6 +2007,7 @@ qboolean Alias_GAliasBuildMesh(mesh_t *mesh, vbo_t **vbop, galiasinfo_t *inf, in
 		lerpcutoff = inf->lerpcutoff * r_lerpmuzzlehack.value;
 		if (Sh_StencilShadowsActive() || e->fatness || lerpcutoff)
 		{
+			memset(&meshcache.vbo.coord2, 0, sizeof(meshcache.vbo.coord2));
 			mesh->xyz2_array = NULL;
 			mesh->xyz_blendw[0] = 1;
 			mesh->xyz_blendw[1] = 0;
@@ -2083,171 +2114,190 @@ qboolean Alias_GAliasBuildMesh(mesh_t *mesh, vbo_t **vbop, galiasinfo_t *inf, in
 //used by the modelviewer.
 void Mod_AddSingleSurface(entity_t *ent, int surfaceidx, shader_t *shader, qboolean normals)
 {
-	galiasinfo_t *mod;
 	scenetris_t *t;
 	vecV_t *posedata = NULL;
 	vec3_t *normdata = NULL, tmp;
-	int surfnum = 0, i;
-#ifdef SKELETALMODELS
-	int cursurfnum = -1;
-#endif
+	int i, j;
 
-	if (!ent->model || ent->model->loadstate != MLS_LOADED || ent->model->type != mod_alias)
+	batch_t *batches[SHADER_SORT_COUNT], *b;
+	int s;
+	mesh_t *m;
+	unsigned int meshidx;
+
+	if (!ent->model || ent->model->loadstate != MLS_LOADED)
 		return;
-	mod = Mod_Extradata(ent->model);
 
-	for(; mod; mod = mod->nextsurf, surfnum++)
+	memset(batches, 0, sizeof(batches));
+	r_refdef.frustum_numplanes = 0;
+	switch(ent->model->type)
 	{
-		if (surfaceidx < 0)
-		{
-			if (!mod->contents)
-				continue;
-		}
-		else if (surfnum != surfaceidx)
+	case mod_alias:
+		R_GAlias_GenerateBatches(ent, batches);
+		break;
+
+#ifdef HALFLIFEMODELS
+	case mod_halflife:
+		R_HalfLife_GenerateBatches(ent, batches);
+		break;
+#endif
+	default:
+		return;
+	}
+
+	for (s = 0; s < countof(batches); s++)
+	{
+		if (!batches[s])
 			continue;
-
-#ifdef SKELETALMODELS
-		normdata = mod->ofs_skel_norm;
-		if (mod->numbones)
+		for (b = batches[s]; b; b = b->next)
 		{
-			if (!mod->ofs_skel_idx)
-				posedata = mod->ofs_skel_xyz;	//if there's no weights, don't try animating anything.
-			else if (mod->shares_verts != cursurfnum || !posedata)
+			if (b->buildmeshes)
+				b->buildmeshes(b);
+
+			for (meshidx = b->firstmesh; meshidx < b->meshes; meshidx++)
 			{
-				cursurfnum = mod->shares_verts;
+				if (surfaceidx < 0)
+				{	//only draw meshes that have an actual contents value (collision data)
+					//FIXME: implement.
+				}
+				else
+				{	//only draw the mesh that's actually selected.
+					if (b->user.alias.surfrefs[meshidx] != surfaceidx)
+						continue;
+				}
 
-				posedata = alloca(mod->numverts*sizeof(vecV_t));
-				Alias_BuildSkeletalVerts((float*)posedata, &ent->framestate, mod);
-			}
-			//else posedata = posedata;
-		}
-		else 
-#endif
-#ifndef NONSKELETALMODELS
-			continue;
-#else
-		if (!mod->numanimations)
-		{
-#ifdef SKELETALMODELS
-			if (mod->ofs_skel_xyz)
-				posedata = mod->ofs_skel_xyz;
-			else
-#endif
-				continue;
-		}
-		else
-		{
-			galiaspose_t *pose;
-			galiasanimation_t *group = mod->ofsanimations;
-			group += ent->framestate.g[FS_REG].frame[0] % mod->numanimations;
-			//FIXME: no support for frame blending.
-			if (!group->numposes || !group->poseofs)
-				continue;
-			pose = group->poseofs;
-			pose += (int)(ent->framestate.g[FS_REG].frametime[0] * group->rate)%group->numposes;
-			posedata = pose->ofsverts;
-		}
-#endif
+				m = b->mesh[meshidx];
 
-
-		if (normals && normdata)
-		{	//pegs, one on each vertex.
-			if (cl_numstris == cl_maxstris)
-			{
-				cl_maxstris+=8;
-				cl_stris = BZ_Realloc(cl_stris, sizeof(*cl_stris)*cl_maxstris);
-			}
-			t = &cl_stris[cl_numstris++];
-			t->shader = shader;
-			t->flags = BEF_LINES;
-			t->firstidx = cl_numstrisidx;
-			t->firstvert = cl_numstrisvert;
-			t->numidx = t->numvert = mod->numverts*2;
-
-			if (cl_numstrisidx+t->numidx > cl_maxstrisidx)
-			{
-				cl_maxstrisidx=cl_numstrisidx+t->numidx;
-				cl_strisidx = BZ_Realloc(cl_strisidx, sizeof(*cl_strisidx)*cl_maxstrisidx);
-			}
-			if (cl_numstrisvert+t->numvert > cl_maxstrisvert)
-				cl_stris_ExpandVerts(cl_numstrisvert+t->numvert);
-			for (i = 0; i < mod->numverts; i++)
-			{
-				VectorMA(ent->origin,	posedata[i][0], ent->axis[0], tmp);
-				VectorMA(tmp,			posedata[i][1], ent->axis[1], tmp);
-				VectorMA(tmp,			posedata[i][2], ent->axis[2], tmp);
-				VectorMA(ent->origin,	ent->scale,		tmp,		  cl_strisvertv[t->firstvert+i*2+0]);
-
-				VectorMA(tmp,			0.1*normdata[i][0], ent->axis[0], tmp);
-				VectorMA(tmp,			0.1*normdata[i][1], ent->axis[1], tmp);
-				VectorMA(tmp,			0.1*normdata[i][2], ent->axis[2], tmp);
-				VectorMA(ent->origin,	ent->scale,		tmp,		  cl_strisvertv[t->firstvert+i*2+1]);
-
-				Vector2Set(cl_strisvertt[t->firstvert+i*2+0], 0.0, 0.0);
-				Vector2Set(cl_strisvertt[t->firstvert+i*2+1], 1.0, 1.0);
-				Vector4Set(cl_strisvertc[t->firstvert+i*2+0], 0, 0, 1, 1);
-				Vector4Set(cl_strisvertc[t->firstvert+i*2+1], 0, 0, 1, 1);
-
-				cl_strisidx[cl_numstrisidx+i*2+0] = i*2+0;
-				cl_strisidx[cl_numstrisidx+i*2+1] = i*2+1;
-			}
-			cl_numstrisidx += i*2;
-			cl_numstrisvert += i*2;
-		}
-		else
-		{
-			if (cl_numstris == cl_maxstris)
-			{
-				cl_maxstris+=8;
-				cl_stris = BZ_Realloc(cl_stris, sizeof(*cl_stris)*cl_maxstris);
-			}
-			t = &cl_stris[cl_numstris++];
-			t->shader = shader;
-			t->flags = 0;//BEF_LINES;
-			t->firstidx = cl_numstrisidx;
-			t->firstvert = cl_numstrisvert;
-			if (t->flags&BEF_LINES)
-				t->numidx = mod->numindexes*2;
-			else
-				t->numidx = mod->numindexes;
-			t->numvert = mod->numverts;
-
-			if (cl_numstrisidx+t->numidx > cl_maxstrisidx)
-			{
-				cl_maxstrisidx=cl_numstrisidx+t->numidx;
-				cl_strisidx = BZ_Realloc(cl_strisidx, sizeof(*cl_strisidx)*cl_maxstrisidx);
-			}
-			if (cl_numstrisvert+mod->numverts > cl_maxstrisvert)
-				cl_stris_ExpandVerts(cl_numstrisvert+mod->numverts);
-			for (i = 0; i < mod->numverts; i++)
-			{
-				VectorMA(vec3_origin,	posedata[i][0], ent->axis[0], tmp);
-				VectorMA(tmp,			posedata[i][1], ent->axis[1], tmp);
-				VectorMA(tmp,			posedata[i][2], ent->axis[2], tmp);
-				VectorMA(ent->origin,	ent->scale,		tmp,		  cl_strisvertv[t->firstvert+i]);
-
-				Vector2Set(cl_strisvertt[t->firstvert+i], 0.5, 0.5);
-				Vector4Set(cl_strisvertc[t->firstvert+i], (mod->contents?1:0), 1, 1, 0.1);
-			}
-			if (t->flags&BEF_LINES)
-			{
-				for (i = 0; i < mod->numindexes; i+=3)
+				posedata = m->xyz_array;
+				normdata = normals?m->normals_array:NULL;
+				if (m->numbones)
+				{	//intended shader might have caused it to use skeletal stuff.
+					//we're too lame for that though.
+					posedata = alloca(m->numvertexes*sizeof(vecV_t));
+					if (normdata)
+					{
+						normdata = alloca(m->numvertexes*sizeof(vec3_t));
+						Alias_TransformVerticies_VN(m->bones, m->numvertexes, m->bonenums[0], m->boneweights[0],	m->xyz_array[0], posedata[0], m->normals_array[0], normdata[0]);
+					}
+					else
+						Alias_TransformVerticies_V(m->bones, m->numvertexes, m->bonenums[0], m->boneweights[0],		m->xyz_array[0], posedata[0]);
+				}
+				else
 				{
-					cl_strisidx[cl_numstrisidx++] = mod->ofs_indexes[i+0];
-					cl_strisidx[cl_numstrisidx++] = mod->ofs_indexes[i+1];
-					cl_strisidx[cl_numstrisidx++] = mod->ofs_indexes[i+1];
-					cl_strisidx[cl_numstrisidx++] = mod->ofs_indexes[i+2];
-					cl_strisidx[cl_numstrisidx++] = mod->ofs_indexes[i+2];
-					cl_strisidx[cl_numstrisidx++] = mod->ofs_indexes[i+0];
+					if (m->xyz_blendw[1] == 1 && m->xyz2_array)
+						posedata = m->xyz2_array;
+					else if (m->xyz_blendw[0] != 1 && m->xyz2_array)
+					{
+						posedata = alloca(m->numvertexes*sizeof(vecV_t));
+						for (i = 0; i < m->numvertexes; i++)
+						{
+							for (j = 0; j < 3; j++)
+								posedata[i][j] =	m->xyz_array[i][j] * m->xyz_blendw[0] +
+													m->xyz2_array[i][j] * m->xyz_blendw[1];
+						}
+					}
+					else
+						posedata = m->xyz_array;
+				}
+				if (normdata)
+				{
+					if (cl_numstris == cl_maxstris)
+					{
+						cl_maxstris+=8;
+						cl_stris = BZ_Realloc(cl_stris, sizeof(*cl_stris)*cl_maxstris);
+					}
+					t = &cl_stris[cl_numstris++];
+					t->shader = shader;
+					t->flags = BEF_LINES;
+					t->firstidx = cl_numstrisidx;
+					t->firstvert = cl_numstrisvert;
+					t->numidx = t->numvert = m->numvertexes*2;
+
+					if (cl_numstrisidx+t->numidx > cl_maxstrisidx)
+					{
+						cl_maxstrisidx=cl_numstrisidx+t->numidx;
+						cl_strisidx = BZ_Realloc(cl_strisidx, sizeof(*cl_strisidx)*cl_maxstrisidx);
+					}
+					if (cl_numstrisvert+t->numvert > cl_maxstrisvert)
+						cl_stris_ExpandVerts(cl_numstrisvert+t->numvert);
+					for (i = 0; i < m->numvertexes; i++)
+					{
+						VectorMA(vec3_origin,	posedata[i][0], ent->axis[0], tmp);
+						VectorMA(tmp,			posedata[i][1], ent->axis[1], tmp);
+						VectorMA(tmp,			posedata[i][2], ent->axis[2], tmp);
+						VectorMA(ent->origin,	ent->scale,		tmp,		  cl_strisvertv[t->firstvert+i*2+0]);
+
+						VectorMA(tmp,			normdata[i][0], ent->axis[0], tmp);
+						VectorMA(tmp,			normdata[i][1], ent->axis[1], tmp);
+						VectorMA(tmp,			normdata[i][2], ent->axis[2], tmp);
+						VectorMA(ent->origin,	ent->scale,		tmp,		  cl_strisvertv[t->firstvert+i*2+1]);
+
+						Vector2Set(cl_strisvertt[t->firstvert+i*2+0], 0.0, 0.0);
+						Vector2Set(cl_strisvertt[t->firstvert+i*2+1], 1.0, 1.0);
+						Vector4Set(cl_strisvertc[t->firstvert+i*2+0], 0, 0, 1, 1);
+						Vector4Set(cl_strisvertc[t->firstvert+i*2+1], 0, 0, 1, 1);
+
+						cl_strisidx[cl_numstrisidx+i*2+0] = i*2+0;
+						cl_strisidx[cl_numstrisidx+i*2+1] = i*2+1;
+					}
+					cl_numstrisidx += i*2;
+					cl_numstrisvert += i*2;
+				}
+				if (!normals)
+				{
+					if (cl_numstris == cl_maxstris)
+					{
+						cl_maxstris+=8;
+						cl_stris = BZ_Realloc(cl_stris, sizeof(*cl_stris)*cl_maxstris);
+					}
+					t = &cl_stris[cl_numstris++];
+					t->shader = shader;
+					t->flags = 0;//BEF_LINES;
+					t->firstidx = cl_numstrisidx;
+					t->firstvert = cl_numstrisvert;
+					if (t->flags&BEF_LINES)
+						t->numidx = m->numindexes*2;
+					else
+						t->numidx = m->numindexes;
+					t->numvert = m->numvertexes;
+
+					if (cl_numstrisidx+t->numidx > cl_maxstrisidx)
+					{
+						cl_maxstrisidx=cl_numstrisidx+t->numidx;
+						cl_strisidx = BZ_Realloc(cl_strisidx, sizeof(*cl_strisidx)*cl_maxstrisidx);
+					}
+					if (cl_numstrisvert+m->numvertexes > cl_maxstrisvert)
+						cl_stris_ExpandVerts(cl_numstrisvert+m->numvertexes);
+					for (i = 0; i < m->numvertexes; i++)
+					{
+						VectorMA(vec3_origin,	posedata[i][0], ent->axis[0], tmp);
+						VectorMA(tmp,			posedata[i][1], ent->axis[1], tmp);
+						VectorMA(tmp,			posedata[i][2], ent->axis[2], tmp);
+						VectorMA(ent->origin,	ent->scale,		tmp,		  cl_strisvertv[t->firstvert+i]);
+
+						Vector2Set(cl_strisvertt[t->firstvert+i], 0.5, 0.5);
+						Vector4Set(cl_strisvertc[t->firstvert+i], 1, 1, 1, 0.1);
+					}
+					if (t->flags&BEF_LINES)
+					{
+						for (i = 0; i < m->numindexes; i+=3)
+						{
+							cl_strisidx[cl_numstrisidx++] = m->indexes[i+0];
+							cl_strisidx[cl_numstrisidx++] = m->indexes[i+1];
+							cl_strisidx[cl_numstrisidx++] = m->indexes[i+1];
+							cl_strisidx[cl_numstrisidx++] = m->indexes[i+2];
+							cl_strisidx[cl_numstrisidx++] = m->indexes[i+2];
+							cl_strisidx[cl_numstrisidx++] = m->indexes[i+0];
+						}
+					}
+					else
+					{
+						for (i = 0; i < m->numindexes; i++)
+							cl_strisidx[cl_numstrisidx+i] = m->indexes[i];
+						cl_numstrisidx += m->numindexes;
+					}
+					cl_numstrisvert += m->numvertexes;
 				}
 			}
-			else
-			{
-				for (i = 0; i < mod->numindexes; i++)
-					cl_strisidx[cl_numstrisidx+i] = mod->ofs_indexes[i];
-				cl_numstrisidx += mod->numindexes;
-			}
-			cl_numstrisvert += mod->numverts;
 		}
 	}
 }
@@ -3059,7 +3109,6 @@ static int Mod_CountSkinFiles(model_t *mod)
 
 void Mod_LoadAliasShaders(model_t *mod)
 {
-	qbyte *mipdata[4];
 	galiasinfo_t *ai = mod->meshinfo;
 	galiasskin_t *s;
 	skinframe_t *f;
@@ -3102,6 +3151,10 @@ void Mod_LoadAliasShaders(model_t *mod)
 		if (!ruleset_allow_sensitive_texture_replacements.ival)
 			imageflags |= IF_NOREPLACE;
 	}
+#ifdef MD1MODELS
+	if (mod->fromgame == fg_quake && mod_nomipmap.ival)
+		imageflags |= IF_NOMIPMAP;
+#endif
 
 	slash = COM_SkipPath(mod->name);
 	if (slash != mod->name && slash-mod->name < sizeof(alttexpath))
@@ -3198,11 +3251,7 @@ void Mod_LoadAliasShaders(model_t *mod)
 						loadflags |= SHADER_HASFULLBRIGHT;
 					if (r_loadbumpmapping)
 						loadflags |= SHADER_HASNORMALMAP;
-					mipdata[0] = f->texels;
-					mipdata[1] = NULL;
-					mipdata[2] = NULL;
-					mipdata[3] = NULL;
-					R_BuildLegacyTexnums(f->shader, basename, alttexpath, loadflags, imageflags, skintranstype, s->skinwidth, s->skinheight, mipdata, host_basepal);
+					R_BuildLegacyTexnums(f->shader, basename, alttexpath, loadflags, imageflags, skintranstype, s->skinwidth, s->skinheight, f->texels, host_basepal);
 				}
 				else
 					R_BuildDefaultTexnums(&f->texnums, f->shader, 0);
@@ -3447,7 +3496,6 @@ static void *Q1MDL_LoadFrameGroup (galiasinfo_t *galias, dmdl_t *pq1inmodel, mod
 				else
 				{
 					Q1MDL_LoadPose(galias, pq1inmodel, verts, normals, svec, tvec, pinframe, seamremaps, mdltype, bbox);
-					pinframe += pq1inmodel->numverts;
 
 #ifdef _DEBUG
 					if ((bbox[3] > frameinfo->bboxmax.v[0] || bbox[4] > frameinfo->bboxmax.v[1] || bbox[5] > frameinfo->bboxmax.v[2] ||
@@ -3461,6 +3509,7 @@ static void *Q1MDL_LoadFrameGroup (galiasinfo_t *galias, dmdl_t *pq1inmodel, mod
 						Con_DPrintf(CON_WARNING"%s has incorrect frame bounds\n", loadmodel->name);
 						galias->warned = true;
 					}
+					pinframe += pq1inmodel->numverts;
 				}
 
 #ifndef SERVERONLY
@@ -3539,7 +3588,7 @@ typedef struct
 #define FLOODFILL_FIFO_MASK (FLOODFILL_FIFO_SIZE - 1)
 
 #define FLOODFILL_STEP( off, dx, dy ) \
-{ \
+do{ \
 	if (pos[off] == fillcolor) \
 	{ \
 		pos[off] = 255; \
@@ -3547,7 +3596,7 @@ typedef struct
 		inpt = (inpt + 1) & FLOODFILL_FIFO_MASK; \
 	} \
 	else if (pos[off] != 255) fdc = pos[off]; \
-}
+}while(0)
 
 static void Mod_FloodFillSkin( qbyte *skin, int skinwidth, int skinheight )
 {
@@ -3812,6 +3861,7 @@ static qboolean QDECL Mod_LoadQ1Model (model_t *mod, void *buffer, size_t fsize)
 #ifndef SERVERONLY
 	vec2_t *st_array;
 	int j;
+	float halftexel = mod_halftexel.ival?0.5:0;
 #endif
 	int version;
 	int i, onseams;
@@ -3993,13 +4043,13 @@ static qboolean QDECL Mod_LoadQ1Model (model_t *mod, void *buffer, size_t fsize)
 		{
 			if (stremap[k] > pq1inmodel->num_st)
 			{	/*onseam verts? shrink the index, and add half a texture width to the s coord*/
-				st_array[k][0] = 0.5+(LittleLong(pinstverts[stremap[k]-pq1inmodel->num_st].s)+0.5)/(float)pq1inmodel->skinwidth;
-				st_array[k][1] = (LittleLong(pinstverts[stremap[k]-pq1inmodel->num_st].t)+0.5)/(float)pq1inmodel->skinheight;
+				st_array[k][0] = 0.5+(LittleLong(pinstverts[stremap[k]-pq1inmodel->num_st].s)+halftexel)/(float)pq1inmodel->skinwidth;
+				st_array[k][1] = (LittleLong(pinstverts[stremap[k]-pq1inmodel->num_st].t)+halftexel)/(float)pq1inmodel->skinheight;
 			}
 			else
 			{
-				st_array[k][0] = (LittleLong(pinstverts[stremap[k]].s)+0.5)/(float)pq1inmodel->skinwidth;
-				st_array[k][1] = (LittleLong(pinstverts[stremap[k]].t)+0.5)/(float)pq1inmodel->skinheight;
+				st_array[k][0] = (LittleLong(pinstverts[stremap[k]].s)+halftexel)/(float)pq1inmodel->skinwidth;
+				st_array[k][1] = (LittleLong(pinstverts[stremap[k]].t)+halftexel)/(float)pq1inmodel->skinheight;
 			}
 		}
 #endif
@@ -4038,8 +4088,8 @@ static qboolean QDECL Mod_LoadQ1Model (model_t *mod, void *buffer, size_t fsize)
 		galias->ofs_st_array = st_array;
 		for (j=pq1inmodel->numverts,i = 0; i < pq1inmodel->numverts; i++)
 		{
-			st_array[i][0] = (LittleLong(pinstverts[i].s)+0.5)/(float)pq1inmodel->skinwidth;
-			st_array[i][1] = (LittleLong(pinstverts[i].t)+0.5)/(float)pq1inmodel->skinheight;
+			st_array[i][0] = (LittleLong(pinstverts[i].s)+halftexel)/(float)pq1inmodel->skinwidth;
+			st_array[i][1] = (LittleLong(pinstverts[i].t)+halftexel)/(float)pq1inmodel->skinheight;
 
 			if (pinstverts[i].onseam)
 			{
@@ -5443,8 +5493,14 @@ shader_t *Mod_ShaderForSkin(model_t *model, int surfaceidx, int num)
 			return NULL;
 	}
 
-	if (model->type == mod_alias)
+	switch(model->type)
 	{
+	case mod_brush:
+		if (surfaceidx < model->numtextures && !num)
+			return model->textures[surfaceidx]->shader;
+		return NULL;
+
+	case mod_alias:
 		inf = Mod_Extradata(model);
 
 		while(surfaceidx-->0 && inf)
@@ -5454,11 +5510,9 @@ shader_t *Mod_ShaderForSkin(model_t *model, int surfaceidx, int num)
 			return NULL;
 		skin = inf->ofsskins;
 		return skin[num].frame[0].shader;
-	}
-	else if (model->type == mod_brush && surfaceidx < model->numtextures && !num)
-		return model->textures[surfaceidx]->shader;
-	else
+	default:
 		return NULL;
+	}
 }
 #endif
 const char *Mod_SkinNameForNum(model_t *model, int surfaceidx, int num)
@@ -5469,23 +5523,37 @@ const char *Mod_SkinNameForNum(model_t *model, int surfaceidx, int num)
 	galiasinfo_t *inf;
 	galiasskin_t *skin;
 
-	if (!model || model->type != mod_alias)
+	if (!model || model->loadstate != MLS_LOADED)
 	{
-		if (model->type == mod_brush && surfaceidx < model->numtextures && !num)
+		if (model && model->loadstate == MLS_NOTLOADED)
+			Mod_LoadModel(model, MLV_SILENT);
+		if (model && model->loadstate == MLS_LOADING)
+			COM_WorkerPartialSync(model, &model->loadstate, MLS_LOADING);
+		if (!model || model->loadstate != MLS_LOADED)
+			return NULL;
+	}
+
+	switch(model->type)
+	{
+	case mod_brush:
+		if (surfaceidx < model->numtextures && !num)
 			return "";
 		return NULL;
-	}
-	inf = Mod_Extradata(model);
+	case mod_alias:
+		inf = Mod_Extradata(model);
 
-	while(surfaceidx-->0 && inf)
-		inf = inf->nextsurf;
-	if (!inf || num >= inf->numskins)
+		while(surfaceidx-->0 && inf)
+			inf = inf->nextsurf;
+		if (!inf || num >= inf->numskins)
+			return NULL;
+		skin = inf->ofsskins;
+	//	if (!*skin[num].name)
+	//		return skin[num].frame[0].shadername;
+	//	else
+			return skin[num].name;
+	default:
 		return NULL;
-	skin = inf->ofsskins;
-//	if (!*skin[num].name)
-//		return skin[num].frame[0].shadername;
-//	else
-		return skin[num].name;
+	}
 #endif
 }
 
@@ -5496,20 +5564,39 @@ const char *Mod_SurfaceNameForNum(model_t *model, int num)
 #else
 	galiasinfo_t *inf;
 
-	if (!model || model->type != mod_alias)
+	if (!model || model->loadstate != MLS_LOADED)
 	{
+		if (model && model->loadstate == MLS_NOTLOADED)
+			Mod_LoadModel(model, MLV_SILENT);
+		if (model && model->loadstate == MLS_LOADING)
+			COM_WorkerPartialSync(model, &model->loadstate, MLS_LOADING);
+		if (!model || model->loadstate != MLS_LOADED)
+			return NULL;
+	}
+
+	switch(model->type)
+	{
+	case mod_brush:
 		if (model->type == mod_brush && num < model->numtextures)
 			return model->textures[num]->name;
 		return NULL;
-	}
-	inf = Mod_Extradata(model);
-
-	while(num-->0 && inf)
-		inf = inf->nextsurf;
-	if (inf)
-		return inf->surfacename;
-	else
+	case mod_halflife:
 		return NULL;
+	case mod_alias:
+		inf = Mod_Extradata(model);
+
+		while(num-->0 && inf)
+			inf = inf->nextsurf;
+		if (inf)
+			return inf->surfacename;
+		else
+			return NULL;
+	case mod_sprite:
+	case mod_dummy:
+	case mod_heightmap:
+	default:
+		return NULL;
+	}
 #endif
 }
 
@@ -5518,8 +5605,20 @@ float Mod_GetFrameDuration(model_t *model, int surfaceidx, int frameno)
 	galiasinfo_t *inf;
 	galiasanimation_t *group;
 
+#ifdef HALFLIFEMODELS
+	if (model && model->type == mod_halflife) {
+		int unused;
+		float duration;
+		char *name;
+		qboolean loop;
+		HLMDL_FrameInfoForNum(model, surfaceidx, frameno, &name, &unused, &duration, &loop);
+		return duration;
+	}
+#endif
+	
 	if (!model || model->type != mod_alias)
 		return 0;
+
 	inf = Mod_Extradata(model);
 	
 	while(surfaceidx-->0 && inf)
@@ -8428,9 +8527,9 @@ static qboolean QDECL Mod_LoadInterQuakeModel(model_t *mod, void *buffer, size_t
 
 static qboolean Mod_ParseMD5Anim(model_t *mod, char *buffer, galiasinfo_t *prototype, void**poseofs, galiasanimation_t *gat)
 {
-#define MD5ERROR0PARAM(x) { Con_Printf(CON_ERROR x "\n"); return false; }
-#define MD5ERROR1PARAM(x, y) { Con_Printf(CON_ERROR x "\n", y); return false; }
-#define EXPECT(x) buffer = COM_ParseOut(buffer, token, sizeof(token)); if (strcmp(token, x)) MD5ERROR1PARAM("MD5ANIM: expected %s", x);
+#define MD5ERROR0PARAM(x) do{ Con_Printf(CON_ERROR x "\n"); return false; }while(0)
+#define MD5ERROR1PARAM(x, y) do{ Con_Printf(CON_ERROR x "\n", y); return false; }while(0)
+#define EXPECT(x) do{buffer = COM_ParseOut(buffer, token, sizeof(token)); if (strcmp(token, x)) MD5ERROR1PARAM("MD5ANIM: expected %s", x);}while(0)
 	unsigned int i, j;
 
 	galiasanimation_t grp;
@@ -8638,9 +8737,9 @@ static qboolean Mod_ParseMD5Anim(model_t *mod, char *buffer, galiasinfo_t *proto
 
 static galiasinfo_t *Mod_ParseMD5MeshModel(model_t *mod, char *buffer, char *modname)
 {
-#define MD5ERROR0PARAM(x) { Con_Printf(CON_ERROR x "\n"); return NULL; }
-#define MD5ERROR1PARAM(x, y) { Con_Printf(CON_ERROR x "\n", y); return NULL; }
-#define EXPECT(x) buffer = COM_ParseOut(buffer, token, sizeof(token)); if (strcmp(token, x)) Sys_Error("MD5MESH: expected %s", x);
+#define MD5ERROR0PARAM(x) do{ Con_Printf(CON_ERROR x "\n"); return NULL; }while(0)
+#define MD5ERROR1PARAM(x, y) do{ Con_Printf(CON_ERROR x "\n", y); return NULL; }while(0)
+#define EXPECT(x) do{buffer = COM_ParseOut(buffer, token, sizeof(token)); if (strcmp(token, x)) Sys_Error("MD5MESH: expected %s", x);}while(0)
 	int numjoints = 0;
 	int nummeshes = 0;
 	qboolean foundjoints = false;

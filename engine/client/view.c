@@ -157,7 +157,7 @@ static cvar_t	v_depthsortentities		= CVARAD("v_depthsortentities", "0", "v_reord
 
 #ifdef QUAKESTATS
 static cvar_t	scr_autoid				= CVARD("scr_autoid", "1", "Display nametags above all players while spectating.");
-static cvar_t	scr_autoid_team			= CVARD("scr_autoid_team", "2", "Display nametags above team members. 0: off. 1: display with half-alpha if occluded. 2: hide when occluded.");
+static cvar_t	scr_autoid_team			= CVARD("scr_autoid_team", "0", "Display nametags above team members. 0: off. 1: display with half-alpha if occluded. 2: hide when occluded.");
 static cvar_t	scr_autoid_health		= CVARD("scr_autoid_health", "1", "Display health as part of nametags (when known).");
 static cvar_t	scr_autoid_armour		= CVARD("scr_autoid_armor", "1", "Display armour as part of nametags (when known).");
 static cvar_t	scr_autoid_weapon		= CVARD("scr_autoid_weapon", "1", "Display the player's best weapon as part of their nametag (when known).");
@@ -373,12 +373,10 @@ void V_DriftPitch (playerview_t *pv)
 
 static void QDECL V_Gamma_Callback(struct cvar_s *var, char *oldvalue);
 
-static cshift_t	cshift_empty = { {130,80,50}, 0 };
-static cshift_t	cshift_water = { {130,80,50}, 128 };
-static cshift_t	cshift_slime = { {0,25,5}, 150 };
-static cshift_t	cshift_lava = { {255,80,0}, 150 };
-
-//static cshift_t	cshift_server = { {130,80,50}, 0 };
+static cvar_t		v_cshift_empty = CVARFD("v_cshift_empty", "130 80 50 0",	CVAR_ARCHIVE, "The colour tint to use when in the open air (additionally scaled by v_contentblend.");
+static cvar_t		v_cshift_water = CVARFD("v_cshift_water", "130 80 50 128",	CVAR_ARCHIVE, "The colour tint to use when underwater (additionally scaled by v_contentblend.");
+static cvar_t		v_cshift_slime = CVARFD("v_cshift_slime",   "0 25 5 150",	CVAR_ARCHIVE, "The colour tint to use when submerged in slime (additionally scaled by v_contentblend.");
+static cvar_t		v_cshift_lava  = CVARFD("v_cshift_lava",  "255 80 0 150",	CVAR_ARCHIVE, "The colour tint to use when burried in lava (ouchie!) (additionally scaled by v_contentblend.");
 
 cvar_t		v_gamma = CVARAFCD("gamma", "1.0", "v_gamma", CVAR_ARCHIVE|CVAR_RENDERERCALLBACK, V_Gamma_Callback, "Controls how bright the screen is. Setting this to anything but 1 without hardware gamma requires glsl support and can noticably harm your framerate.");
 cvar_t		v_gammainverted = CVARFCD("v_gammainverted", "0", CVAR_ARCHIVE, V_Gamma_Callback, "Boolean that controls whether the gamma should be inverted (like quake) or not.");
@@ -629,10 +627,8 @@ void V_cshift_f (void)
 		return;
 	}
 
-	cshift_empty.destcolor[0] = r;
-	cshift_empty.destcolor[1] = g;
-	cshift_empty.destcolor[2] = b;
-	cshift_empty.percent = p;
+	//always empty, to match vanilla.
+	Cvar_Set(&v_cshift_empty, va("%d %d %d %d", r, g, b, p));
 }
 
 
@@ -725,17 +721,21 @@ void V_SetContentsColor (int contents)
 {
 	int i;
 	playerview_t *pv = r_refdef.playerview;
+	cvar_t *v;
 
 	if (contents & FTECONTENTS_LAVA)
-		pv->cshifts[CSHIFT_CONTENTS] = cshift_lava;
+		v = &v_cshift_lava;
 	else if (contents & (FTECONTENTS_SLIME | FTECONTENTS_SOLID))
-		pv->cshifts[CSHIFT_CONTENTS] = cshift_slime;
+		v = &v_cshift_slime;
 	else if (contents & FTECONTENTS_WATER)
-		pv->cshifts[CSHIFT_CONTENTS] = cshift_water;
+		v = &v_cshift_water;
 	else
-		pv->cshifts[CSHIFT_CONTENTS] = cshift_empty;
+		v = &v_cshift_empty;
 
-	pv->cshifts[CSHIFT_CONTENTS].percent *= v_contentblend.value;
+	pv->cshifts[CSHIFT_CONTENTS].destcolor[0]	= v->vec4[0];
+	pv->cshifts[CSHIFT_CONTENTS].destcolor[1]	= v->vec4[1];
+	pv->cshifts[CSHIFT_CONTENTS].destcolor[2]	= v->vec4[2];
+	pv->cshifts[CSHIFT_CONTENTS].percent		= v->vec4[3] * v_contentblend.value;
 
 	if (pv->cshifts[CSHIFT_CONTENTS].percent)
 	{	//bound contents so it can't go negative
@@ -2013,14 +2013,26 @@ void R_DrawNameTags(void)
 #if defined(CSQC_DAT) || !defined(CLIENTONLY)
 	if (r_showshaders.ival && cl.worldmodel && cl.worldmodel->loadstate == MLS_LOADED)
 	{
+#ifdef CSQC_DAT
+		extern world_t csqc_world;
+#endif
 		trace_t trace;
 		char *str;
 		vec3_t targ;
 		vec2_t scale = {12,12};
 		msurface_t *surf;
 		VectorMA(r_refdef.vieworg, 8192, vpn, targ);
-		//FIXME: should probably do a general trace, to hit (networked) submodels too
-		cl.worldmodel->funcs.NativeTrace(cl.worldmodel, 0, PE_FRAMESTATE, NULL, r_refdef.vieworg, targ, vec3_origin, vec3_origin, false, ~0, &trace);
+#ifdef CSQC_DAT
+		if (csqc_world.progs)
+		{
+			int oldhit = csqc_world.edicts->xv->hitcontentsmaski;
+			csqc_world.edicts->xv->hitcontentsmaski = ~0;
+			trace = World_Move(&csqc_world, r_refdef.vieworg, vec3_origin, vec3_origin, targ, MOVE_EVERYTHING, csqc_world.edicts);
+			csqc_world.edicts->xv->hitcontentsmaski = oldhit;
+		}
+		else
+#endif
+			cl.worldmodel->funcs.NativeTrace(cl.worldmodel, 0, PE_FRAMESTATE, NULL, r_refdef.vieworg, targ, vec3_origin, vec3_origin, false, ~0, &trace);
 
 		surf = Mod_GetSurfaceNearPoint(cl.worldmodel, trace.endpos);
 		if (surf)
@@ -2193,7 +2205,7 @@ void R_DrawNameTags(void)
 				if (Matrix4x4_CM_Project(org, screenspace, r_refdef.viewangles, r_refdef.vieworg, r_refdef.fov_x, r_refdef.fov_y))
 				{
 					char asciibuffer[8192];
-					char *entstr;
+					const char *entstr;
 					size_t buflen;
 					int x, y;
 
@@ -2205,7 +2217,19 @@ void R_DrawNameTags(void)
 						vec2_t scale = {8,8};
 						x = screenspace[0]*r_refdef.vrect.width+r_refdef.vrect.x;
 						y = (1-screenspace[1])*r_refdef.vrect.height+r_refdef.vrect.y;
-						R_DrawTextField(x, y, vid.width - x, vid.height - y, entstr, CON_WHITEMASK, CPRINT_TALIGN|CPRINT_LALIGN, font_console, scale);
+						y += scale[1]*R_DrawTextField(x, y, vid.width - x, vid.height - y, entstr, CON_WHITEMASK, CPRINT_TALIGN|CPRINT_LALIGN, font_console, scale);
+
+#ifdef CSQC_DAT
+						{
+							extern world_t csqc_world;
+							if (w == &csqc_world)
+							{
+								entstr = CSQC_GetExtraFieldInfo(e, asciibuffer, sizeof(asciibuffer));
+								if (entstr)
+									y += scale[1]*R_DrawTextField(x, y, vid.width - x, vid.height - y, entstr, CON_WHITEMASK, CPRINT_TALIGN|CPRINT_LALIGN, font_console, scale);
+							}
+						}
+#endif
 					}
 				}
 			}
@@ -2599,6 +2623,11 @@ void V_Init (void)
 	Cvar_Register (&v_iyaw_level, VIEWVARS);
 	Cvar_Register (&v_iroll_level, VIEWVARS);
 	Cvar_Register (&v_ipitch_level, VIEWVARS);
+
+	Cvar_Register (&v_cshift_empty, VIEWVARS);
+	Cvar_Register (&v_cshift_water, VIEWVARS);
+	Cvar_Register (&v_cshift_slime, VIEWVARS);
+	Cvar_Register (&v_cshift_lava, VIEWVARS);
 
 	Cvar_Register (&v_contentblend, VIEWVARS);
 	Cvar_Register (&v_damagecshift, VIEWVARS);

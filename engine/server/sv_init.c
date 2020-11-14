@@ -42,7 +42,6 @@ extern cvar_t	skill;
 extern cvar_t	sv_cheats;
 extern cvar_t	sv_bigcoords;
 extern cvar_t	sv_gamespeed;
-extern cvar_t	sv_csqcdebug;
 extern cvar_t	sv_csqc_progname;
 extern cvar_t	sv_calcphs;
 extern cvar_t	sv_playerslots, maxclients, maxspectators;
@@ -625,7 +624,7 @@ void SV_UnspawnServer (void)	//terminate the running server.
 		}
 		PR_Deinit();
 #ifdef Q3SERVER
-		SVQ3_ShutdownGame();
+		SVQ3_ShutdownGame(false);
 #endif
 #ifdef Q2SERVER
 		SVQ2_ShutdownGameProgs();
@@ -694,6 +693,10 @@ void SV_UpdateMaxPlayers(int newmax)
 		}
 		for (i = 0; i < min(newmax, svs.allocated_client_slots); i++)
 		{
+			if (svs.clients[i].name == old[i].namebuf)
+				svs.clients[i].name = svs.clients[i].namebuf;
+			if (svs.clients[i].team == old[i].teambuf)
+				svs.clients[i].team = svs.clients[i].teambuf;
 			if (svs.clients[i].netchan.message.data)
 				svs.clients[i].netchan.message.data = (qbyte*)&svs.clients[i] + (svs.clients[i].netchan.message.data - (qbyte*)&old[i]);
 			if (svs.clients[i].datagram.data)
@@ -823,11 +826,11 @@ clients along with it.
 This is only called from the SV_Map_f() function.
 ================
 */
-void SV_SpawnServer (const char *server, const char *startspot, qboolean noents, qboolean usecinematic)
+void SV_SpawnServer (const char *server, const char *startspot, qboolean noents, qboolean usecinematic, int playerslots)
 {
 	extern cvar_t allow_download_refpackages;
 	func_t f;
-	const char *file;
+	const char *file, *csprogsname;
 
 	gametype_e newgametype;
 
@@ -921,7 +924,7 @@ void SV_SpawnServer (const char *server, const char *startspot, qboolean noents,
 
 #ifdef Q3SERVER
 	if (svs.gametype == GT_QUAKE3)
-		SVQ3_ShutdownGame();	//botlib kinda mandates this. :(
+		SVQ3_ShutdownGame(false);	//botlib kinda mandates this. :(
 #endif
 
 	Mod_ClearAll ();
@@ -981,7 +984,7 @@ void SV_SpawnServer (const char *server, const char *startspot, qboolean noents,
 		CL_CheckServerInfo();
 #endif
 
-
+	sv.restarting = false;
 	sv.state = ss_loading;
 #if defined(Q2BSPS)
 	if (usecinematic)
@@ -1002,7 +1005,7 @@ void SV_SpawnServer (const char *server, const char *startspot, qboolean noents,
 	{
 		//.map is commented out because quite frankly, they're a bit annoying when the engine loads the gpled start.map when really you wanted to just play the damn game intead of take it apart.
 		//if you want to load a .map, just use 'map foo.map' instead.
-		char *exts[] = {"maps/%s", "maps/%s.bsp", "maps/%s.cm", "maps/%s.hmp", /*"maps/%s.map",*/ NULL};
+		char *exts[] = {"maps/%s", "maps/%s.bsp", "maps/%s.cm", "maps/%s.hmp", /*"maps/%s.map",*/ "maps/%s.bsp.gz", NULL};
 		int depth, bestdepth;
 		flocation_t loc;
 		time_t filetime;
@@ -1071,8 +1074,12 @@ void SV_SpawnServer (const char *server, const char *startspot, qboolean noents,
 	//do we allow csprogs?
 #ifdef PEXT_CSQC
 	fsz = 0;
-	if (*sv_csqc_progname.string)
-		file = COM_LoadTempFile(sv_csqc_progname.string, 0, &fsz);
+	if (noents)
+		csprogsname = "csaddon.dat";
+	else
+		csprogsname = sv_csqc_progname.string;
+	if (*csprogsname)
+		file = COM_LoadTempFile(csprogsname, 0, &fsz);
 	else
 		file = NULL;
 	if (file)
@@ -1083,8 +1090,8 @@ void SV_SpawnServer (const char *server, const char *startspot, qboolean noents,
 		InfoBuf_SetValueForStarKey(&svs.info, "*csprogs", text);
 		sprintf(text, "0x%x", (unsigned int)fsz);
 		InfoBuf_SetValueForStarKey(&svs.info, "*csprogssize", text);
-		if (strcmp(sv_csqc_progname.string, "csprogs.dat"))
-			InfoBuf_SetValueForStarKey(&svs.info, "*csprogsname", sv_csqc_progname.string);
+		if (strcmp(csprogsname, "csprogs.dat"))
+			InfoBuf_SetValueForStarKey(&svs.info, "*csprogsname", csprogsname);
 		else
 			InfoBuf_SetValueForStarKey(&svs.info, "*csprogsname", "");
 	}
@@ -1095,12 +1102,6 @@ void SV_SpawnServer (const char *server, const char *startspot, qboolean noents,
 		InfoBuf_SetValueForStarKey(&svs.info, "*csprogssize", "");
 		InfoBuf_SetValueForStarKey(&svs.info, "*csprogsname", "");
 	}
-
-	sv.csqcdebug = sv_csqcdebug.value;
-	if (sv.csqcdebug)
-		InfoBuf_SetValueForStarKey(&svs.info, "*csqcdebug", "1");
-	else
-		InfoBuf_RemoveKey(&svs.info, "*csqcdebug");
 #endif
 
 	if (svs.gametype == GT_PROGS)
@@ -1126,35 +1127,35 @@ MSV_OpenUserDatabase();
 #endif
 
 	newgametype = svs.gametype;
-#ifdef HLSERVER
-	if (SVHL_InitGame())
-		newgametype = GT_HALFLIFE;
-	else
-#endif
-#ifdef Q3SERVER
-	if (SVQ3_InitGame())
-		newgametype = GT_QUAKE3;
-	else
-#endif
-#ifdef Q2SERVER
-	if ((sv.world.worldmodel->fromgame == fg_quake2 || sv.world.worldmodel->fromgame == fg_quake3) && !*pr_ssqc_progs.string && SVQ2_InitGameProgs())	//these are the rules for running a q2 server
-		newgametype = GT_QUAKE2;	//we loaded the dll
-	else
-#endif
-#ifdef VM_LUA
-	if (PR_LoadLua())
-		newgametype = GT_LUA;
-	else
-#endif
-#ifdef VM_Q1
-	if (PR_LoadQ1QVM())
-		newgametype = GT_Q1QVM;
-
-	else
-#endif
+	if (noents)
 	{
 		newgametype = GT_PROGS;	//let's just hope this loads.
-		Q_InitProgs(usecinematic);
+		Q_InitProgs(INITPROGS_EDITOR);
+	}
+#ifdef HLSERVER
+	else if (SVHL_InitGame())
+		newgametype = GT_HALFLIFE;
+#endif
+#ifdef Q3SERVER
+	else if (SVQ3_InitGame(false))
+		newgametype = GT_QUAKE3;
+#endif
+#ifdef Q2SERVER
+	else if ((sv.world.worldmodel->fromgame == fg_quake2 || sv.world.worldmodel->fromgame == fg_quake3) && !*pr_ssqc_progs.string && SVQ2_InitGameProgs())	//these are the rules for running a q2 server
+		newgametype = GT_QUAKE2;	//we loaded the dll
+#endif
+#ifdef VM_LUA
+	else if (PR_LoadLua())
+		newgametype = GT_LUA;
+#endif
+#ifdef VM_Q1
+	else if (PR_LoadQ1QVM())
+		newgametype = GT_Q1QVM;
+#endif
+	else
+	{
+		newgametype = GT_PROGS;	//let's just hope this loads.
+		Q_InitProgs(usecinematic?INITPROGS_REQUIRE:INITPROGS_NORMAL);
 	}
 
 //	if ((sv.worldmodel->fromgame == fg_quake2 || sv.worldmodel->fromgame == fg_quake3) && !*progs.string && SVQ2_InitGameProgs())	//full q2 dll decision in one if statement
@@ -1167,7 +1168,7 @@ MSV_OpenUserDatabase();
 #endif
 #ifdef Q3SERVER
 		if (newgametype != GT_QUAKE3)
-			SVQ3_ShutdownGame();
+			SVQ3_ShutdownGame(false);
 #endif
 #ifdef Q2SERVER
 		if (newgametype != GT_QUAKE2)	//we don't want the q2 stuff anymore.
@@ -1244,7 +1245,6 @@ MSV_OpenUserDatabase();
 	else if (svs.gametype == GT_QUAKE2)
 	{
 		int subs;
-		extern int map_checksum;
 		extern cvar_t sv_airaccelerate;
 
 		sv.stringsalloced = true;
@@ -1256,10 +1256,7 @@ MSV_OpenUserDatabase();
 			sv.strings.configstring[Q2CS_AIRACCEL] = Z_StrDup("0");
 
 		// init map checksum config string but only for Q2/Q3 maps
-		if (sv.world.worldmodel->fromgame == fg_quake2 || sv.world.worldmodel->fromgame == fg_quake3)
-			sv.strings.configstring[Q2CS_MAPCHECKSUM] = Z_StrDup(va("%i", map_checksum));
-		else
-			sv.strings.configstring[Q2CS_MAPCHECKSUM] = Z_StrDup("0");
+		sv.strings.configstring[Q2CS_MAPCHECKSUM] = Z_StrDup(va("%i", sv.world.worldmodel->checksum));
 
 		subs = sv.world.worldmodel->numsubmodels;
 		if (subs > MAX_PRECACHE_MODELS-1)
@@ -1335,6 +1332,8 @@ MSV_OpenUserDatabase();
 					i = QWMAX_CLIENTS;
 			}
 		}
+		if (playerslots)
+			i = playerslots;	//saved game? force it.
 		if (i > MAX_CLIENTS)
 			i = MAX_CLIENTS;
 		SV_UpdateMaxPlayers(i);
@@ -1380,7 +1379,7 @@ MSV_OpenUserDatabase();
 #endif
 #ifdef Q3SERVER
 	case GT_QUAKE3:
-		SV_UpdateMaxPlayers(32);
+		SV_UpdateMaxPlayers(playerslots?playerslots:max(8,maxclients.ival));
 		break;
 #endif
 #ifdef HLSERVER

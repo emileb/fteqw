@@ -1381,6 +1381,8 @@ void P_ParticleEffect_f(void)
 			ptype->count = 1/atof(value);
 			if (Cmd_Argc()>2)
 				ptype->countrand = 1/atof(Cmd_Argv(2));
+			if (Cmd_Argc()>3)
+				ptype->countextra = atof(Cmd_Argv(3));
 		}
 		else if (!strcmp(var, "count"))
 		{
@@ -4808,6 +4810,9 @@ static int PScript_RunParticleEffectState (vec3_t org, vec3_t dir, float count, 
 			ctx.scale0 = 2.0 / m;
 			ctx.scale1 /= m;
 			ctx.scale2 /= m;
+
+			if (ptype->randsmax!=1)
+				ctx.bias1 += ptype->texsstride * (rand()%ptype->randsmax);
 
 			//inserts decals through a callback.
 			Mod_ClipDecal(ctx.model, ctx.center, ctx.normal, ctx.tangent2, ctx.tangent1, m, ptype->surfflagmask, ptype->surfflagmatch, PScript_AddDecals, &ctx);

@@ -1,7 +1,10 @@
+#ifndef MERGED_H
+#define MERGED_H
+
 #ifdef VKQUAKE
 //we need some types available elsewhere, but don't really want to have to include the entire vulkan api everywhere.
 //unfortunately, vulkan's handle types are not well defined.
-#if defined(__LP64__) || defined(_WIN64)
+#if defined(__LP64__) || defined(_WIN64) || (defined(__x86_64__) && !defined(__ILP32__) ) || defined(_M_X64) || defined(__ia64) || defined (_M_IA64) || defined(__aarch64__) || defined(__powerpc64__)
 #define VulkanAPIRandomness void*
 #elif defined(_MSC_VER) && _MSC_VER < 1300
 #define VulkanAPIRandomness __int64
@@ -53,7 +56,7 @@ typedef enum
 #define FST_BASE 0	//base frames
 #define FS_REG 1	//regular frames
 #define FS_COUNT 2	//regular frames
-typedef struct {
+typedef struct framestate_s {
 	struct framestateregion_s {
 		int frame[FRAME_BLENDS];
 		float frametime[FRAME_BLENDS];
@@ -208,7 +211,8 @@ const char *Mod_GetBoneName(struct model_s *model, int bonenum);
 
 void Draw_FunString(float x, float y, const void *str);
 void Draw_AltFunString(float x, float y, const void *str);
-void Draw_FunStringWidth(float x, float y, const void *str, int width, int rightalign, qboolean highlight);
+void Draw_FunStringWidthFont(struct font_s *font, float x, float y, const void *str, int width, int rightalign, qboolean highlight);
+#define Draw_FunStringWidth(x,y,str,width,rightalign,highlight) Draw_FunStringWidthFont(font_default,x,y,str,width,rightalign,highlight)
 
 extern int r_regsequence;
 
@@ -298,6 +302,8 @@ struct pendingtextureinfo
 		PTI_CUBE,		//w*h*6 - depth MUST be 6 (faces must be tightly packed)
 		PTI_2D_ARRAY,	//w*h*layers - depth is =layers
 		PTI_CUBE_ARRAY,	//w*h*(layers*6) - depth is =(layers*6).
+
+		PTI_ANY			//says we don't care.
 	} type;
 
 	uploadfmt_t encoding;	//PTI_* formats
@@ -437,6 +443,8 @@ typedef struct rendererinfo_s {
 
 	void	 (*VID_SetWindowCaption)		(const char *msg);
 
+//FIXME: add clipboard stuff...
+
 //FIXME: remove these...
 	char	*(*VID_GetRGBInfo)			(int *bytestride, int *truevidwidth, int *truevidheight, enum uploadfmt *fmt);
 
@@ -512,4 +520,4 @@ typedef struct rendererinfo_s {
 texid_t R2D_RT_Configure(const char *id, int width, int height, uploadfmt_t rtfmt, unsigned int imageflags);
 texid_t R2D_RT_GetTexture(const char *id, unsigned int *width, unsigned int *height);
 
-
+#endif //MERGED_H

@@ -21,8 +21,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifndef __MODEL__
 #define __MODEL__
 
-#include "modelgen.h"
-#include "spritegn.h"
+#include "../client/modelgen.h"
+#include "../client/spritegn.h"
 
 struct hull_s;
 struct trace_s;
@@ -56,6 +56,8 @@ typedef enum {
 
 #ifdef FTE_TARGET_WEB
 #define MAX_BONES 256
+#elif defined(IQMTOOL)
+#define MAX_BONES 8192
 #else
 #define MAX_BONES 256	//Note: there's lots of bone data allocated on the stack, so don't bump recklessly.
 #endif
@@ -157,16 +159,37 @@ typedef struct batch_s
 	{
 		struct
 		{
-			unsigned int shadowbatch; //a unique index to accelerate shadowmesh generation (dlights, yay!)
-			unsigned int ebobatch;	//
-		};
-		struct 
+			unsigned int shadowbatch;	//a unique index to accelerate shadowmesh generation (dlights, yay!)
+			unsigned int ebobatch;		//temporal scene cache stuff, basically just a simple index so we don't have to deal with shader sort values when generating new index lists.
+//		} bmodel;
+//		struct
+//		{
+			vec4_t plane;	/*used only at load (for portal surfaces, so multiple planes are not part of the same batch)*/
+		} bmodel;	//bmodel surfaces.
+		struct
 		{
-			unsigned int surf_first;
-			unsigned int surf_count;
+			unsigned int lightidx;
+			unsigned int lightmode;
+		} dlight;	//deferred light batches
+		struct
+		{
+			unsigned short surfrefs[sizeof(mesh_t)/sizeof(unsigned short)];	//for hlmdl batching...
+		} alias;
+		struct
+		{
+			unsigned int surface;
+		} poly;
+	/*	struct
+		{
+			unsigned int first;
+			unsigned int count;
+		} surf;*/
+		struct
+		{
+			mesh_t meshbuf;
+			mesh_t *meshptr;
 		};
-		vec4_t plane;	/*used only at load (for portal surfaces, so multiple planes are not part of the same batch)*/
-	};
+	} user;
 } batch_t;
 /*
 
@@ -254,7 +277,7 @@ typedef struct {
 
 	void (*LightPointValues)	(struct model_s *model, const vec3_t point, vec3_t res_diffuse, vec3_t res_ambient, vec3_t res_dir);
 	void (*StainNode)			(struct mnode_s *node, float *parms);
-	void (*MarkLights)			(struct dlight_s *light, int bit, struct mnode_s *node);
+	void (*MarkLights)			(struct dlight_s *light, dlightbitmask_t bit, struct mnode_s *node);
 
 	int	(*ClusterForPoint)		(struct model_s *model, const vec3_t point, int *areaout);	//pvs index (leaf-1 for q1bsp). may be negative (ie: no pvs).
 	qbyte *(*ClusterPVS)		(struct model_s *model, int cluster, pvsbuffer_t *pvsbuffer, pvsmerge_t merge);
@@ -325,7 +348,7 @@ void GL_DeselectVAO(void);
 typedef struct texture_s
 {
 	char		name[64];
-	unsigned	width, height;
+	unsigned	vwidth, vheight;	//used for lightmap coord generation
 
 	struct shader_s	*shader;
 	char		*partname;				//parsed from the worldspawn entity
@@ -335,8 +358,10 @@ typedef struct texture_s
 	struct texture_s *anim_next;		// in the animation sequence
 	struct texture_s *alternate_anims;	// bmodels in frmae 1 use these
 
-	qbyte		*mips[4];	//the different mipmap levels.
-	qbyte		*palette;	//host_basepal or halflife per-texture palette
+	uploadfmt_t srcfmt;
+	unsigned int srcwidth, srcheight;	//actual size (updated miptex format)
+	qbyte		*srcdata;		//the different mipmap levels.
+	qbyte		*palette;	//host_basepal or halflife per-texture palette (or null)
 } texture_t;
 /*
 typedef struct
@@ -435,20 +460,22 @@ typedef struct msurface_s
 	batch_t		*sbatch;
 	mtexinfo_t	*texinfo;
 	int			visframe;		// should be drawn when node is crossed
+#ifdef RTLIGHTS
 	int			shadowframe;
-	int			clipcount;
+#endif
+//	int			clipcount;
 	
 // legacy lighting info
+	dlightbitmask_t	dlightbits;
 	int			dlightframe;
-	int			dlightbits;
+	qboolean	cached_dlight;				// true if dynamic light in cache
 
 //static lighting
 	int			lightmaptexturenums[MAXRLIGHTMAPS];	//rbsp+fbsp formats have multiple lightmaps
-	lightstyleindex_t	styles[MAXQ1LIGHTMAPS];
+	lightstyleindex_t	styles[MAXCPULIGHTMAPS];
 	qbyte		vlstyles[MAXRLIGHTMAPS];
-	int			cached_light[MAXQ1LIGHTMAPS];	// values currently used in lightmap
-	int			cached_colour[MAXQ1LIGHTMAPS];	// values currently used in lightmap
-	qboolean	cached_dlight;				// true if dynamic light in cache
+	int			cached_light[MAXCPULIGHTMAPS];	// values currently used in lightmap
+	int			cached_colour[MAXCPULIGHTMAPS];	// values currently used in lightmap
 #ifndef NOSTAINS
 	qboolean stained;
 #endif
@@ -563,7 +590,7 @@ void Fragment_ClipPoly(fragmentdecal_t *dec, int numverts, float *inverts, shade
 size_t Fragment_ClipPlaneToBrush(vecV_t *points, size_t maxpoints, void *planes, size_t planestride, size_t numplanes, vec4_t face);
 void Mod_ClipDecal(struct model_s *mod, vec3_t center, vec3_t normal, vec3_t tangent1, vec3_t tangent2, float size, unsigned int surfflagmask, unsigned int surflagmatch, void (*callback)(void *ctx, vec3_t *fte_restrict points, size_t numpoints, shader_t *shader), void *ctx);
 
-void Q1BSP_MarkLights (dlight_t *light, int bit, mnode_t *node);
+void Q1BSP_MarkLights (dlight_t *light, dlightbitmask_t bit, mnode_t *node);
 void GLQ1BSP_LightPointValues(struct model_s *model, const vec3_t point, vec3_t res_diffuse, vec3_t res_ambient, vec3_t res_dir);
 qboolean Q1BSP_RecursiveHullCheck (hull_t *hull, int num, const vec3_t p1, const vec3_t p2, unsigned int hitcontents, struct trace_s *trace);
 
@@ -1022,7 +1049,8 @@ typedef struct model_s
 	{
 		int first;				//once built...
 		int count;				//num lightmaps
-		int	merge;				//merge this many source lightmaps together. woo.
+		int	mergew;				//merge this many source lightmaps together. woo.
+		int	mergeh;				//merge this many source lightmaps together. woo.
 		int width;				//x size of lightmaps
 		int height;				//y size of lightmaps
 		int surfstyles;			//numbers of style per surface.

@@ -44,6 +44,9 @@ void *SVQ2_GetGameAPI (void *parms)
 		"game" "i386" ARCH_DL_POSTFIX,	//compat is often better than consistancy
 #endif
 		"game" ARCH_CPU_POSTFIX ARCH_DL_POSTFIX,
+#ifdef ARCH_ALTCPU_POSTFIX
+		"game" ARCH_ALTCPU_POSTFIX ARCH_DL_POSTFIX,
+#endif
 		"game" ARCH_DL_POSTFIX,
 #if defined(__linux__)	//FTE doesn't provide gamecode. Borrow someone else's. Lets just hope that its installed.
 //		"/usr/lib/yamagi-quake2/%s/game.so",
@@ -343,7 +346,7 @@ static int SVQ2_FindIndex (const char *name, int start, int max, int overflowtyp
 			case 1:
 				overflowstrings = sv.strings.q2_extramodels;
 				max = countof(sv.strings.q2_extramodels);
-				i++;	//do not allow 255 to be allocated, ever. just live with the gap.
+				i++;	//do not allow 255 to be allocated, ever. just live with the gap (255 means special things).
 				start = 0x8000;
 				break;
 			case 2:

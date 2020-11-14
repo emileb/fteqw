@@ -17,7 +17,7 @@ nonstatic void(mitem_desktop desktop) M_Options_Hud =
 	
 	//spawn a container frame for the actual options. this provides a scrollbar if we have too many items.
 	mitem_frame fr = spawn(mitem_frame, item_flags: IF_SELECTABLE, frame_hasscroll:TRUE);
-	m.add(fr, RS_X_MIN_PARENT_MIN|RS_Y_MIN_PARENT_MID | RS_X_MAX_PARENT_MAX|RS_Y_MAX_OWN_MIN, [0, -h], [0, h*2]);
+	m.add(fr, RS_X_MIN_PARENT_MIN|RS_Y_MIN_PARENT_MID | RS_X_MAX_PARENT_MAX|RS_Y_MAX_OWN_MIN, [0, -h+16], [0, h*2+32]);
 
 	float fs = search_begin("huds/*.cfg", TRUE, TRUE);
 	float fc = search_getsize(fs);
@@ -56,13 +56,7 @@ nonstatic void(mitem_desktop desktop) M_Options_Hud =
 
 
 	//random art for style
-#if 1//def CSQC
 	m.addm(spawn (mitem_spinnymodel, item_text: "progs/g_nail2.mdl", zbias:-16), [-160-60, 12*-16/2], [-60, 12*16/2]);
-#else
-	//menuqc doesn't support entities. shove some random crappy static image there instead.
-	local mitem_pic plaque = spawn (mitem_pic, item_text:"gfx/qplaque.lmp", item_alpha:1);
-	m.addm(plaque, [(-160-plaque.item_size_x)*0.5, 12*-16/2], [(-160+plaque.item_size_x)*0.5, 12*16/2]);
-#endif
 
 	addmenuback(m);
 };

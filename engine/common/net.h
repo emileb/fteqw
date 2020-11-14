@@ -93,7 +93,7 @@ typedef struct netadr_s
 	} address;
 
 	unsigned short	port;
-	unsigned short	connum;	//which quake connection/socket the address is talking about. 1-based. 0 is unspecified.
+	unsigned short	connum;	//which quake connection/socket the address is talking about. 1-based. 0 is unspecified. this is NOT used for address equivelency.
 	unsigned int scopeid;	//ipv6 interface id thing.
 } netadr_t;
 
@@ -139,7 +139,7 @@ void		UDP_CloseSocket (int socket);
 void		NET_Shutdown (void);
 qboolean	NET_GetRates(struct ftenet_connections_s *collection, float *pi, float *po, float *bi, float *bo);
 qboolean	NET_UpdateRates(struct ftenet_connections_s *collection, qboolean inbound, size_t size);	//for demos to not be weird
-int			NET_GetPacket (struct ftenet_connections_s *col, int firstsock);
+void		NET_ReadPackets (struct ftenet_connections_s *collection);
 neterr_t	NET_SendPacket (struct ftenet_connections_s *col, int length, const void *data, netadr_t *to);
 int			NET_LocalAddressForRemote(struct ftenet_connections_s *collection, netadr_t *remote, netadr_t *local, int idx);
 void		NET_PrintAddresses(struct ftenet_connections_s *collection);
@@ -155,7 +155,7 @@ enum addressscope_e
 	ASCOPE_LAN=3,
 	ASCOPE_NET=4
 };
-enum addressscope_e NET_ClassifyAddress(netadr_t *adr, char **outdesc);
+enum addressscope_e NET_ClassifyAddress(netadr_t *adr, const char **outdesc);
 
 qboolean NET_AddrIsReliable(netadr_t *adr);	//hints that the protocol is reliable. if so, we don't need to wait for acks
 qboolean	NET_CompareAdr (netadr_t *a, netadr_t *b);

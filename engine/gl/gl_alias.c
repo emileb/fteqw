@@ -693,8 +693,13 @@ static shader_t *GL_ChooseSkin(galiasinfo_t *inf, model_t *model, int surfnum, e
 
 				if (plskin && plskin->loadstate < SKIN_LOADED)
 				{
-					Skin_Cache8(plskin);	//we're not going to use it, but make sure its status is updated when it is finally loaded..
-					plskin = cl.players[e->playerindex].lastskin;
+					Skin_TryCache8(plskin);	//we're not going to use it, but make sure its status is updated when it is finally loaded..
+					if (plskin->loadstate < SKIN_LOADED)
+					{
+						plskin = cl.players[e->playerindex].lastskin;
+						if (!plskin || plskin->loadstate < SKIN_LOADED)
+							return NULL;	//just wait for it to finish loading so we don't generate pointless skins.
+					}
 				}
 				else
 					cl.players[e->playerindex].lastskin = plskin;
@@ -806,6 +811,21 @@ static shader_t *GL_ChooseSkin(galiasinfo_t *inf, model_t *model, int surfnum, e
 				}
 			}
 
+			if (plskin)
+			{
+				original = Skin_TryCache8(plskin);	//will start it loading if not already loaded.
+				if (plskin->loadstate == SKIN_LOADING)
+					return shader;
+				inwidth = plskin->width;
+				inheight = plskin->height;
+			}
+			else
+			{
+				original = NULL;
+				inwidth = 0;
+				inheight = 0;
+			}
+
 			//colourmap isn't present yet.
 			cm = Z_Malloc(sizeof(*cm));
 			*forcedtex = &cm->texnum;
@@ -825,12 +845,7 @@ static shader_t *GL_ChooseSkin(galiasinfo_t *inf, model_t *model, int surfnum, e
 			cm->texnum.bump = shader->defaulttextures->bump;	//can't colour bumpmapping
 			if (plskin)
 			{
-				/*q1 only reskins the player model, not gibbed heads (which have the same colourmap)*/
-				original = Skin_Cache8(plskin);
-				inwidth = plskin->width;
-				inheight = plskin->height;
-
-				if (!original && TEXLOADED(plskin->textures.base))
+				if (TEXLOADED(plskin->textures.base))
 				{
 					cm->texnum.loweroverlay = plskin->textures.loweroverlay;
 					cm->texnum.upperoverlay = plskin->textures.upperoverlay;
@@ -843,12 +858,6 @@ static shader_t *GL_ChooseSkin(galiasinfo_t *inf, model_t *model, int surfnum, e
 					cm->texnum.displacement = r_nulltex;
 					return shader;
 				}
-			}
-			else
-			{
-				original = NULL;
-				inwidth = 0;
-				inheight = 0;
 			}
 			if (!original)
 			{
@@ -1653,7 +1662,7 @@ void R_GAlias_DrawBatch(batch_t *batch)
 
 	galiasinfo_t *inf;
 	model_t *clmodel;
-	int surfnum;
+	unsigned int surfnum;
 
 	static mesh_t mesh;
 	static mesh_t *meshl = &mesh;
@@ -1673,7 +1682,7 @@ void R_GAlias_DrawBatch(batch_t *batch)
 		memset(&mesh, 0, sizeof(mesh));
 		for(surfnum=0; inf; inf=inf->nextsurf, surfnum++)
 		{
-			if (batch->surf_first == surfnum)
+			if (batch->user.alias.surfrefs[0] == surfnum)
 			{
 				/*needrecolour =*/ Alias_GAliasBuildMesh(&mesh, &batch->vbo, inf, surfnum, e, batch->shader->prog && (batch->shader->prog->supportedpermutations & PERMUTATION_SKELETAL));
 				batch->mesh = &meshl;
@@ -1806,8 +1815,11 @@ void R_GAlias_GenerateBatches(entity_t *e, batch_t **batches)
 			b->texture = NULL;
 			b->shader = shader;
 			for (j = 0; j < MAXRLIGHTMAPS; j++)
+			{
 				b->lightmap[j] = -1;
-			b->surf_first = surfnum;
+				b->lmlightstyle[j] = INVALID_LIGHTSTYLE;
+			}
+			b->user.alias.surfrefs[0] = surfnum;
 			b->flags = 0;
 			sort = shader->sort;
 			if (e->flags & RF_FORCECOLOURMOD)
@@ -2732,7 +2744,7 @@ static void R_DB_Poly(batch_t *batch)
 {
 	static mesh_t mesh;
 	static mesh_t *meshptr = &mesh;
-	unsigned int i = batch->surf_first;
+	unsigned int i = batch->user.poly.surface;
 
 	batch->mesh = &meshptr;
 
@@ -2776,7 +2788,7 @@ static void BE_GenPolyBatches(batch_t **batches)
 		b->shader = shader;
 		for (j = 0; j < MAXRLIGHTMAPS; j++)
 			b->lightmap[j] = -1;
-		b->surf_first = i;
+		b->user.poly.surface = i;
 		b->flags = cl_stris[i].flags;
 		b->vbo = 0;
 
@@ -2792,7 +2804,6 @@ static void BE_GenPolyBatches(batch_t **batches)
 		batches[sort] = b;
 	}
 }
-void R_HalfLife_GenerateBatches(entity_t *e, batch_t **batches);
 void PR_Route_Visualise(void);
 void BE_GenModelBatches(batch_t **batches, const dlight_t *dl, unsigned int bemode, const qbyte *worldpvs, const int *worldareas)
 {
@@ -2898,7 +2909,7 @@ void BE_GenModelBatches(batch_t **batches, const dlight_t *dl, unsigned int bemo
 			switch(emodel->type)
 			{
 			case mod_brush:
-				if (r_drawentities.ival == 2)
+				if (r_drawentities.ival == 2 && cls.allow_cheats)	//2 is considered a cheat, because it can be used as a wallhack (whereas mdls are not normally considered as occluding).
 					continue;
 				Surf_GenBrushBatches(batches, ent);
 				break;

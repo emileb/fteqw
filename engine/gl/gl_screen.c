@@ -161,7 +161,13 @@ qboolean GLSCR_UpdateScreen (void)
 		if (r_clear.ival)
 		{
 			GL_ForceDepthWritable();
-			qglClearColor((r_clear.ival&1)?1:0, (r_clear.ival&2)?1:0, (r_clear.ival&4)?1:0, 1);
+			if (r_clearcolour.ival)
+			{
+				r_clearcolour.vec4[0] = host_basepal[(r_clearcolour.ival & 0xFF)*3+0]/255.0;
+				r_clearcolour.vec4[1] = host_basepal[(r_clearcolour.ival & 0xFF)*3+1]/255.0;
+				r_clearcolour.vec4[2] = host_basepal[(r_clearcolour.ival & 0xFF)*3+2]/255.0;
+			}
+			qglClearColor(r_clearcolour.vec4[0], r_clearcolour.vec4[1], r_clearcolour.vec4[2], 1);
 			qglClear (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 			depthcleared = true;
 		}
@@ -328,29 +334,32 @@ char *GLVID_GetRGBInfo(int *bytestride, int *truewidth, int *trueheight, enum up
 
 	if (gammaworks && r2d_canhwgamma)
 	{
-		if (*fmt == PTI_BGRA8 || *fmt == PTI_BGRX8 || *fmt == PTI_BGR8)
+		extern qbyte		gammatable[256];
+		int pxsize = 4;
+		c = (*truewidth)*(*trueheight);
+		switch(*fmt)
 		{
-			int pxsize = (*fmt == PTI_BGR8)?3:4;
-			c = (*truewidth)*(*trueheight)*pxsize;
+		case PTI_RGB8:
+		case PTI_BGR8:
+			pxsize = 3;
+			//fallthrough
+		case PTI_LLLA8:
+		case PTI_LLLX8:
+		case PTI_RGBA8:
+		case PTI_RGBX8:
+		case PTI_BGRA8:
+		case PTI_BGRX8:
+			//pxsize is 4 (or 3 if we fell through above)
+			c*=pxsize;
 			for (i=0 ; i<c ; i+=pxsize)
 			{
-				extern qbyte		gammatable[256];
-				ret[i+0] = gammatable[ret[i+2]];
-				ret[i+1] = gammatable[ret[i+1]];
-				ret[i+2] = gammatable[ret[i+0]];
-			}
-		}
-		else if (*fmt == PTI_RGBA8 || *fmt == PTI_RGBX8 || *fmt == PTI_RGB8)
-		{
-			int pxsize = (*fmt == PTI_RGB8)?3:4;
-			c = (*truewidth)*(*trueheight)*pxsize;
-			for (i=0 ; i<c ; i+=pxsize)
-			{
-				extern qbyte		gammatable[256];
 				ret[i+0] = gammatable[ret[i+0]];
 				ret[i+1] = gammatable[ret[i+1]];
 				ret[i+2] = gammatable[ret[i+2]];
 			}
+			break;
+		default:
+			break;	//some kind of bug.
 		}
 	}
 	

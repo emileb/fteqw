@@ -26,6 +26,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "cl_master.h"
 #include "cl_ignore.h"
 #include "shader.h"
+#include "vr.h"
 #include <ctype.h>
 // callbacks
 void QDECL CL_Sbar_Callback(struct cvar_s *var, char *oldvalue);
@@ -66,8 +67,10 @@ cvar_t	cl_yieldcpu = CVARFD("cl_yieldcpu", "1", CVAR_ARCHIVE, "Attempt to yield 
 cvar_t	cl_nopext	= CVARF("cl_nopext", "0", CVAR_ARCHIVE);
 cvar_t	cl_pext_mask = CVAR("cl_pext_mask", "0xffffffff");
 cvar_t	cl_nolerp	= CVARD("cl_nolerp", "0", "Disables interpolation. If set, missiles/monsters will be show exactly what was last received, which will be jerky. Does not affect players. A value of 2 means 'interpolate only in single-player/coop'.");
+#ifdef NQPROT
 cvar_t	cl_nolerp_netquake = CVARD("cl_nolerp_netquake", "0", "Disables interpolation when connected to an NQ server. Does affect players, even the local player. You probably don't want to set this.");
 cvar_t	cl_fullpitch_nq = CVARAFD("cl_fullpitch", "0", "pq_fullpitch", CVAR_SEMICHEAT, "When set, attempts to unlimit the default view pitch. Note that some servers will screw over your angles if you use this, resulting in terrible gameplay, while some may merely clamp your angle serverside. This is also considered a cheat in quakeworld, ^1so this will not function there^7. For the equivelent in quakeworld, use serverinfo minpitch+maxpitch instead, which applies to all players fairly.");
+#endif
 cvar_t	*hud_tracking_show;
 cvar_t	*hud_miniscores_show;
 extern cvar_t net_compress;
@@ -102,6 +105,7 @@ cvar_t	m_forward = CVARF("m_forward","1", CVAR_ARCHIVE);
 cvar_t	m_side = CVARF("m_side","0.8", CVAR_ARCHIVE);
 
 cvar_t	cl_lerp_maxinterval = CVARD("cl_lerp_maxinterval", "0.3", "Maximum interval between keyframes, in seconds. Larger values can result in entities drifting very slowly when they move sporadically.");
+cvar_t	cl_lerp_maxdistance = CVARD("cl_lerp_maxdistance", "200", "Maximum distance that an entity may move between snapshots without being considered as having teleported.");
 cvar_t	cl_lerp_players = CVARD("cl_lerp_players", "0", "Set this to make other players smoother, though it may increase effective latency. Affects only QuakeWorld.");
 cvar_t	cl_predict_players			= CVARD("cl_predict_players", "1", "Clear this cvar to see ents exactly how they are on the server.");
 cvar_t	cl_predict_players_frac		= CVARD("cl_predict_players_frac", "0.9", "How much of other players to predict. Values less than 1 will help minimize overruns.");
@@ -184,6 +188,7 @@ cvar_t	cl_download_redirection	= CVARFD("cl_download_redirection", "2", CVAR_NOT
 cvar_t  cl_download_mapsrc		= CVARFD("cl_download_mapsrc", "", CVAR_ARCHIVE, "Specifies an http location prefix for map downloads. EG: \"http://example.com/path/quakemaps/\"");
 cvar_t	cl_download_packages	= CVARFD("cl_download_packages", "1", CVAR_NOTFROMSERVER, "0=Do not download packages simply because the server is using them. 1=Download and load packages as needed (does not affect games which do not use this package). 2=Do download and install permanently (use with caution!)");
 cvar_t	requiredownloads		= CVARFD("requiredownloads","1", CVAR_ARCHIVE, "0=join the game before downloads have even finished (might be laggy). 1=wait for all downloads to complete before joining.");
+cvar_t	mod_precache			= CVARD("mod_precache","1", "Controls when models are loaded.\n0: Load them only when they're visible.\n1: Load them upfront.\n2: Lazily load them to shorten load times at the risk of brief stuttering during only the start of the map.");
 
 cvar_t	cl_muzzleflash			= CVAR("cl_muzzleflash", "1");
 
@@ -200,8 +205,10 @@ cvar_t  cl_parsewhitetext		= CVARD("cl_parsewhitetext", "1", "When parsing chat 
 
 cvar_t	cl_dlemptyterminate		= CVAR("cl_dlemptyterminate", "1");
 
-cvar_t	host_mapname			= CVARAF("mapname", "",
-									  "host_mapname", 0);
+static void QDECL Cvar_CheckServerInfo(struct cvar_s *var, char *oldvalue)
+{	//values depend upon the serverinfo, so reparse for overrides.
+	CL_CheckServerInfo();
+}
 
 #define RULESETADVICE " You should not normally change this cvar from its permissive default, instead impose limits on yourself only through the 'ruleset' cvar."
 cvar_t	ruleset_allow_playercount			= CVARD("ruleset_allow_playercount", "1", "Specifies whether teamplay triggers that count nearby players are allowed in the current ruleset."RULESETADVICE);
@@ -216,7 +223,7 @@ cvar_t	ruleset_allow_modified_eyes			= CVARD("ruleset_allow_modified_eyes", "0",
 cvar_t	ruleset_allow_sensitive_texture_replacements = CVARD("ruleset_allow_sensitive_texture_replacements", "1", "Allows the replacement of certain model textures (as well as the models themselves). This prevents adding extra fullbrights to make them blatently obvious."RULESETADVICE);
 cvar_t	ruleset_allow_localvolume			= CVARD("ruleset_allow_localvolume", "1", "Allows the use of the snd_playersoundvolume cvar. Muting your own sounds can make it easier to hear where your opponent is."RULESETADVICE);
 cvar_t  ruleset_allow_shaders				= CVARFD("ruleset_allow_shaders", "1", CVAR_SHADERSYSTEM, "When 0, this completely disables the use of external shader files, preventing custom shaders from being used for wallhacks."RULESETADVICE);
-cvar_t  ruleset_allow_watervis				= CVARFD("ruleset_allow_watervis", "1", CVAR_SHADERSYSTEM, "When 0, this enforces ugly opaque water."RULESETADVICE);
+cvar_t  ruleset_allow_watervis				= CVARFCD("ruleset_allow_watervis", "1", CVAR_SHADERSYSTEM, Cvar_CheckServerInfo, "When 0, this enforces ugly opaque water."RULESETADVICE);
 cvar_t  ruleset_allow_fbmodels				= CVARFD("ruleset_allow_fbmodels", "0", CVAR_SHADERSYSTEM, "When 1, allows all models to be displayed fullbright, completely ignoring the lightmaps. This feature exists only for parity with ezquake's defaults."RULESETADVICE);
 
 extern cvar_t cl_hightrack;
@@ -293,13 +300,8 @@ static struct
 //	qbyte				fingerprint[5*4];	//sha1 hash of accepted dtls certs
 } connectinfo;
 
-quakeparms_t host_parms;
-
-qboolean	host_initialized;		// true if into command execution
 qboolean	nomaster;
 
-double		host_frametime;
-double		realtime;				// without any filtering or bounding
 double		oldrealtime;			// last frame run
 int			host_framecount;
 
@@ -743,6 +745,12 @@ char *CL_TryingToConnect(void)
 	return cls.servername;
 }
 
+#ifdef NQPROT
+static void CL_NullReadPacket(void)
+{	//just drop it all
+}
+#endif
+
 /*
 =================
 CL_CheckForResend
@@ -888,13 +896,13 @@ void CL_CheckForResend (void)
 				connectinfo.subprotocol = CPNQ_DP7;
 			}
 			else if (!strcmp(lbp, "qss") ||
-					 (progstype != PROG_QW && progstype != PROG_H2))	//h2 depends on various extensions and doesn't really match either protocol, but we go for qw because that gives us all sorts of extensions.
+					 (progstype != PROG_QW && progstype != PROG_H2 && sv.state!=ss_clustermode && cl_splitscreen.ival <= 0))	//h2 depends on various extensions and doesn't really match either protocol, but we go for qw because that gives us all sorts of extensions.
 			{
 				connectinfo.protocol = CP_NETQUAKE;
 				connectinfo.subprotocol = CPNQ_FITZ666;
 				connectinfo.fteext1 = Net_PextMask(PROTOCOL_VERSION_FTE1, true);
 				connectinfo.fteext2 = Net_PextMask(PROTOCOL_VERSION_FTE2, true);
-				connectinfo.ezext1 = Net_PextMask(PROTOCOL_VERSION_EZQUAKE1, false) & EZPEXT1_CLIENTADVERTISE;
+				connectinfo.ezext1 = Net_PextMask(PROTOCOL_VERSION_EZQUAKE1, true) & EZPEXT1_CLIENTADVERTISE;
 			}
 #endif
 			else
@@ -972,9 +980,10 @@ void CL_CheckForResend (void)
 			NET_AdrToString(data, sizeof(data), &connectinfo.adr);
 
 			/*eat up the server's packets, to clear any lingering loopback packets (like disconnect commands... yes this might cause packetloss for other clients)*/
-			while(NET_GetPacket (svs.sockets, 0) >= 0)
-			{
-			}
+			svs.sockets->ReadGamePacket = CL_NullReadPacket;
+			NET_ReadPackets(svs.sockets);
+			svs.sockets->ReadGamePacket = SV_ReadPacket;
+
 			net_message.packing = SZ_RAWBYTES;
 			net_message.cursize = 0;
 			MSG_BeginReading(net_message.prim);
@@ -1039,6 +1048,17 @@ void CL_CheckForResend (void)
 		return;
 
 #ifdef HAVE_DTLS
+	if (connectinfo.adr.prot == NP_DTLS)
+	{	//get through the handshake first, instead of waiting for a 5-sec timeout between polls.
+		switch(NET_SendPacket (cls.sockets, 0, NULL, &connectinfo.adr))
+		{
+		case NETERR_CLOGGED:	//temporary failure
+			return;
+		default:
+			break;
+		}
+	}
+
 	if (connectinfo.dtlsupgrade != DTLS_ACTIVE)
 #endif
 	{
@@ -1136,6 +1156,7 @@ void CL_CheckForResend (void)
 		switch(NET_SendPacket (cls.sockets, strlen(data), data, &connectinfo.adr))
 		{
 		case NETERR_CLOGGED:	//temporary failure
+			connectinfo.time = 0;
 		case NETERR_SENT:		//yay, works!
 			break;
 		default:
@@ -1198,6 +1219,9 @@ void CL_CheckForResend (void)
 
 void CL_BeginServerConnect(const char *host, int port, qboolean noproxy)
 {
+	if (!strncmp(host, "localhost", 9))
+		noproxy = true;	//FIXME: resolve the address here or something so that we don't end up using a proxy for lan addresses.
+
 	if (strstr(host, "://") || !*cl_proxyaddr.string || noproxy)
 		Q_strncpyz (cls.servername, host, sizeof(cls.servername));
 	else
@@ -1499,6 +1523,7 @@ void CL_Rcon_f (void)
 		const unsigned char **tokens = alloca(sizeof(*tokens)*(4+Cmd_Argc()*2));
 		size_t *tokensizes = alloca(sizeof(*tokensizes)*(4+Cmd_Argc()*2));
 		int j, k;
+		void *ctx = alloca(hash_sha1.contextsize);
 
 		for (j = 0; j < sizeof(time_t); j++)
 		{	//little-endian byte order, but big-endian nibble order. just screwed. for compat with ezquake.
@@ -1516,9 +1541,11 @@ void CL_Rcon_f (void)
 			tokens[4+j*2+0] = Cmd_Argv(i+j);
 			tokens[4+j*2+1] = " ";
 		}
+		hash_sha1.init(ctx);
 		for (k = 0; k < 4+j*2; k++)
-			tokensizes[k] = strlen(tokens[k]);
-		digestsize = SHA1_m(digest, sizeof(digest), k, tokens, tokensizes);
+			hash_sha1.process(ctx, tokens[k], strlen(tokens[k]));
+		hash_sha1.terminate(digest, ctx);
+		digestsize = hash_sha1.digestsize;
 
 		for (j = 0; j < digestsize; j++)
 		{
@@ -1599,7 +1626,7 @@ void CL_ResetFog(int ftype)
 
 static void CL_ReconfigureCommands(int newgame)
 {
-	static int oldgame;
+	static int oldgame = ~0;
 	extern void SCR_SizeUp_f (void);	//cl_screen
 	extern void SCR_SizeDown_f (void);	//cl_screen
 #ifdef QUAKESTATS
@@ -2052,7 +2079,10 @@ void CL_User_f (void)
 			if (!cl.players[i].userinfovalid)
 				Con_Printf("name: %s\ncolour %i %i\nping: %i\n", cl.players[i].name, cl.players[i].rbottomcolor, cl.players[i].rtopcolor, cl.players[i].ping);
 			else
+			{
 				InfoBuf_Print (&cl.players[i].userinfo, "");
+				Con_Printf("[%u, %u]\n", (unsigned)cl.players[i].userinfo.totalsize, (unsigned)cl.players[i].userinfo.numkeys);
+			}
 			found = true;
 		}
 	}
@@ -2246,23 +2276,23 @@ void CL_CheckServerInfo(void)
 #ifndef CLIENTONLY
 	extern cvar_t sv_cheats;
 #endif
-	int oldteamplay;
+	int oldteamplay = cl.teamplay;
 	qboolean spectating = true;
 	int i;
-	
+	qboolean oldwatervis = cls.allow_watervis;
+	int oldskyboxes = cls.allow_unmaskedskyboxes;
+
 	//spectator 2 = spectator-with-scores, considered to be players. this means we don't want to allow spec cheats while they're inactive, because that would be weird.
 	for (i = 0; i < cl.splitclients; i++)
 		if (cl.playerview[i].spectator != 1)
 			spectating = false;
 
-	oldteamplay = cl.teamplay;
 	cl.teamplay = atoi(InfoBuf_ValueForKey(&cl.serverinfo, "teamplay"));
 	cls.deathmatch = cl.deathmatch = atoi(InfoBuf_ValueForKey(&cl.serverinfo, "deathmatch"));
 
 	cls.allow_cheats = false;
 	cls.allow_semicheats=true;
-	cls.allow_watervis=false;
-	cls.allow_skyboxes=false;
+	cls.allow_unmaskedskyboxes=false;
 	cls.allow_fbskins = 1;
 //	cls.allow_fbskins = 0;
 //	cls.allow_overbrightlight;
@@ -2271,11 +2301,18 @@ void CL_CheckServerInfo(void)
 	cls.allow_csqc = atoi(InfoBuf_ValueForKey(&cl.serverinfo, "anycsqc")) || *InfoBuf_ValueForKey(&cl.serverinfo, "*csprogs");
 	cl.csqcdebug = atoi(InfoBuf_ValueForKey(&cl.serverinfo, "*csqcdebug"));
 
-	if (spectating || cls.demoplayback || atoi(InfoBuf_ValueForKey(&cl.serverinfo, "watervis")))
+	s = InfoBuf_ValueForKey(&cl.serverinfo, "watervis");
+	if (spectating || cls.demoplayback || atoi(s) || (!*s && ruleset_allow_watervis.ival))
 		cls.allow_watervis=true;
+	else
+		cls.allow_watervis=false;
 
-	if (spectating || cls.demoplayback || atoi(InfoBuf_ValueForKey(&cl.serverinfo, "allow_skybox")) || atoi(InfoBuf_ValueForKey(&cl.serverinfo, "allow_skyboxes")))
-		cls.allow_skyboxes=true;	//mostly obsolete.
+	s = InfoBuf_ValueForKey(&cl.serverinfo, "allow_skybox");
+	if (!*s)
+		s = InfoBuf_ValueForKey(&cl.serverinfo, "allow_skyboxes");
+	if (!*s)
+		cls.allow_unmaskedskyboxes = (cl.worldmodel && cl.worldmodel->fromgame != fg_quake);
+	else cls.allow_unmaskedskyboxes = !!atoi(s);
 
 	s = InfoBuf_ValueForKey(&cl.serverinfo, "fbskins");
 	if (*s)
@@ -2292,7 +2329,7 @@ void CL_CheckServerInfo(void)
 #ifndef CLIENTONLY
 	//allow cheats in single player regardless of sv_cheats.
 	//(also directly read the sv_cheats cvar to avoid issues with nq protocols that don't support serverinfo.
-	if ((sv.state == ss_active && sv.allocated_client_slots == 1) || sv_cheats.ival)
+	if (sv.state == ss_active && (sv.allocated_client_slots == 1 || sv_cheats.ival))
 		cls.allow_cheats = true;
 #endif
 
@@ -2341,6 +2378,7 @@ void CL_CheckServerInfo(void)
 	// Initialize cl.maxpitch & cl.minpitch
 	if (cls.protocol == CP_QUAKEWORLD || cls.protocol == CP_NETQUAKE)
 	{
+#ifdef NQPROT
 		s = InfoBuf_ValueForKey(&cl.serverinfo, "maxpitch");
 		cl.maxpitch = *s ? Q_atof(s) : ((cl_fullpitch_nq.ival && !cl.haveserverinfo)?90.0f:80.0f);
 		s = InfoBuf_ValueForKey(&cl.serverinfo, "minpitch");
@@ -2351,6 +2389,12 @@ void CL_CheckServerInfo(void)
 			//should be about 0.5/65536, but there's some precision issues with such small numbers around 80, so we need to bias it more than we ought
 			cl.maxpitch -= 1.0/2048;
 		}
+#else
+		s = InfoBuf_ValueForKey(&cl.serverinfo, "maxpitch");
+		cl.maxpitch = *s ? Q_atof(s) : 80.0f;
+		s = InfoBuf_ValueForKey(&cl.serverinfo, "minpitch");
+		cl.minpitch = *s ? Q_atof(s) : -70.0f;
+#endif
 	}
 	else
 	{
@@ -2370,7 +2414,7 @@ void CL_CheckServerInfo(void)
 //	if (allowed & 2)
 //		cls.allow_rearview = true;
 	if (allowed & 4)
-		cls.allow_skyboxes = true;
+		cls.allow_unmaskedskyboxes = true;
 //	if (allowed & 8)
 //		cls.allow_mirrors = true;
 	//16
@@ -2441,6 +2485,8 @@ void CL_CheckServerInfo(void)
 
 	if (oldteamplay != cl.teamplay)
 		Skin_FlushPlayers();
+	if (oldwatervis != cls.allow_watervis || oldskyboxes != cls.allow_unmaskedskyboxes)
+		Shader_NeedReload(false);
 
 	CSQC_ServerInfoChanged();
 }
@@ -2685,8 +2731,8 @@ void CL_Packet_f (void)
 
 	if (Cmd_FromGamecode())	//some mvdsv servers stuffcmd a packet command which lets them know which ip the client is from.
 	{						//unfortunatly, 50% of servers are badly configured resulting in them poking local services that THEY MUST NOT HAVE ACCESS TO.
-		char *addrdesc;
-		char *realdesc;
+		const char *addrdesc;
+		const char *realdesc;
 		if (cls.demoplayback)
 		{
 			Con_DPrintf ("Not sending realip packet from demo\n");
@@ -2945,6 +2991,25 @@ void CL_Reconnect_f (void)
 		Con_TPrintf ("No server to reconnect to...\n");
 		return;
 	}
+
+#if defined(HAVE_SERVER) && defined(SUBSERVERS)
+	if (sv.state == ss_clustermode)
+	{	//reconnecting while we're a cluster... o.O
+		char oldguid[sizeof(connectinfo.guid)];
+		Q_strncpyz(oldguid, connectinfo.guid, sizeof(oldguid));
+		memset(&connectinfo, 0, sizeof(connectinfo));
+		connectinfo.istransfer = false;
+		Q_strncpyz(connectinfo.guid, oldguid, sizeof(oldguid));	//retain the same guid on transfers
+
+		Cvar_Set(&cl_disconnectreason, "Transferring....");
+		connectinfo.trying = true;
+		connectinfo.defaultport = cl_defaultport.value;
+		connectinfo.protocol = CP_UNKNOWN;
+		SCR_SetLoadingStage(LS_CONNECTION);
+		CL_CheckForResend();
+		return;
+	}
+#endif
 
 	CL_Disconnect(NULL);
 	connectinfo.tries = 0;	//re-ensure routes.
@@ -3318,7 +3383,7 @@ void CL_ConnectionlessPacket (void)
 		if (candtls && connectinfo.adr.prot == NP_DGRAM && (connectinfo.dtlsupgrade || candtls > 1))
 		{
 			//c2s getchallenge
-			//s2c c%u\0DTLS=0
+			//s2c c%u\0DTLS=$candtls
 			//c2s dtlsconnect %u
 			//s2c dtlsopened
 			//c2s DTLS(getchallenge)
@@ -3329,7 +3394,18 @@ void CL_ConnectionlessPacket (void)
 			//FIXME: do rcon via dtls too, but requires tracking pending rcon packets until the handshake completes.
 
 			//server says it can do tls.
-			char *pkt = va("%c%c%c%cdtlsconnect %i", 255, 255, 255, 255, connectinfo.challenge);
+
+			char *pkt;
+			//qwfwd proxy routing
+			char *at;
+			if ((at = strrchr(cls.servername, '@')))
+			{
+				*at = 0;
+				pkt = va("%c%c%c%cdtlsconnect %i %s", 255, 255, 255, 255, connectinfo.challenge, cls.servername);
+				*at = '@';
+			}
+			else
+				pkt = va("%c%c%c%cdtlsconnect %i", 255, 255, 255, 255, connectinfo.challenge);
 			NET_SendPacket (cls.sockets, strlen(pkt), pkt, &net_from);
 			return;
 		}
@@ -3499,6 +3575,8 @@ void CL_ConnectionlessPacket (void)
 			{
 				connectinfo.dtlsupgrade = DTLS_ACTIVE;
 				connectinfo.adr.prot = NP_DTLS;
+
+				connectinfo.time = 0;	//send a new challenge NOW.
 			}
 			else
 			{
@@ -3547,7 +3625,7 @@ client_connect:	//fixme: make function
 			Con_TPrintf ("connection\n");
 
 #ifndef CLIENTONLY
-			if (sv.state)
+			if (sv.state && sv.state != ss_clustermode)
 				SV_UnspawnServer();
 #endif
 		}
@@ -3814,6 +3892,137 @@ void CLNQ_ConnectionlessPacket(void)
 
 void CL_MVDUpdateSpectator (void);
 void CL_WriteDemoMessage (sizebuf_t *msg, int payloadoffset);
+
+void CL_ReadPacket(void)
+{
+	if (!qrenderer)
+		return;
+
+#ifdef HAVE_DTLS
+	if (*(int *)net_message.data != -1)
+		if (NET_DTLS_Decode(cls.sockets))
+			if (!net_message.cursize)
+				return;
+#endif
+
+#ifdef NQPROT
+	if (cls.demoplayback == DPB_NETQUAKE)
+	{
+		MSG_BeginReading (cls.netchan.netprim);
+		cls.netchan.last_received = realtime;
+		CLNQ_ParseServerMessage ();
+
+		if (!cls.demoplayback)
+			CL_NextDemo();
+		return;
+	}
+#endif
+#ifdef Q2CLIENT
+	if (cls.demoplayback == DPB_QUAKE2)
+	{
+		MSG_BeginReading (cls.netchan.netprim);
+		cls.netchan.last_received = realtime;
+		CLQ2_ParseServerMessage ();
+		return;
+	}
+#endif
+	//
+	// remote command packet
+	//
+	if (*(int *)net_message.data == -1)
+	{
+		CL_ConnectionlessPacket ();
+		return;
+	}
+
+	if (net_message.cursize < 6 && (cls.demoplayback != DPB_MVD && cls.demoplayback != DPB_EZTV)) //MVDs don't have the whole sequence header thing going on
+	{
+		char adr[MAX_ADR_SIZE];
+		if (net_message.cursize == 1 && net_message.data[0] == A2A_ACK)
+			Con_TPrintf ("%s: Ack (Pong)\n", NET_AdrToString(adr, sizeof(adr), &net_from));
+		else
+			Con_TPrintf ("%s: Runt packet\n", NET_AdrToString(adr, sizeof(adr), &net_from));
+		return;
+	}
+
+	if (cls.state == ca_disconnected)
+	{	//connect to nq servers, but don't get confused with sequenced packets.
+		if (NET_WasSpecialPacket(cls.sockets))
+			return;
+#ifdef NQPROT
+		CLNQ_ConnectionlessPacket ();
+#endif
+		return;	//ignore it. We arn't connected.
+	}
+
+	//
+	// packet from server
+	//
+	if (!cls.demoplayback &&
+		!NET_CompareAdr (&net_from, &cls.netchan.remote_address))
+	{
+		char adr[MAX_ADR_SIZE];
+		if (NET_WasSpecialPacket(cls.sockets))
+			return;
+		Con_DPrintf ("%s:sequenced packet from wrong server\n"
+			,NET_AdrToString(adr, sizeof(adr), &net_from));
+		return;
+	}
+
+	if (cls.netchan.pext_stunaware)	//should be safe to do this here.
+		if (NET_WasSpecialPacket(cls.sockets))
+			return;
+
+	switch(cls.protocol)
+	{
+	case CP_NETQUAKE:
+#ifdef NQPROT
+		if(NQNetChan_Process(&cls.netchan))
+		{
+			MSG_ChangePrimitives(cls.netchan.netprim);
+			CL_WriteDemoMessage (&net_message, msg_readcount);
+			CLNQ_ParseServerMessage ();
+		}
+#endif
+		break;
+	case CP_PLUGIN:
+		break;
+	case CP_QUAKE2:
+#ifdef Q2CLIENT
+		if (!Netchan_Process(&cls.netchan))
+			return;		// wasn't accepted for some reason
+		CLQ2_ParseServerMessage ();
+		break;
+#endif
+	case CP_QUAKE3:
+#ifdef Q3CLIENT
+		CLQ3_ParseServerMessage();
+#endif
+		break;
+	case CP_QUAKEWORLD:
+		if (cls.demoplayback == DPB_MVD || cls.demoplayback == DPB_EZTV)
+		{
+			MSG_BeginReading(cls.netchan.netprim);
+			cls.netchan.last_received = realtime;
+			cls.netchan.outgoing_sequence = cls.netchan.incoming_sequence;
+		}
+		else if (!Netchan_Process(&cls.netchan))
+			return;		// wasn't accepted for some reason
+
+		CL_WriteDemoMessage (&net_message, msg_readcount);
+
+		if (cls.netchan.incoming_sequence > cls.netchan.outgoing_sequence)
+		{	//server should not be responding to packets we have not sent yet
+			Con_DPrintf("Server is from the future! (%i packets)\n", cls.netchan.incoming_sequence - cls.netchan.outgoing_sequence);
+			cls.netchan.outgoing_sequence = cls.netchan.incoming_sequence;
+		}
+		MSG_ChangePrimitives(cls.netchan.netprim);
+		CLQW_ParseServerMessage ();
+		break;
+	case CP_UNKNOWN:
+		break;
+	}
+}
 /*
 =================
 CL_ReadPackets
@@ -3821,145 +4030,17 @@ CL_ReadPackets
 */
 void CL_ReadPackets (void)
 {
-	char	adr[MAX_ADR_SIZE];
-
-	if (!qrenderer)
-		return;
-
-//	while (NET_GetPacket ())
-	for(;;)
+	if	(cls.demoplayback != DPB_NONE)
 	{
-		if (!CL_GetMessage())
-#ifndef HAVE_DTLS
-			break;
-#else
-		{
-			NET_DTLS_Timeouts(cls.sockets);
-			break;
-		}
-
-		if (*(int *)net_message.data != -1)
-			if (NET_DTLS_Decode(cls.sockets))
-				if (!net_message.cursize)
-					continue;
-#endif
-
-#ifdef NQPROT
-		if (cls.demoplayback == DPB_NETQUAKE)
-		{
-			MSG_BeginReading (cls.netchan.netprim);
-			cls.netchan.last_received = realtime;
-			CLNQ_ParseServerMessage ();
-
-			if (!cls.demoplayback)
-				CL_NextDemo();
-			continue;
-		}
-#endif
-#ifdef Q2CLIENT
-		if (cls.demoplayback == DPB_QUAKE2)
-		{
-			MSG_BeginReading (cls.netchan.netprim);
-			cls.netchan.last_received = realtime;
-			CLQ2_ParseServerMessage ();
-			continue;
-		}
-#endif
-		//
-		// remote command packet
-		//
-		if (*(int *)net_message.data == -1)
-		{
-			CL_ConnectionlessPacket ();
-			continue;
-		}
-
-		if (net_message.cursize < 6 && (cls.demoplayback != DPB_MVD && cls.demoplayback != DPB_EZTV)) //MVDs don't have the whole sequence header thing going on
-		{
-			Con_TPrintf ("%s: Runt packet\n", NET_AdrToString(adr, sizeof(adr), &net_from));
-			continue;
-		}
-
-		if (cls.state == ca_disconnected)
-		{	//connect to nq servers, but don't get confused with sequenced packets.
-			if (NET_WasSpecialPacket(cls.sockets))
-				continue;
-#ifdef NQPROT
-			CLNQ_ConnectionlessPacket ();
-#endif
-			continue;	//ignore it. We arn't connected.
-		}
-
-		//
-		// packet from server
-		//
-		if (!cls.demoplayback &&
-			!NET_CompareAdr (&net_from, &cls.netchan.remote_address))
-		{
-			if (NET_WasSpecialPacket(cls.sockets))
-				continue;
-			Con_DPrintf ("%s:sequenced packet from wrong server\n"
-				,NET_AdrToString(adr, sizeof(adr), &net_from));
-			continue;
-		}
-
-		if (cls.netchan.pext_stunaware)	//should be safe to do this here.
-			if (NET_WasSpecialPacket(cls.sockets))
-				continue;
-
-		switch(cls.protocol)
-		{
-		case CP_NETQUAKE:
-#ifdef NQPROT
-			if(NQNetChan_Process(&cls.netchan))
-			{
-				MSG_ChangePrimitives(cls.netchan.netprim);
-				CL_WriteDemoMessage (&net_message, msg_readcount);
-				CLNQ_ParseServerMessage ();
-			}
-#endif
-			break;
-		case CP_PLUGIN:
-			break;
-		case CP_QUAKE2:
-#ifdef Q2CLIENT
-			if (!Netchan_Process(&cls.netchan))
-				continue;		// wasn't accepted for some reason
-			CLQ2_ParseServerMessage ();
-			break;
-#endif
-		case CP_QUAKE3:
-#ifdef Q3CLIENT
-			CLQ3_ParseServerMessage();
-#endif
-			break;
-		case CP_QUAKEWORLD:
-			if (cls.demoplayback == DPB_MVD || cls.demoplayback == DPB_EZTV)
-			{
-				MSG_BeginReading(cls.netchan.netprim);
-				cls.netchan.last_received = realtime;
-				cls.netchan.outgoing_sequence = cls.netchan.incoming_sequence;
-			}
-			else if (!Netchan_Process(&cls.netchan))
-				continue;		// wasn't accepted for some reason
-
-			CL_WriteDemoMessage (&net_message, msg_readcount);
-
-			if (cls.netchan.incoming_sequence > cls.netchan.outgoing_sequence)
-			{	//server should not be responding to packets we have not sent yet
-				Con_DPrintf("Server is from the future! (%i packets)\n", cls.netchan.incoming_sequence - cls.netchan.outgoing_sequence);
-				cls.netchan.outgoing_sequence = cls.netchan.incoming_sequence;
-			}
-			MSG_ChangePrimitives(cls.netchan.netprim);
-			CLQW_ParseServerMessage ();
-			break;
-		case CP_UNKNOWN:
-			break;
-		}
-
-//		if (cls.demoplayback && cls.state >= ca_active && !CL_DemoBehind())
-//			return;
+		while(CL_GetDemoMessage())
+			CL_ReadPacket();
 	}
+	else
+		NET_ReadPackets(cls.sockets);
+
+#ifdef HAVE_DTLS
+	NET_DTLS_Timeouts(cls.sockets);
+#endif
 
 	//
 	// check timeout
@@ -4059,13 +4140,13 @@ static void CL_Curl_f(void)
 			usage |= 4;
 		else if (!strcmp(arg, "--for"))
 		{
-			alreadyhave = true;	//assume we have it.
-			for (i++; i < argc-1; i++)
+			alreadyhave = true;	//assume we have a package that satisfies the file name.
+			for (i++; i < argc-1; i++)	//all but the last...
 			{
 				arg = Cmd_Argv(i);
 				if (!CL_CheckDLFile(arg))
 				{
-					alreadyhave = false;
+					alreadyhave = false;	//I guess we didn't after all.
 					break;
 				}
 			}
@@ -4349,6 +4430,7 @@ void CL_FTP_f(void)
 void CL_Fog_f(void)
 {
 	int ftype;
+	vec3_t rgb;
 	if (!Q_strcasecmp(Cmd_Argv(0), "waterfog"))
 		ftype = FOGTYPE_WATER;
 	else if (!Q_strcasecmp(Cmd_Argv(0), "skyroomfog"))
@@ -4364,6 +4446,7 @@ void CL_Fog_f(void)
 	else
 	{
 		CL_ResetFog(ftype);
+		VectorSet(rgb, 0.3,0.3,0.3);
 
 		switch(Cmd_Argc())
 		{
@@ -4374,22 +4457,28 @@ void CL_Fog_f(void)
 			break;
 		case 3:
 			cl.fog[ftype].density = atof(Cmd_Argv(1));
-			cl.fog[ftype].colour[0] = cl.fog[ftype].colour[1] = cl.fog[ftype].colour[2] = SRGBf(atof(Cmd_Argv(2)));
+			rgb[0] = rgb[1] = rgb[2] = atof(Cmd_Argv(2));
 			break;
 		case 4:
 			cl.fog[ftype].density = 0.05;	//make something up for vauge compat with fitzquake, so it doesn't get the default of 0
-			cl.fog[ftype].colour[0] = SRGBf(atof(Cmd_Argv(1)));
-			cl.fog[ftype].colour[1] = SRGBf(atof(Cmd_Argv(2)));
-			cl.fog[ftype].colour[2] = SRGBf(atof(Cmd_Argv(3)));
+			rgb[0] = atof(Cmd_Argv(1));
+			rgb[1] = atof(Cmd_Argv(2));
+			rgb[2] = atof(Cmd_Argv(3));
 			break;
 		case 5:
 		default:
 			cl.fog[ftype].density = atof(Cmd_Argv(1));
-			cl.fog[ftype].colour[0] = SRGBf(atof(Cmd_Argv(2)));
-			cl.fog[ftype].colour[1] = SRGBf(atof(Cmd_Argv(3)));
-			cl.fog[ftype].colour[2] = SRGBf(atof(Cmd_Argv(4)));
+			rgb[0] = atof(Cmd_Argv(2));
+			rgb[1] = atof(Cmd_Argv(3));
+			rgb[2] = atof(Cmd_Argv(4));
 			break;
 		}
+
+		if (rgb[0]>=2 || rgb[1]>=2 || rgb[2]>=2)	//we allow SOME slop for hdr fog... hopefully we won't need it. this is mostly just an issue when skyfog is enabled[default .5] ('why is my sky white on map FOO')
+			Con_Printf(CON_WARNING "Fog colour of %g %g %g exceeds standard 0-1 range\n", rgb[0], rgb[1], rgb[2]);
+		cl.fog[ftype].colour[0] = SRGBf(rgb[0]);
+		cl.fog[ftype].colour[1] = SRGBf(rgb[1]);
+		cl.fog[ftype].colour[2] = SRGBf(rgb[2]);
 
 		if (cls.state == ca_active)
 			cl.fog[ftype].time += 1;
@@ -4445,10 +4534,43 @@ void CL_CrashMeError_f(void)
 	Sys_Error("crashme! %s", Cmd_Args());
 }
 
+
+static char *ShowTime(unsigned int seconds)
+{
+	char buf[1024];
+	char *b = buf;
+	*b = 0;
+
+	if (seconds > 60)
+	{
+		if (seconds > 60*60)
+		{
+			if (seconds > 24*60*60)
+			{
+				strcpy(b, va("%id ", seconds/(24*60*60)));
+				b += strlen(b);
+				seconds %= 24*60*60;
+			}
+
+			strcpy(b, va("%ih ", seconds/(60*60)));
+			b += strlen(b);
+			seconds %= 60*60;
+		}
+		strcpy(b, va("%im ", seconds/60));
+		b += strlen(b);
+		seconds %= 60;
+	}
+	strcpy(b, va("%is", seconds));
+	b += strlen(b);
+
+	return va("%s", buf);
+}
 void CL_Status_f(void)
 {
+	extern world_t csqc_world;
 	char adr[128];
 	float pi, po, bi, bo;
+
 	NET_PrintAddresses(cls.sockets);
 	NET_PrintConnectionsStatus(cls.sockets);
 	if (NET_GetRates(cls.sockets, &pi, &po, &bi, &bo))
@@ -4546,6 +4668,42 @@ void CL_Status_f(void)
 		if (cls.fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS)
 			Con_Printf("\treplacement deltas\n");
 	}
+
+	if (cl.worldmodel)
+	{
+		Con_Printf("map uptime       : %s\n", ShowTime(cl.time));
+		COM_FileBase(cl.worldmodel->name, adr, sizeof(adr));
+		Con_Printf ("current map      : %s (%s)\n", adr, cl.levelname);
+	}
+
+	if (csqc_world.progs)
+	{
+		extern int num_sfx;
+		int count = 0, i;
+		edict_t *e;
+		for (i = 0; i < csqc_world.num_edicts; i++)
+		{
+			e = EDICT_NUM_PB(csqc_world.progs, i);
+			if (e && e->ereftype == ER_FREE && Sys_DoubleTime() - e->freetime > 0.5)
+				continue;	//free, and older than the zombie time
+			count++;
+		}
+		Con_Printf("entities         : %i/%i/%i (mem: %.1f%%)\n", count, csqc_world.num_edicts, csqc_world.max_edicts, 100*(float)(csqc_world.progs->stringtablesize/(double)csqc_world.progs->stringtablemaxsize));
+		for (count = 1; count < MAX_PRECACHE_MODELS; count++)
+			if (!*cl.model_csqcname[count])
+				break;
+		Con_Printf("models           : %i/%i\n", count, MAX_PRECACHE_MODELS);
+		Con_Printf("sounds           : %i/\n", num_sfx);	//there is a limit, its just private. :(
+
+		for (count = 1; count < MAX_SSPARTICLESPRE; count++)
+			if (!cl.particle_csname[count])
+				break;
+		if (count!=1)
+			Con_Printf("particles        : %i/%i\n", count, MAX_SSPARTICLESPRE);
+		if (cl.csqcdebug)
+			Con_Printf("csqc debug       : true\n");
+	}
+	Con_Printf("gamedir          : %s\n", FS_GetGamedir(true));
 }
 
 void CL_Demo_SetSpeed_f(void)
@@ -4662,6 +4820,7 @@ void CL_Init (void)
 	Cvar_Register (&rcon_address,	cl_controlgroup);
 
 	Cvar_Register (&cl_lerp_maxinterval, cl_controlgroup);
+	Cvar_Register (&cl_lerp_maxdistance, cl_controlgroup);
 	Cvar_Register (&cl_lerp_players, cl_controlgroup);
 	Cvar_Register (&cl_predict_players,	cl_predictiongroup);
 	Cvar_Register (&cl_predict_players_frac,	cl_predictiongroup);
@@ -4697,8 +4856,8 @@ void CL_Init (void)
 	Cvar_Register (&cl_deadbodyfilter, "Item effects");
 
 	Cvar_Register (&cl_nolerp, "Item effects");
-	Cvar_Register (&cl_nolerp_netquake, "Item effects");
 #ifdef NQPROT
+	Cvar_Register (&cl_nolerp_netquake, "Item effects");
 	Cvar_Register (&cl_fullpitch_nq, "Cheats");
 #endif
 
@@ -4739,6 +4898,7 @@ void CL_Init (void)
 	Cvar_Register (&cl_teamchatsound,				cl_controlgroup);
 
 	Cvar_Register (&requiredownloads,				cl_controlgroup);
+	Cvar_Register (&mod_precache,					cl_controlgroup);
 	Cvar_Register (&cl_standardchat,				cl_controlgroup);
 	Cvar_Register (&msg_filter,						cl_controlgroup);
 	Cvar_Register (&msg_filter_frags,				cl_controlgroup);
@@ -4748,8 +4908,6 @@ void CL_Init (void)
 	Cvar_Register (&cl_pext_mask,					cl_controlgroup);
 
 	Cvar_Register (&cl_splitscreen,					cl_controlgroup);
-
-	Cvar_Register (&host_mapname,					"Scripting");
 
 #ifndef SERVERONLY
 	Cvar_Register (&cl_loopbackprotocol,				cl_controlgroup);
@@ -4804,9 +4962,9 @@ void CL_Init (void)
 	Cmd_AddCommandAD ("timedemo", CL_TimeDemo_f, CL_DemoList_c, NULL);
 #ifdef _DEBUG
 	Cmd_AddCommand ("freespace", CL_FreeSpace_f);
-#endif
 	Cmd_AddCommand ("crashme_endgame", CL_CrashMeEndgame_f);
 	Cmd_AddCommand ("crashme_error", CL_CrashMeError_f);
+#endif
 
 	Cmd_AddCommandD ("showpic", SCR_ShowPic_Script_f, 	"showpic <imagename> <placename> <x> <y> <zone> [width] [height] [touchcommand]\nDisplays an image onscreen, that potentially has a key binding attached to it when clicked/touched.\nzone should be one of: TL, TR, BL, BR, MM, TM, BM, ML, MR. This serves as an extra offset to move the image around the screen without any foreknowledge of the screen resolution.");
 	Cmd_AddCommandD ("showpic_removeall", SCR_ShowPic_Remove_f, 	"removes any pictures inserted with the showpic command.");
@@ -4922,7 +5080,7 @@ void CL_Init (void)
 
 	Cmd_AddCommandD ("fog", CL_Fog_f, "fog <density> <red> <green> <blue> <alpha> <depthbias>");
 	Cmd_AddCommandD ("waterfog", CL_Fog_f, "waterfog <density> <red> <green> <blue> <alpha> <depthbias>");
-	Cmd_AddCommandD ("skyroomfog", CL_Fog_f, "waterfog <density> <red> <green> <blue> <alpha> <depthbias>");
+	Cmd_AddCommandD ("skyroomfog", CL_Fog_f, "skyroomfog <density> <red> <green> <blue> <alpha> <depthbias>");
 	Cmd_AddCommandD ("skygroup", CL_Skygroup_f, "Provides a way to associate a skybox name with a series of maps, so that the requested skybox will override on a per-map basis.");
 //
 //  Windows commands
@@ -5332,15 +5490,15 @@ qboolean Host_BeginFileDownload(struct dl_download *dl, char *mimetype)
 	}
 	return result;
 }
-void Host_RunFilePrompted(void *ctx, int button)
+void Host_RunFilePrompted(void *ctx, promptbutton_t button)
 {
 	hrf_t *f = ctx;
 	switch(button)
 	{
-	case 0:
+	case PROMPT_YES:
 		f->flags |= HRF_OVERWRITE;
 		break;
-	case 1:
+	case PROMPT_NO:
 		f->flags |= HRF_NOOVERWRITE;
 		break;
 	default:
@@ -5506,17 +5664,15 @@ done:
 				else
 				{
 					host_parms.manifest = Z_StrDup(fdata);
-					man = FS_Manifest_Parse(NULL, fdata);
+					man = FS_Manifest_ReadMem(NULL, NULL, fdata);
 					if (man)
 					{
 						if (!man->updateurl)
 							man->updateurl = Z_StrDup(f->fname);
 //						if (f->flags & HRF_DOWNLOADED)
 						man->blockupdate = true;
+						//man->security = MANIFEST_SECURITY_DEFAULT;
 						BZ_Free(fdata);
-#ifdef PACKAGEMANAGER
-						PM_Shutdown();
-#endif
 						FS_ChangeGame(man, true, true);
 					}
 					else
@@ -5734,45 +5890,66 @@ qboolean Host_RunFile(const char *fname, int nlen, vfsfile_t *file)
 	}
 	else
 #endif
+	{
 		if (nlen >= 5 && !strncmp(fname, "qw://", 5))
-	{	//this is also implemented by ezquake, so be careful here...
-		//"qw://[stream@]host[:port]/COMMAND" join, spectate, qtvplay
-		char *t, *cmd;
-		const char *url;
-		char buffer[8192];
-		t = Z_Malloc(nlen+1);
-		memcpy(t, fname, nlen);
-		t[nlen] = 0;
-		url = t+5;
+		{	//this is also implemented by ezquake, so be careful here...
+			//"qw://[stream@]host[:port]/COMMAND" join, spectate, qtvplay
+			char *t, *cmd;
+			const char *url;
+			char buffer[8192];
+			t = Z_Malloc(nlen+1);
+			memcpy(t, fname, nlen);
+			t[nlen] = 0;
+			url = t+5;
 
-		for (cmd = t+5; *cmd; cmd++)
-		{
-			if (*cmd == '/')
+			for (cmd = t+5; *cmd; cmd++)
 			{
-				*cmd++ = 0;
-				break;
+				if (*cmd == '/')
+				{
+					*cmd++ = 0;
+					break;
+				}
 			}
+
+			//quote the url safely.
+			url = COM_QuotedString(url, buffer, sizeof(buffer), false);
+
+			//now figure out what the command actually was
+			if (!Q_strcasecmp(cmd, "join"))
+				Cbuf_AddText(va("join %s\n", url), RESTRICT_LOCAL);
+			else if (!Q_strcasecmp(cmd, "spectate") || !strcmp(cmd, "observe"))
+				Cbuf_AddText(va("observe %s\n", url), RESTRICT_LOCAL);
+			else if (!Q_strcasecmp(cmd, "qtvplay"))
+				Cbuf_AddText(va("qtvplay %s\n", url), RESTRICT_LOCAL);
+			else if (!*cmd || !Q_strcasecmp(cmd, "connect"))
+				Cbuf_AddText(va("connect %s\n", url), RESTRICT_LOCAL);
+			else
+				Con_Printf("Unknown url command: %s\n", cmd);
+
+			if(file)
+				VFS_CLOSE(file);
+			Z_Free(t);
+			return true;
 		}
 
-		//quote the url safely.
-		url = COM_QuotedString(url, buffer, sizeof(buffer), false);
-
-		//now figure out what the command actually was
-		if (!Q_strcasecmp(cmd, "join"))
-			Cbuf_AddText(va("join %s\n", url), RESTRICT_LOCAL);
-		else if (!Q_strcasecmp(cmd, "spectate") || !strcmp(cmd, "observe"))
-			Cbuf_AddText(va("observe %s\n", url), RESTRICT_LOCAL);
-		else if (!Q_strcasecmp(cmd, "qtvplay"))
-			Cbuf_AddText(va("qtvplay %s\n", url), RESTRICT_LOCAL);
-		else if (!*cmd || !Q_strcasecmp(cmd, "connect"))
-			Cbuf_AddText(va("connect %s\n", url), RESTRICT_LOCAL);
-		else
-			Con_Printf("Unknown url command: %s\n", cmd);
-
-		if(file)
-			VFS_CLOSE(file);
-		Z_Free(t);
-		return true;
+		{
+			const char *netschemes[] = {"udp://", "udp4//", "udp6//", "ipx://", "tcp://", "tcp4//", "tcp6//", "spx://", "ws://", "wss://", "tls://", "dtls://", "ice://", "rtc://", "ices://", "rtcs://", "irc://", "udg://", "unix://"};
+			int i;
+			size_t slen;
+			for (i = 0; i < countof(netschemes); i++)
+			{
+				slen = strlen(netschemes[i]);
+				if (nlen >= slen && !strncmp(fname, netschemes[i], slen))
+				{
+					char quoted[8192];
+					char *t = Z_Malloc(nlen+1);
+					memcpy(t, fname, nlen);
+					t[nlen] = 0;
+					Cbuf_AddText(va("connect %s\n", COM_QuotedString(t, quoted, sizeof(quoted), false)), RESTRICT_LOCAL);
+					Z_Free(t);
+				}
+			}
+		}
 	}
 
 	f = Z_Malloc(sizeof(*f) + nlen);
@@ -5821,6 +5998,7 @@ void CL_UpdateHeadAngles(void)
 		R_ConcatRotations(headchange, tmp, tmp2);
 		VectorAngles(tmp2[0], tmp2[2], pv->viewangles);
 		pv->viewangles[0] *= r_meshpitch.value;
+		pv->viewangles[2] *= r_meshroll.value;
 
 		//fall through
 	default:
@@ -5864,6 +6042,7 @@ double Host_Frame (double time)
 	qboolean idle;
 	extern int r_blockvidrestart;
 	static qboolean hadwork;
+	qboolean vrsync;
 
 	RSpeedLocals();
 
@@ -5872,7 +6051,8 @@ double Host_Frame (double time)
 		return 0;			// something bad happened, or the server disconnected
 	}
 
-	newrealtime = Media_TweekCaptureFrameTime(realtime, time);
+	vrsync = vid.vr?vid.vr->SyncFrame(&time):false;				//fiddle with frame timings
+	newrealtime = Media_TweekCaptureFrameTime(realtime, time);	//fiddle with time some more
 
 	time = newrealtime - realtime;
 	realtime = newrealtime;
@@ -5915,7 +6095,7 @@ double Host_Frame (double time)
 	if (!cls.timedemo)
 		CL_ReadPackets ();
 
-	if (idle && cl_idlefps.value > 0)
+	if (idle && cl_idlefps.value > 0 && !vrsync)
 	{
 		double idlesec = 1.0 / cl_idlefps.value;
 		if (idlesec > 0.1)
@@ -5933,6 +6113,8 @@ double Host_Frame (double time)
 				SV_Frame();
 				RSpeedEnd(RSPEED_SERVER);
 			}
+			else
+				MSV_PollSlaves();
 #endif
 			while(COM_DoWork(0, false))
 				;
@@ -5988,7 +6170,7 @@ double Host_Frame (double time)
 #ifdef HAVE_MEDIA_ENCODER
 		&& Media_Capturing() != 2
 #endif
-		)
+		&& !vrsync)
 	{
 //		realtime += spare/1000;	//don't use it all!
 		double newspare = CL_FilterTime((spare/1000 + realtime - oldrealtime)*1000, maxfps, 1.5, maxfpsignoreserver);
@@ -6057,6 +6239,8 @@ double Host_Frame (double time)
 			RSpeedEnd(RSPEED_SERVER);
 			host_frametime = ohft;
 		}
+		else
+			MSV_PollSlaves();
 		return 0;
 	}
 #endif
@@ -6128,6 +6312,8 @@ double Host_Frame (double time)
 //		if (cls.protocol != CP_QUAKE3 && cls.protocol != CP_QUAKE2)
 //			CL_ReadPackets ();	//q3's cgame cannot cope with input commands with the same time as the most recent snapshot value
 	}
+	else
+		MSV_PollSlaves();
 #endif
 	CL_CalcClientTime();
 
@@ -6211,7 +6397,9 @@ double Host_Frame (double time)
 
 	CL_QTVPoll();
 
+#ifdef QUAKESTATS
 	TP_UpdateAutoStatus();
+#endif
 
 	host_framecount++;
 	cl.lasttime = cl.time;
@@ -6349,18 +6537,18 @@ void CL_StartCinematicOrMenu(void)
 
 	if (!sv_state && !cls.demoinfile && !cls.state && !*cls.servername)
 	{
-		if (qrenderer > QR_NONE && !Key_Dest_Has(kdm_menu))
+		if (qrenderer > QR_NONE && !Key_Dest_Has(~kdm_game))
 		{
 #ifndef NOBUILTINMENUS
-			if (!cls.state && !Key_Dest_Has(kdm_menu) && !*FS_GetGamedir(false))
+			if (!cls.state && !Key_Dest_Has(~kdm_game) && !*FS_GetGamedir(false))
 				M_Menu_Mods_f();
 #endif
-			if (!cls.state && !Key_Dest_Has(kdm_menu) && cl_demoreel.ival)
+			if (!cls.state && !Key_Dest_Has(~kdm_game) && cl_demoreel.ival)
 			{
 				cls.demonum = 0;
 				CL_NextDemo();
 			}
-			if (!cls.state && !Key_Dest_Has(kdm_menu))
+			if (!cls.state && !Key_Dest_Has(~kdm_game))
 				//if we're (now) meant to be using csqc for menus, make sure that its running.
 				if (!CSQC_UnconnectedInit())
 					M_ToggleMenu_f();
@@ -6539,7 +6727,7 @@ void Host_FinishLoading(void)
 		SV_ArgumentOverrides();
 	#endif
 
-		Con_Printf ("\nEngine: %s\n", version_string());
+		Con_TPrintf ("\nEngine Version: %s\n", version_string());
 
 		Con_DPrintf("This program is free software; you can redistribute it and/or "
 					"modify it under the terms of the GNU General Public License "
@@ -6552,7 +6740,7 @@ void Host_FinishLoading(void)
 					"\n"
 					"See the GNU General Public License for more details.\n");
 
-	#if defined(_WIN32) && !defined(FTE_SDL) && !defined(_XBOX) && defined(WEBCLIENT)
+	#if defined(_WIN32) && !defined(FTE_SDL) && !defined(_XBOX) && defined(MANIFESTDOWNLOADS)
 		if (Sys_RunInstaller())
 			Sys_Quit();
 	#endif
@@ -6648,10 +6836,6 @@ void Host_Init (quakeparms_t *parms)
 	V_Init ();
 	NET_Init ();
 
-#ifdef PLUGINS
-	Plug_Initialise(false);
-#endif
-
 #if defined(Q2BSPS) || defined(Q3BSPS)
 	CM_Init();
 #endif
@@ -6680,6 +6864,10 @@ void Host_Init (quakeparms_t *parms)
 	CDAudio_Init ();
 	Sbar_Init ();
 	CL_Init ();
+
+#ifdef PLUGINS
+	Plug_Initialise(false);
+#endif
 
 #ifdef TEXTEDITOR
 	Editor_Init();
@@ -6789,7 +6977,7 @@ void Host_Shutdown(void)
 
 	Cmd_Shutdown();
 #ifdef PACKAGEMANAGER
-	PM_Shutdown();
+	PM_Shutdown(false);
 #endif
 	Key_Unbindall_f();
 

@@ -60,6 +60,10 @@ do
 		echo "  -r VER       Specifies the SVN revision to update to"
 		echo "  -j THREADS   Specifies how many jobs to make with"
 		echo "  --help       This text"
+		echo "  --noupdate   Don't do svn updates"
+		echo "  --unclean    Don't do make clean, for faster rebuilds"
+		echo "  --web        Build web target (excluding all others)"
+		echo "  --droid      Build android target (excluding others)"
 		exit 0
 		;;
 	-build|--build)
@@ -68,6 +72,27 @@ do
 		;;
 	--noupdate)
 		NOUPDATE="y"
+		;;
+	--unclean)
+		BUILD_CLEAN="n"
+		;;
+	--web)
+		BUILD_LINUXx86="n"
+		BUILD_LINUXx64="n"
+		BUILD_LINUXarmhf="n"
+		BUILD_WIN32="n"
+		BUILD_WIN64="n"
+		BUILD_ANDROID="n"
+		BUILD_WEB="y"
+		;;
+	--droid)
+		BUILD_LINUXx86="n"
+		BUILD_LINUXx64="n"
+		BUILD_LINUXarmhf="n"
+		BUILD_WIN32="n"
+		BUILD_WIN64="n"
+		BUILD_ANDROID="y"
+		BUILD_WEB="n"
 		;;
 	*)
 		echo "Unknown option $1"
@@ -275,7 +300,7 @@ if [ -e "$HOME/nocompat_readme.html" ]; then
 fi
 
 #this really should use the native cpu type... until then we use 32bit in case anyone's still using a 32bit kernel.
-if [ "$BUILD_LINUXx32" != "n" ]; then
+if [ "$BUILD_LINUXx86" != "n" ]; then
 	echo "--- QC builds ---"
 	rm -rf $QCCBUILDFOLDER 2>&1
 	mkdir -p $QCCBUILDFOLDER
@@ -294,18 +319,33 @@ if [ "$BUILD_LINUXx32" != "n" ]; then
 	fi
 
 	if [ -e $BUILDFOLDER/linux_x86/fteqcc32 ]; then
-		echo "Making csaddon + qcmenu"
 		mkdir -p $BUILDFOLDER/csaddon/
 		cd $SVNROOT/quakec
 		cd csaddon/src
+		echo -n "Making csaddon... "
 		$BUILDFOLDER/linux_x86/fteqcc32 -srcfile csaddon.src > $BUILDLOGFOLDER/csaddon.txt
-		mv ../csaddon.dat $BUILDFOLDER/csaddon/
+		if [ $? -eq 0 ]; then
+			echo "done"
+			cp ../csaddon.dat $BUILDFOLDER/csaddon/
+			cd ..
+			zip -9 $BUILDFOLDER/csaddon/csaddon.pk3 csaddon.dat
+		else
+			echo "failed"
+		fi
 
-		cd ../../menusys
+		cd $SVNROOT/quakec
+		cd menusys
+		echo -n "Making menusys... "
 		$BUILDFOLDER/linux_x86/fteqcc32 -srcfile menu.src > $BUILDLOGFOLDER/menu.txt
-		rm -f fteqcc.log
-		zip -q -9 -o -r $BUILDFOLDER/csaddon/menusys_src.zip .
-		mv ../menu.dat $BUILDFOLDER/csaddon/
+		if [ $? -eq 0 ]; then
+			echo "done"
+			zip -q -9 -o -r $BUILDFOLDER/csaddon/menusys_src.zip .
+			cp ../menu.dat $BUILDFOLDER/csaddon/
+			cd ..
+			zip -9 $BUILDFOLDER/csaddon/menusys.pk3 menu.dat
+		else
+			echo "failed"
+		fi
 	else
 		echo "Skiping csaddon + qcmenu, no compiler build"
 	fi

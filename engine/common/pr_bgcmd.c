@@ -8,12 +8,12 @@
 #ifdef SQL
 #include "sv_sql.h"
 #endif
+#include "fs.h"
 
 #include <ctype.h>
 
 #define VMUTF8 utf8_enable.ival
 #define VMUTF8MARKUP false
-
 
 static char *cvargroup_progs = "Progs variables";
 
@@ -32,9 +32,17 @@ cvar_t pr_brokenfloatconvert = CVAR("pr_brokenfloatconvert", "0");
 cvar_t	pr_fixbrokenqccarrays = CVARFD("pr_fixbrokenqccarrays", "0", CVAR_LATCH, "As part of its nq/qw/h2/csqc support, FTE remaps QC fields to match an internal order. This is a faster way to handle extended fields. However, some QCCs are buggy and don't report all field defs.\n0: do nothing. QCC must be well behaved.\n1: Duplicate engine fields, remap the ones we can to known offsets. This is sufficient for QCCX/FrikQCC mods that use hardcoded or even occasional calculated offsets (fixes ktpro).\n2: Scan the mod for field accessing instructions, and assume those are the fields (and that they don't alias non-fields). This can be used to work around gmqcc's WTFs (fixes xonotic).");
 cvar_t pr_tempstringcount = CVARD("pr_tempstringcount", "", "Obsolete. Set to 16 if you want to recycle+reuse the same 16 tempstring references and break lots of mods.");
 cvar_t pr_tempstringsize = CVARD("pr_tempstringsize", "4096", "Obsolete");
+#ifdef MULTITHREAD
+cvar_t pr_gc_threaded = CVARD("pr_gc_threaded", "1", "Says whether to use a separate thread for tempstring garbage collections. This avoids main-thread stalls but at the expense of more memory usage.");
+#else
+cvar_t pr_gc_threaded = CVARD("pr_gc_threaded", "0", "Says whether to use a separate thread for tempstring garbage collections. This avoids main-thread stalls but at the expense of more memory usage.");
+#endif
 cvar_t	pr_sourcedir = CVARD("pr_sourcedir", "src", "Subdirectory where your qc source is located. Used by the internal compiler and qc debugging functionality.");
 cvar_t pr_enable_uriget = CVARD("pr_enable_uriget", "1", "Allows gamecode to make direct http requests");
 cvar_t pr_enable_profiling = CVARD("pr_enable_profiling", "0", "Enables profiling support. Will run more slowly. Change the map and then use the profile_ssqc/profile_csqc commands to see the results.");
+#ifdef HAVE_CLIENT
+cvar_t pr_precachepic_slow = CVARD("pr_precachepic_slow", "0", "Legacy setting. Should be set to 0 where supported.");
+#endif
 int tokenizeqc(const char *str, qboolean dpfuckage);
 
 void PF_buf_shutdown(pubprogfuncs_t *prinst);
@@ -88,6 +96,7 @@ void PF_Common_RegisterCvars(void)
 	Cvar_Register (&pr_brokenfloatconvert, cvargroup_progs);
 	Cvar_Register (&pr_tempstringcount, cvargroup_progs);
 	Cvar_Register (&pr_tempstringsize, cvargroup_progs);
+	Cvar_Register (&pr_gc_threaded, cvargroup_progs);
 #ifdef WEBCLIENT
 	Cvar_Register (&pr_enable_uriget, cvargroup_progs);
 #endif
@@ -96,6 +105,9 @@ void PF_Common_RegisterCvars(void)
 	Cvar_Register (&pr_fixbrokenqccarrays, cvargroup_progs);
 	Cvar_Register (&utf8_enable, cvargroup_progs);
 	Cvar_Register (&pr_autocreatecvars, cvargroup_progs);
+#ifdef HAVE_CLIENT
+	Cvar_Register (&pr_precachepic_slow, cvargroup_progs);
+#endif
 
 #ifdef RAGDOLL
 	Cmd_AddCommand("skel_info", skel_info_f);
@@ -800,7 +812,7 @@ void QCBUILTIN PF_getsurfacetexture(pubprogfuncs_t *prinst, struct globalvars_s 
 	(n)[1] = ((a)[2] - (b)[2]) * ((c)[0] - (b)[0]) - ((a)[0] - (b)[0]) * ((c)[2] - (b)[2]), \
 	(n)[2] = ((a)[0] - (b)[0]) * ((c)[1] - (b)[1]) - ((a)[1] - (b)[1]) * ((c)[0] - (b)[0]) \
 	)
-static float getsurface_clippointpoly(model_t *model, msurface_t *surf, vec3_t point, vec3_t bestcpoint, float bestdist)
+static float getsurface_clippointpoly(model_t *model, msurface_t *surf, pvec3_t point, pvec3_t bestcpoint, float bestdist)
 {
 	int e, edge;
 	vec3_t edgedir, edgenormal, cpoint, temp;
@@ -849,7 +861,7 @@ static float getsurface_clippointpoly(model_t *model, msurface_t *surf, vec3_t p
 	}
 	return bestdist;
 }
-static float getsurface_clippointtri(model_t *model, msurface_t *surf, vec3_t point, vec3_t bestcpoint, float bestdist)
+static float getsurface_clippointtri(model_t *model, msurface_t *surf, pvec3_t point, pvec3_t bestcpoint, float bestdist)
 {
 	int j;
 	mesh_t *mesh = surf->mesh;
@@ -904,12 +916,12 @@ static float getsurface_clippointtri(model_t *model, msurface_t *surf, vec3_t po
 	}
 	return bestdist;
 }
-msurface_t *Mod_GetSurfaceNearPoint(model_t *model, vec3_t point)
+msurface_t *Mod_GetSurfaceNearPoint(model_t *model, pvec3_t point)
 {
 	msurface_t *surf;
 	int i;
 
-	vec3_t cpoint = {0,0,0};
+	pvec3_t cpoint = {0,0,0};
 	float bestdist = 0x7fffffff, dist;
 	msurface_t *bestsurf = NULL;
 
@@ -947,7 +959,7 @@ msurface_t *Mod_GetSurfaceNearPoint(model_t *model, vec3_t point)
 void QCBUILTIN PF_getsurfacenearpoint(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	wedict_t *ent = G_WEDICT(prinst, OFS_PARM0);
-	float *point = G_VECTOR(OFS_PARM1);
+	pvec_t *point = G_VECTOR(OFS_PARM1);
 
 	world_t *w = prinst->parms->user;
 	model_t *model = w->Get_CModel(w, ent->v->modelindex);
@@ -972,7 +984,7 @@ void QCBUILTIN PF_getsurfaceclippedpoint(pubprogfuncs_t *prinst, struct globalva
 	unsigned int surfnum;
 
 	world_t *w = prinst->parms->user;
-	float *result = G_VECTOR(OFS_RETURN);
+	pvec_t *result = G_VECTOR(OFS_RETURN);
 
 	ent = G_WEDICT(prinst, OFS_PARM0);
 	surfnum = G_FLOAT(OFS_PARM1);
@@ -1133,7 +1145,7 @@ void QCBUILTIN PF_checkpvs(pubprogfuncs_t *prinst, struct globalvars_s *pr_globa
 {
 	world_t *world = prinst->parms->user;
 	model_t *worldmodel = world->worldmodel;
-	float *viewpos = G_VECTOR(OFS_PARM0);
+	VM_VECTORARG(viewpos, OFS_PARM0);
 	wedict_t *ent = G_WEDICT(prinst, OFS_PARM1);
 	int cluster;
 	int qcpvsarea[2];
@@ -1215,31 +1227,37 @@ void QCBUILTIN PF_touchtriggers(pubprogfuncs_t *prinst, struct globalvars_s *pr_
 //Finding
 
 //entity(string field, float match) findchainflags = #450
-//chained search for float, int, and entity reference fields
+//chained search for float reference fields
 void QCBUILTIN PF_findchainflags (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
-	int i, ff, cf;
+	int i;
+	unsigned int ff, cf;
 	int s;
 	wedict_t	*ent, *chain;
 
-	chain = (wedict_t *) *prinst->parms->sv_edicts;
+	chain = (wedict_t *) *prinst->parms->edicts;
 
 	ff = G_INT(OFS_PARM0)+prinst->fieldadjust;
 	s = G_FLOAT(OFS_PARM1);
 	if (prinst->callargc > 2)
 		cf = G_INT(OFS_PARM2)+prinst->fieldadjust;
 	else
-		cf = &((comentvars_t*)NULL)->chain - (int*)NULL;
+		cf = &((comentvars_t*)NULL)->chain - (pint_t*)NULL;
+	if (ff >= prinst->activefieldslots || cf >= prinst->activefieldslots)
+	{
+		PR_BIError (prinst, "PF_FindChain: bad field reference");
+		return;
+	}
 
-	for (i = 1; i < *prinst->parms->sv_num_edicts; i++)
+	for (i = 1; i < *prinst->parms->num_edicts; i++)
 	{
 		ent = WEDICT_NUM_PB(prinst, i);
 		if (ED_ISFREE(ent))
 			continue;
-		if (!((int)((float *)ent->v)[ff] & s))
+		if (!((int)((pvec_t *)ent->v)[ff] & s))
 			continue;
 
-		((int*)ent->v)[cf] = EDICT_TO_PROG(prinst, chain);
+		((pint_t*)ent->v)[cf] = EDICT_TO_PROG(prinst, chain);
 		chain = ent;
 	}
 
@@ -1247,30 +1265,37 @@ void QCBUILTIN PF_findchainflags (pubprogfuncs_t *prinst, struct globalvars_s *p
 }
 
 //entity(string field, float match) findchainfloat = #403
+//chained search for float, int, and entity reference fields
 void QCBUILTIN PF_findchainfloat (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
-	int i, ff, cf;
+	int i;
+	unsigned int ff, cf;
 	float s;
 	wedict_t	*ent, *chain;
 
-	chain = (wedict_t *) *prinst->parms->sv_edicts;
+	chain = (wedict_t *) *prinst->parms->edicts;
 
 	ff = G_INT(OFS_PARM0)+prinst->fieldadjust;
 	s = G_FLOAT(OFS_PARM1);
 	if (prinst->callargc > 2)
 		cf = G_INT(OFS_PARM2)+prinst->fieldadjust;
 	else
-		cf = &((comentvars_t*)NULL)->chain - (int*)NULL;
+		cf = &((comentvars_t*)NULL)->chain - (pint_t*)NULL;
+	if (ff >= prinst->activefieldslots || cf >= prinst->activefieldslots)
+	{
+		PR_BIError (prinst, "PF_FindChain: bad field reference");
+		return;
+	}
 
-	for (i = 1; i < *prinst->parms->sv_num_edicts; i++)
+	for (i = 1; i < *prinst->parms->num_edicts; i++)
 	{
 		ent = WEDICT_NUM_PB(prinst, i);
 		if (ED_ISFREE(ent))
 			continue;
-		if (((float *)ent->v)[ff] != s)
+		if (((pvec_t *)ent->v)[ff] != s)
 			continue;
 
-		((int*)ent->v)[cf] = EDICT_TO_PROG(prinst, chain);
+		((pint_t*)ent->v)[cf] = EDICT_TO_PROG(prinst, chain);
 		chain = ent;
 	}
 
@@ -1281,12 +1306,13 @@ void QCBUILTIN PF_findchainfloat (pubprogfuncs_t *prinst, struct globalvars_s *p
 //chained search for strings in entity fields
 void QCBUILTIN PF_findchain (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
-	int i, ff, cf;
+	int i;
+	unsigned int ff, cf;
 	const char *s;
 	string_t t;
 	wedict_t *ent, *chain;
 	
-	chain = (wedict_t *) *prinst->parms->sv_edicts;
+	chain = (wedict_t *) *prinst->parms->edicts;
 
 	ff = G_INT(OFS_PARM0)+prinst->fieldadjust;
 	s = PR_GetStringOfs(prinst, OFS_PARM1);
@@ -1294,8 +1320,13 @@ void QCBUILTIN PF_findchain (pubprogfuncs_t *prinst, struct globalvars_s *pr_glo
 		cf = G_INT(OFS_PARM2)+prinst->fieldadjust;
 	else
 		cf = &((comentvars_t*)NULL)->chain - (int*)NULL;
+	if (ff >= prinst->activefieldslots || cf >= prinst->activefieldslots)
+	{
+		PR_BIError (prinst, "PF_FindChain: bad field reference");
+		return;
+	}
 
-	for (i = 1; i < *prinst->parms->sv_num_edicts; i++)
+	for (i = 1; i < *prinst->parms->num_edicts; i++)
 	{
 		ent = WEDICT_NUM_PB(prinst, i);
 		if (ED_ISFREE(ent))
@@ -1317,15 +1348,21 @@ void QCBUILTIN PF_findchain (pubprogfuncs_t *prinst, struct globalvars_s *pr_glo
 //entity(entity start, float fld, float match) findflags = #449
 void QCBUILTIN PF_FindFlags (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
-	int e, f;
+	int e;
+	unsigned int f;
 	int s;
 	wedict_t *ed;
 
 	e = G_EDICTNUM(prinst, OFS_PARM0);
 	f = G_INT(OFS_PARM1)+prinst->fieldadjust;
+	if (f >= prinst->activefieldslots)
+	{
+		PR_BIError (prinst, "PF_FindFlags: bad field reference");
+		return;
+	}
 	s = G_FLOAT(OFS_PARM2);
 
-	for (e++; e < *prinst->parms->sv_num_edicts; e++)
+	for (e++; e < *prinst->parms->num_edicts; e++)
 	{
 		ed = WEDICT_NUM_PB(prinst, e);
 		if (ED_ISFREE(ed))
@@ -1337,27 +1374,35 @@ void QCBUILTIN PF_FindFlags (pubprogfuncs_t *prinst, struct globalvars_s *pr_glo
 		}
 	}
 
-	RETURN_EDICT(prinst, *prinst->parms->sv_edicts);
+	RETURN_EDICT(prinst, *prinst->parms->edicts);
 }
 
 //entity(entity start, float fld, float match) findfloat = #98
 void QCBUILTIN PF_FindFloat (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
-	int e, f;
+	int e;
+	unsigned int f;
 	int s;
 	wedict_t *ed;
 
+#ifdef HAVE_LEGACY
 	if (prinst->callargc != 3)	//I can hate mvdsv if I want to.
 	{
 		PR_BIError(prinst, "PF_FindFloat (#98): callargc != 3\nDid you mean to set pr_imitatemvdsv to 1?");
 		return;
 	}
+#endif
 
 	e = G_EDICTNUM(prinst, OFS_PARM0);
 	f = G_INT(OFS_PARM1)+prinst->fieldadjust;
+	if (f >= prinst->activefieldslots)
+	{
+		PR_BIError (prinst, "PF_FindFloat: bad field reference");
+		return;
+	}
 	s = G_INT(OFS_PARM2);
 
-	for (e++; e < *prinst->parms->sv_num_edicts; e++)
+	for (e++; e < *prinst->parms->num_edicts; e++)
 	{
 		ed = WEDICT_NUM_PB(prinst, e);
 		if (ED_ISFREE(ed))
@@ -1369,20 +1414,25 @@ void QCBUILTIN PF_FindFloat (pubprogfuncs_t *prinst, struct globalvars_s *pr_glo
 		}
 	}
 
-	RETURN_EDICT(prinst, *prinst->parms->sv_edicts);
+	RETURN_EDICT(prinst, *prinst->parms->edicts);
 }
 
 // entity (entity start, .string field, string match) find = #5;
 void QCBUILTIN PF_FindString (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	int		e;
-	int		f;
+	unsigned int		f;
 	const char	*s;
 	string_t t;
 	wedict_t	*ed;
 
 	e = G_EDICTNUM(prinst, OFS_PARM0);
 	f = G_INT(OFS_PARM1)+prinst->fieldadjust;
+	if (f >= prinst->activefieldslots)
+	{
+		PR_BIError (prinst, "PF_FindString: bad field reference");
+		return;
+	}
 	s = PR_GetStringOfs(prinst, OFS_PARM2);
 	if (!s)
 	{
@@ -1390,7 +1440,9 @@ void QCBUILTIN PF_FindString (pubprogfuncs_t *prinst, struct globalvars_s *pr_gl
 		return;
 	}
 
-	for (e++ ; e < *prinst->parms->sv_num_edicts ; e++)
+	//FIXME: bound f
+
+	for (e++ ; e < *prinst->parms->num_edicts ; e++)
 	{
 		ed = WEDICT_NUM_PB(prinst, e);
 		if (ED_ISFREE(ed))
@@ -1405,8 +1457,124 @@ void QCBUILTIN PF_FindString (pubprogfuncs_t *prinst, struct globalvars_s *pr_gl
 		}
 	}
 
-	RETURN_EDICT(prinst, *prinst->parms->sv_edicts);
+	RETURN_EDICT(prinst, *prinst->parms->edicts);
 }
+
+#ifdef QCGC
+void QCBUILTIN PF_FindList (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	world_t *w = prinst->parms->user;
+	int		e;
+	unsigned int f = G_INT(OFS_PARM0)+prinst->fieldadjust;
+	wedict_t	*ed;
+	etype_t type = G_INT(OFS_PARM2);
+
+	int *list = alloca(sizeof(*list)*w->num_edicts);	//guess at a max
+	int *retlist;
+	unsigned found = 0;
+
+	if (type <= ev_double)
+	{
+		extern const unsigned int type_size[];
+		if (f < 0 || f+type_size[type] > prinst->activefieldslots)
+		{	//invalid field.
+			G_INT(OFS_PARM3) = G_INT(OFS_RETURN) = 0;
+			return;
+		}
+	}
+	else
+	{	//unsupported field type.
+		G_INT(OFS_PARM3) = G_INT(OFS_RETURN) = 0;
+		return;
+	}
+
+	if (type == ev_string)
+	{
+		const char	*s = PR_GetStringOfs(prinst, OFS_PARM1);
+		string_t t;
+		if (!s)
+			s = ""; /* o.O */
+		for (e=1 ; e < *prinst->parms->num_edicts ; e++)
+		{
+			ed = WEDICT_NUM_PB(prinst, e);
+			if (ED_ISFREE(ed) || ed->readonly)
+				continue;
+			t = ((string_t *)ed->v)[f];
+			if (!t)
+				continue;
+			if (!strcmp(PR_GetString(prinst, t),s))
+				list[found++] = EDICT_TO_PROG(prinst, ed);
+		}
+	}
+	else if (type == ev_float)
+	{	//handling -0 properly requires care
+		pvec_t s = G_FLOAT(OFS_PARM1);
+		for (e=1 ; e < *prinst->parms->num_edicts ; e++)
+		{
+			ed = WEDICT_NUM_PB(prinst, e);
+			if (ED_ISFREE(ed))
+				continue;
+			if (((pvec_t*)ed->v)[f] == s)
+				list[found++] = EDICT_TO_PROG(prinst, ed);
+		}
+	}
+	else if (type == ev_double)
+	{	//handling 64bit -0 properly requires care
+		double s = G_DOUBLE(OFS_PARM1);
+		for (e=1 ; e < *prinst->parms->num_edicts ; e++)
+		{
+			ed = WEDICT_NUM_PB(prinst, e);
+			if (ED_ISFREE(ed))
+				continue;
+			if (*(double*)((pvec_t*)ed->v+f) == s)
+				list[found++] = EDICT_TO_PROG(prinst, ed);
+		}
+	}
+	else if (type == ev_int64 || type == ev_uint64)
+	{	//handling -0 properly requires care
+		pint64_t s = G_INT64(OFS_PARM1);
+		for (e=1 ; e < *prinst->parms->num_edicts ; e++)
+		{
+			ed = WEDICT_NUM_PB(prinst, e);
+			if (ED_ISFREE(ed))
+				continue;
+			if (*(pint64_t*)((pint_t*)ed->v+f) == s)
+				list[found++] = EDICT_TO_PROG(prinst, ed);
+		}
+	}
+	else if (type == ev_vector)
+	{	//big types...
+		pvec_t *s = G_VECTOR(OFS_PARM1);
+		for (e=1 ; e < *prinst->parms->num_edicts ; e++)
+		{
+			ed = WEDICT_NUM_PB(prinst, e);
+			if (ED_ISFREE(ed))
+				continue;
+			if (((pvec_t*)ed->v)[f+0] == s[0]&&
+				((pvec_t*)ed->v)[f+1] == s[1]&&
+				((pvec_t*)ed->v)[f+2] == s[2])
+				list[found++] = EDICT_TO_PROG(prinst, ed);
+		}
+	}
+	else
+	{	//generic references and other stuff that can just be treated as ints
+		pint_t s = G_INT(OFS_PARM1);
+		for (e=1 ; e < *prinst->parms->num_edicts ; e++)
+		{
+			ed = WEDICT_NUM_PB(prinst, e);
+			if (ED_ISFREE(ed))
+				continue;
+			if (((pint_t*)ed->v)[f] == s)
+				list[found++] = EDICT_TO_PROG(prinst, ed);
+		}
+	}
+
+	G_INT(OFS_PARM3) = found;
+	G_INT(OFS_RETURN) = prinst->AllocTempString(prinst, (char**)&retlist, (found+1)*sizeof(*retlist));
+	memcpy(retlist, list, found*sizeof(*retlist));
+	retlist[found] = 0;
+}
+#endif
 
 //Finding
 ////////////////////////////////////////////////////
@@ -1476,7 +1644,12 @@ void QCBUILTIN PF_cvar_description (pubprogfuncs_t *prinst, struct globalvars_s 
 	const char	*str = PR_GetStringOfs(prinst, OFS_PARM0);
 	cvar_t *cv = PF_Cvar_FindOrGet(str);
 	if (cv && !(cv->flags & CVAR_NOUNSAFEEXPAND))
-		RETURN_CSTRING(cv->description);
+	{
+		if (cv->description)
+			RETURN_CSTRING(localtext(cv->description));
+		else
+			G_INT(OFS_RETURN) = 0;
+	}
 	else
 		G_INT(OFS_RETURN) = 0;
 }
@@ -1489,17 +1662,17 @@ void QCBUILTIN PF_cvar_type (pubprogfuncs_t *prinst, struct globalvars_s *pr_glo
 	cvar_t *v = Cvar_FindVar(str);	//this builtin MUST NOT create cvars implicitly, otherwise there would be no way to test if it exists.
 	if (v)
 	{
-		ret |= 1; // CVAR_EXISTS
+		ret |= CVAR_TYPEFLAG_EXISTS;
 		if(v->flags & CVAR_ARCHIVE)
-			ret |= 2; // CVAR_TYPE_SAVED
+			ret |= CVAR_TYPEFLAG_SAVED;
 		if(v->flags & (CVAR_NOTFROMSERVER|CVAR_NOUNSAFEEXPAND))
-			ret |= 4; // CVAR_TYPE_PRIVATE
+			ret |= CVAR_TYPEFLAG_PRIVATE;
 		if(!(v->flags & CVAR_USERCREATED))
-			ret |= 8; // CVAR_TYPE_ENGINE
+			ret |= CVAR_TYPEFLAG_ENGINE;
 		if (v->description)
-			ret |= 16; // CVAR_TYPE_HASDESCRIPTION
+			ret |= CVAR_TYPEFLAG_HASDESCRIPTION;
 		if (v->flags & CVAR_NOSET)
-			ret |= 32; // CVAR_TYPE_READONLY
+			ret |= CVAR_TYPEFLAG_READONLY;
 	}
 	G_FLOAT(OFS_RETURN) = ret;
 }
@@ -1606,29 +1779,26 @@ void QCBUILTIN PF_memcpy (pubprogfuncs_t *prinst, struct globalvars_s *pr_global
 	int dst = G_INT(OFS_PARM0);
 	int src = G_INT(OFS_PARM1);
 	int size = G_INT(OFS_PARM2);
-	if (dst < 0 || dst+size >= prinst->stringtablesize)
-	{
+	if (size < 0 || size > prinst->stringtablesize)
+		PR_BIError(prinst, "PF_memcpy: invalid size\n");
+	else if (dst < 0 || dst+size > prinst->stringtablesize)
 		PR_BIError(prinst, "PF_memcpy: invalid dest\n");
-		return;
-	}
-	if (src < 0 || src+size >= prinst->stringtablesize)
-	{
+	else if (src < 0 || src+size > prinst->stringtablesize)
 		PR_BIError(prinst, "PF_memcpy: invalid source\n");
-		return;
-	}
-	memmove(prinst->stringtable + dst, prinst->stringtable + src, size);
+	else
+		memmove(prinst->stringtable + dst, prinst->stringtable + src, size);
 }
 void QCBUILTIN PF_memfill8 (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	int dst = G_INT(OFS_PARM0);
 	int val = G_INT(OFS_PARM1);
 	int size = G_INT(OFS_PARM2);
-	if (dst < 0 || dst+size >= prinst->stringtablesize)
-	{
-		PR_BIError(prinst, "PF_memcpy: invalid dest\n");
-		return;
-	}
-	memset(prinst->stringtable + dst, val, size);
+	if (size < 0 || size > prinst->stringtablesize)
+		PR_BIError(prinst, "PF_memcpy: invalid size\n");
+	else if (dst < 0 || dst+size > prinst->stringtablesize)
+		PR_BIError(prinst, "PF_memfill8: invalid dest\n");
+	else
+		memset(prinst->stringtable + dst, val, size);
 }
 
 void QCBUILTIN PF_memptradd (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
@@ -1645,7 +1815,7 @@ void QCBUILTIN PF_memptradd (pubprogfuncs_t *prinst, struct globalvars_s *pr_glo
 }
 
 void QCBUILTIN PF_memstrsize(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
-{
+{	//explicitly returns bytes, not chars.
 	G_FLOAT(OFS_RETURN) = strlen(PR_GetStringOfs(prinst, OFS_PARM0));
 }
 
@@ -1670,6 +1840,8 @@ typedef struct
 		char	*stringdata;
 	};
 } pf_hashentry_t;
+#define HASH_REPLACE	256
+#define HASH_ADD		512
 #define FIRSTTABLE 1
 static pf_hashtab_t *pf_hashtab;
 static size_t pf_hash_maxtables;
@@ -1787,6 +1959,7 @@ void QCBUILTIN PF_hash_getcb (pubprogfuncs_t *prinst, struct globalvars_s *pr_gl
 		memcpy(G_VECTOR(OFS_RETURN), G_VECTOR(OFS_PARM2), sizeof(vec3_t));
 */
 }
+
 void QCBUILTIN PF_hash_add (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	pf_hashtab_t *tab = PF_hash_findtab(prinst, G_FLOAT(OFS_PARM0));
@@ -1799,7 +1972,7 @@ void QCBUILTIN PF_hash_add (pubprogfuncs_t *prinst, struct globalvars_s *pr_glob
 	{
 		if (!type)
 			type = tab->defaulttype;
-		if (!(flags & 512) || (flags & 256))
+		if (!(flags & HASH_ADD) || (flags & HASH_REPLACE))
 		{
 			ent = Hash_Get(&tab->tab, name);
 			if (ent)
@@ -1907,11 +2080,138 @@ void QCBUILTIN PF_hash_createtab (pubprogfuncs_t *prinst, struct globalvars_s *p
 	G_FLOAT(OFS_RETURN) = i + FIRSTTABLE;
 }
 
-void pf_hash_savegame(void)	//write the persistant table to a saved game.
+static void PF_hash_savetab(void *ctx, void *data)
 {
+	char tmp[8192];
+	pf_hashentry_t *ent = data;
+	if (ent->type == ev_string)
+		VFS_PRINTF (ctx, "\t%i \"%s\" %s\n", ent->type, ent->name, COM_QuotedString(ent->stringdata, tmp, sizeof(tmp), false));
+	else if (ent->type == ev_vector)
+		VFS_PRINTF (ctx, "\t%i \"%s\" %f %f %f\n", ent->type, ent->name, ent->data[0], ent->data[1], ent->data[2]);
+	else if (ent->type == ev_float)
+		VFS_PRINTF (ctx, "\t%i \"%s\" %f\n", ent->type, ent->name, *(float*)ent->data);
+	else
+		VFS_PRINTF (ctx, "\t%i \"%s\" %#x\n", ent->type, ent->name, *(int*)ent->data);
 }
-void pf_hash_loadgame(void)	//(re)load the persistant table.
+static void PR_hash_savegame(vfsfile_t *f, pubprogfuncs_t *prinst, qboolean binary)	//write the persistant table to a saved game.
 {
+	unsigned int tab;
+	char *tmp = NULL;
+
+	for (tab = 0; tab < pf_hash_maxtables; tab++)
+	{
+		if (pf_hashtab[tab].prinst == prinst)// && (pf_hashtab[tab].flags & BUFFLAG_SAVED))
+		{
+			VFS_PRINTF (f, "hashtable %u %i %u\n", tab+FIRSTTABLE, pf_hashtab[tab].defaulttype, (unsigned int)pf_hashtab[tab].tab.numbuckets);
+			VFS_PRINTF (f, "{\n");
+			Hash_Enumerate(&pf_hashtab[tab].tab, PF_hash_savetab, f);
+			VFS_PRINTF (f, "}\n");
+		}
+	}
+	free(tmp);
+}
+static const char *PR_hash_loadgame(pubprogfuncs_t *prinst, const char *l)
+{
+	char name[8192];
+	char token[65536];
+	int tabno;
+	int nlen, vlen;
+	etype_t hashtype;
+	size_t buffersize;
+	com_tokentype_t tt;
+	pf_hashtab_t *tab;
+	pf_hashentry_t *ent;
+	l = COM_ParseTokenOut(l, NULL, token, sizeof(token), &tt);if (tt != TTP_RAWTOKEN)return NULL;
+	tabno = atoi(token)-FIRSTTABLE;
+	l = COM_ParseTokenOut(l, NULL, token, sizeof(token), &tt);if (tt != TTP_RAWTOKEN)return NULL;
+	hashtype = atoi(token);
+	l = COM_ParseTokenOut(l, NULL, token, sizeof(token), &tt);if (tt != TTP_RAWTOKEN)return NULL;
+	buffersize = atoi(token);
+
+	l = COM_ParseTokenOut(l, NULL, token, sizeof(token), &tt);if (tt != TTP_LINEENDING)return NULL;
+	l = COM_ParseTokenOut(l, NULL, token, sizeof(token), &tt);if (tt != TTP_PUNCTUATION)return NULL;
+	if (strcmp(token, "{"))	return NULL;
+
+	if (tabno < 0 || tabno >= 1<<16)
+		return NULL;
+	if (tabno >= pf_hash_maxtables)
+		Z_ReallocElements((void**)&pf_hashtab, &pf_hash_maxtables, tabno+1, sizeof(*pf_hashtab));
+
+	tab = &pf_hashtab[tabno];
+	if (tab->prinst)
+	{
+		tab->prinst = NULL;
+		Hash_Enumerate(&tab->tab, PF_hash_destroytab_enum, NULL);
+		Z_Free(tab->bucketmem);
+		tab->bucketmem = NULL;
+	}
+	tab->prinst = prinst;
+	tab->defaulttype = hashtype;
+	tab->bucketmem = Z_Malloc(Hash_BytesForBuckets(buffersize));
+	Hash_InitTable(&tab->tab, buffersize, tab->bucketmem);
+
+	for(;;)
+	{
+		l = COM_ParseTokenOut(l, NULL, token, sizeof(token), &tt);
+		if (tt == TTP_LINEENDING)
+			continue;
+		if (tt == TTP_PUNCTUATION && !strcmp(token, "}"))
+			break;
+		if (tt != TTP_RAWTOKEN)
+			break;
+		hashtype = atoi(token);
+		l = COM_ParseTokenOut(l, NULL, name, sizeof(name), &tt);if (tt != TTP_STRING)return NULL;
+
+		nlen = strlen(name);
+		if (hashtype == ev_string)
+		{
+			l = COM_ParseTokenOut(l, NULL, token, sizeof(token), &tt);if (tt != TTP_STRING)return NULL;
+			vlen = strlen(token);
+			l = COM_ParseTokenOut(l, NULL, token, sizeof(token), &tt);if (tt != TTP_LINEENDING)return NULL;
+
+			ent = BZ_Malloc(sizeof(*ent) + nlen+1 + vlen+1);
+			ent->name = (char*)(ent+1);
+			ent->type = hashtype;
+			ent->stringdata = ent->name+(nlen+1);
+			memcpy(ent->name, name, nlen);
+			ent->name[nlen] = 0;
+			memcpy(ent->stringdata, token, vlen+1);
+			Hash_Add(&tab->tab, ent->name, ent, &ent->buck);
+		}
+		else
+		{
+			vec3_t data = {0,0,0};
+			if (hashtype == ev_vector)
+			{
+				l = COM_ParseTokenOut(l, NULL, token, sizeof(token), &tt);if (tt != TTP_RAWTOKEN)return NULL;
+				data[0] = atof(token);
+				l = COM_ParseTokenOut(l, NULL, token, sizeof(token), &tt);if (tt != TTP_RAWTOKEN)return NULL;
+				data[1] = atof(token);
+				l = COM_ParseTokenOut(l, NULL, token, sizeof(token), &tt);if (tt != TTP_RAWTOKEN)return NULL;
+				data[2] = atof(token);
+			}
+			else if (hashtype == ev_float)
+			{
+				l = COM_ParseTokenOut(l, NULL, token, sizeof(token), &tt);if (tt != TTP_RAWTOKEN)return NULL;
+				*data = atof(token);
+			}
+			else	//treat it as an ev_int
+			{
+				l = COM_ParseTokenOut(l, NULL, token, sizeof(token), &tt);if (tt != TTP_RAWTOKEN)return NULL;
+				*(int*)data = atoi(token);
+			}
+			l = COM_ParseTokenOut(l, NULL, token, sizeof(token), &tt);if (tt != TTP_LINEENDING)return NULL;
+
+			ent = BZ_Malloc(sizeof(*ent) + nlen + 1);
+			ent->name = (char*)(ent+1);
+			ent->type = hashtype;
+			memcpy(ent->name, name, nlen);
+			ent->name[nlen] = 0;
+			memcpy(ent->data, data, sizeof(vec3_t));
+			Hash_Add(&tab->tab, ent->name, ent, &ent->buck);
+		}
+	}
+	return l;
 }
 void pf_hash_preserve(void)	//map changed, make sure it can be reset properly.
 {
@@ -1968,8 +2268,8 @@ qboolean QC_FixFileName(const char *name, const char **result, const char **fall
 void QCBUILTIN PF_fopen (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	const char *name = PR_GetStringOfs(prinst, OFS_PARM0);
-	int fmode = G_FLOAT(OFS_PARM1);
-	int fsize = G_FLOAT(OFS_PARM2);
+	int fmode = (prinst->callargc>1)?G_FLOAT(OFS_PARM1):-1;
+	int fsize = (prinst->callargc>2)?G_FLOAT(OFS_PARM2):0;
 	const char *fallbackread;
 	int i;
 	size_t insize;
@@ -1984,6 +2284,28 @@ void QCBUILTIN PF_fopen (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals
 	{
 		Con_Printf("qcfopen(\"%s\"): too many files open\n", name);
 		G_FLOAT(OFS_RETURN) = -1;
+		return;
+	}
+
+	if (fmode < 0 && (!strncmp(name, "tcp://", 6) || !strncmp(name, "tls://", 6)))
+	{
+		G_FLOAT(OFS_RETURN) = -1;
+		Q_strncpyz(pf_fopen_files[i].name, name, sizeof(pf_fopen_files[i].name));
+		pf_fopen_files[i].accessmode = FRIK_FILE_STREAM;
+		pf_fopen_files[i].bufferlen = 0;
+		pf_fopen_files[i].data = NULL;
+		pf_fopen_files[i].len = 0;
+		pf_fopen_files[i].ofs = 0;
+		pf_fopen_files[i].prinst = prinst;
+
+		pf_fopen_files[i].file = FS_OpenTCP(name, 0, true);
+		if (pf_fopen_files[i].file)
+			G_FLOAT(OFS_RETURN) = i + FIRST_QC_FILE_INDEX;
+		else
+		{
+			G_FLOAT(OFS_RETURN) = -1;
+			memset(&pf_fopen_files[i], 0, sizeof(pf_fopen_files[i]));
+		}
 		return;
 	}
 
@@ -2110,6 +2432,50 @@ void QCBUILTIN PF_fopen (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals
 		G_FLOAT(OFS_RETURN) = -1;
 		break;
 	}
+ }
+
+//internal function used by search_begin
+static int PF_fopen_search (pubprogfuncs_t *prinst, const char *name, flocation_t *loc)
+{
+	const char *fallbackread;
+	int i;
+
+	Con_DPrintf("qcfopen(\"%s\") called\n", name);
+
+	for (i = 0; i < MAX_QC_FILES; i++)
+		if (!pf_fopen_files[i].prinst)
+			break;
+
+	if (i == MAX_QC_FILES)	//too many already open
+	{
+		Con_Printf("qcfopen(\"%s\"): too many files open\n", name);
+		return -1;
+	}
+
+	if (!QC_FixFileName(name, &name, &fallbackread) || !fallbackread)
+	{	//we're ignoring the data/ dir so using only the fallback, but still blocking it if its a nasty path.
+		Con_Printf("qcfopen(\"%s\"): Access denied\n", name);
+		return -1;
+	}
+
+	pf_fopen_files[i].accessmode = FRIK_FILE_READ_DELAY;
+
+	Q_strncpyz(pf_fopen_files[i].name, fallbackread, sizeof(pf_fopen_files[i].name));
+	if (loc->search->handle)
+		pf_fopen_files[i].file = FS_OpenReadLocation(loc);
+	else
+		pf_fopen_files[i].file = FS_OpenVFS(loc->rawname, "rb", FS_ROOT);
+
+	pf_fopen_files[i].ofs = 0;
+	if (pf_fopen_files[i].file)
+	{
+		pf_fopen_files[i].len = VFS_GETLEN(pf_fopen_files[i].file);
+
+		pf_fopen_files[i].prinst = prinst;
+		return i + FIRST_QC_FILE_INDEX;
+	}
+	else
+		return -1;
 }
 
 void PF_fclose_i (int fnum)
@@ -2135,6 +2501,7 @@ void PF_fclose_i (int fnum)
 		pf_fopen_files[fnum].prinst->AddressableFree(pf_fopen_files[fnum].prinst, pf_fopen_files[fnum].data);
 		break;
 
+	case FRIK_FILE_STREAM:
 	case FRIK_FILE_READ_DELAY:
 		VFS_CLOSE(pf_fopen_files[fnum].file);
 		break;
@@ -2207,6 +2574,14 @@ void QCBUILTIN PF_fgets (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals
 		return;	//this just isn't ours.
 	}
 
+	if (pf_fopen_files[fnum].accessmode == FRIK_FILE_STREAM)
+	{
+		if (VFS_GETS(pf_fopen_files[fnum].file, pr_string_temp, sizeof(pr_string_temp)))
+			RETURN_TSTRING(pr_string_temp);
+		else
+			G_INT(OFS_RETURN) = 0;	//EOF
+		return;
+	}
 	if (pf_fopen_files[fnum].accessmode == FRIK_FILE_READ_DELAY)
 	{	//on first read, convert into a regular file.
 		pf_fopen_files[fnum].accessmode = FRIK_FILE_READ;
@@ -2325,6 +2700,9 @@ static int PF_fwrite_internal (pubprogfuncs_t *prinst, int fnum, const char *msg
 		return 0;	//this just isn't ours.
 	}
 
+	if (pf_fopen_files[fnum].accessmode == FRIK_FILE_STREAM)
+		return VFS_WRITE(pf_fopen_files[fnum].file, msg, len);
+
 	if (pf_fopen_files[fnum].ofs + len < pf_fopen_files[fnum].ofs)
 	{
 		PF_Warningf(prinst, "PF_fwrite: size overflow\n");
@@ -2369,6 +2747,8 @@ static int PF_fread_internal (pubprogfuncs_t *prinst, int fnum, char *buf, size_
 		return 0;	//this just isn't ours.
 	}
 
+	if (pf_fopen_files[fnum].accessmode == FRIK_FILE_STREAM)
+		return VFS_READ(pf_fopen_files[fnum].file, buf, len);
 	if (pf_fopen_files[fnum].accessmode == FRIK_FILE_READ_DELAY)
 	{	//on first read, convert into a regular file.
 		pf_fopen_files[fnum].accessmode = FRIK_FILE_READ;
@@ -2449,10 +2829,29 @@ void QCBUILTIN PF_fseek (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals
 		return;	//this just isn't ours.
 	}
 
-	G_INT(OFS_RETURN) = pf_fopen_files[fnum].ofs;
-	if (prinst->callargc>1 && G_INT(OFS_PARM1) >= 0)
+	if (pf_fopen_files[fnum].accessmode == FRIK_FILE_READ_DELAY)
+	{	//on first read, convert into a regular file.
+		pf_fopen_files[fnum].accessmode = FRIK_FILE_READ;
+		pf_fopen_files[fnum].data = BZ_Malloc(pf_fopen_files[fnum].len+1);
+		pf_fopen_files[fnum].data[pf_fopen_files[fnum].len] = 0;
+		pf_fopen_files[fnum].len = pf_fopen_files[fnum].bufferlen = VFS_READ(pf_fopen_files[fnum].file, pf_fopen_files[fnum].data, pf_fopen_files[fnum].len);
+		VFS_CLOSE(pf_fopen_files[fnum].file);
+		pf_fopen_files[fnum].file = NULL;
+	}
+
+	if (pf_fopen_files[fnum].file)
 	{
-		pf_fopen_files[fnum].ofs = G_INT(OFS_PARM1);
+		G_INT(OFS_RETURN) = VFS_TELL(pf_fopen_files[fnum].file);
+		if (prinst->callargc>1 && G_INT(OFS_PARM1) >= 0)
+			VFS_SEEK(pf_fopen_files[fnum].file, G_INT(OFS_PARM1));
+	}
+	else
+	{
+		G_INT(OFS_RETURN) = pf_fopen_files[fnum].ofs;
+		if (prinst->callargc>1 && G_INT(OFS_PARM1) >= 0)
+		{
+			pf_fopen_files[fnum].ofs = G_INT(OFS_PARM1);
+		}
 	}
 }
 void QCBUILTIN PF_fsize (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
@@ -2475,12 +2874,31 @@ void QCBUILTIN PF_fsize (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals
 		return;	//this just isn't ours.
 	}
 
-	G_INT(OFS_RETURN) = pf_fopen_files[fnum].len;
-	if (prinst->callargc>1 && G_INT(OFS_PARM1) >= 0)
+	if (pf_fopen_files[fnum].accessmode == FRIK_FILE_READ_DELAY)
+	{	//on first read, convert into a regular file.
+		pf_fopen_files[fnum].accessmode = FRIK_FILE_READ;
+		pf_fopen_files[fnum].data = BZ_Malloc(pf_fopen_files[fnum].len+1);
+		pf_fopen_files[fnum].data[pf_fopen_files[fnum].len] = 0;
+		pf_fopen_files[fnum].len = pf_fopen_files[fnum].bufferlen = VFS_READ(pf_fopen_files[fnum].file, pf_fopen_files[fnum].data, pf_fopen_files[fnum].len);
+		VFS_CLOSE(pf_fopen_files[fnum].file);
+		pf_fopen_files[fnum].file = NULL;
+	}
+
+	if (pf_fopen_files[fnum].file)
 	{
-		size_t newlen = G_INT(OFS_PARM1);
-		PF_fresizebuffer_internal(&pf_fopen_files[fnum], newlen);
-		pf_fopen_files[fnum].len = min(pf_fopen_files[fnum].bufferlen, newlen);
+		G_INT(OFS_RETURN) = VFS_GETLEN(pf_fopen_files[fnum].file);
+		if (prinst->callargc>1 && G_INT(OFS_PARM1) >= 0)
+			PF_Warningf(prinst, "PF_fsize: truncation/extension is not supported for stream file types\n");
+	}
+	else
+	{
+		G_INT(OFS_RETURN) = pf_fopen_files[fnum].len;
+		if (prinst->callargc>1 && G_INT(OFS_PARM1) >= 0)
+		{
+			size_t newlen = G_INT(OFS_PARM1);
+			PF_fresizebuffer_internal(&pf_fopen_files[fnum], newlen);
+			pf_fopen_files[fnum].len = min(pf_fopen_files[fnum].bufferlen, newlen);
+		}
 	}
 }
 
@@ -2495,6 +2913,7 @@ void PF_fcloseall (pubprogfuncs_t *prinst)
 
 		switch(pf_fopen_files[i].accessmode)
 		{
+		case FRIK_FILE_STREAM:
 		case FRIK_FILE_APPEND:
 		case FRIK_FILE_WRITE:
 		case FRIK_FILE_MMAP_RW:
@@ -2598,12 +3017,12 @@ void QCBUILTIN PF_rmtree (pubprogfuncs_t *prinst, struct globalvars_s *pr_global
 void QCBUILTIN PF_whichpack (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	const char *srcname = PR_GetStringOfs(prinst, OFS_PARM0);
-	qboolean makereferenced = prinst->callargc>1?G_FLOAT(OFS_PARM1):true;
+	unsigned int flags = prinst->callargc>1?G_FLOAT(OFS_PARM1):WP_REFERENCE;
 	flocation_t loc;
 
 	if (FS_FLocateFile(srcname, FSLF_IFFOUND, &loc))
 	{
-		srcname = FS_WhichPackForLocation(&loc, makereferenced);
+		srcname = FS_WhichPackForLocation(&loc, flags);
 		if (srcname == NULL)
 			srcname = "";
 		RETURN_TSTRING(srcname);
@@ -2616,19 +3035,35 @@ void QCBUILTIN PF_whichpack (pubprogfuncs_t *prinst, struct globalvars_s *pr_glo
 }
 
 
+enum
+{
+//	QCSEARCH_INSENSITIVE = 1u<<0,	//for dp, we're always insensitive you prick.
+	QCSEARCH_FULLPACKAGE = 1u<<1,	//package names include gamedir prefix etc.
+	QCSEARCH_ALLOWDUPES  = 1u<<2,	//don't filter out dupes, allowing entries hidden by later packages to be shown.
+	QCSEARCH_FORCESEARCH = 1u<<3,	//force the search to succeed even if the gamedir/package is not active.
+	QCSEARCH_MULTISEARCH = 1u<<4,	//to avoid possible string manipulation exploits?
+	QCSEARCH_NAMESORT    = 1u<<5,	//sort results by filename, instead of by filesystem priority/randomness
+};
+searchpathfuncs_t *COM_EnumerateFilesPackage (char *matches, const char *package, unsigned int flags, int (QDECL *func)(const char *, qofs_t, time_t mtime, void *, searchpathfuncs_t*), void *parm);
 typedef struct prvmsearch_s {
 	pubprogfuncs_t *fromprogs;	//share across menu/server
+
+	searchpath_t searchinfo;
+
 	int entries;
-	struct
+	struct prvmsearchentry_s
 	{
 		char *name;
 		qofs_t size;
 		time_t mtime;
+		searchpathfuncs_t *package;
 	} *entry;
 	char *pattern;
+	unsigned int flags;
+	unsigned int fsflags;
 } prvmsearch_t;
-prvmsearch_t *pr_searches;	//realloced to extend
-size_t numpr_searches;
+static prvmsearch_t *pr_searches;	//realloced to extend
+static size_t numpr_searches;
 
 void search_close (pubprogfuncs_t *prinst, int handle)
 {
@@ -2646,6 +3081,8 @@ void search_close (pubprogfuncs_t *prinst, int handle)
 		BZ_Free(s->entry[i].name);
 	Z_Free(s->pattern);
 	BZ_Free(s->entry);
+	if (s->searchinfo.handle)
+		s->searchinfo.handle->ClosePath(s->searchinfo.handle);
 	memset(s, 0, sizeof(*s));
 }
 //a progs was closed... hunt down it's searches, and warn about any searches left open.
@@ -2682,15 +3119,26 @@ void search_close_progs(pubprogfuncs_t *prinst, qboolean complain)
 	}
 }
 
+static int QDECL search_name_sort(const void *av, const void *bv)
+{
+	const struct prvmsearchentry_s *a = av, *b = bv;
+	int ret = strcmp(a->name, b->name);
+	//FIXME: if equal sort by original order!
+	return ret;
+}
+
 static int QDECL search_enumerate(const char *name, qofs_t fsize, time_t mtime, void *parm, searchpathfuncs_t *spath)
 {
 	prvmsearch_t *s = parm;
 
 	size_t i;
-	for (i = 0; i < s->entries; i++)
+	if (!(s->flags & QCSEARCH_ALLOWDUPES))
 	{
-		if (!Q_strcasecmp(name, s->entry[i].name))
-			return true;	//already in the list, apparently. try to avoid dupes.
+		for (i = 0; i < s->entries; i++)
+		{
+			if (!Q_strcasecmp(name, s->entry[i].name))
+				return true;	//already in the list, apparently. try to avoid dupes.
+		}
 	}
 
 	s->entry = BZ_Realloc(s->entry, ((s->entries+64)&~63) * sizeof(*s->entry));
@@ -2698,22 +3146,24 @@ static int QDECL search_enumerate(const char *name, qofs_t fsize, time_t mtime, 
 	strcpy(s->entry[s->entries].name, name);
 	s->entry[s->entries].size = fsize;
 	s->entry[s->entries].mtime = mtime;
+	s->entry[s->entries].package = spath;
 
 	s->entries++;
 	return true;
 }
 
-//float	search_begin(string pattern, float caseinsensitive, float quiet) = #74;
+//float	search_begin(string pattern, float flags, float quiet) = #74;
 void QCBUILTIN PF_search_begin (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {	//< 0 for error, >= 0 for handle.
 	//error includes bad search patterns, but not no files
 	const char *pattern = PR_GetStringOfs(prinst, OFS_PARM0);
-//	qboolean caseinsensitive = G_FLOAT(OFS_PARM1);
-//	qboolean quiet = G_FLOAT(OFS_PARM2);
+	unsigned int flags = G_FLOAT(OFS_PARM1);
+//	qboolean quiet = G_FLOAT(OFS_PARM2);	//fte is not noisy
+	const char *package = (prinst->callargc>3)?PR_GetStringOfs(prinst, OFS_PARM3):NULL;
 	prvmsearch_t *s;
 	size_t j;
 
-	if (!*pattern || (*pattern == '.' && pattern[1] == '.') || *pattern == '/' || *pattern == '\\' || strchr(pattern, ':'))
+	if (!*pattern || (*pattern == '.' && pattern[1] == '.') || *pattern == '/' || *pattern == '\\' || (!(flags&QCSEARCH_MULTISEARCH)&&strchr(pattern, ':')))
 	{
 		PF_Warningf(prinst, "PF_search_begin: bad search pattern \"%s\"\n", pattern);
 		G_FLOAT(OFS_RETURN) = -1;
@@ -2735,7 +3185,18 @@ void QCBUILTIN PF_search_begin (pubprogfuncs_t *prinst, struct globalvars_s *pr_
 
 	s->pattern = Z_StrDup(pattern);
 	s->fromprogs = prinst;
-	COM_EnumerateFiles(pattern, search_enumerate, s);
+	s->flags = flags;
+	s->fsflags = 0;
+	if (flags&QCSEARCH_FULLPACKAGE)
+		s->fsflags |= WP_FULLPATH;
+	if (flags&QCSEARCH_FORCESEARCH)
+		s->fsflags |= WP_FORCE;
+
+	Q_strncpyz(s->searchinfo.purepath, package?package:"", sizeof(s->searchinfo.purepath));
+	s->searchinfo.handle = COM_EnumerateFilesPackage(s->pattern, package?s->searchinfo.purepath:NULL, s->fsflags, search_enumerate, s);
+
+	if (flags&QCSEARCH_NAMESORT)
+		qsort(s->entry, s->entries, sizeof(*s->entry), search_name_sort);
 
 	G_FLOAT(OFS_RETURN) = j;
 }
@@ -2820,6 +3281,69 @@ void QCBUILTIN PF_search_getfilemtime (pubprogfuncs_t *prinst, struct globalvars
 		strftime(timestr, sizeof(timestr), "%Y-%m-%d %H:%M:%S", localtime(&s->entry[num].mtime));
 		RETURN_TSTRING(timestr);
 	}
+}
+static qboolean PF_search_getloc(flocation_t *loc, prvmsearch_t *s, int num)
+{
+	const char *fname = s->entry[num].name;
+	if (s->searchinfo.handle)	//we were only searching a single package...
+	{
+		loc->search = &s->searchinfo;
+		return loc->search->handle->FindFile(loc->search->handle, loc, fname, NULL);
+	}
+	else if (!s->entry[num].package)
+	{
+		loc->search = &s->searchinfo;
+
+		Q_snprintfz(loc->rawname, sizeof(loc->rawname), "%s/%s", s->searchinfo.purepath, fname);
+		return true;
+	}
+	else
+		return FS_GetLocationForPackageHandle(loc, s->entry[num].package, fname);
+}
+void QCBUILTIN PF_search_getpackagename (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	int handle = G_FLOAT(OFS_PARM0);
+	int num = G_FLOAT(OFS_PARM1);
+	prvmsearch_t *s;
+	flocation_t loc;
+	const char *pkgname;
+	G_INT(OFS_RETURN) = 0;
+
+	if (handle < 0 || handle >= numpr_searches || pr_searches[handle].fromprogs != prinst)
+	{
+		PF_Warningf(prinst, "PF_search_getpackagename: Invalid search handle %i\n", handle);
+		return;
+	}
+	s = &pr_searches[handle];
+
+	if (num < 0 || num >= s->entries)
+		return;
+	if (PF_search_getloc(&loc, s, num))
+	{
+		pkgname = FS_WhichPackForLocation(&loc, s->fsflags);
+		if (pkgname)
+			RETURN_TSTRING(pkgname);
+	}
+}
+void QCBUILTIN PF_search_fopen (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	int handle = G_FLOAT(OFS_PARM0);
+	int num = G_FLOAT(OFS_PARM1);
+	prvmsearch_t *s;
+	flocation_t loc;
+	G_FLOAT(OFS_RETURN) = -1;
+
+	if (handle < 0 || handle >= numpr_searches || pr_searches[handle].fromprogs != prinst)
+	{
+		PF_Warningf(prinst, "PF_search_getpackagename: Invalid search handle %i\n", handle);
+		return;
+	}
+	s = &pr_searches[handle];
+
+	if (num < 0 || num >= s->entries)
+		return;
+	if (PF_search_getloc(&loc, s, num))
+		G_FLOAT(OFS_RETURN) = PF_fopen_search (prinst, s->entry[num].name, &loc);
 }
 
 //closes filesystem type stuff for when a progs has stopped needing it.
@@ -3026,9 +3550,6 @@ Returns a chain of entities that have origins within a spherical area
 findradius (origin, radius)
 =================
 */
-#define AREA_ALL 0
-#define AREA_SOLID 1
-#define AREA_TRIGGER 2
 void QCBUILTIN PF_findradius (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	world_t *w = prinst->parms->user;
@@ -3036,8 +3557,8 @@ void QCBUILTIN PF_findradius (pubprogfuncs_t *prinst, struct globalvars_s *pr_gl
 	extern cvar_t dpcompat_findradiusarealinks;
 	wedict_t	*ent, *chain;
 	float	rad;
-	float	*org;
-	vec3_t	eorg;
+	pvec_t	*org;
+	pvec3_t	eorg;
 	int		i, j;
 	int f;
 
@@ -3049,14 +3570,13 @@ void QCBUILTIN PF_findradius (pubprogfuncs_t *prinst, struct globalvars_s *pr_gl
 	if (prinst->callargc > 2)
 		f = G_INT(OFS_PARM2)+prinst->fieldadjust;
 	else
-		f = &((comentvars_t*)NULL)->chain - (int*)NULL;
+		f = &((comentvars_t*)NULL)->chain - (pint_t*)NULL;
 
 	if (dpcompat_findradiusarealinks.ival)
 	{
 		static wedict_t *nearent[32768];
 		vec3_t mins, maxs;
 		int numents;
-		extern int World_AreaEdicts (world_t *w, vec3_t mins, vec3_t maxs, wedict_t **list, int maxcount, int areatype);
 
 		mins[0] = org[0] - rad;
 		mins[1] = org[1] - rad;
@@ -3070,7 +3590,7 @@ void QCBUILTIN PF_findradius (pubprogfuncs_t *prinst, struct globalvars_s *pr_gl
 		for (i=0 ; i<numents ; i++)
 		{
 			ent = nearent[i];
-			if (ent->v->solid == SOLID_NOT && (!((int)ent->v->flags & FL_FINDABLE_NONSOLID)) && !sv_gameplayfix_blowupfallenzombies.ival)
+			if (ent->v->solid == SOLID_NOT && (!((pint_t)ent->v->flags & FL_FINDABLE_NONSOLID)) && !sv_gameplayfix_blowupfallenzombies.ival)
 				continue;
 			if (sv_gameplayfix_findradiusdistancetobox.ival)
 			{
@@ -3088,7 +3608,7 @@ void QCBUILTIN PF_findradius (pubprogfuncs_t *prinst, struct globalvars_s *pr_gl
 			if (DotProduct(eorg,eorg) > rad)
 				continue;
 
-			((int*)ent->v)[f] = EDICT_TO_PROG(prinst, chain);
+			((pint_t*)ent->v)[f] = EDICT_TO_PROG(prinst, chain);
 			chain = ent;
 		}
 	}
@@ -3100,7 +3620,7 @@ void QCBUILTIN PF_findradius (pubprogfuncs_t *prinst, struct globalvars_s *pr_gl
 			ent = WEDICT_NUM_PB(prinst, i);
 			if (ED_ISFREE(ent))
 				continue;
-			if (ent->v->solid == SOLID_NOT && (!((int)ent->v->flags & FL_FINDABLE_NONSOLID)) && !sv_gameplayfix_blowupfallenzombies.value)
+			if (ent->v->solid == SOLID_NOT && (!((pint_t)ent->v->flags & FL_FINDABLE_NONSOLID)) && !sv_gameplayfix_blowupfallenzombies.value)
 				continue;
 			if (sv_gameplayfix_findradiusdistancetobox.ival)
 			{
@@ -3118,13 +3638,66 @@ void QCBUILTIN PF_findradius (pubprogfuncs_t *prinst, struct globalvars_s *pr_gl
 			if (DotProduct(eorg,eorg) > rad)
 				continue;
 
-			((int*)ent->v)[f] = EDICT_TO_PROG(prinst, chain);
+			((pint_t*)ent->v)[f] = EDICT_TO_PROG(prinst, chain);
 			chain = ent;
 		}
 	}
 
 	RETURN_EDICT(prinst, chain);
 }
+
+#ifdef QCGC
+void QCBUILTIN PF_findradius_list (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	world_t *w = prinst->parms->user;
+	wedict_t	*ent;
+	pvec_t	rad;
+	float	*org;
+	pvec3_t	eorg;
+	int		i, j;
+	wedict_t **nearent;
+	vec3_t mins, maxs;
+	int		numents, count = 0;
+	int *temp;
+
+	org = G_VECTOR(OFS_PARM0);
+	rad = G_FLOAT(OFS_PARM1);
+
+	//find out how many ents there are within the box specified.
+	mins[0] = org[0] - rad;
+	mins[1] = org[1] - rad;
+	mins[2] = org[2] - rad;
+	maxs[0] = org[0] + rad;
+	maxs[1] = org[1] + rad;
+	maxs[2] = org[2] + rad;
+	nearent = alloca(sizeof(wedict_t)*w->num_edicts);	//guess at a max
+	numents = World_AreaEdicts(w, mins, maxs, nearent, w->num_edicts, AREA_ALL);
+
+	//allocate space for a result (overestimating slightly still)
+	G_INT(OFS_RETURN) = prinst->AllocTempString(prinst, (char**)&temp, (1+numents)*sizeof(*temp));
+
+	rad = rad*rad;
+	for (i=0 ; i<numents ; i++)
+	{
+		ent = nearent[i];
+		if (ent->v->solid == SOLID_NOT && !((pint_t)ent->v->flags & FL_FINDABLE_NONSOLID))
+			continue;
+		for (j=0 ; j<3 ; j++)
+		{
+			eorg[j] = org[j] - ent->v->origin[j];
+			eorg[j] -= bound(ent->v->mins[j], org[j], ent->v->maxs[j]);
+		}
+		if (DotProduct(eorg,eorg) > rad)
+			continue;
+
+		temp[count++] = EDICT_TO_PROG(prinst, ent);
+	}
+
+	temp[count] = 0;
+
+	G_INT(OFS_PARM2) = count;
+}
+#endif
 
 //entity nextent(entity)
 void QCBUILTIN PF_nextent (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
@@ -3136,9 +3709,9 @@ void QCBUILTIN PF_nextent (pubprogfuncs_t *prinst, struct globalvars_s *pr_globa
 	while (1)
 	{
 		i++;
-		if (i == *prinst->parms->sv_num_edicts)
+		if (i == *prinst->parms->num_edicts)
 		{
-			RETURN_EDICT(prinst, *prinst->parms->sv_edicts);
+			RETURN_EDICT(prinst, *prinst->parms->edicts);
 			return;
 		}
 		ent = WEDICT_NUM_PB(prinst, i);
@@ -3626,7 +4199,15 @@ void QCBUILTIN PF_ftoi (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 }
 void QCBUILTIN PF_itof (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
-	G_FLOAT(OFS_RETURN) = G_INT(OFS_PARM0);
+	if (prinst->callargc > 1)
+	{
+		unsigned int value = G_INT(OFS_PARM0);
+		unsigned int shift = G_FLOAT(OFS_PARM1);
+		unsigned int count = G_FLOAT(OFS_PARM2);
+		G_FLOAT(OFS_RETURN) = (value >> shift) & ((1u<<count)-1u);
+	}
+	else
+		G_FLOAT(OFS_RETURN) = G_INT(OFS_PARM0);
 }
 
 //tstring(integer input) itos
@@ -3720,6 +4301,7 @@ void QCBUILTIN PF_strunzone(pubprogfuncs_t *prinst, struct globalvars_s *pr_glob
 {
 #ifdef QCGC
 	//gc frees everything for us.
+	//FIXME: explicitly free it anyway, to save running the gc quite so often.
 #else
 	prinst->AddressableFree(prinst, prinst->stringtable + G_INT(OFS_PARM0));
 #endif
@@ -3762,6 +4344,22 @@ void QCBUILTIN PF_strzone(pubprogfuncs_t *prinst, struct globalvars_s *pr_global
 #endif
 }
 
+#ifdef QCGC
+void QCBUILTIN PF_createbuffer (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	int len = G_INT(OFS_PARM0);
+	char *buf;
+	if (len <= 0)
+		G_INT(OFS_RETURN) = 0;
+	else
+	{
+		len++;
+		G_INT(OFS_RETURN) = prinst->AllocTempString(prinst, &buf, len);
+		memset(buf, 0, len);
+	}
+}
+#endif
+
 //string(string str1, string str2, str3, etc) strcat
 void QCBUILTIN PF_strcat (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
@@ -3788,7 +4386,6 @@ void QCBUILTIN PF_strcat (pubprogfuncs_t *prinst, struct globalvars_s *pr_global
 	((int *)pr_globals)[OFS_RETURN] = prinst->AllocTempString(prinst, &buf, len);
 	if (buf)
 	{
-		len = 0;
 		for (i = 0; i < prinst->callargc; i++)
 		{
 			memcpy(buf, s[i], l[i]);
@@ -4042,7 +4639,7 @@ struct strbuf {
 };
 
 #define BUFFLAG_SAVED 1
-#define BUFSTRBASE 1
+#define BUFSTRBASE 1	//officially these are 0-based (ie: use negatives for not-a-buffer), but fte biases it to catch qc bugs.
 struct strbuf	*strbuflist;
 size_t			strbufmax;
 
@@ -4532,15 +5129,78 @@ void QCBUILTIN PF_buf_cvarlist  (pubprogfuncs_t *prinst, struct globalvars_s *pr
 	for (grp=cvar_groups ; grp ; grp=grp->next)
 		for (var=grp->cvars ; var ; var=var->next)
 		{
-			if (plen && (pwc?wildcmp(pattern, var->name):strncmp(var->name, pattern, plen)))
+			if (plen && (pwc?!wildcmp(pattern, var->name):strncmp(var->name, pattern, plen)))
 				continue;
-			if (alen && (awc?!wildcmp(antipattern, var->name):!strncmp(var->name, antipattern, alen)))
+			if (alen && (awc?wildcmp(antipattern, var->name):!strncmp(var->name, antipattern, alen)))
 				continue;
 
 			PF_bufstr_add_internal(bufno, var->name, true);
 		}
 
 	qsort(strbuflist[bufno].strings, strbuflist[bufno].used, sizeof(char*), PF_buf_sort_ascending);
+}
+
+enum matchmethod_e
+{
+	MATCH_AUTO=0,
+	MATCH_EXACT=1,
+	MATCH_LEFT=2,
+	MATCH_RIGHT=3,
+	MATCH_MIDDLE=4,
+	MATCH_PATTERN=5,
+};
+static qboolean domatch(const char *str, const char *pattern, enum matchmethod_e method)
+{
+	switch(method)
+	{
+	case MATCH_EXACT:
+		return !strcmp(str, pattern);
+	case MATCH_LEFT:
+		return !strncmp(str, pattern, strlen(pattern));
+	case MATCH_RIGHT:
+		{
+			size_t slen = strlen(str);
+			size_t plen = strlen(pattern);
+			if (plen > slen)
+				return false;
+			return !strcmp(str + slen-plen, pattern);
+		}
+	case MATCH_MIDDLE:
+		return !!strstr(str, pattern);
+	case MATCH_AUTO:	//just treat as MATCH_PATTERN. we could optimise it a bit, but mneh
+	case MATCH_PATTERN:
+	default:
+		return wildcmp(pattern, str);
+	}
+}
+void QCBUILTIN PF_bufstr_find  (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	size_t bufno = G_FLOAT(OFS_PARM0)-BUFSTRBASE;
+	const char *pattern = PR_GetStringOfs(prinst, OFS_PARM1);
+	enum matchmethod_e matchmethod = G_FLOAT(OFS_PARM2);
+	int idx = (prinst->callargc > 3)?G_FLOAT(OFS_PARM3):0;
+	int step = (prinst->callargc > 4)?G_FLOAT(OFS_PARM4):1;
+	const char *s;
+
+	G_FLOAT(OFS_RETURN) = -1;	//assume the worst
+
+	if (bufno >= strbufmax)
+		return;
+	if (strbuflist[bufno].prinst != prinst)
+		return;
+
+	if (idx < 0 || step <= 0)
+		return;
+	for (; idx < strbuflist[bufno].used; idx += step)
+	{
+		s = strbuflist[bufno].strings[idx];
+		if (!s) continue;
+		if (domatch(s, pattern, matchmethod))
+		{
+			G_FLOAT(OFS_RETURN) = idx;
+			break;
+		}
+	}
 }
 
 //directly reads a file into a stringbuffer
@@ -4649,15 +5309,15 @@ static void QCBUILTIN PF_digest_internal (pubprogfuncs_t *prinst, struct globalv
 	}
 	//md5?
 	else if (!strcmp(hashtype, "SHA1"))
-	{
-		digestsize = SHA1(digest, sizeof(digest), str, len);
-	}
-//	else if (!strcmp(hashtype, "SHA256"))
-//	{
-//		digestsize = SHA2(digest, sizeof(digest), str, len);
-//	}
-	//sha384
-	//sha512
+		digestsize = CalcHash(&hash_sha1, digest, sizeof(digest), str, len);
+	else if (!strcmp(hashtype, "SHA224"))
+		digestsize = CalcHash(&hash_sha224, digest, sizeof(digest), str, len);
+	else if (!strcmp(hashtype, "SHA256"))
+		digestsize = CalcHash(&hash_sha256, digest, sizeof(digest), str, len);
+	else if (!strcmp(hashtype, "SHA384"))
+		digestsize = CalcHash(&hash_sha384, digest, sizeof(digest), str, len);
+	else if (!strcmp(hashtype, "SHA512"))
+		digestsize = CalcHash(&hash_sha512, digest, sizeof(digest), str, len);
 	else if (!strcmp(hashtype, "CRC16"))
 	{
 		digestsize = 2;
@@ -4713,8 +5373,9 @@ void QCBUILTIN PF_uri_escape  (pubprogfuncs_t *prinst, struct globalvars_s *pr_g
 	*result = 0;
 	while (*s && o < result+sizeof(result)-4)
 	{
+		//unreserved chars according to RFC3986
 		if ((*s >= 'a' && *s <= 'z') || (*s >= 'A' && *s <= 'Z') || (*s >= '0' && *s <= '9')
-				|| *s == '.' || *s == '-' || *s == '_')
+				|| *s == '.' || *s == '-' || *s == '_' || *s == '~')
 			*o++ = *s++;
 		else
 		{
@@ -4819,7 +5480,8 @@ static void PR_uri_get_callback2(int iarg, void *data)
 				G_INT(OFS_PARM2) = prinst->AllocTempString(prinst, &buffer, len+1);
 				len = VFS_READ(ctx->file, buffer, len);
 				if (len < 0)
-					buffer[len] = 0;
+					len = 0;
+				buffer[len] = 0;
 				G_INT(OFS_PARM3) = len;
 			}
 
@@ -5057,7 +5719,7 @@ void QCBUILTIN PF_tokenizebyseparator  (pubprogfuncs_t *prinst, struct globalvar
 	int seps = 0, s;
 	const char *start = str;
 	int tlen;
-	qboolean found = true;
+	int found;
 
 	while (seps < prinst->callargc - 1 && seps < 7)
 	{
@@ -5094,7 +5756,7 @@ void QCBUILTIN PF_tokenizebyseparator  (pubprogfuncs_t *prinst, struct globalvar
 		if (!*str)
 		{
 			qctoken[qctoken_count].end = str - start;
-			found = true;
+			found = -1;
 		}
 		else
 		{
@@ -5127,12 +5789,12 @@ void QCBUILTIN PF_tokenizebyseparator  (pubprogfuncs_t *prinst, struct globalvar
 				qctoken = n;
 			}
 
-			if (*str)
-				qctoken[qctoken_count].start = str - start;
-			else
+			if (found==-1)
 				break;
+			qctoken[qctoken_count].start = str - start;
 		}
-		str++;
+		else
+			str++;
 	}
 	G_FLOAT(OFS_RETURN) = qctoken_count;
 }
@@ -5389,7 +6051,9 @@ void QCBUILTIN PF_vectorvectors (pubprogfuncs_t *prinst, struct globalvars_s *pr
 
 void QCBUILTIN PF_crossproduct (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
-	CrossProduct(G_VECTOR(OFS_PARM0), G_VECTOR(OFS_PARM1), G_VECTOR(OFS_RETURN));
+	VM_VECTORARG(v0, OFS_PARM0);
+	VM_VECTORARG(v1, OFS_PARM1);
+	CrossProduct(v0, v1, G_VECTOR(OFS_RETURN));
 }
 
 //Maths functions
@@ -5444,7 +6108,7 @@ void QCBUILTIN PF_droptofloor (pubprogfuncs_t *prinst, struct globalvars_s *pr_g
 	vec3_t		end;
 	vec3_t		start;
 	trace_t		trace;
-	const float *gravitydir;
+	const pvec_t *gravitydir;
 
 	ent = PROG_TO_WEDICT(prinst, *world->g.self);
 
@@ -5683,9 +6347,7 @@ void QCBUILTIN PF_rotatevectorsbyangles (pubprogfuncs_t *prinst, struct globalva
 
 	float *ang = G_VECTOR(OFS_PARM0);
 	vec3_t src[3], trans[3], res[3];
-	ang[0]*=r_meshpitch.value;
-	AngleVectors(ang, trans[0], trans[1], trans[2]);
-	ang[0]*=r_meshpitch.value;
+	AngleVectorsMesh(ang, trans[0], trans[1], trans[2]);
 	VectorInverse(trans[1]);
 
 	VectorCopy(w->g.v_forward, src[0]);
@@ -5918,7 +6580,7 @@ void QCBUILTIN PF_gettime (pubprogfuncs_t *prinst, struct globalvars_s *pr_globa
 		G_FLOAT(OFS_RETURN) = realtime;
 		break;
 	case 1:		//actual time, ish. we round to milliseconds to reduce spectre exposure
-		G_FLOAT(OFS_RETURN) = (qint64_t)(Sys_DoubleTime()*1000) / 1000.0;
+		G_FLOAT(OFS_RETURN) = (qint64_t)Sys_Milliseconds();
 		break;
 	//case 2:	//highres.. looks like time into the frame
 	//case 3:	//uptime
@@ -6180,6 +6842,8 @@ nolength:
 						*f++ = 'x';
 					else if (*s == 'P')
 						*f++ = 'X';
+					else if (*s == 'S')
+						*f++ = 's';
 					else
 						*f++ = *s;
 					*f++ = 0;
@@ -6249,22 +6913,22 @@ nolength:
 							break;
 						case 'S':
 							{
+								const char *quotedarg = GETARG_STRING(thisarg);
 								char quotedbuf[65536];	//FIXME: no idea how big this actually needs to be.
-								const char *s = GETARG_STRING(thisarg);
-								s = COM_QuotedString(s, quotedbuf, sizeof(quotedbuf), false);
+								quotedarg = COM_QuotedString(quotedarg, quotedbuf, sizeof(quotedbuf), false);
 								if((flags & PRINTF_ALTERNATE) || !VMUTF8)
 								{	//precision+width are in bytes
 									if(precision < 0) // not set
-										Q_snprintfz(o, end - o, formatbuf, width, s);
+										Q_snprintfz(o, end - o, formatbuf, width, quotedarg);
 									else
-										Q_snprintfz(o, end - o, formatbuf, width, precision, s);
+										Q_snprintfz(o, end - o, formatbuf, width, precision, quotedarg);
 									o += strlen(o);
 								}
 								else
 								{	//precision+width are in chars
 									if(precision < 0) // not set
 										precision = end - o - 1;
-									unicode_strpad(o, end - o, s, (flags & PRINTF_LEFT) != 0, width, precision, VMUTF8MARKUP);
+									unicode_strpad(o, end - o, quotedarg, (flags & PRINTF_LEFT) != 0, width, precision, VMUTF8MARKUP);
 									o += strlen(o);
 								}
 							}
@@ -6388,7 +7052,7 @@ void QCBUILTIN PF_getentityfieldstring (pubprogfuncs_t *prinst, struct globalvar
 #if !defined(CLIENTONLY) && defined(HAVE_LEGACY)
 		qboolean isserver = (prinst == sv.world.progs);
 #endif
-		eval = (eval_t *)&((float *)ent->v)[fdef[fidx].ofs];
+		eval = (eval_t *)&((pvec_t *)ent->v)[fdef[fidx].ofs];
 #ifdef HAVE_LEGACY	//extra code to be lazy so that xonotic doesn't go crazy and spam the fuck out of e
 		if ((fdef->type & 0xff) == ev_vector)
 		{
@@ -6397,17 +7061,17 @@ void QCBUILTIN PF_getentityfieldstring (pubprogfuncs_t *prinst, struct globalvar
 		}
 #ifndef CLIENTONLY
 #ifdef HEXEN2
-		else if (isserver && (float*)eval == &((edict_t*)ent)->xv->drawflags && eval->_float == 96)
+		else if (isserver && (pvec_t*)eval == &((edict_t*)ent)->xv->drawflags && eval->_float == 96)
 			return;
 #endif
-		else if (isserver && (float*)eval == &((edict_t*)ent)->xv->uniquespawnid)
+		else if (isserver && (pvec_t*)eval == &((edict_t*)ent)->xv->uniquespawnid)
 			return;
 #endif
-		else if (((float*)eval == &ent->xv->dimension_solid ||
-				  (float*)eval == &ent->xv->dimension_hit
+		else if (((pvec_t*)eval == &ent->xv->dimension_solid ||
+				  (pvec_t*)eval == &ent->xv->dimension_hit
 #ifndef CLIENTONLY
-				  || (isserver && ((float*)eval == &((edict_t*)ent)->xv->dimension_see
-				  || (float*)eval == &((edict_t*)ent)->xv->dimension_seen))
+				  || (isserver && ((pvec_t*)eval == &((edict_t*)ent)->xv->dimension_see
+				  || (pvec_t*)eval == &((edict_t*)ent)->xv->dimension_seen))
 #endif
 				  )  && eval->_float == 255)
 			return;
@@ -6571,6 +7235,12 @@ qboolean PR_Common_LoadGame(pubprogfuncs_t *prinst, char *command, const char **
 		if (!l)
 			return false;
 	}
+	else if (!strcmp(command, "hashtable"))
+	{
+		l = PR_hash_loadgame(prinst, l);
+		if (!l)
+			return false;
+	}
 	else
 		return false;
 	*file = l;
@@ -6579,6 +7249,7 @@ qboolean PR_Common_LoadGame(pubprogfuncs_t *prinst, char *command, const char **
 void PR_Common_SaveGame(vfsfile_t *f, pubprogfuncs_t *prinst, qboolean binary)
 {
 	PR_buf_savegame(f, prinst, binary);
+	PR_hash_savegame(f, prinst, binary);
 }
 
 
@@ -6804,6 +7475,7 @@ lh_extension_t QSG_Extensions[] = {
 #ifndef SERVERONLY
 	{"DP_CON_SETA",						0,	NULL, {NULL}, "The 'seta' console command exists, like the 'set' command, but also marks the cvar for archiving, allowing it to be written into the user's config. Use this command in your default.cfg file."},
 #endif
+	{"DP_CSQC_ROTATEMOVES"},
 	{"DP_EF_ADDITIVE"},
 //--{"DP_ENT_ALPHA"}, //listed above
 	{"DP_EF_BLUE"},						//hah!! This is QuakeWorld!!!
@@ -6841,6 +7513,7 @@ lh_extension_t QSG_Extensions[] = {
 	{"DP_QC_CVAR_DEFSTRING",			1,	NULL, {"cvar_defstring"}},
 	{"DP_QC_CVAR_STRING",				1,	NULL, {"cvar_string"}},	//448 builtin.
 	{"DP_QC_CVAR_TYPE",					1,	NULL, {"cvar_type"}},
+	{"DP_QC_DIGEST_SHA256"},
 	{"DP_QC_EDICT_NUM",					1,	NULL, {"edict_num"}},
 	{"DP_QC_ENTITYDATA",				5,	NULL, {"numentityfields", "entityfieldname", "entityfieldtype", "getentityfieldstring", "putentityfieldstring"}},
 	{"DP_QC_ETOS",						1,	NULL, {"etos"}},
@@ -6850,6 +7523,7 @@ lh_extension_t QSG_Extensions[] = {
 	{"DP_QC_FINDCHAINFLAGS",			1,	NULL, {"findchainflags"}},
 	{"DP_QC_FINDFLOAT",					1,	NULL, {"findfloat"}},
 	{"DP_QC_FS_SEARCH",					4,	NULL, {"search_begin", "search_end", "search_getsize", "search_getfilename"}},
+	{"DP_QC_FS_SEARCH_PACKFILE",		4,	NULL, {"search_begin", "search_end", "search_getsize", "search_getfilename"}},
 	{"DP_QC_GETSURFACE",				6,	NULL, {"getsurfacenumpoints", "getsurfacepoint", "getsurfacenormal", "getsurfacetexture", "getsurfacenearpoint", "getsurfaceclippedpoint"}},
 	{"DP_QC_GETSURFACEPOINTATTRIBUTE",	1,	NULL, {"getsurfacepointattribute"}},
 	{"DP_QC_GETTAGINFO",				2,	NULL, {"gettagindex", "gettaginfo"}},
@@ -6974,7 +7648,7 @@ lh_extension_t QSG_Extensions[] = {
 	{"FTE_QC_NPCCHAT",					1,	NULL, {"chat"}},	//server looks at chat files. It automagically branches through calling qc functions as requested.
 #endif
 #ifdef PSET_SCRIPT
-	{"FTE_PART_SCRIPT",					0,	NULL, {NULL}, "Specifies that the r_particledesc cvar can be used to select a list of particle effects to load from particles/*.cfg, the format of which is documented elsewhere."},
+	{"FTE_PART_SCRIPT",					0,	NULL, {NULL}, "Specifies that the r_particledesc cvar can be used to select a list of particle effects to load from particles/foo.cfg, the format of which is documented elsewhere."},
 	{"FTE_PART_NAMESPACES",				0,	NULL, {NULL}, "Specifies that the engine can use foo.bar to load effect foo from particle description bar. When used via ssqc, this should cause the client to download whatever effects as needed."},
 #ifdef HAVE_LEGACY
 	{"FTE_PART_NAMESPACE_EFFECTINFO",	0,	NULL, {NULL}, "Specifies that effectinfo.bar can load effects from effectinfo.txt for DP compatibility."},
@@ -6987,6 +7661,10 @@ lh_extension_t QSG_Extensions[] = {
 	{"FTE_QC_CHECKPVS",					1,	NULL, {"checkpvs"}},
 	{"FTE_QC_CROSSPRODUCT",				1,	NULL, {"crossproduct"}},
 	{"FTE_QC_CUSTOMSKINS",				1,	NULL, {"setcustomskin", "loadcustomskin", "applycustomskin", "releasecustomskin"}, "The engine supports the use of q3 skins, as well as the use of such skin 'files' to specify rich top+bottom colours, qw skins, geomsets, or texture composition even on non-players.."},
+	{"FTE_QC_DIGEST_SHA1"},
+	{"FTE_QC_DIGEST_SHA224"},
+	{"FTE_QC_DIGEST_SHA384"},
+	{"FTE_QC_DIGEST_SHA512"},
 	{"FTE_QC_FS_SEARCH_SIZEMTIME",		2,	NULL, {"search_getfilesize", "search_getfilemtime"}},
 	{"FTE_QC_HARDWARECURSORS",			0,	NULL, {NULL}, "setcursormode exists in both csqc+menuqc, and accepts additional arguments to specify a cursor image to use when this module has focus. If the image exceeds hardware limits (or hardware cursors are unsupported), it will be emulated using regular draws - this at least still avoids conflicting cursors as only one will ever be used, even if console+menu+csqc are all overlayed."},
 	{"FTE_QC_HASHTABLES",				6,	NULL, {"hash_createtab", "hash_destroytab", "hash_add", "hash_get", "hash_delete", "hash_getkey"}, "Provides efficient string-based lookups."},

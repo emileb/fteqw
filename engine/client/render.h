@@ -129,7 +129,7 @@ typedef struct entity_s
 											// only used for static objects
 											
 //	int						dlightframe;	// dynamic lighting
-//	int						dlightbits;
+//	dlightbitmask_t			dlightbits;
 	
 // FIXME: could turn these into a union
 //	int						trivial_accept;
@@ -337,7 +337,7 @@ void R_LightArraysByte_BGR(const entity_t *entity, vecV_t *coords, byte_vec4_t *
 void R_LightArrays(const entity_t *entity, vecV_t *coords, avec4_t *colours, int vertcount, vec3_t *normals, float scale, qboolean colormod);
 
 qboolean R_DrawSkyChain (struct batch_s *batch); /*called from the backend, and calls back into it*/
-void R_InitSky (shader_t *shader, const char *skyname, qbyte *src, unsigned int width, unsigned int height);	/*generate q1 sky texnums*/
+void R_InitSky (shader_t *shader, const char *skyname, uploadfmt_t fmt, qbyte *src, unsigned int width, unsigned int height);	/*generate q1 sky texnums*/
 
 void R_Clutter_Emit(struct batch_s **batches);
 void R_Clutter_Purge(void);
@@ -378,6 +378,9 @@ typedef struct {
 	glRect_t	rectchange;
 	qbyte		*lightmaps;	//[pixbytes*LMBLOCK_WIDTH*LMBLOCK_HEIGHT];
 	stmap		*stainmaps;	//[3*LMBLOCK_WIDTH*LMBLOCK_HEIGHT];	//rgb no a. added to lightmap for added (hopefully) speed.
+#ifdef GLQUAKE
+	int			pbo_handle;	//when set, lightmaps is a persistently mapped write-only pbo for us to scribble data into, ready to be copied to the actual texture without waiting for glTexSubImage to complete.
+#endif
 } lightmapinfo_t;
 extern lightmapinfo_t **lightmap;
 extern int numlightmaps;
@@ -387,6 +390,7 @@ void QDECL Surf_RebuildLightmap_Callback (struct cvar_s *var, char *oldvalue);
 
 void R_SkyShutdown(void);
 void R_SetSky(const char *skyname);
+texid_t R_GetDefaultEnvmap(void);
 
 #if defined(GLQUAKE)
 void GLR_Init (void);
@@ -406,6 +410,19 @@ void GLVID_Console_Resize(void);
 #endif
 int R_LightPoint (vec3_t p);
 void R_RenderDlights (void);
+
+typedef struct
+{
+	int allocated[LMBLOCK_SIZE_MAX];
+	int firstlm;
+	int lmnum;
+	unsigned int width;
+	unsigned int height;
+	qboolean deluxe;
+} lmalloc_t;
+void Mod_LightmapAllocInit(lmalloc_t *lmallocator, qboolean hasdeluxe, unsigned int width, unsigned int height, int firstlm);	//firstlm is for debugging stray lightmap indexes
+//void Mod_LightmapAllocDone(lmalloc_t *lmallocator, model_t *mod);
+void Mod_LightmapAllocBlock(lmalloc_t *lmallocator, int w, int h, unsigned short *x, unsigned short *y, int *tnum);
 
 enum imageflags
 {
@@ -429,6 +446,7 @@ enum imageflags
 #define IF_TEXTYPE_CUBE (PTI_CUBE<<IF_TEXTYPESHIFT)
 #define IF_TEXTYPE_2D_ARRAY (PTI_2D_ARRAY<<IF_TEXTYPESHIFT)
 #define IF_TEXTYPE_CUBE_ARRAY (PTI_CUBE_ARRAY<<IF_TEXTYPESHIFT)
+#define IF_TEXTYPE_ANY (PTI_ANY<<IF_TEXTYPESHIFT)
 	IF_MIPCAP			= 1<<13,	//allow the use of d_mipcap
 	IF_PREMULTIPLYALPHA	= 1<<14,	//rgb *= alpha
 
@@ -444,7 +462,7 @@ enum imageflags
 	IF_NOPURGE			= 1<<22,	//texture is not flushed when no more shaders refer to it (for C code that holds a permanant reference to it - still purged on vid_reloads though)
 	IF_HIGHPRIORITY		= 1<<23,	//pushed to start of worker queue instead of end...
 	IF_LOWPRIORITY		= 1<<24,	//
-	IF_LOADNOW			= 1<<25,	/*hit the disk now, and delay the gl load until its actually needed. this is used only so that the width+height are known in advance*/
+	IF_LOADNOW			= 1<<25,	/*hit the disk now, and delay the gl load until its actually needed. this is used only so that the width+height are known in advance. valid on worker threads.*/
 	IF_NOPCX			= 1<<26,	/*block pcx format. meaning qw skins can use team colours and cropping*/
 	IF_TRYBUMP			= 1<<27,	/*attempt to load _bump if the specified _norm texture wasn't found*/
 	IF_RENDERTARGET		= 1<<28,	/*never loaded from disk, loading can't fail*/
@@ -466,19 +484,20 @@ qboolean Image_UnloadTexture(image_t *tex);	//true if it did something.
 void Image_DestroyTexture	(image_t *tex);
 qboolean Image_LoadTextureFromMemory(texid_t tex, int flags, const char *iname, const char *fname, qbyte *filedata, int filesize);	//intended really for worker threads, but should be fine from the main thread too
 qboolean Image_LocateHighResTexture(image_t *tex, flocation_t *bestloc, char *bestname, size_t bestnamesize, unsigned int *bestflags);
-void Image_Upload			(texid_t tex, uploadfmt_t fmt, void *data, void *palette, int width, int height, unsigned int flags);
+void Image_Upload			(texid_t tex, uploadfmt_t fmt, void *data, void *palette, int width, int height, int depth, unsigned int flags);
 void Image_Purge(void);	//purge any textures which are not needed any more (releases memory, but doesn't give null pointers).
 void Image_Init(void);
 void Image_Shutdown(void);
 void Image_PrintInputFormatVersions(void); //for version info
 qboolean Image_WriteKTXFile(const char *filename, enum fs_relative fsroot, struct pendingtextureinfo *mips);
 qboolean Image_WriteDDSFile(const char *filename, enum fs_relative fsroot, struct pendingtextureinfo *mips);
-void Image_BlockSizeForEncoding(uploadfmt_t encoding, unsigned int *blockbytes, unsigned int *blockwidth, unsigned int *blockheight);
+void Image_BlockSizeForEncoding(uploadfmt_t encoding, unsigned int *blockbytes, unsigned int *blockwidth, unsigned int *blockheight, unsigned int *blockdepth);
 const char *Image_FormatName(uploadfmt_t encoding);
 qboolean Image_FormatHasAlpha(uploadfmt_t encoding);
 image_t *Image_LoadTexture	(const char *identifier, int width, int height, uploadfmt_t fmt, void *data, unsigned int flags);
 struct pendingtextureinfo *Image_LoadMipsFromMemory(int flags, const char *iname, const char *fname, qbyte *filedata, int filesize);
 void Image_ChangeFormat(struct pendingtextureinfo *mips, qboolean *allowedformats, uploadfmt_t origfmt, const char *imagename);
+void Image_Premultiply(struct pendingtextureinfo *mips);
 void *Image_FlipImage(const void *inbuffer, void *outbuffer, int *inoutwidth, int *inoutheight, int pixelbytes, qboolean flipx, qboolean flipy, qboolean flipd);
 
 #ifdef D3D8QUAKE
@@ -592,7 +611,10 @@ qbyte *R_MarkLeaves_Q2 (void);
 qbyte *R_MarkLeaves_Q3 (void);
 void R_SetFrustum (float projmat[16], float viewmat[16]);
 void R_SetRenderer(rendererinfo_t *ri);
-void R_RegisterRenderer(rendererinfo_t *ri);
+qboolean R_RegisterRenderer(void *module, rendererinfo_t *ri);
+struct plugvrfuncs_s;
+qboolean R_RegisterVRDriver(void *module, struct plugvrfuncs_s *vrfuncs);
+qboolean R_UnRegisterModule(void *module);
 void R_AnimateLight (void);
 void R_UpdateHDR(vec3_t org);
 void R_UpdateLightStyle(unsigned int style, const char *stylestring, float r, float g, float b);
@@ -602,7 +624,7 @@ struct texture_s *R_TextureAnimation_Q2 (struct texture_s *base);	//mostly depre
 void RQ_Init(void);
 void RQ_Shutdown(void);
 
-void WritePCXfile (const char *filename, enum fs_relative fsroot, qbyte *data, int width, int height, int rowbytes, qbyte *palette, qboolean upload); //data is 8bit.
+qboolean WritePCXfile (const char *filename, enum fs_relative fsroot, qbyte *data, int width, int height, int rowbytes, qbyte *palette, qboolean upload); //data is 8bit.
 qbyte *ReadPCXFile(qbyte *buf, int length, int *width, int *height);
 void *ReadTargaFile(qbyte *buf, int length, int *width, int *height, uploadfmt_t *format, qboolean greyonly, uploadfmt_t forceformat);
 qbyte *ReadPNGFile(const char *fname, qbyte *buf, int length, int *width, int *height, uploadfmt_t *format);
@@ -639,7 +661,7 @@ extern	cvar_t	r_shadow_realtime_dlight, r_shadow_realtime_dlight_shadows;
 extern	cvar_t	r_shadow_realtime_dlight_ambient;
 extern	cvar_t	r_shadow_realtime_dlight_diffuse;
 extern	cvar_t	r_shadow_realtime_dlight_specular;
-extern	cvar_t	r_shadow_realtime_world, r_shadow_realtime_world_shadows, r_shadow_realtime_world_lightmaps;
+extern	cvar_t	r_shadow_realtime_world, r_shadow_realtime_world_shadows, r_shadow_realtime_world_lightmaps, r_shadow_realtime_world_importlightentitiesfrommap;
 extern	cvar_t	r_shadow_shadowmapping;
 extern	cvar_t	r_mirroralpha;
 extern	cvar_t	r_wateralpha;
@@ -651,6 +673,7 @@ extern	cvar_t	r_lavastyle;
 extern	cvar_t	r_slimestyle;
 extern	cvar_t	r_telestyle;
 extern	cvar_t	r_dynamic;
+extern	cvar_t	r_temporalscenecache;
 extern	cvar_t	r_novis;
 extern	cvar_t	r_netgraph;
 extern	cvar_t	r_deluxemapping_cvar;
@@ -670,6 +693,7 @@ extern cvar_t	r_xflip;
 
 extern cvar_t gl_mindist, gl_maxdist;
 extern	cvar_t	r_clear;
+extern	cvar_t	r_clearcolour;
 extern	cvar_t	gl_poly;
 extern	cvar_t	gl_affinemodels;
 extern	cvar_t r_renderscale;
@@ -692,6 +716,7 @@ extern	cvar_t	gl_playermip;
 extern  cvar_t	r_lightmap_saturation;
 
 extern cvar_t r_meshpitch;
+extern cvar_t r_meshroll;	//gah!
 extern cvar_t vid_hardwaregamma;
 
 enum {

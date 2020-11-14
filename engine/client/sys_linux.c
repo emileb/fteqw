@@ -62,13 +62,14 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #endif
 
 #include "quakedef.h"
+#include "netinc.h"
 
 #undef malloc
 
 static int noconinput = 0;
 static int nostdout = 0;
 
-int isPlugin;
+extern int isPlugin;
 int sys_parentleft;
 int sys_parenttop;
 int sys_parentwidth;
@@ -77,6 +78,7 @@ long	sys_parentwindow;
 qboolean sys_gracefulexit;
 
 qboolean X11_GetDesktopParameters(int *width, int *height, int *bpp, int *refreshrate);
+static void Sys_InitClock(void);
 
 qboolean Sys_InitTerminal (void)	//we either have one or we don't.
 {
@@ -168,6 +170,17 @@ void Sys_Printf (char *fmt, ...)
 	wchar_t		w;
 	unsigned int codeflags, codepoint;
 	FILE *out = stdout;
+
+#ifdef SUBSERVERS
+	if (SSV_IsSubServer())
+	{
+		va_start (argptr,fmt);
+		vsnprintf (text,sizeof(text)-1, fmt,argptr);
+		va_end (argptr);
+		SSV_PrintToMaster(text);
+		return;
+	}
+#endif
 
 	if (nostdout)
 	{
@@ -279,17 +292,32 @@ void Sys_Quit (void)
 static void Sys_Register_File_Associations_f(void)
 {
 	char xdgbase[MAX_OSPATH];
+	char confbase[MAX_OSPATH];
 
 	if (1)
-	{
-		const char *e = getenv("XDG_DATA_HOME");
-		if (e && *e)
-			Q_strncpyz(xdgbase, e, sizeof(xdgbase));
+	{	//user
+		const char *data = getenv("XDG_DATA_HOME");
+		const char *config = getenv("XDG_CONFIG_HOME");
+		const char *home = getenv("HOME");
+		if (data && *data)
+			Q_strncpyz(xdgbase, data, sizeof(xdgbase));
 		else
 		{
-			e = getenv("HOME");
-			if (e && *e)
-				Q_snprintfz(xdgbase, sizeof(xdgbase), "%s/.local/share", e);
+			if (home && *home)
+				Q_snprintfz(xdgbase, sizeof(xdgbase), "%s/.local/share", home);
+			else
+			{
+				Con_Printf("homedir not known\n");
+				return;
+			}
+		}
+
+		if (config && *config)
+			Q_strncpyz(confbase, config, sizeof(confbase));
+		else
+		{
+			if (home && *home)
+				Q_snprintfz(confbase, sizeof(confbase), "%s/.config", home);
 			else
 			{
 				Con_Printf("homedir not known\n");
@@ -298,20 +326,33 @@ static void Sys_Register_File_Associations_f(void)
 		}
 	}
 	else
-	{
-		const char *e = getenv("XDG_DATA_DIRS");
-		while (e && *e == ':')
-			e++;
-		if (e && *e)
+	{	//system... gotta be root...
+		const char *data = getenv("XDG_DATA_DIRS");
+		const char *config = getenv("XDG_CONFIG_DIRS");
+		while (data && *data == ':')
+			data++;
+		if (data && *data)
 		{
 			char *c;
-			Q_strncpyz(xdgbase, e, sizeof(xdgbase));
+			Q_strncpyz(xdgbase, data, sizeof(xdgbase));
 			c = strchr(xdgbase, ':');
 			if (*c)
 				*c = 0;
 		}
 		else
 			Q_strncpyz(xdgbase, "/usr/local/share/", sizeof(xdgbase));
+		while (config && *config == ':')
+			config++;
+		if (config && *config)
+		{
+			char *c;
+			Q_strncpyz(confbase, config, sizeof(confbase));
+			c = strchr(confbase, ':');
+			if (*c)
+				*c = 0;
+		}
+		else
+			Q_strncpyz(confbase, "/etc/xdg/", sizeof(confbase));
 	}
 
 	//we need to create some .desktop file first, so stuff knows how to start us up.
@@ -336,7 +377,7 @@ static void Sys_Register_File_Associations_f(void)
 		if (!strcmp(iconname, "afterquake") || !strcmp(iconname, "nq"))	//hacks so that we don't need to create icons.
 			iconname = "quake";
 
-		if (FS_NativePath("icon.png", FS_GAME, iconsyspath, sizeof(iconsyspath)))
+		if (FS_NativePath("icon.png", FS_PUBBASEGAMEONLY, iconsyspath, sizeof(iconsyspath)))
 			iconname = iconsyspath;
 
 		desktopfile = va(desktopfile,
@@ -353,11 +394,11 @@ static void Sys_Register_File_Associations_f(void)
 	//write out a new file and rename the new over the top of the old
 	{
 		char *foundassoc = NULL;
-		vfsfile_t *out = FS_OpenVFS(va("%s/applications/.mimeapps.list.new", xdgbase), "wb", FS_SYSTEM);
+		vfsfile_t *out = FS_OpenVFS(va("%s/.mimeapps.list.new", confbase), "wb", FS_SYSTEM);
 		if (out)
 		{
 			qofs_t insize;
-			char *in = FS_MallocFile(va("%s/applications/mimeapps.list", xdgbase), FS_SYSTEM, &insize);
+			char *in = FS_MallocFile(va("%s/mimeapps.list", confbase), FS_SYSTEM, &insize);
 			if (in)
 			{
 				qboolean inadded = false;
@@ -391,7 +432,7 @@ static void Sys_Register_File_Associations_f(void)
 				if (foundassoc)
 				{	//if we found it, or somewhere to insert it, then insert it.
 					VFS_WRITE(out, in, foundassoc-in);
-					VFS_PRINTF(out, "x-scheme-handler/qw=fte-%s.desktop\n", fs_manifest->installation);
+					VFS_PRINTF(out, "x-scheme-handler/qw=fte-%s.desktop;\n", fs_manifest->installation);
 					VFS_WRITE(out, foundassoc, insize - (foundassoc-in));
 				}
 				else
@@ -401,17 +442,18 @@ static void Sys_Register_File_Associations_f(void)
 			if (!foundassoc)
 			{	//if file not found, or no appropriate section, just concat it on the end.
 				VFS_PRINTF(out, "[Added Associations]\n");
-				VFS_PRINTF(out, "x-scheme-handler/qw=fte-%s.desktop\n", fs_manifest->installation);
+				VFS_PRINTF(out, "x-scheme-handler/qw=fte-%s.desktop;\n", fs_manifest->installation);
 			}
 			VFS_FLUSH(out);
 			VFS_CLOSE(out);
-			FS_Rename2(va("%s/applications/.mimeapps.list.new", xdgbase), va("%s/applications/mimeapps.list", xdgbase), FS_SYSTEM, FS_SYSTEM);
+			FS_Rename2(va("%s/.mimeapps.list.new", confbase), va("%s/mimeapps.list", confbase), FS_SYSTEM, FS_SYSTEM);
 		}
 	}
 }
 
 void Sys_Init(void)
 {
+	Sys_InitClock();
 	Cmd_AddCommandD("sys_register_file_associations", Sys_Register_File_Associations_f, "Register FTE as the default handler for various file+protocol types, using FreeDesktop standards.\n");
 }
 void Sys_Shutdown(void)
@@ -670,28 +712,124 @@ int Sys_EnumerateFiles (const char *gpath, const char *match, int (*func)(const 
 	return Sys_EnumerateFiles2(truepath, suboffset, match, func, parm, spath);
 }
 
-int secbase;
+static quint64_t timer_basetime;	//used by all clocks to bias them to starting at 0
+static void Sys_ClockType_Changed(cvar_t *var, char *oldval);
+static cvar_t sys_clocktype = CVARFCD("sys_clocktype", "", CVAR_NOTFROMSERVER, Sys_ClockType_Changed, "Controls which system clock to base timings from.\n0: auto\n"
+	"1: gettimeofday (may be discontinuous).\n"
+	"2: monotonic.");
+static enum
+{
+	QCLOCK_AUTO = 0,
 
+	QCLOCK_GTOD,
+	QCLOCK_MONOTONIC,
+	QCLOCK_REALTIME,
+
+	QCLOCK_INVALID
+} timer_clocktype;
+static quint64_t Sys_GetClock(quint64_t *freq)
+{
+	quint64_t t;
+	switch(timer_clocktype)
+	{
+#ifdef CLOCK_MONOTONIC
+	case QCLOCK_MONOTONIC:
+		{
+			struct timespec ts;
+			clock_gettime(CLOCK_MONOTONIC, &ts);
+			*freq = 1000000000;
+			t = (ts.tv_sec*(quint64_t)1000000000) + ts.tv_nsec;
+		}
+		break;
+#endif
+#ifdef CLOCK_REALTIME
+	case QCLOCK_REALTIME:
+		{
+			struct timespec ts;
+			clock_gettime(CLOCK_REALTIME, &ts);
+			*freq = 1000000000;
+			t = (ts.tv_sec*(quint64_t)1000000000) + ts.tv_nsec;
+
+			//WARNING t can go backwards
+		}
+		break;
+#endif
+	default:	//QCLOCK_GTOD
+		{
+			struct timeval tp;
+			gettimeofday(&tp, NULL);
+			*freq = 1000000;
+			t = tp.tv_sec*(quint64_t)1000000 + tp.tv_usec;
+
+			//WARNING t can go backwards
+		}
+		break;
+	}
+	return t - timer_basetime;
+}
+static void Sys_ClockType_Changed(cvar_t *var, char *oldval)
+{
+	int newtype = var?var->ival:0;
+	if (newtype >= QCLOCK_INVALID)
+		newtype = QCLOCK_AUTO;
+	if (newtype <= QCLOCK_AUTO)
+		newtype = QCLOCK_MONOTONIC;
+
+	if (newtype != timer_clocktype)
+	{
+		quint64_t oldtime, oldfreq;
+		quint64_t newtime, newfreq;
+
+		oldtime = Sys_GetClock(&oldfreq);
+		timer_clocktype = newtype;
+		timer_basetime = 0;
+		newtime = Sys_GetClock(&newfreq);
+
+		timer_basetime = newtime - (newfreq * (oldtime) / oldfreq);
+
+		/*if (host_initialized)
+		{
+			const char *clockname = "unknown";
+			switch(timer_clocktype)
+			{
+			case QCLOCK_GTOD:		clockname = "gettimeofday";	break;
+#ifdef CLOCK_MONOTONIC
+			case QCLOCK_MONOTONIC:	clockname = "monotonic";	break;
+#endif
+#ifdef CLOCK_REALTIME
+			case QCLOCK_REALTIME:	clockname = "realtime";	break;
+#endif
+			case QCLOCK_AUTO:
+			case QCLOCK_INVALID:	break;
+			}
+			Con_Printf("Clock %s, wraps after %"PRIu64" days, %"PRIu64" years\n", clockname, (((quint64_t)-1)/newfreq)/(24*60*60), (((quint64_t)-1)/newfreq)/(24*60*60*365));
+		}*/
+	}
+}
+static void Sys_InitClock(void)
+{
+	quint64_t freq;
+
+	Cvar_Register(&sys_clocktype, "System vars");
+
+	//calibrate it, and apply.
+	Sys_ClockType_Changed(NULL, NULL);
+	timer_basetime = 0;
+	timer_basetime = Sys_GetClock(&freq);
+}
 double Sys_DoubleTime (void)
 {
-	struct timeval tp;
-	struct timezone tzp;
-
-	gettimeofday(&tp, &tzp);
-
-	if (!secbase)
-	{
-		secbase = tp.tv_sec;
-		return tp.tv_usec/1000000.0;
-	}
-
-	return (tp.tv_sec - secbase) + tp.tv_usec/1000000.0;
+	quint64_t denum, num = Sys_GetClock(&denum);
+	return num / (long double)denum;
 }
-
 unsigned int Sys_Milliseconds (void)
 {
-	return Sys_DoubleTime() * 1000;
+	quint64_t denum, num = Sys_GetClock(&denum);
+	num *= 1000;
+	return num / denum;
 }
+
+
 
 #ifdef USE_LIBTOOL
 void Sys_CloseLibrary(dllhandle_t *lib)
@@ -890,14 +1028,6 @@ char *Sys_ConsoleInput(void)
 	static char text[256];
 	char *nl;
 
-#ifdef SUBSERVERS
-	if (SSV_IsSubServer())
-	{
-		SSV_CheckFromMaster();
-		return NULL;
-	}
-#endif
-
 	if (noconinput)
 		return NULL;
 
@@ -946,6 +1076,46 @@ char *Sys_ConsoleInput(void)
 	return NULL;
 }
 
+#ifdef HAVE_GNUTLS
+static void DoSign(const char *fname)
+{
+	qbyte digest[1024];
+	qbyte signature[2048];
+	qbyte base64[2048*4];
+	int sigsize;
+	vfsfile_t *f;
+	const char *auth = "Unknown";
+	int i = COM_CheckParm("-certhost");
+	if (i)
+		auth = com_argv[i+1];
+
+	f = FS_OpenVFS(fname, "rb", FS_SYSTEM);
+	if (f)
+	{
+		hashfunc_t *h = &hash_sha512;
+		size_t l, ts = 0;
+		void *ctx = alloca(h->contextsize);
+		qbyte data[65536*16];
+		h->init(ctx);
+		while ((l=VFS_READ(f, data, sizeof(data)))>0)
+		{
+			h->process(ctx, data, l);
+			ts += l;
+		}
+		h->terminate(digest, ctx);
+		VFS_CLOSE(f);
+		printf(" \\\"dlsize=%zu\\\"", ts);
+
+		Base16_EncodeBlock(digest, h->digestsize, base64, sizeof(base64));
+		printf(" \\\"sha512=%s\\\"", base64);
+
+		sigsize = GNUTLS_GenerateSignature(digest, h->digestsize, signature, sizeof(signature));
+		Base64_EncodeBlock(signature, sigsize, base64, sizeof(base64));
+		printf(" \\\"sign=%s:%s\\\"\n", auth, base64);
+	}
+}
+#endif
+
 #ifdef _POSIX_C_SOURCE
 static void SigCont(int code)
 {
@@ -961,7 +1131,6 @@ int main (int c, const char **v)
 	quakeparms_t parms;
 	int i;
 
-//	char cwd[1024];
 	char bindir[1024];
 
 	signal(SIGFPE, SIG_IGN);
@@ -1025,19 +1194,49 @@ int main (int c, const char **v)
 		}
 	}
 
-	parms.basedir = realpath(".", NULL);
+#if _POSIX_C_SOURCE >= 200809L
+	{
+		char *path = realpath(".", NULL);
+		if (path)
+		{
+			size_t l = strlen(path)+2;
+			char *npath = malloc(strlen(path)+2);
+			Q_snprintfz(npath, l, "%s/", path);
+			parms.basedir = npath;
+			free(path);
+		}
+	}
+#elif _POSIX_C_SOURCE >= 200112L && defined(PATH_MAX)
+	{
+		char path[PATH_MAX];
+		if (realpath(".", path))
+		{
+			size_t l = strlen(path)+2;
+			char *npath = malloc(strlen(path)+2);
+			Q_snprintfz(npath, l, "%s/", path);
+			parms.basedir = npath;
+		}
+	}
+#else
+	parms.basedir = "./";
+#endif
+
 	memset(bindir, 0, sizeof(bindir));	//readlink does NOT null terminate, apparently.
 #ifdef __linux__
 	//attempt to figure out where the exe is located
-	if (readlink("/proc/self/exe", bindir, sizeof(bindir)-1) > 0)
+	i = readlink("/proc/self/exe", bindir, sizeof(bindir)-1);
+	if (i > 0)
 	{
+		bindir[i] = 0;
 		*COM_SkipPath(bindir) = 0;
 		parms.binarydir = bindir;
 	}
 /*#elif defined(__bsd__)
 	//attempt to figure out where the exe is located
-	if (readlink("/proc/self/file", bindir, sizeof(bindir)-1) > 0)
+	i = readlink("/proc/self/file", bindir, sizeof(bindir)-1);
+	if (i > 0)
 	{
+		bindir[i] = 0;
 		*COM_SkipPath(bindir) = 0;
 		parms.binarydir = bindir;
 	}
@@ -1054,10 +1253,14 @@ int main (int c, const char **v)
 		fcntl(STDIN_FILENO, F_SETFL, fcntl (0, F_GETFL, 0) | FNDELAY);
 #endif
 
-#ifndef CLIENTONLY
+#ifdef HAVE_SERVER
 #ifdef SUBSERVERS
 	if (COM_CheckParm("-clusterslave"))
-		isDedicated = nostdout = isClusterSlave = true;
+	{
+		isDedicated = true;
+		nostdout = noconinput = true;
+		SSV_SetupControlPipe(Sys_GetStdInOutStream());
+	}
 #endif
 	if (COM_CheckParm("-dedicated"))
 		isDedicated = true;
@@ -1066,8 +1269,24 @@ int main (int c, const char **v)
 	if (COM_CheckParm("-nostdout"))
 		nostdout = 1;
 
+#ifdef HAVE_GNUTLS
+	//fteqw -privcert privcert.key -pubcert pubcert.key -sign binaryfile.pk3
+	i = COM_CheckParm("-sign");
+	if (i)
+	{
+		//init some useless crap
+		host_parms = parms;
+		Cvar_Init();
+		Memory_Init ();
+		COM_Init ();
+
+		DoSign(com_argv[i+1]);
+		return EXIT_SUCCESS;
+	}
+#endif
+
 	if (parms.binarydir)
-		Sys_Printf("Binary is located at \"%s\"\n", bindir);
+		Sys_Printf("Binary is located at \"%s\"\n", parms.binarydir);
 
 #ifndef CLIENTONLY
 	if (isDedicated)    //compleate denial to switch to anything else - many of the client structures are not initialized.
@@ -1087,7 +1306,6 @@ int main (int c, const char **v)
 		}
 	}
 #endif
-
 
 	Host_Init(&parms);
 
@@ -1120,6 +1338,7 @@ int main (int c, const char **v)
 		newtime = Sys_DoubleTime ();
 		time = newtime - oldtime;
 
+#ifdef HAVE_SERVER
 		if (isDedicated)
 		{
 			sleeptime = SV_Frame();
@@ -1127,6 +1346,7 @@ int main (int c, const char **v)
 			NET_Sleep(sleeptime, noconinput?false:true);
 		}
 		else
+#endif
 		{
 			sleeptime = Host_Frame(time);
 			oldtime = newtime;
@@ -1200,16 +1420,16 @@ qboolean Sys_GetDesktopParameters(int *width, int *height, int *bpp, int *refres
 #endif
 }
 
-#if !defined(GLQUAKE) && !defined(VKQUAKE)
+#if defined(NO_X11)
 #define SYS_CLIPBOARD_SIZE		256
 static char clipboard_buffer[SYS_CLIPBOARD_SIZE] = {0};
 
-void Sys_Clipboard_PasteText(clipboardtype_t cbt, void (*callback)(void *cb, char *utf8), void *ctx)
+void Sys_Clipboard_PasteText(clipboardtype_t cbt, void (*callback)(void *cb, const char *utf8), void *ctx)
 {
 	callback(ctx, clipboard_buffer);
 }
 
-void Sys_SaveClipboard(clipboardtype_t cbt, char *text) {
+void Sys_SaveClipboard(clipboardtype_t cbt, const char *text) {
 	Q_strncpyz(clipboard_buffer, text, SYS_CLIPBOARD_SIZE);
 }
 #endif
@@ -1224,10 +1444,9 @@ qboolean Sys_RandomBytes(qbyte *string, int len)
 	return res;
 }
 
-#ifdef WEBCLIENT
+#ifdef MANIFESTDOWNLOADS
 qboolean Sys_RunInstaller(void)
 {
 	return false;
 }
 #endif
-

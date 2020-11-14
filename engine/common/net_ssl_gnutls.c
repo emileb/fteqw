@@ -11,8 +11,6 @@
 #endif
 
 #ifdef HAVE_GNUTLS
-#define privname "privkey.pem"
-#define pubname "cert.pem"
 
 #if defined(_WIN32) && !defined(MINGW) && 0
 
@@ -205,6 +203,7 @@ static int		(VARGS *qgnutls_x509_crt_set_dn)(gnutls_x509_crt_t crt, const char *
 static int		(VARGS *qgnutls_x509_crt_set_issuer_dn)(gnutls_x509_crt_t crt, const char *dn, const char **err);
 static int		(VARGS *qgnutls_x509_crt_set_key)(gnutls_x509_crt_t crt, gnutls_x509_privkey_t key);
 static int		(VARGS *qgnutls_x509_crt_export2)(gnutls_x509_crt_t cert, gnutls_x509_crt_fmt_t format, gnutls_datum_t * out);
+static int		(VARGS *qgnutls_x509_crt_import)(gnutls_x509_crt_t cert, const gnutls_datum_t *data, gnutls_x509_crt_fmt_t format);
 static int		(VARGS *qgnutls_x509_privkey_init)(gnutls_x509_privkey_t * key);
 static void		(VARGS *qgnutls_x509_privkey_deinit)(gnutls_x509_privkey_t key);
 static int		(VARGS *qgnutls_x509_privkey_generate)(gnutls_x509_privkey_t key, gnutls_pk_algorithm_t algo, unsigned int bits, unsigned int flags);
@@ -213,7 +212,14 @@ static int		(VARGS *qgnutls_x509_crt_privkey_sign)(gnutls_x509_crt_t crt, gnutls
 static int		(VARGS *qgnutls_privkey_init)(gnutls_privkey_t * key);
 static void		(VARGS *qgnutls_privkey_deinit)(gnutls_privkey_t key);
 static int		(VARGS *qgnutls_privkey_import_x509)(gnutls_privkey_t pkey, gnutls_x509_privkey_t key, unsigned int flags);
+//static int		(VARGS *qgnutls_privkey_sign_hash2)(gnutls_privkey_t signer, gnutls_sign_algorithm_t algo, unsigned int flags, const gnutls_datum_t * hash_data, gnutls_datum_t * signature);
+static int		(VARGS *qgnutls_privkey_sign_hash)(gnutls_privkey_t signer, gnutls_digest_algorithm_t hash_algo, unsigned int flags, const gnutls_datum_t * hash_data, gnutls_datum_t * signature);
+static int		(VARGS *qgnutls_pubkey_init)(gnutls_pubkey_t * key);
+static int		(VARGS *qgnutls_pubkey_import_x509)(gnutls_pubkey_t key, gnutls_x509_crt_t crt, unsigned int flags);
+static int		(VARGS *qgnutls_pubkey_verify_hash2)(gnutls_pubkey_t key, gnutls_sign_algorithm_t algo, unsigned int flags, const gnutls_datum_t * hash, const gnutls_datum_t * signature);
 static int		(VARGS *qgnutls_certificate_set_x509_key_mem)(gnutls_certificate_credentials_t res, const gnutls_datum_t * cert, const gnutls_datum_t * key, gnutls_x509_crt_fmt_t type);
+static int		(VARGS *qgnutls_certificate_get_x509_key)(gnutls_certificate_credentials_t res, unsigned index, gnutls_x509_privkey_t *key);
+static void		(VARGS *qgnutls_certificate_free_credentials)(gnutls_certificate_credentials_t sc);
 
 static qboolean Init_GNUTLS(void)
 {
@@ -384,6 +390,13 @@ static qboolean Init_GNUTLS(void)
 		{(void**)&qgnutls_privkey_import_x509, "gnutls_privkey_import_x509"},
 		{(void**)&qgnutls_certificate_set_x509_key_mem, "gnutls_certificate_set_x509_key_mem"},
 
+		{(void**)&qgnutls_certificate_get_x509_key, "gnutls_certificate_get_x509_key"},
+		{(void**)&qgnutls_certificate_free_credentials, "gnutls_certificate_free_credentials"},
+		{(void**)&qgnutls_pubkey_init, "gnutls_pubkey_init"},
+		{(void**)&qgnutls_pubkey_import_x509, "gnutls_pubkey_import_x509"},
+		{(void**)&qgnutls_privkey_sign_hash, "gnutls_privkey_sign_hash"},
+		{(void**)&qgnutls_pubkey_verify_hash2, "gnutls_pubkey_verify_hash2"},
+		{(void**)&qgnutls_x509_crt_import, "gnutls_x509_crt_import"},
 		{NULL, NULL}
 	};
 	
@@ -417,6 +430,9 @@ typedef struct
 	qboolean handshaking;
 	qboolean datagram;
 
+	int pullerror;	//adding these two because actual networking errors are not getting represented properly, at least with regard to timeouts.
+	int pusherror;
+
 	qboolean challenging;	//not sure this is actually needed, but hey.
 	void *cbctx;
 	neterr_t(*cbpush)(void *cbctx, const qbyte *data, size_t datasize);
@@ -442,22 +458,25 @@ static void SSL_Close(vfsfile_t *vfs)
 		qgnutls_deinit(file->session);
 		file->session = NULL;
 	}
+}
+static qboolean QDECL SSL_CloseFile(vfsfile_t *vfs)
+{
+	gnutlsfile_t *file = (void*)vfs;
+	SSL_Close(vfs);
 	if (file->stream)
 	{
 		VFS_CLOSE(file->stream);
 		file->stream = NULL;
 	}
-}
-static qboolean QDECL SSL_CloseFile(vfsfile_t *vfs)
-{
-	SSL_Close(vfs);
 	Z_Free(vfs);
 	return true;
 }
 
-static qboolean SSL_CheckUserTrust(gnutls_session_t session, gnutlsfile_t *file, int *errorcode)
+static int SSL_CheckUserTrust(gnutls_session_t session, gnutlsfile_t *file, int gcertcode)
 {
+	int ret = gcertcode?GNUTLS_E_CERTIFICATE_ERROR:GNUTLS_E_SUCCESS;
 #ifdef HAVE_CLIENT
+	unsigned int ferrcode;
 	//when using dtls, we expect self-signed certs and persistent trust.
 	if (file->datagram)
 	{
@@ -473,16 +492,27 @@ static qboolean SSL_CheckUserTrust(gnutls_session_t session, gnutlsfile_t *file,
 			memcpy(certdata+certsize, certlist[j].data, certlist[j].size);
 			certsize += certlist[j].size;
 		}
-		if (CertLog_ConnectOkay(file->certname, certdata, certsize))
-			*errorcode = 0;	//user has previously authorised it.
+
+		//if gcertcode is 0 then we can still pin it.
+		ferrcode = 0;
+		if (gcertcode & GNUTLS_CERT_SIGNER_NOT_FOUND)
+			ferrcode |= CERTLOG_MISSINGCA;
+		if (gcertcode & GNUTLS_CERT_UNEXPECTED_OWNER)
+			ferrcode |= CERTLOG_WRONGHOST;
+		if (gcertcode & GNUTLS_CERT_EXPIRED)
+			ferrcode |= CERTLOG_EXPIRED;
+		if (gcertcode & ~(GNUTLS_CERT_INVALID|GNUTLS_CERT_SIGNER_NOT_FOUND|GNUTLS_CERT_UNEXPECTED_OWNER|GNUTLS_CERT_EXPIRED))
+			ferrcode |= CERTLOG_UNKNOWN;
+
+		if (CertLog_ConnectOkay(file->certname, certdata, certsize, ferrcode))
+			ret = GNUTLS_E_SUCCESS;	//user has previously authorised it.
 		else
-			*errorcode = GNUTLS_E_CERTIFICATE_ERROR;	//user didn't trust it yet
+			ret = GNUTLS_E_CERTIFICATE_ERROR;	//user didn't trust it yet
 		free(certdata);
-		return true;
 	}
 #endif
 
-	return false;
+	return ret;
 }
 
 static int QDECL SSL_CheckCert(gnutls_session_t session)
@@ -490,7 +520,6 @@ static int QDECL SSL_CheckCert(gnutls_session_t session)
 	gnutlsfile_t *file = qgnutls_session_get_ptr (session);
 	unsigned int certstatus;
 	qboolean preverified = false;
-	int errcode = GNUTLS_E_CERTIFICATE_ERROR;
 
 	size_t knownsize;
 	qbyte *knowndata = TLS_GetKnownCertificate(file->certname, &knownsize);
@@ -549,26 +578,31 @@ static int QDECL SSL_CheckCert(gnutls_session_t session)
 #ifdef GNUTLS_HAVE_VERIFY3
 	if (qgnutls_certificate_verify_peers3(session, file->certname, &certstatus) >= 0)
 	{
+		gnutls_datum_t out = {NULL,0};
+		gnutls_certificate_type_t type;
+		int ret;
+
+		if (preverified && (certstatus&~GNUTLS_CERT_EXPIRED) == (GNUTLS_CERT_INVALID|GNUTLS_CERT_SIGNER_NOT_FOUND))
+			return 0;
+		ret = SSL_CheckUserTrust(session, file, certstatus);
+		if (!ret)
+			return ret;
+
+		type = qgnutls_certificate_type_get (session);
+		if (qgnutls_certificate_verification_status_print(certstatus, type, &out, 0) >= 0)
 		{
-			gnutls_datum_t out;
-			gnutls_certificate_type_t type;
+			Con_Printf(CON_ERROR "%s: %s (%x)\n", file->certname, out.data, certstatus);
+			(*qgnutls_free)(out.data);
+		}
+		else
+			Con_Printf(CON_ERROR "%s: UNKNOWN STATUS (%x)\n", file->certname, certstatus);
 
-			if (preverified && (certstatus&~GNUTLS_CERT_EXPIRED) == (GNUTLS_CERT_INVALID|GNUTLS_CERT_SIGNER_NOT_FOUND))
-				return 0;
-			if (certstatus == 0)
-				return SSL_CheckUserTrust(session, file, 0);
-			if (certstatus == (GNUTLS_CERT_INVALID|GNUTLS_CERT_SIGNER_NOT_FOUND))
-			{
-				if (SSL_CheckUserTrust(session, file, &errcode))
-					return errcode;
-			}
-
-			type = qgnutls_certificate_type_get (session);
-			if (qgnutls_certificate_verification_status_print(certstatus, type, &out, 0) >= 0)
-			{
-				Con_Printf(CON_ERROR "%s: %s (%x)\n", file->certname, out.data, certstatus);
-//looks like its static anyway.				qgnutls_free(out.data);
-
+		if (tls_ignorecertificateerrors.ival)
+		{
+			Con_Printf(CON_ERROR "%s: Ignoring certificate errors (tls_ignorecertificateerrors is %i)\n", file->certname, tls_ignorecertificateerrors.ival);
+			return 0;
+		}
+	}
 #else
 	if (qgnutls_certificate_verify_peers2(session, &certstatus) >= 0)
 	{
@@ -578,6 +612,7 @@ static int QDECL SSL_CheckCert(gnutls_session_t session)
 		if (certlist && certslen)
 		{
 			//and make sure the hostname on it actually makes sense.
+			int ret;
 			gnutls_x509_crt_t cert;
 			qgnutls_x509_crt_init(&cert);
 			qgnutls_x509_crt_import(cert, certlist, GNUTLS_X509_FMT_DER);
@@ -585,10 +620,10 @@ static int QDECL SSL_CheckCert(gnutls_session_t session)
 			{
 				if (preverified && (certstatus&~GNUTLS_CERT_EXPIRED) == (GNUTLS_CERT_INVALID|GNUTLS_CERT_SIGNER_NOT_FOUND))
 					return 0;
-				if (certstatus == 0)
-					return SSL_CheckUserTrust(session, file, 0);
-				if (certstatus == (GNUTLS_CERT_INVALID|GNUTLS_CERT_SIGNER_NOT_FOUND) && SSL_CheckUserTrust(session, file, GNUTLS_E_CERTIFICATE_ERROR))
-					return 0;
+
+				ret = SSL_CheckUserTrust(session, file, certstatus);	//looks okay... pin it by default...
+				if (!ret)
+					return ret;
 
 				if (certstatus & GNUTLS_CERT_SIGNER_NOT_FOUND)
 					Con_Printf(CON_ERROR "%s: Certificate authority is not recognised\n", file->certname);
@@ -600,7 +635,6 @@ static int QDECL SSL_CheckCert(gnutls_session_t session)
 					Con_Printf(CON_ERROR "%s: Certificate signature failure\n", file->certname);
 				else
 					Con_Printf(CON_ERROR "%s: Certificate error\n", file->certname);
-#endif
 				if (tls_ignorecertificateerrors.ival)
 				{
 					Con_Printf(CON_ERROR "%s: Ignoring certificate errors (tls_ignorecertificateerrors is %i)\n", file->certname, tls_ignorecertificateerrors.ival);
@@ -611,21 +645,23 @@ static int QDECL SSL_CheckCert(gnutls_session_t session)
 				Con_DPrintf(CON_ERROR "%s: certificate is for a different domain\n", file->certname);
 		}
 	}
+#endif
 
 	Con_DPrintf(CON_ERROR "%s: rejecting certificate\n", file->certname);
-	return errcode;
+	return GNUTLS_E_CERTIFICATE_ERROR;
 }
 
 //return 1 to read data.
-//-1 or 0 for error or not ready
+//-1 for error
+//0 for not ready
 static int SSL_DoHandshake(gnutlsfile_t *file)
 {
 	int err;
 	//session was previously closed = error
 	if (!file->session)
 	{
-		Sys_Printf("null session\n");
-		return -1;
+		//Sys_Printf("null session\n");
+		return VFS_ERROR_UNSPECIFIED;
 	}
 
 	err = qgnutls_handshake (file->session);
@@ -643,9 +679,18 @@ static int SSL_DoHandshake(gnutlsfile_t *file)
 				qgnutls_perror (err);
 		}
 
-		SSL_Close(&file->funcs);
 //		Con_Printf("%s: abort\n", file->certname);
-		return -1;
+
+		switch(err)
+		{
+		case GNUTLS_E_CERTIFICATE_ERROR:		err = VFS_ERROR_UNTRUSTED;		break;
+		case GNUTLS_E_PREMATURE_TERMINATION:	err = VFS_ERROR_EOF;			break;
+		case GNUTLS_E_PUSH_ERROR:				err = file->pusherror;			break;
+		case GNUTLS_E_PULL_ERROR:				err = file->pullerror;			break;
+		default:								err = VFS_ERROR_UNSPECIFIED;	break;
+		}
+		SSL_Close(&file->funcs);
+		return err;
 	}
 	file->handshaking = false;
 	return 1;
@@ -664,7 +709,7 @@ static int QDECL SSL_Read(struct vfsfile_s *f, void *buffer, int bytestoread)
 	}
 
 	if (!bytestoread)	//gnutls doesn't like this.
-		return -1;
+		return VFS_ERROR_UNSPECIFIED;	//caller is expecting data that we can never return, or something.
 
 	read = qgnutls_record_recv(file->session, buffer, bytestoread);
 	if (read < 0)
@@ -672,7 +717,7 @@ static int QDECL SSL_Read(struct vfsfile_s *f, void *buffer, int bytestoread)
 		if (read == GNUTLS_E_PREMATURE_TERMINATION)
 		{
 			Con_Printf("TLS Premature Termination from %s\n", file->certname);
-			return -1;
+			return VFS_ERROR_EOF;
 		}
 		else if (read == GNUTLS_E_REHANDSHAKE)
 		{
@@ -688,7 +733,7 @@ static int QDECL SSL_Read(struct vfsfile_s *f, void *buffer, int bytestoread)
 		}
 	}
 	else if (read == 0)
-		return -1;	//closed by remote connection.
+		return VFS_ERROR_EOF;	//closed by remote connection.
 	return read;
 }
 static int QDECL SSL_Write(struct vfsfile_s *f, const void *buffer, int bytestowrite)
@@ -710,12 +755,12 @@ static int QDECL SSL_Write(struct vfsfile_s *f, const void *buffer, int bytestow
 			return 0;
 		else
 		{
-			Con_Printf("TLS Send Warning %i (%i bytes)\n", written, bytestowrite);
-			return -1;
+			Con_DPrintf("TLS Send Error %i (%i bytes)\n", written, bytestowrite);
+			return VFS_ERROR_UNSPECIFIED;
 		}
 	}
 	else if (written == 0)
-		return -1;	//closed by remote connection.
+		return VFS_ERROR_EOF;	//closed by remote connection.
 	return written;
 }
 static qboolean QDECL SSL_Seek (struct vfsfile_s *file, qofs_t pos)
@@ -740,14 +785,21 @@ static ssize_t SSL_Push(gnutls_transport_ptr_t p, const void *data, size_t size)
 	gnutlsfile_t *file = p;
 //	Sys_Printf("SSL_Push: %u\n", size);
 	int done = VFS_WRITE(file->stream, data, size);
-	if (!done)
+	if (done <= 0)
 	{
-		qgnutls_transport_set_errno(file->session, EAGAIN);
+		int eno;
+		file->pusherror = done;
+		switch(done)
+		{
+		case VFS_ERROR_EOF:			return 0;
+		case VFS_ERROR_DNSFAILURE:
+		case VFS_ERROR_NORESPONSE:	eno = ECONNRESET;	break;
+		case VFS_ERROR_TRYLATER:	eno = EAGAIN;		break;
+		default:					eno = ECONNRESET;	break;
+		}
+		qgnutls_transport_set_errno(file->session, eno);
 		return -1;
 	}
-	qgnutls_transport_set_errno(file->session, done<0?errno:0);
-//	if (done < 0)
-//		return 0;
 	return done;
 }
 static ssize_t SSL_Pull(gnutls_transport_ptr_t p, void *data, size_t size)
@@ -755,16 +807,21 @@ static ssize_t SSL_Pull(gnutls_transport_ptr_t p, void *data, size_t size)
 	gnutlsfile_t *file = p;
 //	Sys_Printf("SSL_Pull: %u\n", size);
 	int done = VFS_READ(file->stream, data, size);
-	if (!done)
+	if (done <= 0)
 	{
-		qgnutls_transport_set_errno(file->session, EAGAIN);
+		int eno;
+		file->pullerror = done;
+		switch(done)
+		{
+		case VFS_ERROR_EOF:			return 0;
+		case VFS_ERROR_DNSFAILURE:
+		case VFS_ERROR_NORESPONSE:	eno = ECONNRESET;	break;
+		case VFS_ERROR_TRYLATER:	eno = EAGAIN;		break;
+		default:					eno = ECONNRESET;	break;
+		}
+		qgnutls_transport_set_errno(file->session, eno);
 		return -1;
 	}
-	qgnutls_transport_set_errno(file->session, done<0?errno:0);
-//	if (done < 0)
-//	{
-//		return 0;
-//	}
 	return done;
 }
 
@@ -840,17 +897,69 @@ static gnutls_certificate_credentials_t xcred[2];
 static gnutls_datum_t cookie_key;
 #endif
 
+vfsfile_t *SSL_OpenPrivKey(char *nativename, size_t nativesize)
+{
+#define privname "privkey.pem"
+	vfsfile_t *privf;
+	const char *mode = nativename?"wb":"rb";
+	int i = COM_CheckParm("-privkey");
+	if (i++)
+	{
+		if (nativename)
+			Q_strncpyz(nativename, com_argv[i], nativesize);
+		privf = FS_OpenVFS(com_argv[i], mode, FS_SYSTEM);
+	}
+	else
+	{
+		if (nativename)
+			if (!FS_NativePath(privname, FS_ROOT, nativename, nativesize))
+				return NULL;
+
+		privf = FS_OpenVFS(privname, mode, FS_ROOT);
+	}
+	return privf;
+#undef privname
+}
+vfsfile_t *SSL_OpenPubKey(char *nativename, size_t nativesize)
+{
+#define fullchainname "fullchain.pem"
+#define pubname "cert.pem"
+	vfsfile_t *pubf = NULL;
+	const char *mode = nativename?"wb":"rb";
+	int i = COM_CheckParm("-pubkey");
+	if (i++)
+	{
+		if (nativename)
+			Q_strncpyz(nativename, com_argv[i], nativesize);
+		pubf = FS_OpenVFS(com_argv[i], mode, FS_SYSTEM);
+	}
+	else
+	{
+		if (!pubf && (!nativename || FS_NativePath(fullchainname, FS_ROOT, nativename, nativesize)))
+			pubf = FS_OpenVFS(fullchainname, mode, FS_ROOT);
+		if (!pubf && (!nativename || FS_NativePath(pubname, FS_ROOT, nativename, nativesize)))
+			pubf = FS_OpenVFS(pubname, mode, FS_ROOT);
+	}
+	return pubf;
+#undef pubname
+}
+
 static qboolean SSL_LoadPrivateCert(gnutls_certificate_credentials_t cred)
 {
 	int ret = -1;
 	gnutls_datum_t priv, pub;
-	vfsfile_t *privf = FS_OpenVFS(privname, "rb", FS_ROOT);
-	vfsfile_t *pubf = FS_OpenVFS(pubname, "rb", FS_ROOT);
+	vfsfile_t *privf = SSL_OpenPrivKey(NULL, 0);
+	vfsfile_t *pubf = SSL_OpenPubKey(NULL, 0);
+	const char *hostname = NULL;
+
+	int i = COM_CheckParm("-certhost");
+	if (i)
+		hostname = com_argv[i+1];
 
 	memset(&priv, 0, sizeof(priv));
 	memset(&pub, 0, sizeof(pub));
 
-	if (!privf || !pubf)
+	if ((!privf || !pubf) && hostname)
 	{	//not found? generate a new one.
 		//FIXME: how to deal with race conditions with multiple servers on the same host?
 		//delay till the first connection? we at least write both files at the sameish time.
@@ -861,7 +970,7 @@ static qboolean SSL_LoadPrivateCert(gnutls_certificate_credentials_t cred)
 		char serial[64];
 		const char *errstr;
 		gnutls_pk_algorithm_t privalgo = GNUTLS_PK_RSA;
-		
+
 		if (privf)VFS_CLOSE(privf);privf=NULL;
 		if (pubf)VFS_CLOSE(pubf);pubf=NULL;
 
@@ -885,11 +994,16 @@ static qboolean SSL_LoadPrivateCert(gnutls_certificate_credentials_t cred)
 		qgnutls_x509_crt_set_activation_time(cert, time(NULL)-1);
 		qgnutls_x509_crt_set_expiration_time(cert, time(NULL)+(time_t)10*365*24*60*60);
 		qgnutls_x509_crt_set_serial(cert, serial, strlen(serial));
-		if (qgnutls_x509_crt_set_dn(cert, "CN=localhost", &errstr) < 0)
-			Con_Printf("gnutls_x509_crt_set_dn failed: %s\n", errstr);
-		if (qgnutls_x509_crt_set_issuer_dn(cert, "CN=localhost", &errstr) < 0)
-			Con_Printf("gnutls_x509_crt_set_issuer_dn failed: %s\n", errstr);
-//		qgnutls_x509_crt_set_key_usage(cert, GNUTLS_KEY_KEY_ENCIPHERMENT|GNUTLS_KEY_DATA_ENCIPHERMENT|);
+		if (!hostname)
+			/*qgnutls_x509_crt_set_key_usage(cert, GNUTLS_KEY_DIGITAL_SIGNATURE)*/;
+		else
+		{
+			if (qgnutls_x509_crt_set_dn(cert, va("CN=%s", hostname), &errstr) < 0)
+				Con_Printf("gnutls_x509_crt_set_dn failed: %s\n", errstr);
+			if (qgnutls_x509_crt_set_issuer_dn(cert, va("CN=%s", hostname), &errstr) < 0)
+				Con_Printf("gnutls_x509_crt_set_issuer_dn failed: %s\n", errstr);
+//			qgnutls_x509_crt_set_key_usage(cert, GNUTLS_KEY_KEY_ENCIPHERMENT|GNUTLS_KEY_DATA_ENCIPHERMENT|);
+		}
 		qgnutls_x509_crt_set_key(cert, key);
 
 		/*sign it with our private key*/
@@ -911,31 +1025,29 @@ static qboolean SSL_LoadPrivateCert(gnutls_certificate_credentials_t cred)
 		if (priv.size && pub.size)
 		{
 			char fullname[MAX_OSPATH];
-			privf = FS_OpenVFS(privname, "wb", FS_ROOT);
+			privf = SSL_OpenPrivKey(fullname, sizeof(fullname));
 			if (privf)
 			{
 				VFS_WRITE(privf, priv.data, priv.size);
 				VFS_CLOSE(privf);
-				FS_NativePath(privname, FS_ROOT, fullname, sizeof(fullname));
 				Con_Printf("Wrote %s\n", fullname);
 			}
 //			memset(priv.data, 0, priv.size);
 			(*qgnutls_free)(priv.data);
 			memset(&priv, 0, sizeof(priv));
 
-			pubf = FS_OpenVFS(pubname, "wb", FS_ROOT);
+			pubf = SSL_OpenPubKey(fullname, sizeof(fullname));
 			if (pubf)
 			{
 				VFS_WRITE(pubf, pub.data, pub.size);
 				VFS_CLOSE(pubf);
-				FS_NativePath(pubname, FS_ROOT, fullname, sizeof(fullname));
 				Con_Printf("Wrote %s\n", fullname);
 			}
 			(*qgnutls_free)(pub.data);
 			memset(&pub, 0, sizeof(pub));
 
-			privf = FS_OpenVFS(privname, "rb", FS_ROOT);
-			pubf = FS_OpenVFS(pubname, "rb", FS_ROOT);
+			privf = SSL_OpenPrivKey(NULL, 0);
+			pubf = SSL_OpenPubKey(NULL, 0);
 
 			Con_Printf("Certificate generated\n");
 		}
@@ -966,7 +1078,7 @@ static qboolean SSL_LoadPrivateCert(gnutls_certificate_credentials_t cred)
 			Con_Printf("gnutls_certificate_set_x509_key_mem failed: %i\n", ret);
 	}
 	else
-		Con_Printf("Unable to read/generate cert\n");
+		Con_Printf("Unable to read/generate cert ('-certhost HOSTNAME' commandline arguments to autogenerate one)\n");
 
 	memset(priv.data, 0, priv.size);//just in case. FIXME: we didn't scrub the filesystem code. libc has its own caches etc. lets hope that noone comes up with some way to scrape memory remotely (although if they can inject code then we've lost either way so w/e)
 	if (priv.data)
@@ -979,6 +1091,7 @@ static qboolean SSL_LoadPrivateCert(gnutls_certificate_credentials_t cred)
 
 qboolean SSL_InitGlobal(qboolean isserver)
 {
+	int err;
 	static int initstatus[2];
 	isserver = !!isserver;
 	if (COM_CheckParm("-notls"))
@@ -1014,7 +1127,9 @@ qboolean SSL_InitGlobal(qboolean isserver)
 		qgnutls_certificate_allocate_credentials (&xcred[isserver]);
 
 #ifdef GNUTLS_HAVE_SYSTEMTRUST
-		qgnutls_certificate_set_x509_system_trust (xcred[isserver]);
+		err = qgnutls_certificate_set_x509_system_trust (xcred[isserver]);
+		if (err <= 0)
+			Con_Printf("gnutls_certificate_set_x509_system_trust: error %i.\n", err);
 #else
 		qgnutls_certificate_set_x509_trust_file (xcred[isserver], CAFILE, GNUTLS_X509_FMT_PEM);
 #endif
@@ -1123,10 +1238,8 @@ vfsfile_t *GNUTLS_OpenVFS(const char *hostname, vfsfile_t *source, qboolean isse
 		newf = Z_Malloc(sizeof(*newf));
 	if (!newf)
 	{
-		VFS_CLOSE(source);
 		return NULL;
 	}
-	newf->stream = source;
 	newf->funcs.Close = SSL_CloseFile;
 	newf->funcs.Flush = NULL;
 	newf->funcs.GetLen = SSL_GetLen;
@@ -1146,6 +1259,7 @@ vfsfile_t *GNUTLS_OpenVFS(const char *hostname, vfsfile_t *source, qboolean isse
 		VFS_CLOSE(&newf->funcs);
 		return NULL;
 	}
+	newf->stream = source;
 
 	return &newf->funcs;
 }
@@ -1155,7 +1269,7 @@ int GNUTLS_GetChannelBinding(vfsfile_t *vf, qbyte *binddata, size_t *bindsize)
 	gnutls_datum_t cb;
 	gnutlsfile_t *f = (gnutlsfile_t*)vf;
 	if (vf->Close != SSL_CloseFile)
-		return -1;	//err, not a tls connection.
+		return -1;	//err, not a gnutls connection.
 
 	if (qgnutls_session_channel_binding(f->session, GNUTLS_CB_TLS_UNIQUE, &cb))
 	{	//error of some kind
@@ -1172,7 +1286,84 @@ int GNUTLS_GetChannelBinding(vfsfile_t *vf, qbyte *binddata, size_t *bindsize)
 	}
 }
 
+//crypto: generates a signed blob
+int GNUTLS_GenerateSignature(qbyte *hashdata, size_t hashsize, qbyte *signdata, size_t signsizemax)
+{
+	gnutls_datum_t hash = {hashdata, hashsize};
+	gnutls_datum_t sign = {NULL, 0};
 
+	gnutls_certificate_credentials_t cred;
+	if (Init_GNUTLS())
+	{
+		qgnutls_certificate_allocate_credentials (&cred);
+		if (SSL_LoadPrivateCert(cred))
+		{
+			gnutls_x509_privkey_t xkey;
+			gnutls_privkey_t privkey;
+			qgnutls_privkey_init(&privkey);
+			qgnutls_certificate_get_x509_key(cred, 0, &xkey);
+			qgnutls_privkey_import_x509(privkey, xkey, 0);
+
+			qgnutls_privkey_sign_hash(privkey, GNUTLS_DIG_SHA512, 0, &hash, &sign);
+			qgnutls_privkey_deinit(privkey);
+		}
+		else
+			sign.size = 0;
+		qgnutls_certificate_free_credentials(cred);
+	}
+	else
+		Con_Printf("Unable to init gnutls\n");
+	memcpy(signdata, sign.data, sign.size);
+	return sign.size;
+}
+
+//crypto: verifies a signed blob matches an authority's public cert. windows equivelent https://docs.microsoft.com/en-us/windows/win32/seccrypto/example-c-program-signing-a-hash-and-verifying-the-hash-signature
+enum hashvalidation_e GNUTLS_VerifyHash(qbyte *hashdata, size_t hashsize, const char *authority, qbyte *signdata, size_t signsize)
+{
+	gnutls_datum_t hash = {hashdata, hashsize};
+	gnutls_datum_t sign = {signdata, signsize};
+	int r;
+
+	gnutls_datum_t rawcert;
+#if 1
+	size_t sz;
+	gnutls_pubkey_t pubkey;
+	gnutls_x509_crt_t cert;
+
+	rawcert.data = Auth_GetKnownCertificate(authority, &sz);
+	if (!rawcert.data)
+		return VH_AUTHORITY_UNKNOWN;
+	if (!Init_GNUTLS())
+		return VH_UNSUPPORTED;
+	rawcert.size = sz;
+
+	qgnutls_pubkey_init(&pubkey);
+	qgnutls_x509_crt_init(&cert);
+	qgnutls_x509_crt_import(cert, &rawcert, GNUTLS_X509_FMT_PEM);
+
+	qgnutls_pubkey_import_x509(pubkey, cert, 0);
+#else
+	qgnutls_pubkey_import(pubkey, rawcert, GNUTLS_X509_FMT_PEM);
+#endif
+
+	r = qgnutls_pubkey_verify_hash2(pubkey, GNUTLS_SIGN_RSA_SHA512, 0, &hash, &sign);
+	if (r < 0)
+	{
+		if (r == GNUTLS_E_PK_SIG_VERIFY_FAILED)
+		{
+			Con_Printf("GNUTLS_VerifyHash: GNUTLS_E_PK_SIG_VERIFY_FAILED!\n");
+			return VH_INCORRECT;
+		}
+		else if (r == GNUTLS_E_INSUFFICIENT_SECURITY)
+		{
+			Con_Printf("GNUTLS_VerifyHash: GNUTLS_E_INSUFFICIENT_SECURITY\n");
+			return VH_AUTHORITY_UNKNOWN;	//should probably be incorrect or something, but oh well
+		}
+		return VH_INCORRECT;
+	}
+	else
+		return VH_CORRECT;
+}
 
 #ifdef HAVE_DTLS
 

@@ -120,8 +120,9 @@ extern	int	sv_nailmodel, sv_supernailmodel, sv_playermodel;
 qboolean demonails;
 #endif
 
-static edict_t *csqcent[MAX_EDICTS];
-static int csqcnuments;
+static edict_t **csqcent/*[csqcmaxents]*/;
+static size_t csqcmaxents;
+static size_t csqcnuments;
 
 qboolean SV_AddNailUpdate (edict_t *ent)
 {
@@ -263,6 +264,8 @@ static qboolean SV_AddCSQCUpdate (client_t *client, edict_t *ent)
 	if (!(client->csqcactive))
 		return false;
 
+	if (csqcnuments >= csqcmaxents)
+		Z_ReallocElements((void**)&csqcent, &csqcmaxents, csqcnuments + 1024, sizeof(*csqcent));
 	csqcent[csqcnuments++] = ent;
 
 	return true;
@@ -322,6 +325,9 @@ void SV_EmitCSQCUpdate(client_t *client, sizebuf_t *msg, qbyte svcnumber)
 	csqcmsgbuffer.maxsize = sizeof(messagebuffer);
 	csqcmsgbuffer.packing = msg->packing;
 	csqcmsgbuffer.prim = msg->prim;
+
+	if (sv_csqcdebug.ival)
+		svcnumber = svcfte_csqcentities_sized;
 
 	for (en = 0, entnum = 0; en < csqcnuments; en++, entnum++)
 	{
@@ -419,7 +425,7 @@ void SV_EmitCSQCUpdate(client_t *client, sizebuf_t *msg, qbyte svcnumber)
 				MSG_WriteByte(msg, svcnumber);
 			}
 			SV_EmitDeltaEntIndex(msg, entnum, false, client->fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS);
-			if (sv.csqcdebug)	//optional extra length prefix.
+			if (svcnumber == svcfte_csqcentities_sized)	//optional extra length prefix.
 			{
 				if (!csqcmsgbuffer.cursize)
 					Con_Printf("Warning: empty csqc packet on %s\n", PR_GetString(svprogfuncs, ent->v->classname));
@@ -2367,39 +2373,79 @@ void SV_WritePlayerToClient(sizebuf_t *msg, clstate_t *ent)
 #endif
 
 
-qboolean Cull_Traceline(pvscamera_t *cameras, edict_t *seen)
+qboolean Cull_Traceline(float *timestamp, pvscamera_t *cameras, edict_t *seen)
 {
 	int i;
 	trace_t tr;
-	vec3_t end;
+	vec3_t end, amin, size;
 	int c;
 
 	if (seen->v->solid == SOLID_BSP)
-		return false;	//bsp ents are never culled this way
+		return false;	//bsp ents are never culled this way (typically far too large to care, often with large parts inside walls)
 
-	//stage 1: check against their origin
-	for (c = 0; c < cameras->numents; c++)
+	if (timestamp)
 	{
-		tr.fraction = 1;
-		if (!sv.world.worldmodel->funcs.NativeTrace (sv.world.worldmodel, 1, NULLFRAMESTATE, NULL, cameras->org[c], seen->v->origin, vec3_origin, vec3_origin, false, FTECONTENTS_SOLID, &tr))
-			return false;	//wasn't blocked
-	}
+		int tests;
+		float delay;
 
-	//stage 2: check against their bbox
-	for (c = 0; c < cameras->numents; c++)
-	{
-		for (i = 0; i < 8; i++)
+		//temporal cache
+		//we still need to fire some traces every frame (monte-carlo style), but we don't need to be so desperate as it'll stay visible for a while anyway.
+
+		if (seen->entnum <= sv.allocated_client_slots)
+			tests = 8, delay = 0.2;
+		else
+			tests = 2, delay = 1.0;
+
+		VectorAdd(seen->v->origin, seen->v->mins, amin);
+		VectorSubtract(seen->v->maxs, seen->v->mins, size);
+
+		for (c = 0; c < cameras->numents; c++)
 		{
-			end[0] = seen->v->origin[0] + ((i&1)?seen->v->mins[0]:seen->v->maxs[0]);
-			end[1] = seen->v->origin[1] + ((i&2)?seen->v->mins[1]:seen->v->maxs[1]);
-			end[2] = seen->v->origin[2] + ((i&4)?seen->v->mins[2]+0.1:seen->v->maxs[2]);
+			for (i = 0; i < tests; i++)
+			{
+				end[0] = amin[0] + frandom()*size[0];
+				end[1] = amin[1] + frandom()*size[1];
+				end[2] = amin[2] + frandom()*size[2];
 
+				if (!sv.world.worldmodel->funcs.NativeTrace (sv.world.worldmodel, 1, NULLFRAMESTATE, NULL, cameras->org[c], end, vec3_origin, vec3_origin, false, FTECONTENTS_SOLID, &tr))
+				{
+					*timestamp = sv.time + delay;
+					return false;	//this trace went through, so don't cull
+				}
+			}
+		}
+
+		if (*timestamp >= sv.time)
+			return false;
+		return true;
+	}
+	else
+	{
+		//stage 1: check against their origin
+		for (c = 0; c < cameras->numents; c++)
+		{
 			tr.fraction = 1;
-			if (!sv.world.worldmodel->funcs.NativeTrace (sv.world.worldmodel, 1, NULLFRAMESTATE, NULL, cameras->org[c], end, vec3_origin, vec3_origin, false, FTECONTENTS_SOLID, &tr))
-				return false;	//this trace went through, so don't cull
+			if (!sv.world.worldmodel->funcs.NativeTrace (sv.world.worldmodel, 1, NULLFRAMESTATE, NULL, cameras->org[c], seen->v->origin, vec3_origin, vec3_origin, false, FTECONTENTS_SOLID, &tr))
+				return false;	//wasn't blocked
+		}
+
+		//stage 2: check against their bbox
+		for (c = 0; c < cameras->numents; c++)
+		{
+			for (i = 0; i < 8; i++)
+			{
+				end[0] = seen->v->origin[0] + ((i&1)?seen->v->mins[0]:seen->v->maxs[0]);
+				end[1] = seen->v->origin[1] + ((i&2)?seen->v->mins[1]:seen->v->maxs[1]);
+				end[2] = seen->v->origin[2] + ((i&4)?seen->v->mins[2]+0.1:seen->v->maxs[2]);
+
+				tr.fraction = 1;
+				if (!sv.world.worldmodel->funcs.NativeTrace (sv.world.worldmodel, 1, NULLFRAMESTATE, NULL, cameras->org[c], end, vec3_origin, vec3_origin, false, FTECONTENTS_SOLID, &tr))
+					return false;	//this trace went through, so don't cull
+			}
 		}
 	}
 
+	//not visible
 	return true;
 }
 
@@ -2707,7 +2753,7 @@ void SV_WritePlayersToClient (client_t *client, client_frame_t *frame, edict_t *
 			if (!((int)clent->xv->dimension_see & ((int)ent->xv->dimension_seen | (int)ent->xv->dimension_ghost)))
 				continue;	//not in this dimension - sorry...
 			if (cameras && (sv_cullplayers_trace.value || sv_cullentities_trace.value))
-				if (Cull_Traceline(cameras, ent))
+				if (Cull_Traceline(NULL, cameras, ent))
 					continue;
 		}
 
@@ -3443,14 +3489,13 @@ void SV_Snapshot_BuildStateQ1(entity_state_t *state, edict_t *ent, client_t *cli
 					state->effects |= EF_GREEN;
 				}
 			}
-			else
+
+			if (state->number <= sv.allocated_client_slots) // clear only client ents
 			{
 				if (state->effects & NQEF_NODRAW)
 					state->modelindex = 0;
-			}
-
-			if (state->number <= sv.allocated_client_slots) // clear only client ents
 				state->effects &= ~ (QWEF_FLAG1|QWEF_FLAG2);
+			}
 
 			if ((state->effects & EF_DIMLIGHT) && !(state->effects & (EF_RED|EF_BLUE)))
 			{
@@ -3620,6 +3665,9 @@ void SV_Snapshot_BuildQ1(client_t *client, packet_entities_t *pack, pvscamera_t 
 		limit = e+1;
 	}
 
+	if (sv_cullentities_trace.ival && client->lastseen_count < limit)
+		Z_ReallocElements((void**)&client->lastseen_time, &client->lastseen_count, limit, sizeof(client->lastseen_time));
+
 	for ( ; e<limit ; e++)
 	{
 		ent = EDICT_NUM_PB(svprogfuncs, e);
@@ -3771,16 +3819,18 @@ void SV_Snapshot_BuildQ1(client_t *client, packet_entities_t *pack, pvscamera_t 
 			}
 
 		//QSG_DIMENSION_PLANES
-		if (client->edict)
-			if (!((int)client->edict->xv->dimension_see & ((int)ent->xv->dimension_seen | (int)ent->xv->dimension_ghost)))
-				continue;	//not in this dimension - sorry...
+		if (clent)	//don't crash
+			if (!((int)clent->xv->dimension_see & ((int)ent->xv->dimension_seen | (int)ent->xv->dimension_ghost)))	//not able to see it.
+				if (c >= maxc)	//always network the player entity though
+					continue;
 
 
 		if (cameras && tracecullent && !((unsigned int)ent->v->effects & (EF_DIMLIGHT|EF_BLUE|EF_RED|EF_BRIGHTLIGHT|EF_BRIGHTFIELD|EF_NODEPTHTEST)))
 		{	//more expensive culling
-			if ((e <= sv.allocated_client_slots && sv_cullplayers_trace.value) || sv_cullentities_trace.value)
-				if (Cull_Traceline(cameras, tracecullent))
-					continue;
+			if (!(pvsflags & PVSF_MODE_MASK))
+				if ((e <= sv.allocated_client_slots && sv_cullplayers_trace.value) || sv_cullentities_trace.value)
+					if (Cull_Traceline(e < client->lastseen_count?&client->lastseen_time[e]:NULL, cameras, tracecullent))
+						continue;
 		}
 
 		//EXT_CSQC
@@ -3863,7 +3913,7 @@ void SV_Snapshot_BuildQ1(client_t *client, packet_entities_t *pack, pvscamera_t 
 	}
 }
 
-void SV_AddCameraEntity(pvscamera_t *cameras, edict_t *ent, vec3_t viewofs)
+void SV_AddCameraEntity(pvscamera_t *cameras, edict_t *ent, pvec3_t viewofs)
 {
 	int i;
 	vec3_t org;

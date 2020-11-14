@@ -116,6 +116,7 @@ FTEPFNGLBINDATTRIBLOCATIONARBPROC	qglBindAttribLocationARB;
 FTEPFNGLGETATTRIBLOCATIONARBPROC	qglGetAttribLocationARB;
 FTEPFNGLGETUNIFORMLOCATIONARBPROC	qglGetUniformLocationARB;
 FTEPFNGLUNIFORMMATRIXPROC			qglUniformMatrix4fvARB;
+FTEPFNGLUNIFORMMATRIXPROC			qglUniformMatrix3fvARB;
 FTEPFNGLUNIFORM4FARBPROC			qglUniform4fARB;
 FTEPFNGLUNIFORM4FVARBPROC			qglUniform4fvARB;
 FTEPFNGLUNIFORM3FARBPROC			qglUniform3fARB;
@@ -221,12 +222,11 @@ void (APIENTRY *qglDeleteBuffersARB)(GLsizei n, GLuint* ids);
 void (APIENTRY *qglBindBufferARB)(GLenum target, GLuint id);
 void (APIENTRY *qglBufferDataARB)(GLenum target, GLsizei size, const void* data, GLenum usage);
 void (APIENTRY *qglBufferSubDataARB)(GLenum target, GLint offset, GLsizei size, void* data);
-void *(APIENTRY *qglMapBufferARB)(GLenum target, GLenum access);
-GLboolean (APIENTRY *qglUnmapBufferARB)(GLenum target);
-
-void *(APIENTRY *qglMapBufferRange)(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access);
 #endif
 
+void *(APIENTRY *qglMapBufferARB)(GLenum target, GLenum access);
+GLboolean (APIENTRY *qglUnmapBufferARB)(GLenum target);
+void *(APIENTRY *qglMapBufferRange)(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access);
 void (APIENTRY *qglBufferStorage)(GLenum target, GLsizeiptr size, const GLvoid *data, GLbitfield flags);
 
 void (APIENTRY *qglTexStorage2D)(GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height);		//gl4.2
@@ -965,12 +965,12 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 		qglMapBufferARB = NULL;
 		qglUnmapBufferARB = NULL;
 	}
+#endif
 
 	//ARB_map_buffer_range: core in gl3.0/gles3.0, the extension is backported, and thus no ARB postfix on functions.
-	qglMapBufferRange = (void *)getglext("glMapBufferRange");
+	qglMapBufferRange = qglUnmapBufferARB?(void *)getglext("glMapBufferRange"):NULL;
 
 	if (qglBufferSubDataARB && qglMapBufferRange)
-#endif
 	{
 		if ((!gl_config.gles && gl_config.glversion >= 4.4) || GL_CheckExtension("GL_ARB_buffer_storage"))
 			if (gl_immutable_buffers.ival)
@@ -1051,6 +1051,7 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 		qglGetAttribLocationARB		= (void *)getglext("glGetAttribLocation");
 		qglGetUniformLocationARB	= (void *)getglext("glGetUniformLocation");
 		qglUniformMatrix4fvARB		= (void *)getglext("glUniformMatrix4fv");
+		qglUniformMatrix3fvARB		= (void *)getglext("glUniformMatrix3fv");
 		qglUniformMatrix3x4fv		= (void *)getglext("glUniformMatrix3x4fv");
 		qglUniformMatrix4x3fv		= (void *)getglext("glUniformMatrix4x3fv");
 		qglUniform4fARB				= (void *)getglext("glUniform4f");
@@ -1104,6 +1105,7 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 		qglDisableVertexAttribArray	= (void *)getglext("glDisableVertexAttribArrayARB");
 		qglGetUniformLocationARB	= (void *)getglext("glGetUniformLocationARB");
 		qglUniformMatrix4fvARB		= (void *)getglext("glUniformMatrix4fvARB");
+		qglUniformMatrix3fvARB		= (void *)getglext("glUniformMatrix3fvARB");
 		qglUniformMatrix3x4fv		= (void *)getglext("glUniformMatrix3x4fvARB");
 		qglUniformMatrix4x3fv		= (void *)getglext("glUniformMatrix4x3fvARB");
 		qglUniform4fARB				= (void *)getglext("glUniform4fARB");
@@ -1400,7 +1402,9 @@ static const char *glsl_hdrs[] =
 				"#define SPECULAR_BASE_POW 32.0\n"
 				"#define SPECULAR_BASE_MUL 1.0\n"
 			"#endif\n"
-			"#define FTE_SPECULAR_EXPONENT (SPECULAR_BASE_POW*float(SPECEXP))\n"
+			"#ifndef FTE_SPECULAR_EXPONENT\n"
+				"#define FTE_SPECULAR_EXPONENT (SPECULAR_BASE_POW*float(SPECEXP))\n"
+			"#endif\n"
 			"#ifndef SPECMUL\n"
 				"#define SPECMUL 1.0\n"
 			"#endif\n"
@@ -1514,12 +1518,17 @@ static const char *glsl_hdrs[] =
 				"#endif\n"
 				"uniform mat4 m_invviewprojection;"
 				"uniform mat4 m_invmodelviewprojection;"
+				"uniform mat3 m_invmodelview;"
 
 				/*viewer properties*/
 				"uniform vec3 v_eyepos;"
 				"uniform vec4 w_fog[2];\n"
 				"#define w_fogcolour	w_fog[0].rgb\n"
+				"#ifdef FOG\n"
 				"#define w_fogalpha		w_fog[0].a\n"
+				"#else\n"
+				"#define w_fogalpha		0.0\n"
+				"#endif\n"
 				"#define w_fogdensity	w_fog[1].x\n"
 				"#define w_fogdepthbias	w_fog[1].y\n"
 				"uniform vec4 w_user[16];\n"
@@ -1797,7 +1806,7 @@ static const char *glsl_hdrs[] =
 						"return vec4(fog3(regularcolour.rgb), 1.0) * regularcolour.a;\n"
 					"}\n"
 					"vec4 fog4additive(in vec4 regularcolour)"
-					"{"
+					"{"	//fog function for additive blends
 						"float z = w_fogdensity * gl_FragCoord.z / gl_FragCoord.w;\n"
 						"z = max(0.0,z-w_fogdepthbias);\n"
 						"#if #include \"cvar/r_fog_exp2\"\n"
@@ -1808,7 +1817,7 @@ static const char *glsl_hdrs[] =
 						"return regularcolour * vec4(fac, fac, fac, 1.0);\n"
 					"}\n"
 					"vec4 fog4blend(in vec4 regularcolour)"
-					"{"
+					"{"	//fog function for regular alpha blends (uses the blend for fading, to avoid fighting the surface behind)
 						"float z = w_fogdensity * gl_FragCoord.z / gl_FragCoord.w;\n"
 						"z = max(0.0,z-w_fogdepthbias);\n"
 						"#if #include \"cvar/r_fog_exp2\"\n"
@@ -1819,6 +1828,7 @@ static const char *glsl_hdrs[] =
 						"return regularcolour * vec4(1.0, 1.0, 1.0, fac);\n"
 					"}\n"
 				"#else\n"
+					"#define w_fogalpha		0.0\n"
 					/*don't use macros for this - mesa bugs out*/
 					"vec3 fog3(in vec3 regularcolour) { return regularcolour; }\n"
 					"vec3 fog3additive(in vec3 regularcolour) { return regularcolour; }\n"
@@ -2309,7 +2319,7 @@ static GLhandleARB GLSlang_CreateShader (program_t *prog, const char *name, int 
 			);
 		}
 
-		if (prog)
+		if (prog && !prog->explicitsyms)
 		{	//for compat with our vulkan processor, which injects samplers in order to control layouts.
 			const char *defaultsamplernames[] =
 			{
@@ -2399,41 +2409,44 @@ static GLhandleARB GLSlang_CreateShader (program_t *prog, const char *name, int 
 				);
 		}
 
-		if (gl_config_nofixedfunc)
+		if (!prog || !prog->explicitsyms)
 		{
-			GLSlang_GenerateInternal(&glsl,
-					"attribute vec3 v_position1;\n"
-					"#ifdef FRAMEBLEND\n"
-					"attribute vec3 v_position2;\n"
-					"uniform vec2 e_vblend;\n"
-					"#define v_position ((v_position1*e_vblend.x)+(v_position2*e_vblend.y))\n"
-					"#else\n"
-					"#define v_position v_position1\n"
-					"#endif\n"
-					"uniform mat4 m_modelviewprojection;\n"
+			if (gl_config_nofixedfunc)
+			{
+				GLSlang_GenerateInternal(&glsl,
+						"attribute vec3 v_position1;\n"
+						"#ifdef FRAMEBLEND\n"
+							"attribute vec3 v_position2;\n"
+							"uniform vec2 e_vblend;\n"
+							"#define v_position ((v_position1*e_vblend.x)+(v_position2*e_vblend.y))\n"
+						"#else\n"
+							"#define v_position v_position1\n"
+						"#endif\n"
+						"uniform mat4 m_modelviewprojection;\n"
 #if 1//def FTE_TARGET_WEB
-					//IE is buggy
-					"vec4 ftetransform() { return m_modelviewprojection * vec4(v_position, 1.0); }\n"
+						//IE is buggy
+						"vec4 ftetransform() { return m_modelviewprojection * vec4(v_position, 1.0); }\n"
 #else
-					"#define ftetransform() (m_modelviewprojection * vec4(v_position, 1.0))\n"
+						"#define ftetransform() (m_modelviewprojection * vec4(v_position, 1.0))\n"
 #endif
-				);
-		}
-		else
-		{
-			GLSlang_GenerateInternal(&glsl,
-					"#ifdef FRAMEBLEND\n"
-					"attribute vec3 v_position2;\n"
-					"uniform vec2 e_vblend;\n"
-					"#define v_position (gl_Vertex.xyz*e_vblend.x+v_position2*e_vblend.y)\n"
-					"uniform mat4 m_modelviewprojection;\n"
-					"#define ftetransform() (m_modelviewprojection * vec4(v_position, 1.0))\n"
-					"#else\n"
-					"#define v_position gl_Vertex.xyz\n"
-					"uniform mat4 m_modelviewprojection;\n"
-					"#define ftetransform ftransform\n"
-					"#endif\n"
-				);
+					);
+			}
+			else
+			{
+				GLSlang_GenerateInternal(&glsl,
+						"#ifdef FRAMEBLEND\n"
+							"attribute vec3 v_position2;\n"
+							"uniform vec2 e_vblend;\n"
+							"#define v_position (gl_Vertex.xyz*e_vblend.x+v_position2*e_vblend.y)\n"
+							"uniform mat4 m_modelviewprojection;\n"
+							"#define ftetransform() (m_modelviewprojection * vec4(v_position, 1.0))\n"
+						"#else\n"
+							"#define v_position gl_Vertex.xyz\n"
+							"uniform mat4 m_modelviewprojection;\n"
+							"#define ftetransform ftransform\n"
+						"#endif\n"
+					);
+			}
 		}
 
 		break;
@@ -2622,8 +2635,9 @@ static GLhandleARB GLSlang_FinishShader(GLhandleARB shader, const char *name, GL
 	return shader;
 }
 
-GLhandleARB GLSlang_CreateProgramObject (const char *name, GLhandleARB vert, GLhandleARB cont, GLhandleARB eval, GLhandleARB geom, GLhandleARB frag)
+GLhandleARB GLSlang_CreateProgramObject (program_t *prog, const char *name, GLhandleARB vert, GLhandleARB cont, GLhandleARB eval, GLhandleARB geom, GLhandleARB frag)
 {
+	int i;
 	GLhandleARB	program;
 
 	program = qglCreateProgramObjectARB();
@@ -2633,36 +2647,20 @@ GLhandleARB GLSlang_CreateProgramObject (const char *name, GLhandleARB vert, GLh
 	if (eval) qglAttachObjectARB(program, eval);
 	if (frag) qglAttachObjectARB(program, frag);
 
-	qglBindAttribLocationARB(program, VATTR_VERTEX1, "v_position1");
-	qglBindAttribLocationARB(program, VATTR_COLOUR, "v_colour");
-	qglBindAttribLocationARB(program, VATTR_TEXCOORD, "v_texcoord");
-	qglBindAttribLocationARB(program, VATTR_LMCOORD, "v_lmcoord");
-	qglBindAttribLocationARB(program, VATTR_NORMALS, "v_normal");
-	qglBindAttribLocationARB(program, VATTR_SNORMALS, "v_svector");
-	qglBindAttribLocationARB(program, VATTR_TNORMALS, "v_tvector");
-	qglBindAttribLocationARB(program, VATTR_VERTEX2, "v_position2");
-
-	//the following MAY not be valid in gles2.
-	if (gl_config.maxattribs > VATTR_BONENUMS)
-		qglBindAttribLocationARB(program, VATTR_BONENUMS, "v_bone");
-	if (gl_config.maxattribs > VATTR_BONEWEIGHTS)
-		qglBindAttribLocationARB(program, VATTR_BONEWEIGHTS, "v_weight");
-#if MAXRLIGHTMAPS > 1
-	if (gl_config.maxattribs > VATTR_COLOUR2)
-		qglBindAttribLocationARB(program, VATTR_COLOUR2, "v_colour2");
-	if (gl_config.maxattribs > VATTR_COLOUR3)
-		qglBindAttribLocationARB(program, VATTR_COLOUR3, "v_colour3");
-	if (gl_config.maxattribs > VATTR_COLOUR4)
-		qglBindAttribLocationARB(program, VATTR_COLOUR4, "v_colour4");
+	for (i = 0; shader_attr_names[i].name; i++)
+	{
+		if (gl_config.maxattribs > shader_attr_names[i].ptype)
+		{
+#ifdef __ANDROID__ //EMILE, fix bug
+			if (!(!prog || !prog->explicitsyms))
+#else
+			if (prog->explicitsyms))
 #endif
-#if MAXRLIGHTMAPS > 1
-	if (gl_config.maxattribs > VATTR_LMCOORD2)
-		qglBindAttribLocationARB(program, VATTR_LMCOORD2, "v_lmcoord2");
-	if (gl_config.maxattribs > VATTR_LMCOORD3)
-		qglBindAttribLocationARB(program, VATTR_LMCOORD3, "v_lmcoord3");
-	if (gl_config.maxattribs > VATTR_LMCOORD4)
-		qglBindAttribLocationARB(program, VATTR_LMCOORD4, "v_lmcoord4");
-#endif
+				qglBindAttribLocationARB(program, shader_attr_names[i].ptype, va("fte_%s", shader_attr_names[i].name));
+			else
+				qglBindAttribLocationARB(program, shader_attr_names[i].ptype, shader_attr_names[i].name);
+		}
+	}
 
 	qglLinkProgramARB(program);
 	return program;
@@ -2758,7 +2756,7 @@ union programhandle_u GLSlang_CreateProgram(program_t *prog, const char *name, i
 	if (!vs || !fs)
 		ret.glsl.handle = 0;
 	else
-		ret.glsl.handle = GLSlang_CreateProgramObject(name, vs, cs, es, gs, fs);
+		ret.glsl.handle = GLSlang_CreateProgramObject(prog, name, vs, cs, es, gs, fs);
 	//delete ignores 0s.
 	if (vs) qglDeleteShaderObject_(vs);
 	if (gs) qglDeleteShaderObject_(gs);
@@ -2886,9 +2884,9 @@ static void GLSlang_DeleteProg(program_t *prog)
 	}
 }
 
-static void GLSlang_ProgAutoFields(program_t *prog, struct programpermu_s *pp, cvar_t **cvars, char **cvarnames, int *cvartypes)
+static void GLSlang_ProgAutoFields(program_t *prog, struct programpermu_s *pp, char **cvarnames, int *cvartypes)
 {
-	unsigned int i;
+	unsigned int i,j;
 	int uniformloc;
 	char tmpname[128];
 	int maxparms = 0;
@@ -2897,7 +2895,10 @@ static void GLSlang_ProgAutoFields(program_t *prog, struct programpermu_s *pp, c
 	GLSlang_UseProgram(pp->h.glsl.handle);
 	for (i = 0; shader_attr_names[i].name; i++)
 	{
-		uniformloc = qglGetAttribLocationARB(pp->h.glsl.handle, shader_attr_names[i].name);
+		if (prog->explicitsyms)
+			uniformloc = qglGetAttribLocationARB(pp->h.glsl.handle, va("fte_%s", shader_attr_names[i].name));
+		else
+			uniformloc = qglGetAttribLocationARB(pp->h.glsl.handle, shader_attr_names[i].name);
 		if (uniformloc != -1)
 		{
 			if (shader_attr_names[i].ptype != uniformloc)
@@ -2933,22 +2934,53 @@ static void GLSlang_ProgAutoFields(program_t *prog, struct programpermu_s *pp, c
 	/*FIXME: enumerate cvars automatically instead*/
 	for (i = 0; cvarnames[i]; i++)
 	{
-		if (!cvars[i])
-			continue;
-
-		Q_snprintfz(tmpname, sizeof(tmpname), "cvar_%s", cvarnames[i]);
-		uniformloc = qglGetUniformLocationARB(pp->h.glsl.handle, tmpname);
-		if (uniformloc >= 0)
+		if (cvartypes[i] <= SP_CONST4F)
 		{
-			if (pp->numparms >= maxparms)
+			char *t;
+			Q_snprintfz(tmpname, sizeof(tmpname), "%s", cvarnames[i]);
+			t = strchr(tmpname, '=');
+			if (t) *t++=0;
+			uniformloc = qglGetUniformLocationARB(pp->h.glsl.handle, tmpname);
+			if (uniformloc >= 0)
 			{
-				maxparms = pp->numparms?pp->numparms * 2:8;
-				pp->parm = BZ_Realloc(pp->parm, sizeof(*pp->parm) * maxparms);
+				if (pp->numparms >= maxparms)
+				{
+					maxparms = pp->numparms?pp->numparms * 2:8;
+					pp->parm = BZ_Realloc(pp->parm, sizeof(*pp->parm) * maxparms);
+				}
+				pp->parm[pp->numparms].type = cvartypes[i];
+				for(j = 0; j < 4; j++)
+				{
+					t = COM_Parse(t);
+					if (cvartypes[i] >= SP_CONST1F && cvartypes[i] <= SP_CONST4F)
+						pp->parm[pp->numparms].fval[j] = atoi(com_token);
+					else
+						pp->parm[pp->numparms].ival[j] = atoi(com_token);
+				}
+				pp->parm[pp->numparms].handle = uniformloc;
+				pp->numparms++;
 			}
-			pp->parm[pp->numparms].type = cvartypes[i];
-			pp->parm[pp->numparms].pval = cvars[i];
-			pp->parm[pp->numparms].handle = uniformloc;
-			pp->numparms++;
+		}
+		else
+		{
+			cvar_t *ref = Cvar_FindVar(cvarnames[i]);
+			if (!ref)
+				continue;	//shouldn't happen...
+
+			Q_snprintfz(tmpname, sizeof(tmpname), "cvar_%s", cvarnames[i]);
+			uniformloc = qglGetUniformLocationARB(pp->h.glsl.handle, tmpname);
+			if (uniformloc >= 0)
+			{
+				if (pp->numparms >= maxparms)
+				{
+					maxparms = pp->numparms?pp->numparms * 2:8;
+					pp->parm = BZ_Realloc(pp->parm, sizeof(*pp->parm) * maxparms);
+				}
+				pp->parm[pp->numparms].type = cvartypes[i];
+				pp->parm[pp->numparms].pval = ref;
+				pp->parm[pp->numparms].handle = uniformloc;
+				pp->numparms++;
+			}
 		}
 	}
 
@@ -3413,9 +3445,6 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 		qglTexCoord1f		= (void *)getglcore("glTexCoord1f");
 		qglTexCoord2f		= (void *)getglcore("glTexCoord2f");
 		qglTexCoord2fv		= (void *)getglcore("glTexCoord2fv");
-		qglTexEnvf			= (void *)getglcore("glTexEnvf");
-		qglTexEnvfv			= (void *)getglcore("glTexEnvfv");
-		qglTexEnvi			= (void *)getglcore("glTexEnvi");
 		qglTexGeni			= (void *)getglcore("glTexGeni");
 		qglTexGenfv			= (void *)getglcore("glTexGenfv");
 		qglTranslatef		= (void *)getglcore("glTranslatef");
@@ -3437,6 +3466,12 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 		qglNewList		= (void*)getglcore("glNewList");
 		qglEndList		= (void*)getglcore("glEndList");
 		qglCallList		= (void*)getglcore("glCallList");
+	}
+	if (!gl_config.gles || (gl_config.gles && gl_config.glversion<2))
+	{
+		qglTexEnvf			= (void *)getglcore("glTexEnvf");
+		qglTexEnvfv			= (void *)getglcore("glTexEnvfv");
+		qglTexEnvi			= (void *)getglcore("glTexEnvi");
 	}
 	if (!qglColor4fv)
 		qglColor4fv = GL_Color4fv_Emul;	//can be missing in gles1
@@ -3854,7 +3889,7 @@ rendererinfo_t openglrendererinfo = {
 	GLBE_Init,
 	GLBE_GenBrushModelVBO,
 	GLBE_ClearVBO,
-	GLBE_UploadAllLightmaps,
+	GLBE_UpdateLightmaps,
 	GLBE_SelectEntity,
 	GLBE_SelectDLight,
 	GLBE_Scissor,

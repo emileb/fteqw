@@ -697,14 +697,13 @@ void M_Menu_Audio_f (void)
 	menubulk_t bulk[] = {
 		MB_REDTEXT("Sound Options", true),
 		MB_TEXT("^Ue080^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue082", true),
-		MB_SPACING(8),
 		MB_CONSOLECMD("Restart Sound", "snd_restart\n", "Restart audio systems and apply set options."),
 		MB_SPACING(4),
 		MB_COMBOCVAR("Output Device", snd_device, (const char**)info->outdevdescs, (const char**)info->outdevnames, "Choose which audio driver and device to use."),
 		MB_SLIDER("Volume", volume, 0, 1, 0.1, NULL),
 		MB_COMBOCVAR("Speaker Setup", snd_speakers, speakeroptions, speakervalues, NULL),
 		MB_COMBOCVAR("Frequency", snd_khz, soundqualityoptions, soundqualityvalues, NULL),
-		MB_CHECKBOXCVAR("Low Quality (8-bit)", loadas8bit, 0),
+		MB_CHECKBOXCVAR("Low Quality (8-bit)", snd_loadas8bit, 0),
 		MB_CHECKBOXCVAR("Flip Speakers", snd_leftisright, 0),
 		MB_SLIDER("Mixahead", _snd_mixahead, 0, 1, 0.05, NULL),
 		MB_CHECKBOXCVAR("Disable All Sounds", nosound, 0),
@@ -796,7 +795,7 @@ void M_Menu_Particles_f (void)
 		"highfps",
 		"spikeset",
 		"spikeset tsshaft",
-		"spikeset high tsshaft",
+		"high tsshaft",
 		"minimal",
 		NULL
 	};
@@ -895,6 +894,7 @@ const char *presetexec[] =
 	"seta r_drawflame 0;"
 	"seta r_waterstyle 1;"
 	"seta r_lavastyle 1;"		//defer to water
+	"seta r_fog_cullentities 2;"
 //	"seta r_slimestyle \"\";"	//defer to water
 	"seta r_coronas 0;"
 	"seta r_shadow_realtime_dlight 0;"
@@ -907,6 +907,7 @@ const char *presetexec[] =
 	"seta r_replacemodels \"\";"
 	"seta r_waterwarp 0;"
 	"seta r_lightstylesmooth 0;"
+	"seta r_lightstylespeed 0;"
 	"seta r_part_density 0.25;"
 	"seta cl_nolerp 1;"
 	"seta r_lerpmuzzlehack 0;"
@@ -925,6 +926,7 @@ const char *presetexec[] =
 	"seta r_graphics 1;"
 	"seta r_renderscale 1;"
 	"seta gl_texture_anisotropic_filtering 0;"
+	// end '286'
 
 	, // fast options (for deathmatch)
 	"gl_texturemode ln;"
@@ -944,8 +946,10 @@ const char *presetexec[] =
 	"r_lavastyle 1;"
 	"r_nolightdir 0;"
 	"seta gl_simpleitems 0;"
+	// end fast
 
 	, //quakespasm-esque options (for singleplayer faithful).
+	"gl_texturemode2d l.l;"
 	"r_part_density 1;"
 	"gl_polyblend 1;"
 	"r_dynamic 2;"
@@ -957,6 +961,8 @@ const char *presetexec[] =
 	"v_gunkick 1;"
 	"cl_rollangle 2.0;"
 	"cl_bob 0.02;"
+	"r_fog_cullentities 1;"
+	"r_lightstylespeed 10;"
 	"vid_hardwaregamma 1;"		//auto hardware gamma, for fast fullscreen and usable windowed.
 	"r_part_classic_expgrav 1;"	//vanillaery
 	"r_part_classic_opaque 1;"
@@ -969,6 +975,7 @@ const char *presetexec[] =
 	"seta cl_deadbodyfilter 0;"
 	"gl_texture_anisotropic_filtering 4;"
 	"cl_fullpitch 1;maxpitch 90;seta minpitch -90;"	//QS has cheaty viewpitch range. some maps require it.
+	// end spasm
 
 	, //vanilla-esque options (for purists).
 	"cl_fullpitch 0;maxpitch \"\";seta minpitch \"\";"	//quakespasm is not vanilla
@@ -982,6 +989,7 @@ const char *presetexec[] =
 	"gl_affinemodels 1;"
 	"r_softwarebanding 1;"		//ugly software banding.
 	"r_part_classic_square 1;"	//blocky baby!
+	// end vanilla
 
 	, // normal (faithful) options, but with content replacement thrown in
 //#ifdef MINIMAL
@@ -1011,6 +1019,7 @@ const char *presetexec[] =
 	"r_nolerp 0;"
 	"r_noframegrouplerp 0;"
 	"cl_fullpitch 1;maxpitch 90;seta minpitch -90;"
+	//end normal
 
 	, // nice options
 //	"r_stains 0.75;"
@@ -1029,6 +1038,7 @@ const char *presetexec[] =
 //	"gl_detail 1;"
 	"r_lightstylesmooth 1;"
 	"r_deluxemapping 2;"
+	//end 'nice'
 
 	, // realtime options
 	"r_bloom 1;"
@@ -1039,6 +1049,117 @@ const char *presetexec[] =
 	"r_shadow_realtime_world 1;"
 	"gl_texture_anisotropic_filtering 16;"
 	"vid_hardwaregamma 4;"	//scene gamma
+	//end 'realtime'
+};
+
+struct
+{
+	const char *name;
+	const char *desc;
+	const char *settings;
+} builtinpresets[] =
+{
+	{	"hdr",
+		"Don't let colour depth stop you!",
+
+		"set vid_srgb 2\n"
+		"set r_hdr_irisadaptation 1\n"
+	},
+	{	"shib",
+		"Performance optimisations for large/detailed maps.",
+
+		"if r_dynamic >= 1\n"
+		"{\n"	//fake it anyway.
+			"set r_shadow_realtime_dlight 1\n"
+			"set r_shadow_realtime_dlight_shadows 0\n"
+			"set r_dynamic 0\n"
+		"}\n"
+		"set r_temporalscenecache 1\n"	//the main speedup.
+		"set r_lightstylespeed 0\n"		//FIXME: we shouldn't need this, but its too stuttery without.
+		"set sv_autooffload 1\n"		//Needs polish still.
+		"set gl_pbolightmaps 1\n"		//FIXME: this needs to be the default eventually.
+	},
+	{	"qw",
+		"Enable QuakeWorld-isms, for better gameplay.",
+
+		"set sv_nqplayerphysics 0\n"
+		"set sv_gameplayfix_multiplethinks 1\n"
+	},
+	{	"nq"
+		"Disable QuakeWorld-isms, for nq mod compat.",
+
+		"set sv_nqplayerphysics 1\n"
+		"set sv_gameplayfix_multiplethinks 0\n"
+	},
+
+	{	"dp",
+		"Reconfigures FTE to mimic DP for compat reasons.",
+
+		"if $server then echo Be sure to restart your server\n"
+
+		"fps_preset nq\n"
+		//these are for smc+derived mods
+		"sv_listen_dp 1\n"					//awkward, but forces the server to load the effectinfo.txt in advance.
+		"sv_bigcoords 1\n"					//for viewmodel lep precision (would be better to use csqc)
+		"r_particledesc \"effectinfo high\"\n" //blurgh.
+		"dpcompat_noretouchground 1\n"		//don't call touch functions on entities that already appear onground. this also changes the order that the onground flag is set relative to touch functions.
+		"cl_nopred 1\n"						//DP doesn't predict by default, and DP mods have a nasty habit of clearing .solid values during prethinks, which screws up prediction. so play safe.
+		"r_dynamic 0\nr_shadow_realtime_dlight 1\n" //fte has separate cvars for everything. which kinda surprises people and makes stuff twice as bright as it should be.
+		"r_coronas_intensity 0.25\n"
+		"con_logcenterprint 0\n"			//kinda annoying....
+		"scr_fov_mode 4\n"					//for fairer framerate comparisons
+
+		//general compat stuff
+		"dpcompat_console 1\n"				//
+		"dpcompat_findradiusarealinks 1\n"	//faster findradiuses (but that require things are setorigined properly)
+		"dpcompat_makeshitup 2\n"			//flatten shaders to a single pass, then add new specular etc passes.
+		//"dpcompat_nopremulpics 1\n"			//don't use premultiplied alpha (solving issues with compressed image formats)
+		"dpcompat_psa_ungroup 1\n"			//don't use framegroups with psk models at all.
+		"dpcompat_set 1\n"					//handle 3-arg sets differently
+		"dpcompat_stats 1\n"				//truncate float stats
+		"dpcompat_strcat_limit 16383\n"		//xonotic compat. maximum length of strcat strings.
+
+//		"sv_listen_dp 1\nsv_listen_nq 0\nsv_listen_qw 0\ncl_loopbackprotocol dpp7\ndpcompat_nopreparse 1\n"
+	},
+
+	{	"tenebrae",
+		"Reconfigures FTE to mimic Tenebrae for compat/style reasons.",
+		//for the luls. combine with the tenebrae mod for maximum effect.
+		"fps_preset nq\n"
+		"set r_shadow_realtime_world 1\n"
+		"set r_shadow_realtime_dlight 1\n"
+		"set r_shadow_bumpscale_basetexture 4\n"
+		"set r_shadow_shadowmapping 0\n"
+		"set gl_specular 1\n"
+		"set gl_specular_power 16\n"
+		"set gl_specular_fallback 1\n"
+		"set mod_litsprites_force 1\n"
+		"set r_nolerp 1\n"	//well, that matches tenebrae. for the luls, right?
+	},
+
+	{	"timedemo",
+		"Reconfigure some stuff to get through timedemos really fast. Some people might consider this cheating.",
+		//some extra things to pwn timedemos.
+		"fps_preset fast\n"
+		"set r_renderscale 1\n"
+		"set contrast 1\n"
+		"set gamma 1\n"
+		"set brightness 0\n"
+		"set scr_autoid 0\n"
+		"set scr_autoid_team 0\n"
+		"set r_dynamic 0\n"
+		"set sbar_teamstatus 2\n"
+		"set gl_polyblend 0\n"
+#if 1
+		//these are cheaty settings.
+		"set gl_flashblend 0\n"
+		"set cl_predict_players 0\n"	//very cheaty. you won't realise its off, but noone would disable it for actual play.
+#else
+		//to make things fair
+		"set gl_flashblend 1\n"
+		"set r_part_density 1\n"
+#endif
+	},
 };
 
 typedef struct fpsmenuinfo_s
@@ -1046,18 +1167,21 @@ typedef struct fpsmenuinfo_s
 	menucombo_t *preset;
 } fpsmenuinfo_t;
 
-static void ApplyPreset (int presetnum)
+static void ApplyPreset (int presetnum, qboolean doreload)
 {
 	int i;
 	//this function is written backwards, to ensure things work properly in configs etc.
 
 	// TODO: work backwards and only set cvars once
-	Cbuf_InsertText("\nfs_restart\nvid_reload\n", RESTRICT_LOCAL, true);
+	if (doreload)
+	{
+		forcesaveprompt = true;
+		Cbuf_InsertText("\nfs_restart\nvid_reload\n", RESTRICT_LOCAL, true);
+	}
 	for (i = presetnum; i >= 0; i--)
 	{
 		Cbuf_InsertText(presetexec[i], RESTRICT_LOCAL, true);
 	}
-	forcesaveprompt = true;
 }
 
 void M_Menu_Preset_f (void)
@@ -1070,10 +1194,10 @@ void M_Menu_Preset_f (void)
 		MB_REDTEXT("Please Choose Preset", true),
 		MB_TEXT("^Ue080^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue082", true),
 		MB_CONSOLECMD("simple  (untextured)",	"fps_preset 286;menupop\n",			"Lacks textures, particles, pretty much everything."),
-		MB_CONSOLECMD("fast    (deathmatch)",	"fps_preset fast;menupop\n",		"Fullscreen effects off to give consistant framerates"),
+		MB_CONSOLECMD("fast (qw deathmatch)",	"fps_preset fast;menupop\n",		"Fullscreen effects off to give consistant framerates"),
 		MB_CONSOLECMD("spasm    (nq compat)",	"fps_preset spasm;menupop\n",		"Aims for visual compatibility with common NQ engines. Also affects mods slightly."),
 		MB_CONSOLECMD("vanilla  (softwarey)",	"fps_preset vanilla;menupop\n",		"This is for purists! Party like its 1995! No sanity spared!"),
-		MB_CONSOLECMD("normal (qw faithful)",	"fps_preset normal;menupop\n",		"An updated but still faithful appearance, using content replacements where applicable"),
+		MB_CONSOLECMD("normal    (faithful)",	"fps_preset normal;menupop\n",		"An updated but still faithful appearance, using content replacements where applicable"),
 		MB_CONSOLECMD("nice       (dynamic)",	"fps_preset nice;menupop\n",		"For people who like nice things, but still want to actually play"),
 #ifdef RTLIGHTS
 		MB_CONSOLECMD("realtime    (all on)",	"fps_preset realtime;menupop\n",	"For people who value pretty over fast/smooth. Not viable for deathmatch."),
@@ -1120,6 +1244,7 @@ void FPS_Preset_f (void)
 	char *presetfname;
 	char *arg = Cmd_Argv(1);
 	int i;
+	qboolean doreload = true;
 
 	if (!*arg)
 	{
@@ -1127,124 +1252,39 @@ void FPS_Preset_f (void)
 		return;
 	}
 
-	presetfname = va("configs/preset_%s.cfg", arg);
-	if (COM_FCheckExists(presetfname))
+	if (!strncmp(arg, "builtin_", 8))
 	{
-		char buffer[MAX_OSPATH];
-		COM_QuotedString(presetfname, buffer, sizeof(buffer), false);
-		Cbuf_InsertText(va("\nexec %s\nfs_restart\n", buffer), RESTRICT_LOCAL, false);
-		return;
+		arg += 8;
+		doreload = false;
 	}
-
-	if (!stricmp("hdr", arg))
+	else
 	{
-		Cbuf_InsertText(
-			"set vid_srgb 2\n"
-			"set r_hdr_irisadaptation 1\n"
-			, RESTRICT_LOCAL, false);
-		return;
-	}
-
-	if (!stricmp("qw", arg))
-	{	//enable qwisms
-		Cbuf_InsertText(
-			"set sv_nqplayerphysics 0\n"
-			"set sv_gameplayfix_multiplethinks 1\n"
-			, RESTRICT_LOCAL, false);
-		return;
-	}
-	if (!stricmp("nq", arg))
-	{	//disable qwisms, for better mod compat
-		Cbuf_InsertText(
-			"set sv_nqplayerphysics 1\n"
-			"set sv_gameplayfix_multiplethinks 0\n"
-			, RESTRICT_LOCAL, false);
-		return;
-	}
-
-	if (!stricmp("dp", arg))
-	{
-#ifdef HAVE_SERVER
-		if (sv.state)
-			Cbuf_InsertText("echo Be sure to restart your server\n", RESTRICT_LOCAL, false);
-#endif
-		Cbuf_InsertText(
-			"fps_preset nq\n"
-			//these are for smc+derived mods
-			"sv_listen_dp 1\n"					//awkward, but forces the server to load the effectinfo.txt in advance.
-			"sv_bigcoords 1\n"					//for viewmodel lep precision (would be better to use csqc)
-			"r_particledesc \"effectinfo high\"\n" //blurgh.
-			"dpcompat_noretouchground 1\n"		//don't call touch functions on entities that already appear onground. this also changes the order that the onground flag is set relative to touch functions.
-			"cl_nopred 1\n"						//DP doesn't predict by default, and DP mods have a nasty habit of clearing .solid values during prethinks, which screws up prediction. so play safe.
-			"r_dynamic 0\nr_shadow_realtime_dlight 1\n" //fte has separate cvars for everything. which kinda surprises people and makes stuff twice as bright as it should be.
-			"r_coronas_intensity 0.25\n"
-			"con_logcenterprint 0\n"			//kinda annoying....
-			"scr_fov_mode 4\n"					//for fairer framerate comparisons
-
-			//general compat stuff
-			"dpcompat_console 1\n"				//
-			"dpcompat_findradiusarealinks 1\n"	//faster findradiuses (but that require things are setorigined properly)
-			"dpcompat_makeshitup 2\n"			//flatten shaders to a single pass, then add new specular etc passes.
-			//"dpcompat_nopremulpics 1\n"			//don't use premultiplied alpha (solving issues with compressed image formats)
-			"dpcompat_psa_ungroup 1\n"			//don't use framegroups with psk models at all.
-			"dpcompat_set 1\n"					//handle 3-arg sets differently
-			"dpcompat_stats 1\n"				//truncate float stats
-			"dpcompat_strcat_limit 16383\n"		//xonotic compat. maximum length of strcat strings.
-
-//			"sv_listen_dp 1\nsv_listen_nq 0\nsv_listen_qw 0\ncl_loopbackprotocol dpp7\ndpcompat_nopreparse 1\n"
-			, RESTRICT_LOCAL, false);
-		return;
-	}
-
-	if (!stricmp("tenebrae", arg))
-	{	//for the luls. combine with the tenebrae mod for maximum effect.
-		Cbuf_InsertText(
-			"fps_preset nq\n"
-			"set r_shadow_realtime_world 1\n"
-			"set r_shadow_realtime_dlight 1\n"
-			"set r_shadow_bumpscale_basetexture 4\n"
-			"set r_shadow_shadowmapping 0\n"
-			"set gl_specular 1\n"
-			"set gl_specular_power 16\n"
-			"set gl_specular_fallback 1\n"
-			"set mod_litsprites_force 1\n"
-			"set r_nolerp 1\n"	//well, that matches tenebrae. for the luls, right?
-			, RESTRICT_LOCAL, false);
-		return;
-	}
-
-	if (!stricmp("timedemo", arg))
-	{
-		//some extra things to pwn timedemos.
-		Cbuf_InsertText(
-			"fps_preset fast\n"
-			"set r_renderscale 1\n"
-			"set contrast 1\n"
-			"set gamma 1\n"
-			"set brightness 0\n"
-			"set scr_autoid 0\n"
-			"set scr_autoid_team 0\n"
-			"set r_dynamic 0\n"
-			"set sbar_teamstatus 2\n"
-			"set gl_polyblend 0\n"
-#if 1
-			//these are cheaty settings.
-			"set gl_flashblend 0\n"
-			"set cl_predict_players 0\n"	//very cheaty. you won't realise its off, but noone would disable it for actual play.
-#else
-			//to make things fair
-			"set gl_flashblend 1\n"
-			"set r_part_density 1\n"
-#endif
-			, RESTRICT_LOCAL, false);
-		return;
+		presetfname = va("configs/preset_%s.cfg", arg);
+		if (COM_FCheckExists(presetfname))
+		{
+			char buffer[MAX_OSPATH];
+			COM_QuotedString(presetfname, buffer, sizeof(buffer), false);
+			Cbuf_InsertText(va("\nexec %s\nfs_restart\n", buffer), RESTRICT_LOCAL, false);
+			return;
+		}
 	}
 
 	for (i = 0; i < PRESET_NUM; i++)
 	{
 		if (!stricmp(presetname[i], arg))
 		{
-			ApplyPreset(i);
+			ApplyPreset(i, doreload);
+			return;
+		}
+	}
+
+	for (i = 0; i < countof(builtinpresets); i++)
+	{
+		if (!stricmp(builtinpresets[i].name, arg))
+		{
+			if (doreload)
+				Cbuf_InsertText("\nfs_restart\nvid_reload\n", RESTRICT_LOCAL, false);
+			Cbuf_InsertText(builtinpresets[i].settings, RESTRICT_LOCAL, false);
 			return;
 		}
 	}
@@ -1253,6 +1293,38 @@ void FPS_Preset_f (void)
 	Con_Printf("Valid presests:\n");
 	for (i = 0; i < PRESET_NUM; i++)
 		Con_Printf("%s\n", presetname[i]);
+	for (i = 0; i < countof(builtinpresets); i++)
+		Con_DPrintf("%s\n", builtinpresets[i].name);
+}
+
+static int QDECL CompletePresetList (const char *name, qofs_t flags, time_t mtime, void *parm, searchpathfuncs_t *spath)
+{
+	struct xcommandargcompletioncb_s *ctx = parm;
+	if (!Q_strncasecmp(name, "configs/preset_", 15))
+	{
+		char preset[MAX_QPATH];
+		COM_StripExtension(name+15, preset, sizeof(preset));
+		ctx->cb(preset, NULL, NULL, ctx);
+	}
+	return true;
+}
+void FPS_Preset_c(int argn, const char *partial, struct xcommandargcompletioncb_s *ctx)
+{
+	if (argn == 1)
+	{
+		int i;
+		size_t partiallen = strlen(partial);
+
+		COM_EnumerateFiles(va("configs/preset_%s*.cfg", partial), CompletePresetList, ctx);
+
+		for (i = 0; i < PRESET_NUM; i++)
+			if (!Q_strncasecmp(partial, presetname[i], partiallen))
+				ctx->cb(presetname[i], NULL, NULL, ctx);
+
+		for (i = 0; i < countof(builtinpresets); i++)
+			if (!Q_strncasecmp(partial, builtinpresets[i].name, partiallen))
+				ctx->cb(builtinpresets[i].name, builtinpresets[i].desc, NULL, ctx);
+	}
 }
 
 qboolean M_PresetApply (union menuoption_s *op, struct emenu_s *menu, int key)
@@ -1275,16 +1347,10 @@ void M_Menu_FPS_f (void)
 	{
 		"Disabled",
 		"Average FPS",
-		"Worst FPS",
-		"Best FPS",
-		"Immediate FPS",
-		"Average MSEC",
-		"Worst MSEC",
-		"Best MSEC",
-		"Immediate MSEC",
+		"Timing Graph",
 		NULL
 	};
-	static const char *fpsvalues[] = {"0", "1", "2", "3", "4", "-1", "-2", "-3", "-4", NULL};
+	static const char *fpsvalues[] = {"0", "1", "2", NULL};
 	static const char *entlerpopts[] =
 	{
 		"Enabled (always)",
@@ -1380,26 +1446,27 @@ void M_Menu_Render_f (void)
 	{
 		MB_REDTEXT("Rendering Options", true),
 		MB_TEXT("^Ue080^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue082", true),
-		MB_CHECKBOXCVAR("Graphics", r_graphics, 0),	//graphics on / off. Its a general dig at modern games not having any real options.
-		MB_CHECKBOXCVAR("Disable VIS", r_novis, 0),
-		MB_CHECKBOXCVAR("Fast Sky", r_fastsky, 0),
+		MB_CHECKBOXCVARTIP("Graphics", r_graphics, 0, "The only option console games have. Yes, this is a joke cvar. Try toggling it!"),	//graphics on / off. Its a general dig at modern games not having any real options.
+		MB_CHECKBOXCVARTIP("Disable VIS", r_novis, 0, "You shouldn't normally set this. Its better to use vispatches for your maps in order to support transparent water properly."),
+		MB_CHECKBOXCVARTIP("Fast Sky", r_fastsky, 0, "Use black skies. On modern machines this is more of a stylistic choice that a perfomance helper."),
+		MB_CHECKBOXCVAR("Lerp Images", gl_lerpimages, 0),
 		MB_CHECKBOXCVAR("Disable Model Lerp", r_nolerp, 0),
 		MB_CHECKBOXCVAR("Disable Framegroup Lerp", r_noframegrouplerp, 0),
-		MB_CHECKBOXCVAR("Lerp Images", gl_lerpimages, 0),
+		MB_CHECKBOXCVAR("Model Bobbing", cl_item_bobbing, 0),
 		MB_COMBOCVAR("Water Warp", r_waterwarp, warpopts, warpvalues, NULL),
 		MB_SLIDER("Water Alpha", r_wateralpha, 0, 1, 0.1, NULL),
 		MB_SLIDER("Viewmodel Alpha", r_drawviewmodel, 0, 1, 0.1, NULL),
 		MB_COMBOCVAR("Screen Tints", gl_cshiftenabled, cshiftopts, cshiftvalues, "Changes how screen flashes should be displayed (otherwise known as polyblends)."),
 #ifdef QWSKINS
-		MB_CHECKBOXCVAR("Disable Colormap", gl_nocolors, 0),
+		MB_CHECKBOXCVAR("Ignore Player Colors", gl_nocolors, 0),
 #endif
 		MB_COMBOCVAR("Log Centerprints", scr_logcenterprint, logcenteropts, logcentervalues, "Display centerprints in the console also."),
 		MB_CHECKBOXCVAR("FXAA", r_fxaa, 0),
 #ifdef GLQUAKE
 		MB_CHECKBOXCVAR("Bloom", r_bloom, 0),
 #endif
-		MB_CHECKBOXCVAR("HDR", r_hdr_irisadaptation, 0),
-		MB_CHECKBOXCVAR("Model Bobbing", cl_item_bobbing, 0),
+		MB_CHECKBOXCVARTIP("HDR", r_hdr_irisadaptation, 0, "Adjust scene brightness to compensate for lighting levels."),
+		MB_CHECKBOXCVARTIP("Temporal Scene Cache", r_temporalscenecache, 0, "Cache scene data to optimise complex scenes or unvised maps."),
 		MB_END()
 	};
 	menu = M_Options_Title(&y, 0);
@@ -1812,7 +1879,7 @@ menucombo_t *skillcombo;
 menucombo_t *mapcombo;
 } singleplayerinfo_t;
 
-#ifndef CLIENTONLY
+#ifdef HAVE_SERVER
 static const char *maplist_q1[] =
 {
 	"start",
@@ -1927,7 +1994,6 @@ static const char *maplist_q2[] =
 	"city3",
 	"boss1",
 	"boss2",
-	NULL
 };
 static const char *mapoptions_q2[] =
 {
@@ -1998,7 +2064,7 @@ qboolean M_Apply_SP_Cheats (union menuoption_s *op,struct emenu_s *menu,int key)
 		break;
 	}
 
-#ifndef CLIENTONLY
+#ifdef HAVE_SERVER
 	if ((unsigned int)info->mapcombo->selectedoption < countof(maplist_q1)-1)
 		Cbuf_AddText(va("map %s\n", maplist_q1[info->mapcombo->selectedoption]), RESTRICT_LOCAL);
 #endif
@@ -2011,7 +2077,7 @@ qboolean M_Apply_SP_Cheats (union menuoption_s *op,struct emenu_s *menu,int key)
 
 void M_Menu_Singleplayer_Cheats_Quake (void)
 {
-	#ifndef CLIENTONLY
+	#ifdef HAVE_SERVER
 	static const char *skilloptions[] =
 	{
 		"Easy",
@@ -2024,7 +2090,6 @@ void M_Menu_Singleplayer_Cheats_Quake (void)
 	int currentskill;
 	int currentmap;
 	extern cvar_t sv_gravity, sv_cheats, sv_maxspeed, skill;
-	extern cvar_t host_mapname;
 	#endif
 	singleplayerinfo_t *info;
 	int cursorpositionY;
@@ -2034,7 +2099,7 @@ void M_Menu_Singleplayer_Cheats_Quake (void)
 
 	cursorpositionY = (y + 24);
 
-	#ifndef CLIENTONLY
+	#ifdef HAVE_SERVER
 	if ( !*skill.string )
 		currentskill = 4; // no skill selected
 	else
@@ -2049,7 +2114,7 @@ void M_Menu_Singleplayer_Cheats_Quake (void)
 	MC_AddRedText(menu, 16, 170, y, 			"     Quake Singleplayer Cheats", false); y+=8;
 	MC_AddWhiteText(menu, 16, 170, y,		"     ^Ue080^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue082 ", false); y+=8;
 	y+=8;
-	#ifndef CLIENTONLY
+	#ifdef HAVE_SERVER
 	info->skillcombo = MC_AddCombo(menu,16,170, y,	"Difficulty", skilloptions, currentskill);	y+=8;
 	info->mapcombo = MC_AddCombo(menu,16,170, y,	"Map", mapoptions_q1, currentmap);	y+=8;
 	MC_AddCheckBox(menu,	16, 170, y,		"Cheats", &sv_cheats,0);	y+=8;
@@ -2061,19 +2126,19 @@ void M_Menu_Singleplayer_Cheats_Quake (void)
 	MC_AddConsoleCommand(menu, 16, 170, y,	"     Toggle Flymode", "fly\n"); y+=8;
 	MC_AddConsoleCommand(menu, 16, 170, y,	"      Toggle Noclip", "noclip\n"); y+=8;
 	MC_AddConsoleCommand(menu, 16, 170, y,	"        Quad Damage", "impulse 255\n"); y+=8;
-	#ifndef CLIENTONLY
+	#ifdef HAVE_SERVER
 	MC_AddSlider(menu,	16, 170, y,			"Gravity", &sv_gravity,0,800,25);	y+=8;
 	#endif
 	MC_AddSlider(menu,	16, 170, y,			"Forward Speed", &cl_forwardspeed,0,1000,50);	y+=8;
 	MC_AddSlider(menu,	16, 170, y,			"Side Speed", &cl_sidespeed,0,1000,50);	y+=8;
 	MC_AddSlider(menu,	16, 170, y,			"Back Speed", &cl_backspeed,0,1000,50);	y+=8;
-	#ifndef CLIENTONLY
+	#ifdef HAVE_SERVER
 	MC_AddSlider(menu,	16, 170, y,			"Max Movement Speed", &sv_maxspeed,0,1000,50);	y+=8;
 	#endif
 	MC_AddConsoleCommand(menu, 16, 170, y,	" Silver & Gold Keys", "impulse 13\nimpulse 14\n"); y+=8;
 	MC_AddConsoleCommand(menu, 16, 170, y,	"All Weapons & Items", "impulse 9\n"); y+=8;
 	MC_AddConsoleCommand(menu, 16, 170, y,	"No Enemy Targetting", "notarget\n"); y+=8;
-	#ifndef CLIENTONLY
+	#ifdef HAVE_SERVER
 	MC_AddConsoleCommand(menu, 16, 170, y,   "Restart Map", "restart\n"); y+=8;
 	#else
 	MC_AddConsoleCommand(menu, 16, 170, y,   "Suicide", "kill\n"); y+=8;
@@ -2136,11 +2201,10 @@ void M_Menu_Singleplayer_Cheats_Quake2 (void)
 
 	singleplayerq2info_t *info;
 	int cursorpositionY;
-	#ifndef CLIENTONLY
+	#ifdef HAVE_SERVER
 	int currentskill;
 	int currentmap;
 	extern cvar_t sv_gravity, sv_cheats, sv_maxspeed, skill;
-	extern cvar_t host_mapname;
 	#endif
 	int y;
 	emenu_t *menu = M_Options_Title(&y, sizeof(*info));
@@ -2148,14 +2212,14 @@ void M_Menu_Singleplayer_Cheats_Quake2 (void)
 
 	cursorpositionY = (y + 24);
 
-	#ifndef CLIENTONLY
+	#ifdef HAVE_SERVER
 	if ( !*skill.string )
 		currentskill = 3; // no skill selected
 	else
 		currentskill = skill.value;
 
 	for (currentmap = countof(maplist_q2); currentmap --> 0; )
-		if (!strcmp(host_mapname.string, maplist_q2[currentmap]))
+		if (!Q_strcasecmp(host_mapname.string, maplist_q2[currentmap]))
 			break;
 	/*anything that doesn't match will end up with 0*/
 	#endif
@@ -2163,20 +2227,20 @@ void M_Menu_Singleplayer_Cheats_Quake2 (void)
 	MC_AddRedText(menu, 16, 170, y, 		"Quake2 Singleplayer Cheats", false); y+=8;
 	MC_AddWhiteText(menu, 16, 170, y,		"^Ue080^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue082", false); y+=8;
 	y+=8;
-	#ifndef CLIENTONLY
+	#ifdef HAVE_SERVER
 	info->skillcombo = MC_AddCombo(menu,16,170, y,	"Difficulty", skilloptions, currentskill);	y+=8;
 	info->mapcombo = MC_AddCombo(menu,16,170, y,	"Map", mapoptions_q2, currentmap);	y+=8;
 	MC_AddCheckBox(menu,	16, 170, y,		"Cheats", &sv_cheats,0);	y+=8;
 	#endif
 	MC_AddConsoleCommand(menu, 16, 170, y,	"Toggle Godmode", "god\n"); y+=8;
 	MC_AddConsoleCommand(menu, 16, 170, y,	"Toggle Noclip", "noclip\n"); y+=8;
-	#ifndef CLIENTONLY
+	#ifdef HAVE_SERVER
 	MC_AddSlider(menu,	16, 170, y,			"Gravity", &sv_gravity,0,850,25);	y+=8;
 	#endif
 	MC_AddSlider(menu,	16, 170, y,			"Forward Speed", &cl_forwardspeed,0,1000,50);	y+=8;
 	MC_AddSlider(menu,	16, 170, y,			"Side Speed", &cl_sidespeed,0,1000,50);	y+=8;
 	MC_AddSlider(menu,	16, 170, y,			"Back Speed", &cl_backspeed,0,1000,50);	y+=8;
-	#ifndef CLIENTONLY
+	#ifdef HAVE_SERVER
 	MC_AddSlider(menu,	16, 170, y,			"Max Movement Speed", &sv_maxspeed,0,1000,50);	y+=8;
 	#endif
 	MC_AddConsoleCommand(menu, 16, 170, y,	"Unlimited Ammo", "dmflags 8192\n"); y+=8;
@@ -2199,7 +2263,7 @@ void M_Menu_Singleplayer_Cheats_Quake2 (void)
 	MC_AddConsoleCommand(menu, 16, 170, y,	"Commander's Head", "give commander's head\n"); y+=8;
 	MC_AddConsoleCommand(menu, 16, 170, y,	"Security Pass", "give security pass\n"); y+=8;
 	MC_AddConsoleCommand(menu, 16, 170, y,	"Airstrike Marker", "give airstrike marker\n"); y+=8;
-	#ifndef CLIENTONLY
+	#ifdef HAVE_SERVER
 	MC_AddConsoleCommand(menu, 16, 170, y,   "Restart Map", va("restart\n")); y+=8;
 	#endif
 
@@ -2217,6 +2281,90 @@ menucombo_t *skillcombo;
 menucombo_t *mapcombo;
 } singleplayerh2info_t;
 
+#ifdef HAVE_SERVER
+static const char *maplist_h2[] =
+{
+	"demo1",
+	"demo2",
+	"demo3",
+	"village1",
+	"village3",
+	"village2",
+	"village4",
+	"village5",
+	"rider1a",
+	"meso1",
+	"meso2",
+	"meso3",
+	"meso4",
+	"meso5",
+	"meso6",
+	"meso8",
+	"meso9",
+	"egypt1",
+	"egypt2",
+	"egypt3",
+	"egypt4",
+	"egypt5",
+	"egypt6",
+	"egypt7",
+	"rider2c",
+	"romeric1",
+	"romeric2",
+	"romeric3",
+	"romeric4",
+	"romeric5",
+	"romeric6",
+	"romeric7",
+	"castle4",
+	"castle5",
+	"cath",
+	"tower",
+	"eidolon",
+};
+static const char *mapoptions_h2[] =
+{
+	"demo1 (Blackmarsh: Hub 1 Blackmarsh)",
+	"demo2 (Barbican: Hub 1 Blackmarsh)",
+	"demo3 (The Mill: Hub 1 Blackmarsh)",
+	"village1 (King's Court: Hub 1 Blackmarsh)",
+	"village3 (Stables: Hub 1 Blackmarsh)",
+	"village2 (Inner Courtyard: Hub 1 Blackmarsh)",
+	"village4 (Palance Entrance: Hub 1 Blackmarsh)",
+	"village5 (The Forgotten Chapel: Hub 1 Blackmarsh)",
+	"rider1a (Famine's Domain: Hub 1 Blackmarsh)",
+	"meso1 (Palance of Columns: Hub 2 Mazaera)",
+	"meso2 (Plaza of the Sun: Hub 2 Mazaera)",
+	"meso3 (Square of the Stream: Hub 2 Mazaera)",
+	"meso4 (Tomb of the High Priest: Hub 2 Mazaera)",
+	"meso5 (Obelisk of the Moon: Hub 2 Mazaera)",
+	"meso6 (Court of 1000 Warriors: Hub 2 Mazaera)",
+	"meso8 (Bridge of Stars: Hub 2 Mazaera)",
+	"meso9 (Well of Souls: Hub 2 Mazaera)",
+	"egypt1 (Temple of Horus: Hub 3 Thysis)",
+	"egypt2 (Ancient Tempor of Nefertum: Hub 3 Thysis)",
+	"egypt3 (Tempor of Nefertum: Hub 3 Thysis)",
+	"egypt4 (Palace of the Pharaoh: Hub 3 Thysis",
+	"egypt5 (Pyramid of Anubus: Hub 3 Thysis)",
+	"egypt6 (Temple of Light: Hub 3 Thysis)",
+	"egypt7 (Shrine of Naos: Hub 3 Thysis)",
+	"rider2c (Pestilence's Lair: Hub 3 Thysis)",
+	"romeric1 (The Hall of Heroes: Hub 4 Septimus)",
+	"romeric2 (Gardens of Athena: Hub 4 Septimus)",
+	"romeric3 (Forum of Zeus: Hub 4 Septimus)",
+	"romeric4 (Baths of Demetrius: Hub 4 Septimus)",
+	"romeric5 (Temple of Mars: Hub 4 Septimus)",
+	"romeric6 (Coliseum of War: Hub 4 Septimus)",
+	"romeric7 (Reflecting Pool: Hub 4 Septimus)",
+	"castle4 (The Underhalls: Hub 5 Return to Blackmarsh)",
+	"castle5 (Eidolon's Ordeal: Hub 5 Return to Blackmarsh)",
+	"cath (Cathedral: Hub 5 Return to Blackmarsh)",
+	"tower (Tower of the Dark Mage: Hub 5 Return to Blackmarsh)",
+	"eidolon (Eidolon's Lair: Hub 5 Return to Blackmarsh)",
+	NULL
+};
+#endif
+
 qboolean M_Apply_SP_Cheats_H2 (union menuoption_s *op,struct emenu_s *menu,int key)
 {
 	singleplayerh2info_t *info = menu->data;
@@ -2224,6 +2372,7 @@ qboolean M_Apply_SP_Cheats_H2 (union menuoption_s *op,struct emenu_s *menu,int k
 	if (key != K_ENTER && key != K_KP_ENTER && key != K_GP_START && key != K_MOUSE1)
 		return false;
 
+#ifdef HAVE_SERVER
 	switch(info->skillcombo->selectedoption)
 	{
 	case 0:
@@ -2240,120 +2389,9 @@ qboolean M_Apply_SP_Cheats_H2 (union menuoption_s *op,struct emenu_s *menu,int k
 		break;
 	}
 
-	switch(info->mapcombo->selectedoption)
-	{
-	case 0:
-		Cbuf_AddText("map demo1\n", RESTRICT_LOCAL);
-		break;
-	case 1:
-		Cbuf_AddText("map demo2\n", RESTRICT_LOCAL);
-		break;
-	case 2:
-		Cbuf_AddText("map demo3\n", RESTRICT_LOCAL);
-		break;
-	case 3:
-		Cbuf_AddText("map village1\n", RESTRICT_LOCAL);
-		break;
-	case 4:
-		Cbuf_AddText("map village2\n", RESTRICT_LOCAL);
-		break;
-	case 5:
-		Cbuf_AddText("map village3\n", RESTRICT_LOCAL);
-		break;
-	case 6:
-		Cbuf_AddText("map village4\n", RESTRICT_LOCAL);
-		break;
-	case 7:
-		Cbuf_AddText("map village5\n", RESTRICT_LOCAL);
-		break;
-	case 8:
-		Cbuf_AddText("map rider1a\n", RESTRICT_LOCAL);
-		break;
-	case 9:
-		Cbuf_AddText("map meso1\n", RESTRICT_LOCAL);
-		break;
-	case 10:
-		Cbuf_AddText("map meso2\n", RESTRICT_LOCAL);
-		break;
-	case 11:
-		Cbuf_AddText("map meso3\n", RESTRICT_LOCAL);
-		break;
-	case 12:
-		Cbuf_AddText("map meso4\n", RESTRICT_LOCAL);
-		break;
-	case 13:
-		Cbuf_AddText("map meso5\n", RESTRICT_LOCAL);
-		break;
-	case 14:
-		Cbuf_AddText("map meso6\n", RESTRICT_LOCAL);
-		break;
-	case 15:
-		Cbuf_AddText("map meso8\n", RESTRICT_LOCAL);
-		break;
-	case 16:
-		Cbuf_AddText("map meso9\n", RESTRICT_LOCAL);
-		break;
-	case 17:
-		Cbuf_AddText("map egypt1\n", RESTRICT_LOCAL);
-		break;
-	case 18:
-		Cbuf_AddText("map egypt2\n", RESTRICT_LOCAL);
-		break;
-	case 19:
-		Cbuf_AddText("map egypt3\n", RESTRICT_LOCAL);
-		break;
-	case 20:
-		Cbuf_AddText("map egypt4\n", RESTRICT_LOCAL);
-		break;
-	case 21:
-		Cbuf_AddText("map egypt5\n", RESTRICT_LOCAL);
-		break;
-	case 22:
-		Cbuf_AddText("map egypt6\n", RESTRICT_LOCAL);
-		break;
-	case 23:
-		Cbuf_AddText("map egypt7\n", RESTRICT_LOCAL);
-		break;
-	case 24:
-		Cbuf_AddText("map rider2c\n", RESTRICT_LOCAL);
-		break;
-	case 25:
-		Cbuf_AddText("map romeric1\n", RESTRICT_LOCAL);
-		break;
-	case 26:
-		Cbuf_AddText("map romeric2\n", RESTRICT_LOCAL);
-		break;
-	case 27:
-		Cbuf_AddText("map romeric3\n", RESTRICT_LOCAL);
-		break;
-	case 28:
-		Cbuf_AddText("map romeric4\n", RESTRICT_LOCAL);
-		break;
-	case 29:
-		Cbuf_AddText("map romeric5\n", RESTRICT_LOCAL);
-		break;
-	case 30:
-		Cbuf_AddText("map romeric6\n", RESTRICT_LOCAL);
-		break;
-	case 31:
-		Cbuf_AddText("map romeric7\n", RESTRICT_LOCAL);
-		break;
-	case 32:
-		Cbuf_AddText("map castle4\n", RESTRICT_LOCAL);
-		break;
-	case 33:
-		Cbuf_AddText("map castle5\n", RESTRICT_LOCAL);
-		break;
-	case 34:
-		Cbuf_AddText("map cath\n", RESTRICT_LOCAL);
-		break;
-	case 35:
-		Cbuf_AddText("map tower\n", RESTRICT_LOCAL);
-		break;
-	case 36:
-		Cbuf_AddText("map eidolon\n", RESTRICT_LOCAL);
-		break;
-	}
+	if ((unsigned)info->mapcombo->selectedoption < countof(maplist_h2))
+		Cbuf_AddText(va("map %s\n", maplist_h2[info->mapcombo->selectedoption]), RESTRICT_LOCAL);
+#endif
 
 	M_RemoveMenu(menu);
 	Cbuf_AddText("menu_spcheats\n", RESTRICT_LOCAL);
@@ -2363,7 +2401,6 @@ qboolean M_Apply_SP_Cheats_H2 (union menuoption_s *op,struct emenu_s *menu,int k
 
 void M_Menu_Singleplayer_Cheats_Hexen2 (void)
 {
-
 	static const char *skilloptions[] =
 	{
 		"Easy",
@@ -2374,168 +2411,50 @@ void M_Menu_Singleplayer_Cheats_Hexen2 (void)
 		NULL
 	};
 
-	static const char *mapoptions[] =
-	{
-		"demo1 (Blackmarsh: Hub 1 Blackmarsh)",
-		"demo2 (Barbican: Hub 1 Blackmarsh)",
-		"demo3 (The Mill: Hub 1 Blackmarsh)",
-		"village1 (King's Court: Hub 1 Blackmarsh)",
-		"village3 (Stables: Hub 1 Blackmarsh)",
-		"village2 (Inner Courtyard: Hub 1 Blackmarsh)",
-		"village4 (Palance Entrance: Hub 1 Blackmarsh)",
-		"village5 (The Forgotten Chapel: Hub 1 Blackmarsh)",
-		"rider1a (Famine's Domain: Hub 1 Blackmarsh)",
-		"meso1 (Palance of Columns: Hub 2 Mazaera)",
-		"meso2 (Plaza of the Sun: Hub 2 Mazaera)",
-		"meso3 (Square of the Stream: Hub 2 Mazaera)",
-		"meso4 (Tomb of the High Priest: Hub 2 Mazaera)",
-		"meso5 (Obelisk of the Moon: Hub 2 Mazaera)",
-		"meso6 (Court of 1000 Warriors: Hub 2 Mazaera)",
-		"meso8 (Bridge of Stars: Hub 2 Mazaera)",
-		"meso9 (Well of Souls: Hub 2 Mazaera)",
-		"egypt1 (Temple of Horus: Hub 3 Thysis)",
-		"egypt2 (Ancient Tempor of Nefertum: Hub 3 Thysis)",
-		"egypt3 (Tempor of Nefertum: Hub 3 Thysis)",
-		"egypt4 (Palace of the Pharaoh: Hub 3 Thysis",
-		"egypt5 (Pyramid of Anubus: Hub 3 Thysis)",
-		"egypt6 (Temple of Light: Hub 3 Thysis)",
-		"egypt7 (Shrine of Naos: Hub 3 Thysis)",
-		"rider2c (Pestilence's Lair: Hub 3 Thysis)",
-		"romeric1 (The Hall of Heroes: Hub 4 Septimus)",
-		"romeric2 (Gardens of Athena: Hub 4 Septimus)",
-		"romeric3 (Forum of Zeus: Hub 4 Septimus)",
-		"romeric4 (Baths of Demetrius: Hub 4 Septimus)",
-		"romeric5 (Temple of Mars: Hub 4 Septimus)",
-		"romeric6 (Coliseum of War: Hub 4 Septimus)",
-		"romeric7 (Reflecting Pool: Hub 4 Septimus)",
-		"castle4 (The Underhalls: Hub 5 Return to Blackmarsh)",
-		"castle5 (Eidolon's Ordeal: Hub 5 Return to Blackmarsh)",
-		"cath (Cathedral: Hub 5 Return to Blackmarsh)",
-		"tower (Tower of the Dark Mage: Hub 5 Return to Blackmarsh)",
-		"eidolon (Eidolon's Lair: Hub 5 Return to Blackmarsh)",
-		NULL
-	};
-
 	singleplayerh2info_t *info;
 	int cursorpositionY;
 	int currentmap;
-	#ifndef CLIENTONLY
+	#ifdef HAVE_SERVER
 		int currentskill;
 		extern cvar_t sv_gravity, sv_cheats, sv_maxspeed, skill;
 	#endif
-	extern cvar_t host_mapname;
 	int y;
 	emenu_t *menu = M_Options_Title(&y, sizeof(*info));
 	info = menu->data;
 
 	cursorpositionY = (y + 24);
 
-	#ifndef CLIENTONLY
+	#ifdef HAVE_SERVER
 	if ( !*skill.string )
 		currentskill = 4; // no skill selected
 	else
 		currentskill = skill.value;
-	#endif
 
-	if ( strcmp ( host_mapname.string, "" ) == 0)
-		currentmap = 0;
-	else if ( stricmp ( host_mapname.string, "demo1" ) == 0 )
-		currentmap = 0;
-	else if ( stricmp ( host_mapname.string, "demo2" ) == 0 )
-		currentmap = 1;
-	else if ( stricmp ( host_mapname.string, "demo3" ) == 0 )
-		currentmap = 2;
-	else if ( stricmp ( host_mapname.string, "village1" ) == 0 )
-		currentmap = 3;
-	else if ( stricmp ( host_mapname.string, "village2" ) == 0 )
-		currentmap = 4;
-	else if ( stricmp ( host_mapname.string, "village3" ) == 0 )
-		currentmap = 5;
-	else if ( stricmp ( host_mapname.string, "village4" ) == 0 )
-		currentmap = 6;
-	else if ( stricmp ( host_mapname.string, "village5" ) == 0 )
-		currentmap = 7;
-	else if ( stricmp ( host_mapname.string, "rider1a" ) == 0 )
-		currentmap = 8;
-	else if ( stricmp ( host_mapname.string, "meso1" ) == 0 )
-		currentmap = 9;
-	else if ( stricmp ( host_mapname.string, "meso2" ) == 0 )
-		currentmap = 10;
-	else if ( stricmp ( host_mapname.string, "meso3" ) == 0 )
-		currentmap = 11;
-	else if ( stricmp ( host_mapname.string, "meso4" ) == 0 )
-		currentmap = 12;
-	else if ( stricmp ( host_mapname.string, "meso5" ) == 0 )
-		currentmap = 13;
-	else if ( stricmp ( host_mapname.string, "meso6" ) == 0 )
-		currentmap = 14;
-	else if ( stricmp ( host_mapname.string, "meso8" ) == 0 )
-		currentmap = 15;
-	else if ( stricmp ( host_mapname.string, "meso9" ) == 0 )
-		currentmap = 16;
-	else if ( stricmp ( host_mapname.string, "egypt1" ) == 0 )
-		currentmap = 17;
-	else if ( stricmp ( host_mapname.string, "egypt2" ) == 0 )
-		currentmap = 18;
-	else if ( stricmp ( host_mapname.string, "egypt3" ) == 0 )
-		currentmap = 19;
-	else if ( stricmp ( host_mapname.string, "egypt4" ) == 0 )
-		currentmap = 20;
-	else if ( stricmp ( host_mapname.string, "egypt5" ) == 0 )
-		currentmap = 21;
-	else if ( stricmp ( host_mapname.string, "egypt6" ) == 0 )
-		currentmap = 22;
-	else if ( stricmp ( host_mapname.string, "egypt7" ) == 0 )
-		currentmap = 23;
-	else if ( stricmp ( host_mapname.string, "rider2c" ) == 0 )
-		currentmap = 24;
-	else if ( stricmp ( host_mapname.string, "romeric1" ) == 0 )
-		currentmap = 25;
-	else if ( stricmp ( host_mapname.string, "romeric2" ) == 0 )
-		currentmap = 26;
-	else if ( stricmp ( host_mapname.string, "romeric3" ) == 0 )
-		currentmap = 27;
-	else if ( stricmp ( host_mapname.string, "romeric4" ) == 0 )
-		currentmap = 28;
-	else if ( stricmp ( host_mapname.string, "romeric5" ) == 0 )
-		currentmap = 29;
-	else if ( stricmp ( host_mapname.string, "romeric6" ) == 0 )
-		currentmap = 30;
-	else if ( stricmp ( host_mapname.string, "romeric7" ) == 0 )
-		currentmap = 31;
-	else if ( stricmp ( host_mapname.string, "castle4" ) == 0 )
-		currentmap = 32;
-	else if ( stricmp ( host_mapname.string, "castle5" ) == 0 )
-		currentmap = 33;
-	else if ( stricmp ( host_mapname.string, "cath" ) == 0 )
-		currentmap = 34;
-	else if ( stricmp ( host_mapname.string, "tower" ) == 0 )
-		currentmap = 35;
-	else if ( stricmp ( host_mapname.string, "eidolon" ) == 0 )
-		currentmap = 36;
-	else
-		currentmap = 0;
+	for (currentmap = countof(maplist_h2); currentmap --> 0; )
+		if (!Q_strcasecmp(host_mapname.string, maplist_h2[currentmap]))
+			break;
+	#endif
 
 	MC_AddRedText(menu, 16, 170, y, 		"Hexen2 Singleplayer Cheats", false); y+=8;
 	MC_AddWhiteText(menu, 16, 170, y,		"^Ue080^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue082 ", false); y+=8;
 	y+=8;
-	#ifndef CLIENTONLY
+	#ifdef HAVE_SERVER
 	info->skillcombo = MC_AddCombo(menu,16,170, y,	"Difficulty", skilloptions, currentskill);	y+=8;
+	info->mapcombo = MC_AddCombo(menu,16,170, y,	"Map", mapoptions_h2, currentmap);	y+=8;
 	#endif
-	info->mapcombo = MC_AddCombo(menu,16,170, y,	"Map", mapoptions, currentmap);	y+=8;
-	#ifndef CLIENTONLY
+	#ifdef HAVE_SERVER
 	MC_AddCheckBox(menu,	16, 170, y,		"Cheats", &sv_cheats,0);	y+=8;
 	#endif
 	MC_AddConsoleCommand(menu, 16, 170, y,	"Toggle Godmode", "god\n"); y+=8;
 	MC_AddConsoleCommand(menu, 16, 170, y,	"Toggle Flymode", "fly\n"); y+=8;
 	MC_AddConsoleCommand(menu, 16, 170, y,	"Toggle Noclip", "noclip\n"); y+=8;
-	#ifndef CLIENTONLY
+	#ifdef HAVE_SERVER
 	MC_AddSlider(menu,	16, 170, y,			"Gravity", &sv_gravity,0,800,25);	y+=8;
 	#endif
 	MC_AddSlider(menu,	16, 170, y,			"Forward Speed", &cl_forwardspeed,0,1000,50);	y+=8;
 	MC_AddSlider(menu,	16, 170, y,			"Side Speed", &cl_sidespeed,0,1000,50);	y+=8;
 	MC_AddSlider(menu,	16, 170, y,			"Back Speed", &cl_backspeed,0,1000,50);	y+=8;
-	#ifndef CLIENTONLY
+	#ifdef HAVE_SERVER
 	MC_AddSlider(menu,	16, 170, y,			"Max Movement Speed", &sv_maxspeed,0,1000,50);	y+=8;
 	#endif
 	MC_AddConsoleCommand(menu, 16, 170, y,	"Sheep Transformation", "impulse 14\n"); y+=8;
@@ -2543,6 +2462,7 @@ void M_Menu_Singleplayer_Cheats_Hexen2 (void)
 	MC_AddConsoleCommand(menu, 16, 170, y,	"Change To Crusader (lvl3+)", "impulse 172\n"); y+=8;
 	MC_AddConsoleCommand(menu, 16, 170, y,	"Change to Necromancer (lvl3+)", "impulse 173\n"); y+=8;
 	MC_AddConsoleCommand(menu, 16, 170, y,	"Change to Assassin (lvl3+)", "impulse 174\n"); y+=8;
+	//demoness?
 	MC_AddConsoleCommand(menu, 16, 170, y,	"Remove Monsters", "impulse 35\n"); y+=8;
 	MC_AddConsoleCommand(menu, 16, 170, y,	"Freeze Monsters", "impulse 36\n"); y+=8;
 	MC_AddConsoleCommand(menu, 16, 170, y,	"Unfreeze Monsters", "impulse 37\n"); y+=8;
@@ -2830,10 +2750,10 @@ void M_Menu_Video_f (void)
 	};
 
 	static const char *srgbopts[] = {
-		"Non-Linear",
-		"sRGB-Aware (PBR)",
-		"Linear (HDR)",
-		"Linearised", //-1
+		"Non-Linear",	//0 (legacy buggy linear->srgb non-transforms)
+		"sRGB-Aware",	//1 (linear->srgb transforms)
+		"Linear (HDR)",	//2 (try to use a float framebuffer, otherwise fall back on srgb framebuffer)
+		"Linearised",	//-1
 		NULL
 	};
 	static const char *srgbvalues[] = { "0", "1", "2", "-1", NULL};
@@ -3080,7 +3000,7 @@ void M_Menu_Video_f (void)
 			MB_COMBOCVAR("Renderer", vid_renderer, rendererops, renderervalues, NULL),
 			MB_COMBOCVARRETURN("Display Mode", vid_fullscreen, fullscreenopts, fullscreenvalues, info->dispmode, vid_fullscreen.description),
 #endif
-			MB_COMBOCVAR("Anti-aliasing", vid_multisample, aaopts, aavalues, NULL),
+			MB_COMBOCVAR("MSAA", vid_multisample, aaopts, aavalues, NULL),
 			MB_REDTEXT(current3dres, true),
 			MB_COMBORETURN("Aspect", resmodeopts, resmodechoice, info->resmode, "Select method for determining or configuring display options. The desktop option will attempt to use the width, height, color depth, and refresh from your operating system's desktop environment."),
 			// aspect entries
@@ -3201,9 +3121,14 @@ typedef struct
 	int textype;
 	double framechangetime;
 	double skinchangetime;
+
 	float pitch;
 	float yaw;
+	vec3_t cameraorg;
+	vec2_t mousepos;
+	qboolean mousedown;
 	float dist;
+
 	char modelname[MAX_QPATH];
 	char forceshader[MAX_QPATH];
 
@@ -3295,6 +3220,7 @@ static unsigned int tobit(unsigned int bitmask)
 }
 static void M_ModelViewerDraw(int x, int y, struct menucustom_s *c, struct emenu_s *m)
 {
+	extern qboolean keydown[];
 	static playerview_t pv;
 	entity_t ent;
 	vec3_t fwd, rgt, up;
@@ -3305,6 +3231,7 @@ static void M_ModelViewerDraw(int x, int y, struct menucustom_s *c, struct emenu
 	vec3_t lightpos = {0, 1, 0};
 
 	modelview_t *mods = c->dptr;
+	skinfile_t *skin;
 
 	if (R2D_Flush)
 		R2D_Flush();
@@ -3335,21 +3262,58 @@ static void M_ModelViewerDraw(int x, int y, struct menucustom_s *c, struct emenu
 	AngleVectors(r_refdef.viewangles, fwd, rgt, up);
 	VectorScale(fwd, -mods->dist, r_refdef.vieworg);
 
+	if (keydown[K_MOUSE1] && mods->mousedown&1)
+	{
+		mods->pitch += (mousecursor_y-mods->mousepos[1]) * m_pitch.value * sensitivity.value;
+		mods->yaw -= (mousecursor_x-mods->mousepos[0]) * m_yaw.value * sensitivity.value;
+
+		if (keydown['w'] || keydown['s'] || keydown['a'] || keydown['d'])
+		{
+			VectorAdd(mods->cameraorg, r_refdef.vieworg, mods->cameraorg);
+			mods->dist = 0;
+
+			if (keydown['w'])
+				VectorMA(mods->cameraorg, host_frametime*cl_forwardspeed.value, fwd, mods->cameraorg);
+			if (keydown['s'])
+				VectorMA(mods->cameraorg, host_frametime*-(cl_backspeed.value?cl_backspeed.value:cl_forwardspeed.value), fwd, mods->cameraorg);
+			if (keydown['a'])
+				VectorMA(mods->cameraorg, host_frametime*-cl_sidespeed.value, rgt, mods->cameraorg);
+			if (keydown['d'])
+				VectorMA(mods->cameraorg, host_frametime*cl_sidespeed.value, rgt, mods->cameraorg);
+		}
+	}
+	else if (keydown[K_MOUSE3] && (mods->mousedown&2))
+	{
+		float r = (mousecursor_x-mods->mousepos[0]);
+		float u = (mousecursor_y-mods->mousepos[1]);
+		VectorMA(mods->cameraorg, r*cl_sidespeed.value/4000, rgt, mods->cameraorg);
+		VectorMA(mods->cameraorg, u*cl_upspeed.value/4000, up, mods->cameraorg);
+	}
+	mods->mousedown = (!!keydown[K_MOUSE1])<<0;
+	mods->mousedown|= (!!keydown[K_MOUSE3])<<1;
+	mods->mousepos[0] = mousecursor_x;
+	mods->mousepos[1] = mousecursor_y;
+
+	VectorAdd(r_refdef.vieworg, mods->cameraorg, r_refdef.vieworg);
+
 	memset(&ent, 0, sizeof(ent));
 //	ent.angles[1] = realtime*45;//mods->yaw;
 //	ent.angles[0] = realtime*23.4;//mods->pitch;
 
-	ent.angles[0]*=r_meshpitch.value;
-	AngleVectors(ent.angles, ent.axis[0], ent.axis[1], ent.axis[2]);
-	ent.angles[0]*=r_meshpitch.value;
-	VectorInverse(ent.axis[1]);
-
 	ent.model = Mod_ForName(mods->modelname, MLV_WARN);
 	if (!ent.model)
 		return;	//panic!
+
+	if (ent.model->type == mod_alias)	//should we even bother with this here?
+		AngleVectorsMesh(ent.angles, ent.axis[0], ent.axis[1], ent.axis[2]);
+	else
+		AngleVectors(ent.angles, ent.axis[0], ent.axis[1], ent.axis[2]);
+	VectorInverse(ent.axis[1]);
+
 	ent.scale = max(max(fabs(ent.model->maxs[0]-ent.model->mins[0]), fabs(ent.model->maxs[1]-ent.model->mins[1])), fabs(ent.model->maxs[2]-ent.model->mins[2]));
 	ent.scale = ent.scale?64.0/ent.scale:1;
-	ent.origin[2] -= (ent.model->maxs[2]-ent.model->mins[2]) * 0.5;// + ent.model->mins[2];
+//	ent.scale = 1;
+	ent.origin[2] -= ent.model->mins[2] + (ent.model->maxs[2]-ent.model->mins[2]) * 0.5;
 	ent.origin[2] *= ent.scale;
 	Vector4Set(ent.shaderRGBAf, 1, 1, 1, 1);
 	VectorSet(ent.glowmod, 1, 1, 1);
@@ -3378,9 +3342,14 @@ static void M_ModelViewerDraw(int x, int y, struct menucustom_s *c, struct emenu
 	ent.framestate.g[FS_REG].frametime[0] = ent.framestate.g[FS_REG].frametime[1] = realtime - mods->framechangetime;
 	ent.framestate.g[FS_REG].endbone = 0x7fffffff;
 	ent.customskin = Mod_RegisterSkinFile(va("%s_%i.skin", mods->modelname, ent.skinnum));
+	skin = Mod_LookupSkin(ent.customskin);
 
 	ent.light_avg[0] = ent.light_avg[1] = ent.light_avg[2] = 0.66;
 	ent.light_range[0] = ent.light_range[1] = ent.light_range[2] = 0.33;
+
+#ifdef HEXEN2
+	ent.drawflags = SCALE_ORIGIN_ORIGIN;
+#endif
 
 	V_ApplyRefdef();
 /*
@@ -3603,11 +3572,11 @@ static void M_ModelViewerDraw(int x, int y, struct menucustom_s *c, struct emenu
 			}
 			if (b-1 == mods->boneidx)
 			{
-				VectorSet(end, start[0]+1, start[1], start[2]);
+				VectorSet(end, start[0]+boneinfo[0], start[1]+boneinfo[4], start[2]+boneinfo[8]);
 				CLQ1_DrawLine(lineshader, start, end, 1, 0, 0, 1);
-				VectorSet(end, start[0], start[1]+1, start[2]);
+				VectorSet(end, start[0]+boneinfo[1], start[1]+boneinfo[5], start[2]+boneinfo[9]);
 				CLQ1_DrawLine(lineshader, start, end, 0, 1, 0, 1);
-				VectorSet(end, start[0], start[1], start[2]+1);
+				VectorSet(end, start[0]+boneinfo[2], start[1]+boneinfo[6], start[2]+boneinfo[10]);
 				CLQ1_DrawLine(lineshader, start, end, 0, 0, 1, 1);
 			}
 		}
@@ -3644,7 +3613,7 @@ static void M_ModelViewerDraw(int x, int y, struct menucustom_s *c, struct emenu
 		float duration = 0;
 		qboolean loop = false;
 		if (!Mod_FrameInfoForNum(ent.model, mods->surfaceidx, mods->framegroup, &fname, &numframes, &duration, &loop))
-			fname = "Unknown Frame";
+			fname = "Unknown Sequence";
 		Draw_FunString(0, y, va("Frame%i: %s (%i poses, %f of %f secs, %s)", mods->framegroup, fname, numframes, ent.framestate.g[FS_REG].frametime[0], duration, loop?"looped":"unlooped"));
 		y+=8;
 	}
@@ -3653,7 +3622,7 @@ static void M_ModelViewerDraw(int x, int y, struct menucustom_s *c, struct emenu
 	{
 	case MV_NONE:
 		R_DrawTextField(r_refdef.grect.x, r_refdef.grect.y+y, r_refdef.grect.width, r_refdef.grect.height-y, 
-			va("arrows: pitch/rotate\n"
+			va("Help:\narrows: pitch/rotate\n"
 			"w: zoom in\n"
 			"s: zoom out\n"
 			"m: mode\n"
@@ -3707,7 +3676,8 @@ static void M_ModelViewerDraw(int x, int y, struct menucustom_s *c, struct emenu
 				if (!*contents)
 					Q_strncatz(contents, "non-solid", sizeof(contents));
 				R_DrawTextField(r_refdef.grect.x, r_refdef.grect.y+y, r_refdef.grect.width, r_refdef.grect.height-y, 
-					va(	"mins: %g %g %g, maxs: %g %g %g\n"
+					va(	"Collision:\n"
+						"mins: %g %g %g, maxs: %g %g %g\n"
 						"contents: %s\n"
 						"surfflags: %#x\n"
 						"body: %i\n"
@@ -3722,7 +3692,10 @@ static void M_ModelViewerDraw(int x, int y, struct menucustom_s *c, struct emenu
 						contents,
 						inf->csurface.flags,
 						inf->surfaceid,
-						inf->geomset>=MAX_GEOMSETS?-1:inf->geomset, inf->geomid, inf->geomset>=MAX_GEOMSETS?" (always)":"",
+						inf->geomset>=MAX_GEOMSETS?-1:inf->geomset, inf->geomid,
+								inf->geomset>=MAX_GEOMSETS?" (always)":
+								((skin?skin->geomset[inf->geomset]:0)!=inf->geomid)?" (hidden)":
+								"",
 						inf->numverts, inf->numindexes/3
 #ifdef SKELETALMODELS
 						,inf->numbones
@@ -3735,11 +3708,13 @@ static void M_ModelViewerDraw(int x, int y, struct menucustom_s *c, struct emenu
 		else
 		{
 			R_DrawTextField(r_refdef.grect.x, r_refdef.grect.y+y, r_refdef.grect.width, r_refdef.grect.height-y, 
-				va("mins: %g %g %g, maxs: %g %g %g\n", ent.model->mins[0], ent.model->mins[1], ent.model->mins[2], ent.model->maxs[0], ent.model->maxs[1], ent.model->maxs[2])
+				va(	"Collision info not available\n"
+					"mins: %g %g %g, maxs: %g %g %g\n", ent.model->mins[0], ent.model->mins[1], ent.model->mins[2], ent.model->maxs[0], ent.model->maxs[1], ent.model->maxs[2])
 				, CON_WHITEMASK, CPRINT_TALIGN|CPRINT_LALIGN, font_default, fs);
 		}
 		break;
 	case MV_NORMALS:
+		Draw_FunString(0, y, va("Normals"));
 		break;
 	case MV_BONES:
 #ifdef SKELETALMODELS
@@ -3777,7 +3752,10 @@ static void M_ModelViewerDraw(int x, int y, struct menucustom_s *c, struct emenu
 			{
 				char *body = Shader_GetShaderBody(Mod_ShaderForSkin(ent.model, mods->surfaceidx, mods->skingroup), mods->shaderfile, sizeof(mods->shaderfile));
 				if (!body)
+				{
+					Draw_FunString(0, y, "Shader info not available");
 					break;
+				}
 				if (*mods->shaderfile)
 					mods->shadertext = Z_StrDup(va("\n\nPress space to view+edit the shader\n\n%s", body));
 				else
@@ -3843,28 +3821,34 @@ static void M_ModelViewerDraw(int x, int y, struct menucustom_s *c, struct emenu
 				}
 				if (shader->defaulttextures->base)
 				{
-					Draw_FunString(0, y, va("%s: %s  (%s)", t, shader->defaulttextures->base->ident, shader->defaulttextures->base->subpath));
+					Draw_FunString(0, y, va("%s: %s  (%s)", t, shader->defaulttextures->base->ident, shader->defaulttextures->base->subpath?shader->defaulttextures->base->subpath:""));
 					y+=8;
 					R2D_Image(0, y, shader->defaulttextures->base->width, shader->defaulttextures->base->height, 0, 0, 1, 1, shader);
 				}
 				else
 					Draw_FunString(0, y, va("%s: <NO TEXTURE>", t));
 			}
+			else
+				Draw_FunString(0, y, "Texture info not available");
 		}
+		break;
+	default:
+		Draw_FunString(0, y, "Unknown display mode");
 		break;
 	}
 }
 static qboolean M_ModelViewerKey(struct menucustom_s *c, struct emenu_s *m, int key, unsigned int unicode)
 {
+	extern qboolean keydown[];
 	modelview_t *mods = c->dptr;
 
-	if (key == 'w')
+	if ((key == 'w' && !keydown[K_MOUSE1]) || key == K_MWHEELUP)
 	{
 		mods->dist *= 0.9;
 		if (mods->dist < 1)
 			mods->dist = 1;
 	}
-	else if (key == 's')
+	else if ((key == 's' && !keydown[K_MOUSE1]) || key == K_MWHEELDOWN)
 		mods->dist /= 0.9;
 	else if (key == 'm')
 	{
@@ -4004,6 +3988,8 @@ void M_Menu_ModelViewer_f(void)
 	Q_strncpyz(mv->modelname, Cmd_Argv(1), sizeof(mv->modelname));
 	Q_strncpyz(mv->forceshader, Cmd_Argv(2), sizeof(mv->forceshader));
 
+	mv->framechangetime = realtime;
+	mv->skinchangetime = realtime;
 #ifdef RAGDOLL
 	menu->remove = M_Modelviewer_Shutdown;
 	mv->ragworld.progs = &mv->ragfuncs;
@@ -4057,23 +4043,14 @@ void M_Menu_ModelViewer_f(void)
 }
 #endif
 
-typedef struct
-{
-	struct
-	{
-		ftemanifest_t *manifest;
-		char *gamedir;
-	} *mod;
-	size_t nummods;
-} modmenu_t;
-
+#include "fs.h"
 static void Mods_Draw(int x, int y, struct menucustom_s *c, struct emenu_s *m)
 {
-	modmenu_t *mods = c->dptr;
 	int i = c->dint;
+	struct modlist_s *mod = Mods_GetMod(i);
 	c->common.width = vid.width - x - 16;
 
-	if (!mods->nummods && !i)
+	if (!mod && !i)
 	{
 		float scale[] = {8,8};
 		R_DrawTextField(0, y, vid.width, vid.height - y,
@@ -4091,139 +4068,55 @@ static void Mods_Draw(int x, int y, struct menucustom_s *c, struct emenu_s *m)
 		return;
 	}
 
-	if (i < 0 || i > mods->nummods)
+	if (!mod)
 		return;
-	if (mods->mod[i].manifest)
+	if (mod->manifest)
 	{
-		if (mousecursor_y >= y && mousecursor_y < y+8)
-			Draw_AltFunString(x, y, mods->mod[i].manifest->formalname);
+		if (m->selecteditem == (menuoption_t*)c)
+			Draw_AltFunString(x, y, mod->manifest->formalname);
 		else
-			Draw_FunString(x, y, mods->mod[i].manifest->formalname);
+			Draw_FunString(x, y, mod->manifest->formalname);
 	}
 	else
 	{
-		if (mousecursor_y >= y && mousecursor_y < y+8)
-			Draw_AltFunString(x, y, mods->mod[i].gamedir);
+		if (m->selecteditem == (menuoption_t*)c)
+			Draw_AltFunString(x, y, mod->gamedir);
 		else
-			Draw_FunString(x, y, mods->mod[i].gamedir);
+			Draw_FunString(x, y, mod->gamedir);
 	}
 }
 static qboolean Mods_Key(struct menucustom_s *c, struct emenu_s *m, int key, unsigned int unicode)
 {
-	modmenu_t *mods = c->dptr;
-	int i;
-	ftemanifest_t *man;
+	int gameidx = c->dint;
 	if (key == K_MOUSE1 || key == K_ENTER || key == K_GP_A)
 	{
 		qboolean wasgameless = !*FS_GetGamedir(false);
-		i = c->dint;
-		if (i < 0 || i > mods->nummods)
+		if (!Mods_GetMod(c->dint))
 			return false;
-		man = mods->mod[i].manifest;
-		mods->mod[i].manifest = NULL;	//make sure the manifest survives the menu being closed.
 		M_RemoveMenu(m);
-		FS_ChangeGame(man, true, true);
 
+		Cbuf_AddText(va("\nfs_changegame %u\n", gameidx+1), RESTRICT_LOCAL);
 		if (wasgameless && !!*FS_GetGamedir(false))
 		{
 			//starting to a blank state generally means that the current(engine-default) config settings are utterly useless and windowed by default.
 			//so generally when switching to a *real* game, we want to restart video just so things like fullscreen etc are saved+used properly.
 			Cbuf_AddText("\nvid_restart\n", RESTRICT_LOCAL);
 		}
-		else
-		{
-			//if we're already running a game, this should probably just be a vid_reload instead to ensure that the conback etc is reloaded.
-			//(a full restart is annoying)
-			Cbuf_AddText("\nvid_reload\n", RESTRICT_LOCAL);
-		}
 		return true;
 	}
 
 	return false;
 }
-static void Mods_Remove	(struct emenu_s *m)
-{
-	modmenu_t *mods = m->data;
-	int i;
-
-	for (i = 0; i < mods->nummods; i++)
-	{
-		if (mods->mod[i].manifest)
-			FS_Manifest_Free(mods->mod[i].manifest);
-		Z_Free(mods->mod[i].gamedir);
-	}
-	Z_Free(mods->mod);
-	mods->mod = NULL;
-}
-
-static qboolean Mods_AddManifest(void *usr, ftemanifest_t *man)
-{
-	modmenu_t *mods = usr;
-	int i = mods->nummods;
-	mods->mod = BZ_Realloc(mods->mod, (i+1) * sizeof(*mods->mod));
-	mods->mod[i].manifest = man;
-	mods->mod[i].gamedir = NULL;
-	mods->nummods = i+1;
-	return true;
-}
-static int QDECL Mods_AddGamedir(const char *fname, qofs_t fsize, time_t mtime, void *usr, searchpathfuncs_t *spath)
-{
-	modmenu_t *mods = usr;
-	size_t l = strlen(fname);
-	int i, p;
-	char gamedir[MAX_QPATH];
-	if (l && fname[l-1] == '/' && l < countof(gamedir))
-	{
-		l--;
-		memcpy(gamedir, fname, l);
-		gamedir[l] = 0;
-		for (i = 0; i < mods->nummods; i++)
-		{
-			//don't add dupes (can happen from gamedir+homedir)
-			//if the gamedir was already included in one of the manifests, don't bother including it again.
-			//this generally removes id1.
-			if (mods->mod[i].manifest)
-			{
-				for (p = 0; p < countof(fs_manifest->gamepath); p++)
-					if (mods->mod[i].manifest->gamepath[p].path)
-						if (!Q_strcasecmp(mods->mod[i].manifest->gamepath[p].path, gamedir))
-							return true;
-			}
-			else if (mods->mod[i].gamedir)
-			{
-				if (!Q_strcasecmp(mods->mod[i].gamedir, gamedir))
-					return true;
-			}
-		}
-		mods->mod = BZ_Realloc(mods->mod, (i+1) * sizeof(*mods->mod));
-		mods->mod[i].manifest = NULL;
-		mods->mod[i].gamedir = Z_StrDup(gamedir);
-		mods->nummods = i+1;
-	}
-	return true;
-}
-
-#include "fs.h"
 
 void M_Menu_Mods_f (void)
 {
-	modmenu_t mods;
 	menucustom_t *c;
 	emenu_t *menu;
 	size_t i;
-	extern qboolean com_homepathenabled;
-
-	memset(&mods, 0, sizeof(mods));
-	FS_EnumerateKnownGames(Mods_AddManifest, &mods);
-
-	if (com_homepathenabled)
-		Sys_EnumerateFiles(com_homepath, "*", Mods_AddGamedir, &mods, NULL);
-	Sys_EnumerateFiles(com_gamepath, "*", Mods_AddGamedir, &mods, NULL);
 
 	//FIXME: sort by mtime?
 
-	menu = M_CreateMenu(sizeof(modmenu_t));
-	*(modmenu_t*)menu->data = mods;
+	menu = M_CreateMenu(0);
 	if (COM_FCheckExists("gfx/p_option.lmp"))
 	{
 		MC_AddPicture(menu, 16, 4, 32, 144, "gfx/qplaque.lmp");
@@ -4231,17 +4124,16 @@ void M_Menu_Mods_f (void)
 	}
 
 	MC_AddFrameStart(menu, 32);
-	for (i = 0; i < mods.nummods || i<1; i++)
+	for (i = 0; i<1 || Mods_GetMod(i); i++)
 	{
 		c = MC_AddCustom(menu, 64, 32+i*8, menu->data, i, NULL);
-		if (!menu->cursoritem)
-			menu->cursoritem = (menuoption_t*)c;
+//		if (!menu->selecteditem)
+//			menu->selecteditem = (menuoption_t*)c;
 		c->common.height = 8;
 		c->draw = Mods_Draw;
 		c->key = Mods_Key;
-		menu->remove = Mods_Remove;
 	}
-	MC_AddFrameEnd(menu, 32+i*8);
+	MC_AddFrameEnd(menu, 32);
 }
 
 #if 0

@@ -3,8 +3,6 @@
 /*Todo (in no particular order):
 	tooltips for inspecting variables/types.
 	variables/watch list.
-	calltips for argument info
-	autocompletion calltips, for people who can't remember function names
 	initial open project prompt
 	shpuld's styling
 	decompiler output saving
@@ -47,8 +45,14 @@ extern int fl_tabsize;
 extern char enginebinary[MAX_OSPATH];
 extern char enginebasedir[MAX_OSPATH];
 extern char enginecommandline[8192];
+
+extern QCC_def_t *sourcefilesdefs[];
+extern int sourcefilesnumdefs;
 };
 static char *cmdlineargs;
+
+static progfuncs_t guiprogfuncs;
+static progexterns_t guiprogexterns;
 
 #undef NULL
 #define NULL nullptr
@@ -60,7 +64,7 @@ template<class T> inline T cpprealloc(T p, size_t s) {return static_cast<T>(real
 #define STRINGIFY2(s) #s
 #define STRINGIFY(s) STRINGIFY2(s)
 
-
+static QProcess *qcdebugger;
 static void DebuggerStop(void);
 static bool DebuggerSendCommand(const char *msg, ...);
 static void DebuggerStart(void);
@@ -407,9 +411,130 @@ public:
 	}
 };
 
+class WrappedQsciScintilla:public QsciScintilla
+{
+public:
+	WrappedQsciScintilla(QWidget *parent):QsciScintilla(parent){}
+
+	char *WordUnderCursor(char *word, int wordsize, char *term, int termsize, int position)
+	{
+		unsigned char linebuf[1024];
+		long charidx;
+		long lineidx;
+		long len;
+		pbool noafter = (position==-2);
+
+		if (position == -3)
+		{
+			len = SendScintilla(QsciScintillaBase::SCI_GETSELTEXT, NULL);
+			if (len > 0 && len < wordsize)
+			{
+				len = SendScintilla(QsciScintillaBase::SCI_GETSELTEXT, word);
+				if (len>0)
+					return word;
+			}
+		}
+
+		if (position < 0)
+			position = SendScintilla(QsciScintillaBase::SCI_GETCURRENTPOS);
+
+		lineidx = SendScintilla(QsciScintillaBase::SCI_LINEFROMPOSITION, position);
+		charidx = position - SendScintilla(QsciScintillaBase::SCI_POSITIONFROMLINE, lineidx);
+
+		len = SendScintilla(QsciScintillaBase::SCI_LINELENGTH, lineidx);
+		if (len >= sizeof(linebuf))
+		{
+			*word = 0;
+			return word;
+		}
+		len = SendScintilla(QsciScintillaBase::SCI_GETLINE, lineidx, linebuf);
+		linebuf[len] = 0;
+		if (charidx >= len)
+			charidx = len-1;
+
+		if (noafter)	//truncate it here if we're not meant to be reading anything after.
+			linebuf[charidx] = 0;
+
+		if (word)
+		{
+			//skip back to the start of the word
+			while(charidx > 0 && (
+				(linebuf[charidx-1] >= 'a' && linebuf[charidx-1] <= 'z') ||
+				(linebuf[charidx-1] >= 'A' && linebuf[charidx-1] <= 'Z') ||
+				(linebuf[charidx-1] >= '0' && linebuf[charidx-1] <= '9') ||
+				linebuf[charidx-1] == '_' || linebuf[charidx-1] == ':' ||
+				linebuf[charidx-1] >= 128
+				))
+			{
+				charidx--;
+			}
+			//copy the result out
+			lineidx = 0;
+			wordsize--;
+			while (wordsize && (
+				(linebuf[charidx] >= 'a' && linebuf[charidx] <= 'z') ||
+				(linebuf[charidx] >= 'A' && linebuf[charidx] <= 'Z') ||
+				(linebuf[charidx] >= '0' && linebuf[charidx] <= '9') ||
+				linebuf[charidx] == '_' || linebuf[charidx] == ':' ||
+				linebuf[charidx] >= 128
+				))
+			{
+				word[lineidx++] = linebuf[charidx++];
+				wordsize--;
+			}
+			word[lineidx++] = 0;
+		}
+
+		if (term)
+		{
+			//skip back to the start of the word
+			while(charidx > 0 && (
+				(linebuf[charidx-1] >= 'a' && linebuf[charidx-1] <= 'z') ||
+				(linebuf[charidx-1] >= 'A' && linebuf[charidx-1] <= 'Z') ||
+				(linebuf[charidx-1] >= '0' && linebuf[charidx-1] <= '9') ||
+				linebuf[charidx-1] == '_' || linebuf[charidx-1] == ':' || linebuf[charidx-1] == '.' ||
+				linebuf[charidx-1] == '[' || linebuf[charidx-1] == ']' ||
+				linebuf[charidx-1] >= 128
+				))
+			{
+				charidx--;
+			}
+			//copy the result out
+			lineidx = 0;
+			termsize--;
+			while (termsize && (
+				(linebuf[charidx] >= 'a' && linebuf[charidx] <= 'z') ||
+				(linebuf[charidx] >= 'A' && linebuf[charidx] <= 'Z') ||
+				(linebuf[charidx] >= '0' && linebuf[charidx] <= '9') ||
+				linebuf[charidx] == '_' || linebuf[charidx] == ':' || linebuf[charidx] == '.' ||
+				linebuf[charidx] == '[' || linebuf[charidx] == ']' ||
+				linebuf[charidx] >= 128
+				))
+			{
+				term[lineidx++] = linebuf[charidx++];
+				termsize--;
+			}
+			term[lineidx++] = 0;
+		}
+		return word;
+	}
+protected:
+	void contextMenuEvent(QContextMenuEvent *event);
+};
+
 class documentlist : public QAbstractListModel
 {
-	QsciScintilla *s;	//this is the widget that we load our documents into
+public: enum endings_e
+	{
+		NONE	= 0,	//no endings at all yet
+		UNIX	= 1,
+		MAC		= 2,
+		MIXED	= 3,
+		WINDOWS = 4,
+	};
+private:
+
+	WrappedQsciScintilla *s;	//this is the widget that we load our documents into
 
 	int numdocuments;
 	struct document_s
@@ -419,6 +544,8 @@ class documentlist : public QAbstractListModel
 		time_t filemodifiedtime;
 		bool modified;
 		int cursorline;
+		int cursorindex;
+		enum endings_e endings;	//line endings for this file.
 		int savefmt;	//encoding to save as
 		QsciDocument doc;
 		QsciLexer *l;
@@ -441,6 +568,10 @@ class documentlist : public QAbstractListModel
 				return;
 			dl.curdoc = oldval;
 			dl.s->setDocument(dl.curdoc->doc);
+
+			//annoying, but it completely loses your position otherwise.
+			dl.s->setCursorPosition(dl.curdoc->cursorline-1, dl.curdoc->cursorindex);
+			dl.s->ensureCursorVisible();
 		}
 	};
 
@@ -480,7 +611,7 @@ class documentlist : public QAbstractListModel
 	}
 	void UpdateTitle(void);
 public:
-	documentlist(QsciScintilla *editor)
+	documentlist(WrappedQsciScintilla *editor)
 	{
 		s = editor;
 		numdocuments = 0;
@@ -492,6 +623,7 @@ public:
 				if (curdoc)
 				{
 					curdoc->cursorline = line+1;
+					curdoc->cursorindex = index;
 					UpdateTitle();
 				}
 			});
@@ -807,6 +939,60 @@ public:
 		}
 */	}
 
+	void SwitchToDocument_Internal(document_s *ed)
+	{
+		curdoc = ed;
+		s->setDocument(ed->doc);
+
+		switch(ed->endings)
+		{
+#ifdef _WIN32
+		case endings_e::NONE: //new file with no endings, default to windows on windows.
+#endif
+		case endings_e::WINDOWS: //windows
+			s->setEolMode(QsciScintilla::EolMode::EolWindows);
+			s->setEolVisibility(false);
+			break;
+#ifndef _WIN32
+		case endings_e::NONE: //new file with no endings, default to unix on non-windows.
+#endif
+		case endings_e::UNIX: //unix
+			s->setEolMode(QsciScintilla::EolMode::EolUnix);
+			s->setEolVisibility(false);
+			break;
+		case endings_e::MAC: //mac. traditionally qccs have never supported this. one of the mission packs has a \r in the middle of some single-line comment.
+			s->setEolMode(QsciScintilla::EolMode::EolMac);
+			s->setEolVisibility(false);
+			break;
+		default: //panic! everyone panic!
+			s->setEolMode(QsciScintilla::EolMode::EolUnix);
+			s->setEolVisibility(true);
+			break;
+		}
+
+		s->setUtf8(ed->savefmt != UTF_ANSI);
+	}
+	void ConvertEndings(endings_e newendings)
+	{
+		curdoc->endings = newendings;
+
+		switch(newendings)
+		{
+		case endings_e::WINDOWS: //windows
+			s->convertEols(QsciScintilla::EolWindows);
+			break;
+		case endings_e::UNIX: //unix
+			s->convertEols(QsciScintilla::EolUnix);
+			break;
+		case endings_e::MAC: //mac. traditionally qccs have never supported this. one of the mission packs has a \r in the middle of some single-line comment.
+			s->convertEols(QsciScintilla::EolMac);
+			break;
+		default:
+			break;	//not real endings.
+		}
+
+		SwitchToDocument_Internal(curdoc);
+	}
 	bool CreateDocument(document_s *ed)
 	{
 		size_t flensz;
@@ -820,7 +1006,7 @@ public:
 		QCC_StatFile(ed->fname, &sbuf);
 		ed->filemodifiedtime = sbuf.st_mtime;
 
-		int endings = 0;
+		endings_e endings = endings_e::NONE;
 		char *e, *stop;
 		for (e = file, stop=file+flen; e < stop; )
 		{
@@ -830,45 +1016,40 @@ public:
 				if (*e == '\n')
 				{
 					e++;
-					endings |= 4;
+					if (endings != endings_e::WINDOWS)
+						endings = endings?(endings_e::MIXED):endings_e::WINDOWS;
 				}
 				else
-					endings |= 2;
+				{
+					if (endings != endings_e::MAC)
+						endings = endings?(endings_e::MIXED):endings_e::MAC;
+				}
 			}
 			else if (*e == '\n')
 			{
 				e++;
-				endings |= 1;
+				if (endings != endings_e::UNIX)
+					endings = endings?(endings_e::MIXED):endings_e::UNIX;
 			}
 			else
 				e++;
 		}
+		ed->endings = endings;
 
-		curdoc = ed;
-		s->setDocument(ed->doc);
+		SwitchToDocument_Internal(ed);
 
-		switch(endings)
+		connect(s, &QsciScintillaBase::SCN_CHARADDED, [=](int charadded)
 		{
-		case 0: //new file with no endings, default to windows on windows.
-		case 4: //windows
-			s->setEolMode(QsciScintilla::EolMode::EolWindows);
-			s->setEolVisibility(false);
-			break;
-		case 1: //unix
-			s->setEolMode(QsciScintilla::EolMode::EolUnix);
-			s->setEolVisibility(false);
-			break;
-		case 2: //mac. traditionally qccs have never supported this. one of the mission packs has a \r in the middle of some single-line comment.
-			s->setEolMode(QsciScintilla::EolMode::EolMac);
-			s->setEolVisibility(false);
-			break;
-		default:    //panic! everyone panic!
-			s->setEolMode(QsciScintilla::EolMode::EolUnix);
-			s->setEolVisibility(true);
-			break;
-		}
+			if (charadded == '(')
+			{
+				int pos = s->SendScintilla(QsciScintillaBase::SCI_GETCURRENTPOS);
+				char *tooltext = GetCalltipForLine(pos-1);
+				//tooltip_editor = NULL;
+				if (tooltext)
+					s->SendScintilla(QsciScintillaBase::SCI_CALLTIPSHOW, pos, tooltext);
+			}
+		});
 
-		s->setUtf8(ed->savefmt != UTF_ANSI);
 		s->setText(QString(file));
 
 		SetupScintilla(ed);
@@ -888,8 +1069,7 @@ public:
 			return;
 		}
 
-		curdoc = ed;
-		s->setDocument(ed->doc);
+		SwitchToDocument_Internal(ed);
 	}
 
 	document_s *FindFile(const char *filename)
@@ -925,6 +1105,167 @@ public:
 		auto text = s->text().toUtf8();
 		ret = text.length();
 		return ret;
+	}
+
+	char *GetCalltipForLine(int cursorpos)	//calltips are used for tooltips too, so there's some extra weirdness in here
+	{
+		static char buffer[1024];
+		char wordbuf[256], *text;
+		char term[256];
+		char *defname;
+		defname = s->WordUnderCursor(wordbuf, sizeof(wordbuf), term, sizeof(term), cursorpos);
+		if (!*defname)
+			return NULL;
+		else if (globalstable.numbuckets)
+		{
+			QCC_def_t *def;
+			int fno;
+			int line;
+			int best, bestline;
+			char *macro = QCC_PR_CheckCompConstTooltip(defname, buffer, buffer + sizeof(buffer));
+			if (macro && *macro)
+				return macro;
+
+			/*if (dwell)
+			{
+				tooltip_editor = NULL;
+				*tooltip_variable = 0;
+				tooltip_position = 0;
+				*tooltip_type = 0;
+				*tooltip_comment = 0;
+			}*/
+
+			line = s->SendScintilla(QsciScintillaBase::SCI_LINEFROMPOSITION, cursorpos);
+
+			for (best = 0,bestline=0, fno = 1; fno < numfunctions; fno++)
+			{
+				if (line > functions[fno].line && bestline < functions[fno].line)
+				{
+					if (!strcmp(curdoc->fname, functions[fno].filen))
+					{
+						best = fno;
+						bestline = functions[fno].line;
+					}
+				}
+			}
+			if (best)
+			{
+				if (strstr(functions[best].name, "::"))
+				{
+					QCC_type_t *type;
+					char tmp[256];
+					char *c;
+					QC_strlcpy(tmp, functions[best].name, sizeof(tmp));
+					c = strstr(tmp, "::");
+					if (c)
+						*c = 0;
+					type = QCC_TypeForName(tmp);
+
+					if (type->type == ev_entity)
+					{
+						QCC_def_t *def;
+						QC_snprintfz(tmp, sizeof(tmp), "%s::__m%s", type->name, term);
+
+						for (fno = 0, def = NULL; fno < sourcefilesnumdefs && !def; fno++)
+						{
+							for (def = sourcefilesdefs[fno]; def; def = def->next)
+							{
+								if (def->scope && def->scope != &functions[best])
+									continue;
+	//							OutputDebugString(def->name);
+	//							OutputDebugString("\n");
+								if (!strcmp(def->name, tmp))
+								{
+									//FIXME: look at the scope's function to find the start+end of the function and filter based upon that, to show locals
+									break;
+								}
+							}
+						}
+
+						if (def && def->type->type == ev_field)
+						{
+	//						QC_strlcpy(tmp, term, sizeof(tmp));
+							QC_snprintfz(term, sizeof(term), "self.%s", tmp);
+						}
+						else
+						{
+							for (fno = 0, def = NULL; fno < sourcefilesnumdefs && !def; fno++)
+							{
+								for (def = sourcefilesdefs[fno]; def; def = def->next)
+								{
+									if (def->scope && def->scope != &functions[best])
+										continue;
+									if (!strcmp(def->name, term))
+									{
+										//FIXME: look at the scope's function to find the start+end of the function and filter based upon that, to show locals
+										break;
+									}
+								}
+							}
+							if (def && def->type->type == ev_field)
+							{
+								QC_strlcpy(tmp, term, sizeof(tmp));
+								QC_snprintfz(term, sizeof(term), "self.%s", tmp);
+							}
+						}
+					}
+				}
+			}
+
+			//FIXME: we may need to display types too
+			for (fno = 0, def = NULL; fno < sourcefilesnumdefs && !def; fno++)
+			{
+				for (def = sourcefilesdefs[fno]; def; def = def->next)
+				{
+					if (def->scope)
+						continue;
+					if (!strcmp(def->name, defname))
+					{
+						//FIXME: look at the scope's function to find the start+end of the function and filter based upon that, to show locals
+						break;
+					}
+				}
+			}
+
+			if (def)
+			{
+				char typebuf[1024];
+				char valuebuf[1024];
+				if (def->constant && def->type->type == ev_float)
+					QC_snprintfz(valuebuf, sizeof(valuebuf), " = %g", def->symboldata[def->ofs]._float);
+				else if (def->constant && def->type->type == ev_integer)
+					QC_snprintfz(valuebuf, sizeof(valuebuf), " = %i", def->symboldata[def->ofs]._int);
+				else if (def->constant && def->type->type == ev_vector)
+					QC_snprintfz(valuebuf, sizeof(valuebuf), " = '%g %g %g'", def->symboldata[def->ofs].vector[0], def->symboldata[def->ofs].vector[1], def->symboldata[def->ofs].vector[2]);
+				else
+					*valuebuf = 0;
+				//note function argument names do not persist beyond the function def. we might be able to read the function's localdefs for them, but that's unreliable/broken with builtins where they're most needed.
+				if (def->comment)
+					QC_snprintfz(buffer, sizeof(buffer)-1, "%s %s%s\r\n%s", TypeName(def->type, typebuf, sizeof(typebuf)), def->name, valuebuf, def->comment);
+				else
+					QC_snprintfz(buffer, sizeof(buffer)-1, "%s %s%s", TypeName(def->type, typebuf, sizeof(typebuf)), def->name, valuebuf);
+
+				text = buffer;
+			}
+			else
+				text = NULL;
+
+			return text;
+		}
+		else
+			return NULL;//"Type info not available. Compile first.";
+	}
+
+	void clearannotates(void)
+	{
+		for (int i = 0; i < numdocuments; i++)
+		{
+			document_s *d = docs[i];
+			s->setDocument(d->doc);
+			s->clearAnnotations();
+		}
+		if (curdoc)
+			s->setDocument(curdoc->doc);
 	}
 
 	bool annotate(const char *line)
@@ -1049,6 +1390,7 @@ public:
 			//UpdateEditorTitle(d);
 		}
 
+		UpdateTitle();
 		return true;
 	}
 
@@ -1123,6 +1465,47 @@ public:
 		s->SendScintilla(mode?QsciScintillaBase::SCI_MARKERADD:QsciScintillaBase::SCI_MARKERDELETE, curdoc->cursorline-1);
 
 		DebuggerSendCommand("qcbreakpoint %i \"%s\" %i\n", mode, curdoc->fname, curdoc->cursorline);
+	}
+	/*void setMarkerLine(int linenum)
+	{	//moves the 'current-line' marker to the active document and current line
+		for (int i = 0; i < numdocuments; i++)
+		{
+			docstacklock lock(this, docs[i]);
+			s->SendScintilla(QsciScintillaBase::SCI_MARKERDELETEALL, 1);
+			s->SendScintilla(QsciScintillaBase::SCI_MARKERDELETEALL, 2);
+		}
+
+		if (linenum <= 0)
+			return;
+		s->SendScintilla(QsciScintillaBase::SCI_MARKERADD, linenum-1, 1);
+		s->SendScintilla(QsciScintillaBase::SCI_MARKERADD, linenum-1, 2);
+	}*/
+	void setNextStatement(void)
+	{
+		if (!curdoc)
+			return;
+		if (!qcdebugger)
+			return;	//can't move it if we're not running.
+
+		DebuggerSendCommand("qcjump \"%s\" %i\n", curdoc->fname, curdoc->cursorline);
+	}
+	void autoComplete(void)
+	{
+		if (!curdoc)
+			return;
+
+		char word[256];
+		char suggestions[65536];
+		s->WordUnderCursor(word, sizeof(word), NULL, 0, -2);
+		if (*word && GenAutoCompleteList(word, suggestions, sizeof(suggestions)))
+		{
+			s->SendScintilla(QsciScintillaBase::SCI_AUTOCSETFILLUPS, ".,[<>(*/+-=\t\n");
+			s->SendScintilla(QsciScintillaBase::SCI_AUTOCSHOW, strlen(word), suggestions);
+		}
+
+		//s->SendScintilla(QsciScintillaBase::SCI_CALLTIPSHOW, (int)0, "hello world");
+
+		//SCI_CALLTIPSHOW pos, "text"
 	}
 	void setNext(void)
 	{
@@ -1199,8 +1582,12 @@ class optionswindow : public QDialog
 			w->setEnabled(fl_nondfltopts);	//FIXME: should use tristate on a per-setting basis
 		}
 	}
-
 public:
+	~optionswindow()
+	{
+		GUI_SaveConfig();
+	}
+
 	optionswindow()
 	{
 		setModal(true);
@@ -1304,7 +1691,7 @@ public:
 static class guimainwindow : public QMainWindow
 {
 public:
-	QsciScintilla s;
+	WrappedQsciScintilla s;
 	QSplitter leftrightsplit;
 	QSplitter logsplit;
 	QSplitter leftsplit;
@@ -1318,215 +1705,230 @@ public:
 private:
 	void CreateMenus(void)
 	{
-		auto fileMenu = menuBar()->addMenu(tr("&File"));
+		{
+			auto fileMenu = menuBar()->addMenu(tr("&File"));
 
-		//editor UI things
-		auto fileopen = new QAction(tr("Open"), this);
-		fileMenu->addAction(fileopen);
-		fileopen->setShortcuts(QKeySequence::listFromString("Ctrl+O"));
-		connect(fileopen, &QAction::triggered, [=]()
-			{
-				GUIprintf("Ctrl+O hit\n");
-			});
-		auto filesave = new QAction(tr("Save"), this);
-		fileMenu->addAction(filesave);
-		filesave->setShortcuts(QKeySequence::listFromString("Ctrl+S"));
-		connect(filesave, &QAction::triggered, [=]()
-			{
-				if (!docs.saveDocument(NULL))
-					QMessageBox::critical(nullptr, "Error", QString::asprintf("Unable to save"));
-			});
-
-		auto prefs = new QAction(tr("&Preferences"), this);
-		fileMenu->addAction(prefs);
-		prefs->setShortcuts(QKeySequence::Preferences);
-		prefs->setStatusTip(tr("Reconfigure stuff"));
-		connect(prefs, &QAction::triggered, [](){(new optionswindow())->show();});
-
-		auto goline = new QAction(tr("Go to line"), this);
-		fileMenu->addAction(goline);
-		goline->setShortcuts(QKeySequence::listFromString("Ctrl+G"));
-		goline->setStatusTip(tr("Jump to line"));
-		connect(goline, &QAction::triggered, [=]()
-			{
-				struct grepargs_s
+			//editor UI things
+			auto fileopen = new QAction(tr("Open"), this);
+			fileMenu->addAction(fileopen);
+			fileopen->setShortcuts(QKeySequence::listFromString("Ctrl+O"));
+			connect(fileopen, &QAction::triggered, [=]()
 				{
-					guimainwindow *mw;
-					QDialog *d;
-					QLineEdit *t;
-				} args = {this, new QDialog()};
-				args.t = new QLineEdit(QString(""));
-				auto l = new QVBoxLayout;
-				l->addWidget(args.t);
-				args.d->setLayout(l);
-				args.d->setWindowTitle("FTEQCC Go To Line");
-				args.t->installEventFilter(new keyEnterReceiver<grepargs_s>([](grepargs_s &ctx)
-					{
-						ctx.mw->docs.EditFile(NULL, atoi(ctx.t->text().toUtf8().data()));
-						ctx.d->done(0);
-					}, args));
-				args.d->show();
-			});
-
-		auto godef = new QAction(tr("Go To Definition"), this);
-		fileMenu->addAction(godef);
-		godef->setShortcuts(QKeySequence::listFromString("F12"));
-		connect(godef, &QAction::triggered, [=]()
-			{
-				struct grepargs_s
+					GUIprintf("Ctrl+O hit\n");
+					QMessageBox::critical(nullptr, "Error", QString::asprintf("Not yet implemented"));
+				});
+			auto filesave = new QAction(tr("Save"), this);
+			fileMenu->addAction(filesave);
+			filesave->setShortcuts(QKeySequence::listFromString("Ctrl+S"));
+			connect(filesave, &QAction::triggered, [=]()
 				{
-					guimainwindow *mw;
-					QDialog *d;
-					QLineEdit *t;
-				} args = {this, new QDialog()};
-				args.t = new QLineEdit(this->s.selectedText());
-				auto l = new QVBoxLayout;
-				l->addWidget(args.t);
-				args.d->setLayout(l);
-				args.d->setWindowTitle("Go To Definition");
-				args.t->installEventFilter(new keyEnterReceiver<grepargs_s>([](grepargs_s &ctx)
-					{
-						GoToDefinition(ctx.t->text().toUtf8().data());
-						ctx.d->done(0);
-					}, args));
-				args.d->show();
-			});
+					if (!docs.saveDocument(NULL))
+						QMessageBox::critical(nullptr, "Error", QString::asprintf("Unable to save"));
+				});
 
-		auto find = new QAction(tr("Find"), this);
-		fileMenu->addAction(find);
-		find->setShortcuts(QKeySequence::listFromString("Ctrl+F"));
-		find->setStatusTip(tr("Search through all project files"));
-		connect(find, &QAction::triggered, [=]()
-			{
-				struct grepargs_s
+			auto prefs = new QAction(tr("&Preferences"), this);
+			fileMenu->addAction(prefs);
+			prefs->setShortcuts(QKeySequence::Preferences);
+			prefs->setStatusTip(tr("Reconfigure stuff"));
+			connect(prefs, &QAction::triggered, [](){auto w = new optionswindow();w->setAttribute(Qt::WidgetAttribute::WA_DeleteOnClose, true); w->show();});
+
+			auto goline = new QAction(tr("Go to line"), this);
+			fileMenu->addAction(goline);
+			goline->setShortcuts(QKeySequence::listFromString("Ctrl+G"));
+			goline->setStatusTip(tr("Jump to line"));
+			connect(goline, &QAction::triggered, [=]()
 				{
-					guimainwindow *mw;
-					QDialog *d;
-					QLineEdit *t;
-				} args = {this, new QDialog()};
-				args.t = new QLineEdit(this->s.selectedText());
-				auto l = new QVBoxLayout;
-				l->addWidget(args.t);
-				args.d->setLayout(l);
-				args.d->setWindowTitle("FTEQCC Find");
-				args.t->installEventFilter(new keyEnterReceiver<grepargs_s>([](grepargs_s &ctx)
+					struct grepargs_s
 					{
-						ctx.mw->s.findFirst(ctx.t->text(), false, false, false, true);
-						ctx.d->done(0);
-					}, args));
-				args.d->show();
-			});
-		connect(new QShortcut(QKeySequence(tr("F3", "File|FindNext")), this), &QShortcut::activated,
-			[=]()
-			{
-				s.findNext();
-			});
+						guimainwindow *mw;
+						QDialog *d;
+						QLineEdit *t;
+					} args = {this, new QDialog()};
+					args.t = new QLineEdit(QString(""));
+					auto l = new QVBoxLayout;
+					l->addWidget(args.t);
+					args.d->setLayout(l);
+					args.d->setWindowTitle("FTEQCC Go To Line");
+					args.t->installEventFilter(new keyEnterReceiver<grepargs_s>([](grepargs_s &ctx)
+						{
+							ctx.mw->docs.EditFile(NULL, atoi(ctx.t->text().toUtf8().data()));
+							ctx.d->done(0);
+						}, args));
+					args.d->show();
+				});
 
-		auto grep = new QAction(tr("Grep"), this);
-		fileMenu->addAction(grep);
-		grep->setShortcuts(QKeySequence::listFromString("Ctrl+Shift+G"));
-		grep->setStatusTip(tr("Search through all project files"));
-		connect(grep, &QAction::triggered, [=]()
-			{
-				struct grepargs_s
+			auto find = new QAction(tr("Find In File"), this);
+			fileMenu->addAction(find);
+			find->setShortcuts(QKeySequence::listFromString("Ctrl+F"));
+			find->setStatusTip(tr("Search for a token in the current file"));
+			connect(find, &QAction::triggered, [=]()
 				{
-					guimainwindow *mw;
-					QDialog *d;
-					QLineEdit *t;
-				} args = {this, new QDialog()};
-				args.t = new QLineEdit(this->s.selectedText());
-				auto l = new QVBoxLayout;
-				l->addWidget(args.t);
-				args.d->setLayout(l);
-				args.d->setWindowTitle("FTEQCC Grep Project Files");
-				args.t->installEventFilter(new keyEnterReceiver<grepargs_s>([](grepargs_s &ctx)
+					struct grepargs_s
 					{
-						ctx.mw->files.GrepAll(ctx.t->text().toUtf8().data());
-						ctx.d->done(0);
-					}, args));
-				args.d->show();
-			});
+						guimainwindow *mw;
+						QDialog *d;
+						QLineEdit *t;
+					} args = {this, new QDialog()};
+					args.t = new QLineEdit(this->s.selectedText());
+					auto l = new QVBoxLayout;
+					l->addWidget(args.t);
+					args.d->setLayout(l);
+					args.d->setWindowTitle("Find In File");
+					args.t->installEventFilter(new keyEnterReceiver<grepargs_s>([](grepargs_s &ctx)
+						{
+							ctx.mw->s.findFirst(ctx.t->text(), false, false, false, true);
+							ctx.d->done(0);
+						}, args));
+					args.d->show();
+				});
+			connect(new QShortcut(QKeySequence(tr("F3", "File|FindNext")), this), &QShortcut::activated,
+				[=]()
+				{
+					s.findNext();
+				});
 
-		//convert to utf-8 chars
-		//convert to Quake chars
+			auto grep = new QAction(tr("Find In Project"), this);
+			fileMenu->addAction(grep);
+			grep->setShortcuts(QKeySequence::listFromString("Ctrl+Shift+F"));
+			grep->setStatusTip(tr("Search through all project files"));
+			connect(grep, &QAction::triggered, [=]()
+				{
+					struct grepargs_s
+					{
+						guimainwindow *mw;
+						QDialog *d;
+						QLineEdit *t;
+					} args = {this, new QDialog()};
+					args.t = new QLineEdit(this->s.selectedText());
+					auto l = new QVBoxLayout;
+					l->addWidget(args.t);
+					args.d->setLayout(l);
+					args.d->setWindowTitle("Find In Project");
+					args.t->installEventFilter(new keyEnterReceiver<grepargs_s>([](grepargs_s &ctx)
+						{
+							ctx.mw->files.GrepAll(ctx.t->text().toUtf8().data());
+							ctx.d->done(0);
+						}, args));
+					args.d->show();
+				});
 
-		auto convertunix = new QAction(tr("Convert to Unix Endings"), this);
-		fileMenu->addAction(convertunix);
-		connect(convertunix, &QAction::triggered, [=]()
-			{
-				s.convertEols(QsciScintilla::EolUnix);
-				s.setEolVisibility(false);
-			});
-		auto convertdos = new QAction(tr("Convert to DOS Endings"), this);
-		fileMenu->addAction(convertdos);
-		connect(convertdos, &QAction::triggered, [=]()
-			{
-				s.convertEols(QsciScintilla::EolWindows);
-				s.setEolVisibility(false);
-			});
+			auto quit = new QAction(tr("Quit"), this);
+			fileMenu->addAction(quit);
+			connect(quit, &QAction::triggered, [=]()
+				{
+					this->close();
+				});
+		}
+		{
+			auto editMenu = menuBar()->addMenu(tr("&Edit"));
 
-		auto quit = new QAction(tr("Quit"), this);
-		fileMenu->addAction(quit);
-		connect(quit, &QAction::triggered, [=]()
-			{
-				this->close();
-			});
+			//undo
+			//redo
 
+			auto godef = new QAction(tr("Go To Definition"), this);
+			editMenu->addAction(godef);
+			godef->setShortcuts(QKeySequence::listFromString("F12"));
+			connect(godef, &QAction::triggered, [=]()
+				{
+					struct grepargs_s
+					{
+						guimainwindow *mw;
+						QDialog *d;
+						QLineEdit *t;
+					} args = {this, new QDialog()};
+					args.t = new QLineEdit(this->s.selectedText());
+					auto l = new QVBoxLayout;
+					l->addWidget(args.t);
+					args.d->setLayout(l);
+					args.d->setWindowTitle("Go To Definition");
+					args.t->installEventFilter(new keyEnterReceiver<grepargs_s>([](grepargs_s &ctx)
+						{
+							GoToDefinition(ctx.t->text().toUtf8().data());
+							ctx.d->done(0);
+						}, args));
+					args.d->show();
+				});
 
-		auto debugMenu = menuBar()->addMenu(tr("&Debug"));
-		auto debugrebuild = new QAction(tr("Rebuild"), this);
-		debugMenu->addAction(debugrebuild);
-		debugrebuild->setShortcuts(QKeySequence::listFromString("F7"));
-		connect(debugrebuild, &QAction::triggered, [=]()
-			{
-				RunCompiler("", false);
-			});
-		auto debugsetnext = new QAction(tr("Set Next Statement"), this);
-		debugMenu->addAction(debugsetnext);
-		debugsetnext->setShortcuts(QKeySequence::listFromString("F8"));
-		connect(debugsetnext, &QAction::triggered, [=]()
-			{
-				//FIXME
-			});
-		auto debugresume = new QAction(tr("Resume"), this);
-		debugMenu->addAction(debugresume);
-		debugresume->setShortcuts(QKeySequence::listFromString("F5"));
-		connect(debugresume, &QAction::triggered, [=]()
-			{
-				if (!DebuggerSendCommand("qcresume\n"))
-					DebuggerStart();	//unable to send? assume its not running.
-			});
-		auto debugover = new QAction(tr("Step Over"), this);
-		debugMenu->addAction(debugover);
-		debugover->setShortcuts(QKeySequence::listFromString("F10"));
-		connect(debugover, &QAction::triggered, [=]()
-			{
-				if (!DebuggerSendCommand("qcstep over\n"))
-					DebuggerStart();
-			});
-		auto debuginto = new QAction(tr("Step Into"), this);
-		debugMenu->addAction(debuginto);
-		debuginto->setShortcuts(QKeySequence::listFromString("F11"));
-		connect(debuginto, &QAction::triggered, [=]()
-			{
-				if (!DebuggerSendCommand("qcstep into\n"))
-					DebuggerStart();
-			});
-		auto debugout = new QAction(tr("Step Out"), this);
-		debugMenu->addAction(debugout);
-		debugout->setShortcuts(QKeySequence::listFromString("Shift+F11"));
-		connect(debugout, &QAction::triggered, [=]()
-			{
-				if (!DebuggerSendCommand("qcstep out\n"))
-					DebuggerStart();
-			});
-		auto debugbreak = new QAction(tr("Toggle Breakpoint"), this);
-		debugMenu->addAction(debugbreak);
-		debugbreak->setShortcuts(QKeySequence::listFromString("F9"));
-		connect(debugbreak, &QAction::triggered, [=]()
-			{
-				docs.toggleBreak();
-			});
+			auto autocomplete = new QAction(tr("AutoComplete"), this);
+			editMenu->addAction(autocomplete);
+			autocomplete->setShortcuts(QKeySequence::listFromString("Ctrl+Space"));
+			connect(autocomplete, &QAction::triggered, [=]()
+				{
+					docs.autoComplete();
+				});
+			auto convertunix = new QAction(tr("Convert to Unix Endings"), this);
+			editMenu->addAction(convertunix);
+			connect(convertunix, &QAction::triggered, [=]()
+				{
+					docs.ConvertEndings(documentlist::endings_e::UNIX);
+				});
+			auto convertdos = new QAction(tr("Convert to DOS Endings"), this);
+			editMenu->addAction(convertdos);
+			connect(convertdos, &QAction::triggered, [=]()
+				{
+					docs.ConvertEndings(documentlist::endings_e::WINDOWS);
+				});
+
+			//convert to utf-8 chars
+			//convert to Quake chars
+		}
+		{
+			auto debugMenu = menuBar()->addMenu(tr("&Debug"));
+
+			auto debugrebuild = new QAction(tr("Rebuild"), this);
+			debugMenu->addAction(debugrebuild);
+			debugrebuild->setShortcuts(QKeySequence::listFromString("F7"));
+			connect(debugrebuild, &QAction::triggered, [=]()
+				{
+					RunCompiler("", false);
+				});
+			auto debugsetnext = new QAction(tr("Set Next Statement"), this);
+			debugMenu->addAction(debugsetnext);
+			debugsetnext->setShortcuts(QKeySequence::listFromString("F8"));
+			connect(debugsetnext, &QAction::triggered, [=]()
+				{
+					docs.setNextStatement();
+				});
+			auto debugresume = new QAction(tr("Resume"), this);
+			debugMenu->addAction(debugresume);
+			debugresume->setShortcuts(QKeySequence::listFromString("F5"));
+			connect(debugresume, &QAction::triggered, [=]()
+				{
+					if (!DebuggerSendCommand("qcresume\n"))
+						DebuggerStart();	//unable to send? assume its not running.
+				});
+			auto debugover = new QAction(tr("Step Over"), this);
+			debugMenu->addAction(debugover);
+			debugover->setShortcuts(QKeySequence::listFromString("F10"));
+			connect(debugover, &QAction::triggered, [=]()
+				{
+					if (!DebuggerSendCommand("qcstep over\n"))
+						DebuggerStart();
+				});
+			auto debuginto = new QAction(tr("Step Into"), this);
+			debugMenu->addAction(debuginto);
+			debuginto->setShortcuts(QKeySequence::listFromString("F11"));
+			connect(debuginto, &QAction::triggered, [=]()
+				{
+					if (!DebuggerSendCommand("qcstep into\n"))
+						DebuggerStart();
+				});
+			auto debugout = new QAction(tr("Step Out"), this);
+			debugMenu->addAction(debugout);
+			debugout->setShortcuts(QKeySequence::listFromString("Shift+F11"));
+			connect(debugout, &QAction::triggered, [=]()
+				{
+					if (!DebuggerSendCommand("qcstep out\n"))
+						DebuggerStart();
+				});
+			auto debugbreak = new QAction(tr("Toggle Breakpoint"), this);
+			debugMenu->addAction(debugbreak);
+			debugbreak->setShortcuts(QKeySequence::listFromString("F9"));
+			connect(debugbreak, &QAction::triggered, [=]()
+				{
+					docs.toggleBreak();
+				});
+		}
 	}
 
 public:
@@ -1597,6 +1999,52 @@ public:
 	}
 } *mainwnd;
 
+
+void WrappedQsciScintilla::contextMenuEvent(QContextMenuEvent *event)
+{
+	QMenu *menu = createStandardContextMenu();
+	static char blah[256];
+
+	if (*WordUnderCursor(blah, sizeof(blah), NULL, 0, -3))
+	{
+		menu->addSeparator();
+		connect(menu->addAction(tr("Go to definition")), &QAction::triggered, [=]()
+		{
+			GoToDefinition(blah);
+		});
+		connect(menu->addAction(tr("Find Usages")), &QAction::triggered, [=]()
+		{
+			mainwnd->files.GrepAll(blah);
+		});
+	}
+
+	menu->addSeparator();
+	connect(menu->addAction(tr("Toggle Breakpoint")), &QAction::triggered, [=]()
+	{
+		mainwnd->docs.toggleBreak();
+	});
+	if (qcdebugger)
+	{
+		connect(menu->addAction(tr("Set Next Statement")), &QAction::triggered, [=]()
+		{
+			mainwnd->docs.setNextStatement();
+		});
+		connect(menu->addAction(tr("Resume")), &QAction::triggered, [=]()
+		{
+		});
+	}
+	else
+	{
+		connect(menu->addAction(tr("Start Debugging")), &QAction::triggered, [=]()
+		{
+			DebuggerStart();
+		});
+	}
+
+	menu->exec(event->globalPos());
+	delete menu;
+}
+
 //called when progssrcname has changed.
 //progssrcname should already have been set.
 void UpdateFileList(void)
@@ -1645,27 +2093,25 @@ void RunCompiler(const char *args, pbool quick)
 	static FILE *logfile;
 	const char *argv[128];
 	int argc;
-	progexterns_t ext;
-	progfuncs_t funcs;
 
 	mainwnd->docs.saveAll();
 
-	memset(&funcs, 0, sizeof(funcs));
-	funcs.funcs.parms = &ext;
-	memset(&ext, 0, sizeof(ext));
-	ext.ReadFile = GUIReadFile;
-	ext.FileSize = GUIFileSize;
-	ext.WriteFile = QCC_WriteFile;
-	ext.Sys_Error = Sys_Error;
+	memset(&guiprogfuncs, 0, sizeof(guiprogfuncs));
+	guiprogfuncs.funcs.parms = &guiprogexterns;
+	memset(&guiprogexterns, 0, sizeof(guiprogexterns));
+	guiprogexterns.ReadFile = GUIReadFile;
+	guiprogexterns.FileSize = GUIFileSize;
+	guiprogexterns.WriteFile = QCC_WriteFile;
+	guiprogexterns.Sys_Error = Sys_Error;
 
 	if (quick)
-		ext.Printf = Dummyprintf;
+		guiprogexterns.Printf = Dummyprintf;
 	else
 	{
-		ext.Printf = GUIprintf;
+		guiprogexterns.Printf = GUIprintf;
 		GUIprintf("");
 	}
-	ext.DPrintf = ext.Printf;
+	guiprogexterns.DPrintf = guiprogexterns.Printf;
 
 	if (logfile)
 		fclose(logfile);
@@ -1676,7 +2122,7 @@ void RunCompiler(const char *args, pbool quick)
 
 	argc = GUI_BuildParms(args, argv, quick);
 
-	if (CompileParams(&funcs, NULL, argc, argv))
+	if (CompileParams(&guiprogfuncs, NULL, argc, argv))
 	{
 		if (!quick)
 		{
@@ -1717,18 +2163,16 @@ void GUI_DoDecompile(void *buf, size_t size)
 					{
 						int h = SafeOpenWrite(fname.toUtf8().data(), -1);
 
-						progfuncs_t funcs;
-						progexterns_t ext;
-						memset(&funcs, 0, sizeof(funcs));
-						funcs.funcs.parms = &ext;
-						memset(&ext, 0, sizeof(ext));
-						ext.ReadFile = GUIReadFile;
-						ext.FileSize = GUIFileSize;
-						ext.WriteFile = QCC_WriteFile;
-						ext.Sys_Error = Sys_Error;
-						ext.Printf = GUIprintf;
+						memset(&guiprogfuncs, 0, sizeof(guiprogfuncs));
+						guiprogfuncs.funcs.parms = &guiprogexterns;
+						memset(&guiprogexterns, 0, sizeof(guiprogexterns));
+						guiprogexterns.ReadFile = GUIReadFile;
+						guiprogexterns.FileSize = GUIFileSize;
+						guiprogexterns.WriteFile = QCC_WriteFile;
+						guiprogexterns.Sys_Error = Sys_Error;
+						guiprogexterns.Printf = GUIprintf;
 
-						qccprogfuncs = &funcs;
+						qccprogfuncs = &guiprogfuncs;
 						WriteSourceFiles(qcc_vfiles, h, true, false);
 						qccprogfuncs = NULL;
 
@@ -1916,6 +2360,8 @@ int GUIprintf(const char *msg, ...)
 			sizes.append(1);
 			mainwnd->logsplit.setSizes(sizes);
 		}
+
+		mainwnd->docs.clearannotates();
 		return 0;
 	}
 
@@ -2043,7 +2489,6 @@ int GUIFileSize(const char *fname)
 
 
 
-static QProcess *qcdebugger;
 static void DebuggerStop(void)
 {
 	if (qcdebugger)
@@ -2076,25 +2521,31 @@ static bool DebuggerSendCommand(const char *msg, ...)
 	va_end(va);
 	return true;
 }
+extern "C" pbool QCC_PR_SimpleGetToken (void);
 static void DebuggerStart(void)
 {
 	DebuggerStop();
 
 	const char *engine = enginebinary;
-	const char *cmdline = enginecommandline;
+	char *cmdline = enginecommandline;
 	if (!*enginebinary)
 	{
 		engine = "fteqw";
 		if(!*cmdline)
-			cmdline = "-window";
+			cmdline = (char*)"-window";
 	}
 	qcdebugger = new QProcess(mainwnd);
 	qcdebugger->setProgram(engine);
 	qcdebugger->setWorkingDirectory(enginebasedir);
-	qcdebugger->setArguments(QStringList(cmdline));
 
-	QObject::connect(qcdebugger, static_cast<void(QProcess::*)(int)>(&QProcess::finished),
-		[=](int exitcode)
+	QStringList args;
+	pr_file_p = cmdline;
+	while (QCC_PR_SimpleGetToken())
+		args.append(pr_token);
+	qcdebugger->setArguments(args);
+
+	QObject::connect(qcdebugger, static_cast<void(QProcess::*)(int,QProcess::ExitStatus)>(&QProcess::finished),
+		[=](int exitcode,QProcess::ExitStatus status)
 		{
 //			GUIprintf("Debuggee finished\n");
 //			DebuggerStop();	//can't kill it here, there's still code running inside it

@@ -25,6 +25,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "glquake.h"
 #include "renderque.h"
 #include "shader.h"
+#include "vr.h"
 
 void R_RenderBrushPoly (msurface_t *fa);
 
@@ -84,27 +85,28 @@ cvar_t	r_xflip = CVAR("leftisright", "0");
 
 extern	cvar_t	scr_fov;
 
-shader_t *scenepp_rescaled;
-shader_t *scenepp_antialias;
-shader_t *scenepp_waterwarp;
-shader_t *scenepp_gamma;
+static shader_t *scenepp_rescaled;
+static shader_t *scenepp_antialias;
+static shader_t *scenepp_waterwarp;
+static shader_t *scenepp_gamma;
 
 // post processing stuff
-texid_t sceneblur_texture;
-texid_t scenepp_texture_warp;
-texid_t scenepp_texture_edge;
+static texid_t sceneblur_texture;
+static texid_t scenepp_texture_warp;
+static texid_t scenepp_texture_edge;
 
 texid_t scenepp_postproc_cube;
-int scenepp_postproc_cube_size;
+static int scenepp_postproc_cube_size;
 
-fbostate_t fbo_gameview;
-fbostate_t fbo_postproc;
-fbostate_t fbo_postproc_cube;
+static fbostate_t fbo_vr;
+static fbostate_t fbo_gameview;
+static fbostate_t fbo_postproc;
+static fbostate_t fbo_postproc_cube;
 
 // KrimZon - init post processing - called in GL_CheckExtensions, when they're called
 // I put it here so that only this file need be changed when messing with the post
 // processing shaders
-void GL_InitSceneProcessingShaders_WaterWarp (void)
+static void GL_InitSceneProcessingShaders_WaterWarp (void)
 {
 	scenepp_waterwarp = NULL;
 	if (gl_config.arb_shader_objects)
@@ -130,6 +132,7 @@ void GL_InitSceneProcessingShaders_WaterWarp (void)
 
 void GL_ShutdownPostProcessing(void)
 {
+	GLBE_FBO_Destroy(&fbo_vr);
 	GLBE_FBO_Destroy(&fbo_gameview);
 	GLBE_FBO_Destroy(&fbo_postproc);
 	GLBE_FBO_Destroy(&fbo_postproc_cube);
@@ -218,7 +221,7 @@ void GL_SetupSceneProcessingTextures (void)
 		}
 	}
 
-	Image_Upload(scenepp_texture_warp, TF_RGBX32, pp_warp_tex, NULL, PP_WARP_TEX_SIZE, PP_WARP_TEX_SIZE, IF_LINEAR|IF_NOMIPMAP|IF_NOGAMMA);
+	Image_Upload(scenepp_texture_warp, TF_RGBX32, pp_warp_tex, NULL, PP_WARP_TEX_SIZE, PP_WARP_TEX_SIZE, 1, IF_LINEAR|IF_NOMIPMAP|IF_NOGAMMA);
 
 	// TODO: init edge texture - this is ampscale * 2, with ampscale calculated
 	// init warp texture - this specifies offset in
@@ -262,17 +265,17 @@ void GL_SetupSceneProcessingTextures (void)
 		}
 	}
 
-	Image_Upload(scenepp_texture_edge, TF_RGBX32, pp_edge_tex, NULL, PP_AMP_TEX_SIZE, PP_AMP_TEX_SIZE, IF_LINEAR|IF_NOMIPMAP|IF_NOGAMMA);
+	Image_Upload(scenepp_texture_edge, TF_RGBX32, pp_edge_tex, NULL, PP_AMP_TEX_SIZE, PP_AMP_TEX_SIZE, 1, IF_LINEAR|IF_NOMIPMAP|IF_NOGAMMA);
 }
 
 void R_RotateForEntity (float *m, float *modelview, const entity_t *e, const model_t *mod)
 {
-	if ((e->flags & RF_WEAPONMODEL) && r_refdef.playerview->viewentity > 0)
+	if (e->flags & RF_WEAPONMODEL)
 	{
 		float em[16];
 		float vm[16];
 
-		if (e->flags & RF_WEAPONMODELNOBOB)
+		if ((e->flags & RF_WEAPONMODELNOBOB) || r_refdef.playerview->viewentity <= 0)
 		{
 			vm[0] = vpn[0];
 			vm[1] = vpn[1];
@@ -427,56 +430,71 @@ void R_RotateForEntity (float *m, float *modelview, const entity_t *e, const mod
 
 //==================================================================================
 
-qboolean R_GameRectIsFullscreen(void);
 /*
 =============
 R_SetupGL
 =============
 */
-void R_SetupGL (float stereooffset, int i)
+static void R_SetupGL (vec3_t axisorigin[4], vec4_t fovoverrides, float projmatrix[16]/*for webvr*/, texid_t fbo)
 {
 	int		x, x2, y2, y, w, h;
 	vec3_t newa;
 
-	float fov_x, fov_y;
+	float fov_x, fov_y, fov_l, fov_r, fov_d, fov_u;
 	float fovv_x, fovv_y;
+
+	TRACE(("dbg: calling R_SetupGL\n"));
 
 	if (!r_refdef.recurse)
 	{
 		newa[0] = r_refdef.viewangles[0];
 		newa[1] = r_refdef.viewangles[1];
 		newa[2] = r_refdef.viewangles[2] + gl_screenangle.value;
-		if (r_refdef.stereomethod)
-			newa[1] += r_stereo_convergence.value * (i?0.5:-0.5);	//can we get away with this cheapness? rip 6dof
-		if (0)
+		if (axisorigin)
 		{
 			vec3_t paxis[3];
 			AngleVectors (newa, paxis[0], paxis[1], paxis[2]);
 
 			//R_ConcatRotations(r_refdef.headaxis, paxis, vpn);
 
-			VectorMA(vec3_origin,	r_refdef.headaxis[0][0], paxis[0], vpn);
-			VectorMA(vpn,			r_refdef.headaxis[0][1], paxis[1], vpn);
-			VectorMA(vpn,			r_refdef.headaxis[0][2], paxis[2], vpn);
+			VectorMA(vec3_origin,	axisorigin[0][0], paxis[0], vpn);
+			VectorMA(vpn,			axisorigin[0][1], paxis[1], vpn);
+			VectorMA(vpn,			axisorigin[0][2], paxis[2], vpn);
 
-			VectorMA(vec3_origin,	r_refdef.headaxis[1][0], paxis[0], vright);
-			VectorMA(vright,		r_refdef.headaxis[1][1], paxis[1], vright);
-			VectorMA(vright,		r_refdef.headaxis[1][2], paxis[2], vright);
+			VectorMA(vec3_origin,	axisorigin[1][0], paxis[0], vright);
+			VectorMA(vright,		axisorigin[1][1], paxis[1], vright);
+			VectorMA(vright,		axisorigin[1][2], paxis[2], vright);
 
-			VectorMA(vec3_origin,	r_refdef.headaxis[2][0], paxis[0], vup);
-			VectorMA(vup,			r_refdef.headaxis[2][1], paxis[1], vup);
-			VectorMA(vup,			r_refdef.headaxis[2][2], paxis[2], vup);
+			VectorMA(vec3_origin,	axisorigin[2][0], paxis[0], vup);
+			VectorMA(vup,			axisorigin[2][1], paxis[1], vup);
+			VectorMA(vup,			axisorigin[2][2], paxis[2], vup);
+
+
+			VectorMA(r_refdef.vieworg, axisorigin[3][0], vpn, r_origin);
+			VectorMA(r_origin, axisorigin[3][1], vright, r_origin);
+			VectorMA(r_origin, axisorigin[3][2], vup, r_origin);
 		}
 		else
+		{
 			AngleVectors (newa, vpn, vright, vup);
+			VectorCopy(r_refdef.vieworg, r_origin);
+		}
 
-		VectorMA(r_refdef.vieworg, stereooffset, vright, r_origin);
-		VectorAdd(r_origin, r_refdef.eyeoffset, r_origin);
+		VectorAdd(r_origin, r_refdef.eyeoffset, r_origin);	//used for vr screenshots
 
 		//
 		// set up viewpoint
 		//
-		if (r_refdef.flags & (RDF_ALLPOSTPROC|RDF_RENDERSCALE))
+		if (fbo)
+		{
+			//with VR fbo postprocessing, we disable all viewport.
+			r_refdef.pxrect.x = 0;
+			r_refdef.pxrect.y = 0;
+			r_refdef.pxrect.width = fbo->width;
+			r_refdef.pxrect.height = fbo->height;
+			r_refdef.pxrect.maxheight = fbo->height;
+		}
+		else if (r_refdef.flags & (RDF_ALLPOSTPROC|RDF_RENDERSCALE))
 		{
 			//with fbo postprocessing, we disable all viewport.
 			r_refdef.pxrect.x = 0;
@@ -523,7 +541,7 @@ void R_SetupGL (float stereooffset, int i)
 			w = x2 - x;
 			h = y2 - y;
 
-			if (r_refdef.stereomethod == STEREO_CROSSEYED
+/*			if (r_refdef.stereomethod == STEREO_CROSSEYED
 #ifdef FTE_TARGET_WEB
 				|| r_refdef.stereomethod == STEREO_WEBVR
 #endif
@@ -533,53 +551,64 @@ void R_SetupGL (float stereooffset, int i)
 				if (i)
 					x += vid.fbpwidth/2;
 			}
-
+*/
 			r_refdef.pxrect.x = x;
 			r_refdef.pxrect.y = y;
 			r_refdef.pxrect.width = w;
 			r_refdef.pxrect.height = h;
 			r_refdef.pxrect.maxheight = vid.fbpheight;
 		}
-		fov_x = r_refdef.fov_x;
-		fov_y = r_refdef.fov_y;
-		fovv_x = r_refdef.fovv_x;
-		fovv_y = r_refdef.fovv_y;
 
-		if ((*r_refdef.rt_destcolour[0].texname || *r_refdef.rt_depth.texname) && strcmp(r_refdef.rt_destcolour[0].texname, "megascreeny"))
+		if (projmatrix)
 		{
-			r_refdef.pxrect.y = r_refdef.pxrect.maxheight - (r_refdef.pxrect.height+r_refdef.pxrect.y);
-			fov_y *= -1;
-			fovv_y *= -1;
-			r_refdef.flipcull ^= SHADER_CULL_FLIP;
-		}
-		else if ((r_refdef.flags & RDF_UNDERWATER) && !(r_refdef.flags & RDF_WATERWARP))
-		{
-			fov_x *= 1 + (((sin(cl.time * 4.7) + 1) * 0.015) * r_waterwarp.value);
-			fov_y *= 1 + (((sin(cl.time * 3.0) + 1) * 0.015) * r_waterwarp.value);
-
-			fovv_x *= 1 + (((sin(cl.time * 4.7) + 1) * 0.015) * r_waterwarp.value);
-			fovv_y *= 1 + (((sin(cl.time * 3.0) + 1) * 0.015) * r_waterwarp.value);
-		}
-
-		GL_ViewportUpdate();
-
-#ifdef FTE_TARGET_WEB
-		if (r_refdef.stereomethod == STEREO_WEBVR)
-		{
-			float vm[16], em[16];
-			emscriptenfte_getvreyedata(i, r_refdef.m_projection_std, em);
-			memcpy(r_refdef.m_projection_view, r_refdef.m_projection_std, sizeof(r_refdef.m_projection_view));
-			Matrix4x4_Identity(em);
-
-			Matrix4x4_CM_ModelViewMatrixFromAxis(vm, vpn, vright, vup, r_origin);
-			Matrix4_Multiply(vm, em, r_refdef.m_view);
-			//fixme: read the axis+org back out...
-
-//			Matrix4x4_CM_ModelViewMatrixFromAxis(r_refdef.m_view, vpn, vright, vup, r_origin);
+			memcpy(r_refdef.m_projection_std, projmatrix, sizeof(r_refdef.m_projection_std));
+			memcpy(r_refdef.m_projection_view, projmatrix, sizeof(r_refdef.m_projection_view));
+			r_refdef.flipcull = 0;
 		}
 		else
-#endif
 		{
+			if (fovoverrides)
+			{
+				fov_l = fovoverrides[0];
+				fov_r = fovoverrides[1];
+				fov_d = fovoverrides[2];
+				fov_u = fovoverrides[3];
+
+				fov_x = fov_r-fov_l;
+				fov_y = fov_u-fov_d;
+
+				fovv_x = fov_x;
+				fovv_y = fov_y;
+				r_refdef.flipcull = ((fov_u < fov_d)^(fov_r < fov_l))?SHADER_CULL_FLIP:0;
+			}
+			else
+			{
+				fov_x = r_refdef.fov_x;
+				fov_y = r_refdef.fov_y;
+				fovv_x = r_refdef.fovv_x;
+				fovv_y = r_refdef.fovv_y;
+
+				if ((*r_refdef.rt_destcolour[0].texname || *r_refdef.rt_depth.texname) && strcmp(r_refdef.rt_destcolour[0].texname, "megascreeny"))
+				{
+					r_refdef.pxrect.y = r_refdef.pxrect.maxheight - (r_refdef.pxrect.height+r_refdef.pxrect.y);
+					fov_y *= -1;
+					fovv_y *= -1;
+					r_refdef.flipcull ^= SHADER_CULL_FLIP;
+				}
+				else if ((r_refdef.flags & RDF_UNDERWATER) && !(r_refdef.flags & RDF_WATERWARP))
+				{
+					fov_x *= 1 + (((sin(cl.time * 4.7) + 1) * 0.015) * r_waterwarp.value);
+					fov_y *= 1 + (((sin(cl.time * 3.0) + 1) * 0.015) * r_waterwarp.value);
+
+					fovv_x *= 1 + (((sin(cl.time * 4.7) + 1) * 0.015) * r_waterwarp.value);
+					fovv_y *= 1 + (((sin(cl.time * 3.0) + 1) * 0.015) * r_waterwarp.value);
+				}
+				fov_l = -fov_x / 2;
+				fov_r = fov_x / 2;
+				fov_d = -fov_y / 2;
+				fov_u = fov_y / 2;
+			}
+
 			if (r_refdef.useperspective)
 			{
 				int stencilshadows = Sh_StencilShadowsActive();
@@ -591,7 +620,7 @@ void R_SetupGL (float stereooffset, int i)
 			//		yfov = 2*atan((float)r_refdef.vrect.height/r_refdef.vrect.width)*(scr_fov.value*2)/M_PI;
 			//		MYgluPerspective (yfov,  screenaspect,  4,  4096);
 
-					Matrix4x4_CM_Projection_Far(r_refdef.m_projection_std, fov_x, fov_y, r_refdef.mindist, r_refdef.maxdist, false);
+					Matrix4x4_CM_Projection_Offset(r_refdef.m_projection_std, fov_l, fov_r, fov_d, fov_u, r_refdef.mindist, r_refdef.maxdist, false);
 					Matrix4x4_CM_Projection_Far(r_refdef.m_projection_view, fovv_x, fovv_y, r_refdef.mindist, r_refdef.maxdist, false);
 				}
 				else
@@ -612,14 +641,16 @@ void R_SetupGL (float stereooffset, int i)
 			}
 
 			Matrix4x4_CM_ModelViewMatrixFromAxis(r_refdef.m_view, vpn, vright, vup, r_origin);
-
-			r_refdef.m_projection_view[2+4*0] *= 0.333;
-			r_refdef.m_projection_view[2+4*1] *= 0.333;
-			r_refdef.m_projection_view[2+4*2] *= 0.333;
-			r_refdef.m_projection_view[2+4*3] *= 0.333;
-			r_refdef.m_projection_view[14] -= 0.666;
-			//FIXME: bias, so that we use -1 to -.333 range instead of -.333 to 0.333
 		}
+
+		//bias the viewmodel depth range to a third: -1 through -0.333 (instead of -1 to 1)
+		r_refdef.m_projection_view[2+4*0] *= 0.333;
+		r_refdef.m_projection_view[2+4*1] *= 0.333;
+		r_refdef.m_projection_view[2+4*2] *= 0.333;
+		r_refdef.m_projection_view[2+4*3] *= 0.333;
+		r_refdef.m_projection_view[14] -= 0.666;
+
+		GL_ViewportUpdate();
 	}
 
 	if (qglLoadMatrixf)
@@ -672,14 +703,70 @@ R_RenderScene
 r_refdef must be set before the first call
 ================
 */
-void R_RenderScene (void)
+static void R_RenderScene_Internal(void)
+{
+	int tmpvisents = cl_numvisedicts;
+	TRACE(("dbg: calling R_SetFrustrum\n"));
+	if (!r_refdef.recurse)
+		R_SetFrustum (r_refdef.m_projection_std, r_refdef.m_view);
+
+	RQ_BeginFrame();
+
+	TRACE(("dbg: calling Surf_DrawWorld\n"));
+	Surf_DrawWorld ();		// adds static entities to the list
+
+	S_ExtraUpdate ();	// don't let sound get messed up if going slow
+
+//	R_DrawDecals();
+
+	TRACE(("dbg: calling R_RenderDlights\n"));
+	R_RenderDlights ();
+
+	if (r_refdef.recurse)
+		RQ_RenderBatch();
+	else
+		RQ_RenderBatchClear();
+
+	cl_numvisedicts = tmpvisents;
+}
+static void R_RenderEyeScene (texid_t rendertarget, vec4_t fovoverride, vec3_t axisorigin[4])
+{
+	refdef_t refdef = r_refdef;
+	int pw = vid.fbpwidth;
+	int ph = vid.fbpheight;
+	int r = 0;
+
+	if (rendertarget)
+	{
+		r = GLBE_FBO_Update(&fbo_vr, FBO_RB_DEPTH, &rendertarget, 1, r_nulltex,  rendertarget->width, rendertarget->height, 0);
+		GL_ForceDepthWritable();
+		qglClear (GL_DEPTH_BUFFER_BIT|GL_COLOR_BUFFER_BIT);
+		vid.fbpwidth = rendertarget->width;
+		vid.fbpheight = rendertarget->height;
+	}
+
+	R_SetupGL (axisorigin, fovoverride, NULL, rendertarget);
+	R_RenderScene_Internal();
+
+	if (rendertarget)
+	{
+		GLBE_FBO_Pop(r);
+		if (gl_finish.ival)
+			qglFinish();
+	}
+
+	r_refdef = refdef;
+	vid.fbpwidth = pw;
+	vid.fbpheight = ph;
+}
+static void R_RenderScene (void)
 {
 	float stereooffset[2];
 	int stereoframes = 1;
 	int stereomode;
 	int i;
-	int tmpvisents = cl_numvisedicts;	/*world rendering is allowed to add additional ents, but we don't want to keep them for recursive views*/
 	int cull = r_refdef.flipcull;
+	vec3_t axisorg[4], ang;
 
 	stereomode = r_refdef.stereomethod;
 	if (stereomode == STEREO_QUAD)
@@ -706,7 +793,35 @@ void R_RenderScene (void)
 		stereoframes = 2;
 	}
 
-	for (i = 0; i < stereoframes; i++)
+	r_framecount++;
+	if (vid.vr && !r_refdef.recurse && vid.vr->Render(R_RenderEyeScene))
+		;	//we drew something VR-ey
+	else if (stereomode == STEREO_OFF)
+	{
+		GL_ForceDepthWritable();
+		qglClear (GL_DEPTH_BUFFER_BIT);
+		r_framecount++;
+
+		R_SetupGL (NULL, NULL, NULL, NULL);
+		R_RenderScene_Internal();
+	}
+#ifdef FTE_TARGET_WEB
+	else if (r_refdef.stereomethod == STEREO_WEBVR)
+	{
+		float projmatrix[16], eyematrix[16];
+		GL_ForceDepthWritable();
+		qglClear (GL_DEPTH_BUFFER_BIT);
+		r_framecount++;
+
+		for (i = 0; i < stereoframes; i++)
+		{
+			emscriptenfte_getvreyedata(i, projmatrix, eyematrix);
+			R_SetupGL (eyematrix, NULL, projmatrix, NULL);
+			R_RenderScene_Internal();
+		}
+	}
+#endif
+	else for (i = 0; i < stereoframes; i++)
 	{
 		switch (stereomode)
 		{
@@ -765,31 +880,15 @@ void R_RenderScene (void)
 			r_framecount++;
 		}
 
-		TRACE(("dbg: calling R_SetupGL\n"));
-		R_SetupGL (stereooffset[i], i);
-
-		TRACE(("dbg: calling R_SetFrustrum\n"));
-		if (!r_refdef.recurse)
-			R_SetFrustum (r_refdef.m_projection_std, r_refdef.m_view);
-
-		RQ_BeginFrame();
-
-		TRACE(("dbg: calling Surf_DrawWorld\n"));
-		Surf_DrawWorld ();		// adds static entities to the list
-
-		S_ExtraUpdate ();	// don't let sound get messed up if going slow
-
-	//	R_DrawDecals();
-
-		TRACE(("dbg: calling R_RenderDlights\n"));
-		R_RenderDlights ();
-
-		if (r_refdef.recurse)
-			RQ_RenderBatch();
-		else
-			RQ_RenderBatchClear();
-
-		cl_numvisedicts = tmpvisents;
+		ang[0] = 0;
+		ang[1] = r_stereo_convergence.value * (i?0.5:-0.5);
+		ang[2] = 0;;
+		AngleVectors(ang, axisorg[0], axisorg[1], axisorg[2]);
+		axisorg[3][0] = 0;
+		axisorg[3][1] = stereooffset[i];
+		axisorg[3][2] = 0;
+		R_SetupGL (axisorg, NULL, NULL, NULL);
+		R_RenderScene_Internal ();
 	}
 
 	switch (stereomode)
@@ -1354,18 +1453,13 @@ void GLR_DrawPortal(batch_t *batch, batch_t **blist, batch_t *depthmasklist[2], 
 R_Clear
 =============
 */
-qboolean R_GameRectIsFullscreen(void)
-{
-	return r_refdef.grect.x == 0 && r_refdef.grect.y == 0 && (unsigned)r_refdef.grect.width == vid.fbvwidth && (unsigned)r_refdef.grect.height == vid.fbvheight;
-}
-
 int gldepthfunc = GL_LEQUAL;
 qboolean depthcleared;
 void R_Clear (qboolean fbo)
 {
 	/*tbh, this entire function should be in the backend*/
 	{
-		qglColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+		qglColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);	//FIXME: breaks backend!
 		if (!depthcleared || fbo)
 		{
 			GL_ForceDepthWritable();

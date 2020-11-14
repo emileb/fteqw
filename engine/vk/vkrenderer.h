@@ -236,7 +236,6 @@ enum dynbuf_e
 };
 struct vk_rendertarg
 {
-
 	VkCommandBuffer cbuf;	//cbuf allocated for this render target.
 	VkFramebuffer framebuffer;
 	vk_image_t colour, depth, mscolour;
@@ -252,6 +251,7 @@ struct vk_rendertarg
 	VkRenderPassBeginInfo restartinfo;
 	VkSemaphore presentsemaphore;
 	qboolean firstuse;
+	qboolean externalimage;
 
 	struct vk_rendertarg *prevtarg;
 };
@@ -295,12 +295,14 @@ extern struct vulkaninfo_s
 	VkCommandPool cmdpool;
 	VkPhysicalDeviceLimits limits;
 
-#define ACQUIRELIMIT 8	//don't run more than this many frames behind
+	//we have a ringbuffer for acquires
+#define ACQUIRELIMIT 8
 	VkSemaphore acquiresemaphores[ACQUIRELIMIT];
 	VkFence acquirefences[ACQUIRELIMIT];
 	uint32_t acquirebufferidx[ACQUIRELIMIT];
-	unsigned int aquirenext;
-	volatile unsigned int aquirelast;	//set inside the submission thread
+	unsigned int acquirenext;			//first usable buffer, but we still need to wait on its fence (accessed on main thread).
+	volatile unsigned int acquirelast;	//last buffer that we have successfully asked to aquire (set inside the submission thread).
+	//acquirenext <= acquirelast, acquirelast-acquirenext<=ACQUIRELIMIT
 
 	VkPipelineCache pipelinecache;
 
@@ -483,7 +485,7 @@ void VKBE_BeginShadowmapFace(void);
 void VKBE_DoneShadows(void);
 
 void VKBE_RT_Gen_Cube(struct vk_rendertarg_cube *targ, uint32_t size, qboolean clear);
-void VKBE_RT_Gen(struct vk_rendertarg *targ, uint32_t width, uint32_t height, qboolean clear, unsigned int flags);
+void VKBE_RT_Gen(struct vk_rendertarg *targ, vk_image_t *colour, uint32_t width, uint32_t height, qboolean clear, unsigned int flags);
 void VKBE_RT_Begin(struct vk_rendertarg *targ);
 void VKBE_RT_End(struct vk_rendertarg *targ);
 void VKBE_RT_Destroy(struct vk_rendertarg *targ);

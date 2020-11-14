@@ -19,13 +19,6 @@ void M_Init_Internal (void);
 void M_DeInit_Internal (void);
 
 extern unsigned int r2d_be_flags;
-#define DRAWFLAG_NORMAL		0
-#define DRAWFLAG_ADD		1
-#define DRAWFLAG_MODULATE	2
-#define DRAWFLAG_MODULATE2	3
-#define DRAWFLAG_2D			(1u<<2)
-#define DRAWFLAG_TWOSIDED	0x400
-#define DRAWFLAG_LINES		0x800
 static unsigned int PF_SelectDPDrawFlag(pubprogfuncs_t *prinst, int flag)
 {
 	if (r_refdef.warndraw)
@@ -815,34 +808,45 @@ void QCBUILTIN PF_CL_is_cached_pic (pubprogfuncs_t *prinst, struct globalvars_s 
 
 void QCBUILTIN PF_CL_precache_pic (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
+	extern cvar_t pr_precachepic_slow;
 	const char	*str;
 	mpic_t	*pic;
-	float fromwad;
+	unsigned int flags;
+#define PIC_FROMWAD 1				/*obsolete, probably better to just use gfx/foo.lmp instead*/
+//#define PIC_TEMPORARY 2			/*DP, not meaningful here*/
+//#define PIC_NOCLAMP 4				/*DP, not useful here - use a shader instead*/
+//#define PIC_MIPMAP 8				/*DP, not useful here - use a shader instead*/
+#define PRECACHE_PIC_DOWNLOAD 256	/*block until loaded, downloading if missing*/
+#define PRECACHE_PIC_TEST 512		/*block until loaded*/
 
+	G_INT(OFS_RETURN) = G_INT(OFS_PARM0);
 	str = PR_GetStringOfs(prinst, OFS_PARM0);
 	if (prinst->callargc > 1)
-		fromwad = G_FLOAT(OFS_PARM1);
+		flags = G_FLOAT(OFS_PARM1);
 	else
-		fromwad = false;
+		flags = 0;
 
-	if (fromwad)
+	if (pr_precachepic_slow.ival)
+		flags |= PRECACHE_PIC_DOWNLOAD|PRECACHE_PIC_TEST;
+
+	if (flags & PIC_FROMWAD)
 		pic = R2D_SafePicFromWad(str);
 	else
 	{
 		pic = R2D_SafeCachePic(str);
 
-		if ((!pic || !R_GetShaderSizes(pic, NULL, NULL, true)) && cls.state
+		if ((flags & PRECACHE_PIC_DOWNLOAD) && cls.state	//if we're allowed to download it...
+			 && strchr(str, '.')	//only try to download it if it looks as though it contains a path.
 #ifndef CLIENTONLY
-			&& !sv.active
+			&& !sv.active			//not if we're already the server...
 #endif
-			&& strchr(str, '.'))	//only try to download it if it looks as though it contains a path.
+			&& (!pic || !R_GetShaderSizes(pic, NULL, NULL, true)))	//and it wasn't loaded...
 			CL_CheckOrEnqueDownloadFile(str, str, 0);
 	}
 
-	if (pic && R_GetShaderSizes(pic, NULL, NULL, true))
-		G_INT(OFS_RETURN) = G_INT(OFS_PARM0);
-	else
-		G_INT(OFS_RETURN) = 0;
+	if (flags & PRECACHE_PIC_TEST)
+		if (!pic || !R_GetShaderSizes(pic, NULL, NULL, true))
+			G_INT(OFS_RETURN) = 0;
 }
 
 #ifdef CSQC_DAT
@@ -886,9 +890,9 @@ void QCBUILTIN PF_CL_uploadimage (pubprogfuncs_t *prinst, struct globalvars_s *p
 	}
 	else
 	{
-		unsigned int blockbytes, blockwidth, blockheight;
+		unsigned int blockbytes, blockwidth, blockheight, blockdepth;
 		//get format info
-		Image_BlockSizeForEncoding(format, &blockbytes, &blockwidth, &blockheight);
+		Image_BlockSizeForEncoding(format, &blockbytes, &blockwidth, &blockheight, &blockdepth);
 		//round up as appropriate
 		blockwidth = ((width+blockwidth-1)/blockwidth)*blockwidth;
 		blockheight = ((height+blockheight-1)/blockheight)*blockheight;
@@ -896,7 +900,7 @@ void QCBUILTIN PF_CL_uploadimage (pubprogfuncs_t *prinst, struct globalvars_s *p
 			G_INT(OFS_RETURN) = 0;	//size isn't right. which means the pointer might be invalid too.
 		else
 		{
-			Image_Upload(tid, format, imgptr, NULL, width, height, RT_IMAGEFLAGS);
+			Image_Upload(tid, format, imgptr, NULL, width, height, 1, RT_IMAGEFLAGS);
 			tid->width = width;
 			tid->height = height;
 			G_INT(OFS_RETURN) = 1;
@@ -1348,6 +1352,8 @@ static struct
 	evalc_t frame2time;
 	evalc_t renderflags;
 	evalc_t skinobject;
+	evalc_t colourmod;
+	evalc_t alpha;
 } menuc_eval;
 static playerview_t menuview;
 
@@ -1372,6 +1378,7 @@ static struct
 	func_t toggle;
 	func_t consolecommand;
 	func_t gethostcachecategory;
+	func_t rendererrestarted;
 } mpfuncs;
 jmp_buf mp_abort;
 
@@ -1518,7 +1525,12 @@ void QCBUILTIN PF_isserver (pubprogfuncs_t *prinst, struct globalvars_s *pr_glob
 #ifdef CLIENTONLY
 	G_FLOAT(OFS_RETURN) = false;
 #else
-	G_FLOAT(OFS_RETURN) = sv.state != ss_dead;
+	if (sv.state == ss_dead)
+		G_FLOAT(OFS_RETURN) = false;
+	else if (sv.allocated_client_slots == 1)
+		G_FLOAT(OFS_RETURN) = 0.5;
+	else
+		G_FLOAT(OFS_RETURN) = true;
 #endif
 }
 void QCBUILTIN PF_isdemo (pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
@@ -1717,12 +1729,12 @@ void QCBUILTIN PF_menu_findchain (pubprogfuncs_t *prinst, struct globalvars_s *p
 	menuedict_t *ent, *chain;	//note, all edicts share the common header, but don't use it's fields!
 	eval_t *val;
 
-	chain = (menuedict_t *) *prinst->parms->sv_edicts;
+	chain = (menuedict_t *) *prinst->parms->edicts;
 
 	f = G_INT(OFS_PARM0)+prinst->fieldadjust;
 	s = PR_GetStringOfs(prinst, OFS_PARM1);
 
-	for (i = 1; i < *prinst->parms->sv_num_edicts; i++)
+	for (i = 1; i < *prinst->parms->num_edicts; i++)
 	{
 		ent = (menuedict_t *)EDICT_NUM_PB(prinst, i);
 		if (ent->ereftype == ER_FREE)
@@ -1749,12 +1761,12 @@ void QCBUILTIN PF_menu_findchainfloat (pubprogfuncs_t *prinst, struct globalvars
 	menuedict_t	*ent, *chain;	//note, all edicts share the common header, but don't use it's fields!
 	eval_t *val;
 
-	chain = (menuedict_t *) *prinst->parms->sv_edicts;
+	chain = (menuedict_t *) *prinst->parms->edicts;
 
 	f = G_INT(OFS_PARM0)+prinst->fieldadjust;
 	s = G_FLOAT(OFS_PARM1);
 
-	for (i = 1; i < *prinst->parms->sv_num_edicts; i++)
+	for (i = 1; i < *prinst->parms->num_edicts; i++)
 	{
 		ent = (menuedict_t*)EDICT_NUM_PB(prinst, i);
 		if (ent->ereftype == ER_FREE)
@@ -1778,12 +1790,12 @@ void QCBUILTIN PF_menu_findchainflags (pubprogfuncs_t *prinst, struct globalvars
 	menuedict_t	*ent, *chain;	//note, all edicts share the common header, but don't use it's fields!
 	eval_t *val;
 
-	chain = (menuedict_t *) *prinst->parms->sv_edicts;
+	chain = (menuedict_t *) *prinst->parms->edicts;
 
 	f = G_INT(OFS_PARM0)+prinst->fieldadjust;
 	s = G_FLOAT(OFS_PARM1);
 
-	for (i = 1; i < *prinst->parms->sv_num_edicts; i++)
+	for (i = 1; i < *prinst->parms->num_edicts; i++)
 	{
 		ent = (menuedict_t*)EDICT_NUM_PB(prinst, i);
 		if (ent->ereftype == ER_FREE)
@@ -1974,6 +1986,12 @@ void QCBUILTIN PF_crypto_getidfp(pubprogfuncs_t *prinst, struct globalvars_s *pr
 	//not supported.
 	G_INT(OFS_RETURN) = 0;
 }
+//float(string serveraddress) crypto_getidstatus
+void QCBUILTIN PF_crypto_getidstatus(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	//not supported.
+	G_INT(OFS_RETURN) = 0;
+}
 //string(string serveraddress) crypto_getencryptlevel
 void QCBUILTIN PF_crypto_getencryptlevel(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
@@ -1988,6 +2006,12 @@ void QCBUILTIN PF_crypto_getmykeyfp(pubprogfuncs_t *prinst, struct globalvars_s 
 }
 //string(float i) crypto_getmyidfp
 void QCBUILTIN PF_crypto_getmyidfp(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	//not supported.
+	G_INT(OFS_RETURN) = 0;
+}
+//float(float i) PF_crypto_getmyidstatus
+void QCBUILTIN PF_crypto_getmyidstatus(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
 {
 	//not supported.
 	G_INT(OFS_RETURN) = 0;
@@ -2088,6 +2112,8 @@ static qboolean CopyMenuEdictToEntity(pubprogfuncs_t *prinst, menuedict_t *in, e
 	eval_t *colormapval = prinst->GetEdictFieldValue(prinst, (void*)in, "colormap", ev_float, &menuc_eval.colormap);
 	eval_t *renderflagsval = prinst->GetEdictFieldValue(prinst, (void*)in, "renderflags", ev_float, &menuc_eval.renderflags);
 	eval_t *skinobjectval = prinst->GetEdictFieldValue(prinst, (void*)in, "skinobject", ev_float, &menuc_eval.skinobject);
+	eval_t *colourmodval = prinst->GetEdictFieldValue(prinst, (void*)in, "colormod", ev_vector, &menuc_eval.colourmod);
+	eval_t *alphaval = prinst->GetEdictFieldValue(prinst, (void*)in, "alpha", ev_float, &menuc_eval.alpha);
 	int ival;
 	int rflags;
 
@@ -2132,6 +2158,22 @@ static qboolean CopyMenuEdictToEntity(pubprogfuncs_t *prinst, menuedict_t *in, e
 	{
 		out->topcolour = TOP_DEFAULT;
 		out->bottomcolour = BOTTOM_DEFAULT;
+	}
+
+	VectorSet(out->glowmod, 1,1,1);
+	if (!colourmodval || (!colourmodval->_vector[0] && !colourmodval->_vector[1] && !colourmodval->_vector[2]))
+		VectorSet(out->shaderRGBAf, 1, 1, 1);
+	else
+	{
+		out->flags |= RF_FORCECOLOURMOD;
+		VectorCopy(colourmodval->_vector, out->shaderRGBAf);
+	}
+	if (!alphaval || !alphaval->_float || alphaval->_float == 1)
+		out->shaderRGBAf[3] = 1.0f;
+	else
+	{
+		out->flags |= RF_TRANSLUCENT;
+		out->shaderRGBAf[3] = alphaval->_float;
 	}
 
 	if (rflags & CSQCRF_ADDITIVE)
@@ -2214,6 +2256,43 @@ static void QCBUILTIN PF_menu_registercommand (pubprogfuncs_t *prinst, struct gl
 		Cmd_AddCommand(str, MP_ConsoleCommand_f);
 }
 
+static void PF_m_clipboard_got(void *ctx, const char *utf8)
+{
+	void *pr_globals;
+	unsigned int unicode;
+	int error;
+
+	while (*utf8)
+	{
+		unicode = utf8_decode(&error, utf8, &utf8);
+		if (error)
+			unicode = 0xfffdu;
+
+		if (!menu_world.progs || !mpfuncs.inputevent)
+			return;
+	#ifdef TEXTEDITOR
+		if (editormodal)
+			return;
+	#endif
+
+		pr_globals = PR_globals(menu_world.progs, PR_CURRENT);
+		G_FLOAT(OFS_PARM0) = CSIE_PASTE;
+		G_FLOAT(OFS_PARM1) = 0;
+		G_FLOAT(OFS_PARM2) = unicode;
+		G_FLOAT(OFS_PARM3) = 0;
+
+		qcinput_scan = G_FLOAT(OFS_PARM1);
+		qcinput_unicode = G_FLOAT(OFS_PARM2);
+		PR_ExecuteProgram (menu_world.progs, mpfuncs.inputevent);
+		qcinput_scan = 0;	//and stop replay attacks
+		qcinput_unicode = 0;
+	}
+}
+static void QCBUILTIN PF_m_clipboard_get(pubprogfuncs_t *prinst, struct globalvars_s *pr_globals)
+{
+	clipboardtype_t cliptype = G_FLOAT(OFS_PARM0);
+	Sys_Clipboard_PasteText(cliptype, PF_m_clipboard_got, prinst);
+}
 
 static struct {
 	char *name;
@@ -2259,6 +2338,9 @@ static struct {
 	{"findentity",				PF_FindFloat,				25},
 	{"findchain",				PF_menu_findchain,			26},
 	{"findchainfloat",			PF_menu_findchainfloat,		27},
+#ifdef QCGC
+	{"find_list",				PF_FindList,				0},
+#endif
 	{"precache_file",			PF_CL_precache_file,		28},
 	{"precache_sound",			PF_CL_precache_sound,		29},
 	{"coredump",				PF_coredump,				30},
@@ -2295,6 +2377,9 @@ static struct {
 	{"stov",					PF_stov,					55},
 	{"strzone",					PF_strzone,					56},
 	{"strunzone",				PF_strunzone,				57},
+#ifdef QCGC
+	{"createbuffer",			PF_createbuffer,			0},
+#endif
 	{"tokenize",				PF_Tokenize,				58},
 	{"argv",					PF_ArgV,					59},
 	{"isserver",				PF_isserver,				60},
@@ -2317,6 +2402,8 @@ static struct {
 	{"search_getfilename",		PF_search_getfilename,		77},
 	{"search_getfilesize",		PF_search_getfilesize,		0},
 	{"search_getfilemtime",		PF_search_getfilemtime,		0},
+	{"search_getpackagename",	PF_search_getpackagename,	0},
+	{"search_fopen",			PF_search_fopen,			0},
 	{"chr2str",					PF_chr2str,					78},
 	{"etof",					PF_etof,					79},
 	{"ftoe",					PF_ftoe,					80},
@@ -2328,7 +2415,7 @@ static struct {
 	{"altstr_ins",				PF_altstr_ins,				86},
 	{"findflags",				PF_FindFlags,				87},
 	{"findchainflags",			PF_menu_findchainflags,		88},
-	{"mcvar_defstring",			PF_cvar_defstring,			89},
+	{"cvar_defstring",			PF_cvar_defstring,			89},
 	{"setmodel",				PF_m_setmodel,				90},
 	{"precache_model",			PF_m_precache_model,		91},
 	{"setorigin",				PF_m_setorigin,				92},
@@ -2391,6 +2478,11 @@ static struct {
 	{"setcursormode",			PF_cl_setcursormode,		343},
 	{"getcursormode",			PF_cl_getcursormode,		0},	
 	{"setmousepos",				PF_cl_setmousepos,			0},
+
+
+	{"clipboard_get",			PF_m_clipboard_get,			0},
+	{"clipboard_set",			PF_cl_clipboard_set,		0},
+
 //	{NULL,						PF_Fixme,					344},
 //	{NULL,						PF_Fixme,					345},
 //	{NULL,						PF_Fixme,					346},
@@ -2489,7 +2581,7 @@ static struct {
 	{"tokenizebyseparator",		PF_tokenizebyseparator,		479},
 	{"strtolower",				PF_strtolower,				480},
 	{"strtoupper",				PF_strtoupper,				481},
-	{"cvar_defstring",			PF_cvar_defstring,			482},
+	{"csqc_cvar_defstring",		PF_cvar_defstring,			482},
 //	{NULL,						PF_Fixme,					483},
 	{"strreplace",				PF_strreplace,				484},
 	{"strireplace",				PF_strireplace,				485},
@@ -2533,7 +2625,7 @@ static struct {
 	{"soundlength",				PF_soundlength,				534},
 	{"buf_loadfile",			PF_buf_loadfile,			535},
 	{"buf_writefile",			PF_buf_writefile,			536},
-//	{"bufstr_find",				PF_Fixme,					537},
+	{"bufstr_find",				PF_bufstr_find,				537},
 //	{"matchpattern",			PF_Fixme,					538},
 															//gap
 	{"setkeydest",				PF_cl_setkeydest,			601},
@@ -2567,6 +2659,9 @@ static struct {
 #endif
 	{"netaddress_resolve",		PF_netaddress_resolve,		625},
 	{"getgamedirinfo",			PF_cl_getgamedirinfo,		626},
+#ifdef PACKAGEMANAGER
+	{"getpackagemanagerinfo",	PF_cl_getpackagemanagerinfo,0},
+#endif
 	{"sprintf",					PF_sprintf,					627},
 //	{NULL,						PF_Fixme,					628},
 //	{NULL,						PF_Fixme,					629},
@@ -2582,9 +2677,9 @@ static struct {
 	{"digest_hex",				PF_digest_hex,				639},
 	{"digest_ptr",				PF_digest_ptr,				0},
 //	{NULL,						PF_Fixme,					640},
-	{"crypto_getmyidstatus",	PF_crypto_getmyidfp,		641},
-//	{NULL,						PF_Fixme,					642},
-//	{NULL,						PF_Fixme,					643},
+	{"crypto_getmyidstatus",	PF_crypto_getmyidstatus,	641},
+//	{"coverage",				PF_Fixme,					642},
+	{"crypto_getidstatus",		PF_crypto_getidstatus,		643},
 //	{NULL,						PF_Fixme,					644},
 //	{NULL,						PF_Fixme,					645},
 //	{NULL,						PF_Fixme,					646},
@@ -2661,7 +2756,6 @@ static int PDECL PR_Menu_MapNamedBuiltin(pubprogfuncs_t *progfuncs, int headercr
 	return 0;
 }
 
-
 static qboolean MP_MouseMove(menu_t *menu, qboolean isabs, unsigned int devid, float xdelta, float ydelta)
 {
 	void *pr_globals;
@@ -2718,16 +2812,18 @@ static qboolean MP_KeyEvent(menu_t *menu, qboolean isdown, unsigned int devid, i
 	if (isdown)
 	{
 #ifndef NOBUILTINMENUS
+#ifdef _DEBUG
 		if (key == 'c')
 		{
 			extern qboolean	keydown[K_MAX];
-			if (keydown[K_LCTRL] || keydown[K_RCTRL])
+			if ((keydown[K_LCTRL] || keydown[K_RCTRL]) && (keydown[K_LSHIFT] || keydown[K_RSHIFT]))
 			{
 				MP_Shutdown();
 				M_Init_Internal();
 				return true;
 			}
 		}
+#endif
 #endif
 
 		mpkeysdown[key>>3] |= (1<<(key&7));
@@ -2969,9 +3065,12 @@ qboolean MP_Init (void)
 	menuprogparms.autocompile = PR_COMPILEIGNORE;//PR_COMPILEEXISTANDCHANGED;//enum {PR_NOCOMPILE, PR_COMPILENEXIST, PR_COMPILECHANGED, PR_COMPILEALWAYS} autocompile;
 
 	menuprogparms.gametime = &menutime;
+#ifdef MULTITHREAD
+	menuprogparms.usethreadedgc = pr_gc_threaded.ival;
+#endif
 
-	menuprogparms.sv_edicts = (struct edict_s **)&menu_edicts;
-	menuprogparms.sv_num_edicts = &num_menu_edicts;
+	menuprogparms.edicts = (struct edict_s **)&menu_edicts;
+	menuprogparms.num_edicts = &num_menu_edicts;
 
 	menuprogparms.useeditor = QCEditor;//void (*useeditor) (char *filename, int line, int nump, char **parms);
 	menuprogparms.user = &menu_world;
@@ -3059,6 +3158,7 @@ qboolean MP_Init (void)
 		mpfuncs.toggle = PR_FindFunction(menu_world.progs, "m_toggle", PR_ANY);
 		mpfuncs.consolecommand = PR_FindFunction(menu_world.progs, "m_consolecommand", PR_ANY);
 		mpfuncs.gethostcachecategory = PR_FindFunction(menu_world.progs, "m_gethostcachecategory", PR_ANY);
+		mpfuncs.rendererrestarted = PR_FindFunction(menu_world.progs, "Menu_RendererRestarted", PR_ANY);
 		if (mpfuncs.init)
 			PR_ExecuteProgram(menu_world.progs, mpfuncs.init);
 		inmenuprogs--;
@@ -3203,6 +3303,38 @@ int MP_GetServerCategory(int index)
 	return category;
 }
 
+void MP_RendererRestarted(void)
+{
+	int i;
+	if (!menu_world.progs)
+		return;
+
+	menu_world.worldmodel = cl.worldmodel;
+
+	for (i = 0; i < MAX_CSMODELS; i++)
+	{
+		cl.model_csqcprecache[i] = NULL;
+	}
+
+	//FIXME: registered shaders
+
+	//let the csqc know that its rendertargets got purged
+	if (mpfuncs.rendererrestarted)
+	{
+		void *pr_globals = PR_globals(menu_world.progs, PR_CURRENT);
+		(((string_t *)pr_globals)[OFS_PARM0] = PR_TempString(menu_world.progs, rf->description));
+		PR_ExecuteProgram(menu_world.progs, mpfuncs.rendererrestarted);
+	}
+	//in case it drew to any render targets.
+	if (R2D_Flush)
+		R2D_Flush();
+	if (*r_refdef.rt_destcolour[0].texname)
+	{
+		Q_strncpyz(r_refdef.rt_destcolour[0].texname, "", sizeof(r_refdef.rt_destcolour[0].texname));
+		BE_RenderToTextureUpdate2d(true);
+	}
+}
+
 void MP_Draw(void)
 {
 	extern qboolean scr_drawloading;
@@ -3239,13 +3371,22 @@ void MP_Draw(void)
 		if (mpfuncs.fuckeddrawsizes)
 		{	//pass useless sizes in two args if its a dp menu
 			((float *)pr_globals)[OFS_PARM0] = vid.pixelwidth;
+			((float *)pr_globals)[OFS_PARM0+1] = 0;	//make sure its set, just in case...
+			((float *)pr_globals)[OFS_PARM0+2] = 0;
 			((float *)pr_globals)[OFS_PARM1] = vid.pixelheight;
+			((float *)pr_globals)[OFS_PARM1+1] = 0;
+			((float *)pr_globals)[OFS_PARM1+2] = 0;
 		}
 		else
 		{	//pass useful sizes in a 1-arg vector if its an fte menu.
 			((float *)pr_globals)[OFS_PARM0+0] = vid.width;
 			((float *)pr_globals)[OFS_PARM0+1] = vid.height;
 			((float *)pr_globals)[OFS_PARM0+2] = 0;
+
+			//make physical pixel counts available too, because we can.
+			((float *)pr_globals)[OFS_PARM1+0] = vid.pixelwidth;
+			((float *)pr_globals)[OFS_PARM1+1] = vid.pixelheight;
+			((float *)pr_globals)[OFS_PARM1+2] = 0;
 		}
 
 		PR_ExecuteProgram(menu_world.progs, mpfuncs.draw);

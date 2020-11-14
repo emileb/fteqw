@@ -55,7 +55,7 @@ static void R_DrawPortal(batch_t *batch, batch_t **blist, batch_t *depthmasklist
 #define MAX_TMUS 32
 
 extern texid_t r_whiteimage, missing_texture_gloss, missing_texture_normal;
-extern texid_t r_blackimage;
+extern texid_t r_blackimage, r_blackcubeimage, r_whitecubeimage;
 
 static void BE_RotateForEntity (const entity_t *e, const model_t *mod);
 void VKBE_SetupLightCBuffer(dlight_t *l, vec3_t colour);
@@ -962,6 +962,8 @@ VkShaderModule VK_CreateGLSLModule(program_t *prog, const char *name, int ver, c
 			"uniform sampler2D s_paletted;\n",
 			"uniform samplerCube s_reflectcube;\n",
 			"uniform sampler2D s_reflectmask;\n",
+			"uniform sampler2D s_displacement;\n",
+			"uniform sampler2D s_occlusion;\n",
 			"uniform sampler2D s_lightmap;\n#define s_lightmap0 s_lightmap\n",
 			"uniform sampler2D s_deluxmap;\n#define s_deluxmap0 s_deluxmap\n",
 
@@ -1058,7 +1060,6 @@ qboolean VK_LoadGLSL(program_t *prog, struct programpermu_s *permu, int ver, con
 	if (permu->permutation)	//FIXME...
 		return false;
 
-	prog->nofixedcompat = false;
 //	prog->supportedpermutations = 0;
 	prog->cvardata = NULL;
 	prog->cvardatasize = 0;
@@ -1101,7 +1102,6 @@ qboolean VK_LoadBlob(program_t *prog, void *blobdata, const char *name)
 
 	prog->vert = vert;
 	prog->frag = frag;
-	prog->nofixedcompat = true;
 	prog->numsamplers = blob->numtextures;
 	prog->defaulttextures = blob->defaulttextures;
 	prog->supportedpermutations = blob->permutations;
@@ -1705,7 +1705,7 @@ static texid_t SelectPassTexture(const shaderpass_t *pass)
 		else if (shaderstate.curbatch->envmap)
 			return shaderstate.curbatch->envmap;
 		else
-			return r_nulltex;	//FIXME
+			return r_blackcubeimage;	//FIXME
 	case T_GEN_REFLECTMASK:
 		return shaderstate.curtexnums->reflectmask;
 	case T_GEN_OCCLUSION:
@@ -1752,7 +1752,7 @@ static texid_t SelectPassTexture(const shaderpass_t *pass)
 		if (shaderstate.curdlight)
 			return shaderstate.curdlight->cubetexture;
 		else
-			return r_nulltex;
+			return r_blackcubeimage;
 
 	case T_GEN_SHADOWMAP:	//light's depth values.
 		return shaderstate.currentshadowmap;
@@ -1772,7 +1772,7 @@ static texid_t SelectPassTexture(const shaderpass_t *pass)
 		return vk.sourcedepth;
 
 	case T_GEN_SOURCECUBE:	//used for render-to-texture targets
-		return r_nulltex;
+		return r_blackcubeimage;
 
 	case T_GEN_GBUFFER0:
 	case T_GEN_GBUFFER1:
@@ -1800,7 +1800,7 @@ static void T_Gen_CurrentRender(void)
 	if (img->width != vid.fbpwidth || img->height != vid.fbpheight)
 	{
 		//FIXME: free the old image when its safe to do so.
-		*img = VK_CreateTexture2DArray(vid.fbpwidth, vid.fbpheight, 1, 1, -vk.backbufformat, PTI_2D, true, shaderstate.tex_currentrender->ident);
+		*img = VK_CreateTexture2DArray(vid.fbpwidth, vid.fbpheight, 1, 1, -vk.backbufformat, PTI_2D, false, shaderstate.tex_currentrender->ident);
 
 		if (!img->sampler)
 			VK_CreateSampler(shaderstate.tex_currentrender->flags, img);
@@ -1845,6 +1845,8 @@ static void T_Gen_CurrentRender(void)
 		set_image_layout(vk.rendertarg->cbuf, vk.frame->backbuf->colour.image, VK_IMAGE_ASPECT_COLOR_BIT,
 				VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,		VK_ACCESS_TRANSFER_READ_BIT,		VK_PIPELINE_STAGE_TRANSFER_BIT,
 				VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,	VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,	VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+
+		img->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	}
 
 
@@ -2708,7 +2710,7 @@ static void deformgen(const deformv_t *deformv, int cnt, vecV_t *src, vecV_t *ds
 static void BE_CreatePipeline(program_t *p, unsigned int shaderflags, unsigned int blendflags, unsigned int permu)
 {
 	struct pipeline_s *pipe;
-	VkDynamicState dynamicStateEnables[VK_DYNAMIC_STATE_RANGE_SIZE]={0};
+	VkDynamicState dynamicStateEnables[2]={0};
 	VkPipelineDynamicStateCreateInfo dyn = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
 	VkVertexInputBindingDescription vbinds[VK_BUFF_MAX] = {{0}};
 	VkVertexInputAttributeDescription vattrs[VK_BUFF_MAX] = {{0}};
@@ -3201,48 +3203,50 @@ static qboolean BE_SetupMeshProgram(program_t *p, shaderpass_t *pass, unsigned i
 		//light / scene
 		BE_SetupUBODescriptor(set, descs, desc++, &shaderstate.ubo_entity);
 		BE_SetupUBODescriptor(set, descs, desc++, &shaderstate.ubo_light);
-		if (p->defaulttextures & (1u<<0))
+		if (p->defaulttextures & (1u<<S_SHADOWMAP))
 			BE_SetupTextureDescriptor(shaderstate.currentshadowmap, r_whiteimage, set, descs, desc++, img++);
-		if (p->defaulttextures & (1u<<1))
-			BE_SetupTextureDescriptor(shaderstate.curdlight?shaderstate.curdlight->cubetexture:r_nulltex, r_whiteimage, set, descs, desc++, img++);
+		if (p->defaulttextures & (1u<<S_PROJECTIONMAP))
+			BE_SetupTextureDescriptor(shaderstate.curdlight?shaderstate.curdlight->cubetexture:r_nulltex, r_whitecubeimage, set, descs, desc++, img++);
 
 		//material
-		if (p->defaulttextures & (1u<<2))
+		if (p->defaulttextures & (1u<<S_DIFFUSE))
 			BE_SetupTextureDescriptor(shaderstate.curtexnums->base, r_blackimage, set, descs, desc++, img++);
-		if (p->defaulttextures & (1u<<3))
+		if (p->defaulttextures & (1u<<S_NORMALMAP))
 			BE_SetupTextureDescriptor(shaderstate.curtexnums->bump, missing_texture_normal, set, descs, desc++, img++);
-		if (p->defaulttextures & (1u<<4))
+		if (p->defaulttextures & (1u<<S_SPECULAR))
 			BE_SetupTextureDescriptor(shaderstate.curtexnums->specular, missing_texture_gloss, set, descs, desc++, img++);
-		if (p->defaulttextures & (1u<<5))
+		if (p->defaulttextures & (1u<<S_UPPERMAP))
 			BE_SetupTextureDescriptor(shaderstate.curtexnums->upperoverlay, r_blackimage, set, descs, desc++, img++);
-		if (p->defaulttextures & (1u<<6))
+		if (p->defaulttextures & (1u<<S_LOWERMAP))
 			BE_SetupTextureDescriptor(shaderstate.curtexnums->loweroverlay, r_blackimage, set, descs, desc++, img++);
-		if (p->defaulttextures & (1u<<7))
+		if (p->defaulttextures & (1u<<S_FULLBRIGHT))
 			BE_SetupTextureDescriptor(shaderstate.curtexnums->fullbright, r_blackimage, set, descs, desc++, img++);
-		if (p->defaulttextures & (1u<<8))
+		if (p->defaulttextures & (1u<<S_PALETTED))
 			BE_SetupTextureDescriptor(shaderstate.curtexnums->paletted, r_blackimage, set, descs, desc++, img++);
-		if (p->defaulttextures & (1u<<9))
+		if (p->defaulttextures & (1u<<S_REFLECTCUBE))
 		{
 			if (shaderstate.curtexnums && TEXLOADED(shaderstate.curtexnums->reflectcube))
 				t = shaderstate.curtexnums->reflectcube;
 			else if (shaderstate.curbatch->envmap)
 				t = shaderstate.curbatch->envmap;
 			else
-				t = r_nulltex;	//FIXME
-			BE_SetupTextureDescriptor(t, r_blackimage, set, descs, desc++, img++);
+				t = r_blackcubeimage;	//FIXME
+			BE_SetupTextureDescriptor(t, r_blackcubeimage, set, descs, desc++, img++);
 		}
-		if (p->defaulttextures & (1u<<10))
+		if (p->defaulttextures & (1u<<S_REFLECTMASK))
 			BE_SetupTextureDescriptor(shaderstate.curtexnums->reflectmask, r_whiteimage, set, descs, desc++, img++);
-		if (p->defaulttextures & (1u<<11))
+		if (p->defaulttextures & (1u<<S_DISPLACEMENT))
 			BE_SetupTextureDescriptor(shaderstate.curtexnums->displacement, r_whiteimage, set, descs, desc++, img++);
+		if (p->defaulttextures & (1u<<S_OCCLUSION))
+			BE_SetupTextureDescriptor(shaderstate.curtexnums->occlusion, r_whiteimage, set, descs, desc++, img++);
 
 		//batch
-		if (p->defaulttextures & (1u<<12))
+		if (p->defaulttextures & (1u<<S_LIGHTMAP0))
 		{
 			unsigned int lmi = shaderstate.curbatch->lightmap[0];
 			BE_SetupTextureDescriptor((lmi<numlightmaps)?lightmap[lmi]->lightmap_texture:NULL, r_whiteimage, set, descs, desc++, img++);
 		}
-		if (p->defaulttextures & (1u<<13))
+		if (p->defaulttextures & (1u<<S_DELUXEMAP0))
 		{
 			texid_t delux = NULL;
 			unsigned int lmi = shaderstate.curbatch->lightmap[0];
@@ -3251,7 +3255,7 @@ static qboolean BE_SetupMeshProgram(program_t *p, shaderpass_t *pass, unsigned i
 			BE_SetupTextureDescriptor(delux, r_whiteimage, set, descs, desc++, img++);
 		}
 #if MAXRLIGHTMAPS > 1
-		if (p->defaulttextures & ((1u<<14)|(1u<<15)|(1u<<16)))
+		if (p->defaulttextures & ((1u<<S_LIGHTMAP1)|(1u<<S_LIGHTMAP2)|(1u<<S_LIGHTMAP3)))
 		{
 			int lmi = shaderstate.curbatch->lightmap[1];
 			BE_SetupTextureDescriptor((lmi<numlightmaps)?lightmap[lmi]->lightmap_texture:NULL, r_whiteimage, set, descs, desc++, img++);
@@ -3260,7 +3264,7 @@ static qboolean BE_SetupMeshProgram(program_t *p, shaderpass_t *pass, unsigned i
 			lmi = shaderstate.curbatch->lightmap[3];
 			BE_SetupTextureDescriptor((lmi<numlightmaps)?lightmap[lmi]->lightmap_texture:NULL, r_whiteimage, set, descs, desc++, img++);
 		}
-		if (p->defaulttextures & ((1u<<17)|(1u<<18)|(1u<<19)))
+		if (p->defaulttextures & ((1u<<S_DELUXEMAP1)|(1u<<S_DELUXEMAP2)|(1u<<S_DELUXEMAP3)))
 		{
 			int lmi = shaderstate.curbatch->lightmap[1];
 			if (lmi<numlightmaps && lightmap[lmi]->hasdeluxe)
@@ -4708,7 +4712,7 @@ static void VKBE_RT_Purge(void *ptr)
 	VK_DestroyVkTexture(&ctx->mscolour);
 	VK_DestroyVkTexture(&ctx->colour);
 }
-void VKBE_RT_Gen(struct vk_rendertarg *targ, uint32_t width, uint32_t height, qboolean clear, unsigned int flags)
+void VKBE_RT_Gen(struct vk_rendertarg *targ, vk_image_t *colour, uint32_t width, uint32_t height, qboolean clear, unsigned int flags)
 {
 	//sooooo much work...
 	VkImageCreateInfo colour_imginfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -4717,16 +4721,27 @@ void VKBE_RT_Gen(struct vk_rendertarg *targ, uint32_t width, uint32_t height, qb
 	struct vkbe_rtpurge *purge;
 	static VkClearValue clearvalues[3];
 
+	if (colour)
+	{	//override the width+height if we already have an image to draw to.
+		width = colour->width;
+		height = colour->height;
+	}
+
 	targ->restartinfo.clearValueCount = 3;
 	targ->depthcleared = true;	//will be once its activated.
 
 	if (targ->width == width && targ->height == height && targ->q_colour.flags == flags && (!(targ->rpassflags&RP_MULTISAMPLE))==(targ->mscolour.image==VK_NULL_HANDLE))
 	{
-		if (clear || targ->firstuse)
-			targ->restartinfo.renderPass = VK_GetRenderPass(RP_FULLCLEAR|targ->rpassflags);
-		else
-			targ->restartinfo.renderPass = VK_GetRenderPass(RP_DEPTHCLEAR|targ->rpassflags);	//don't care
-		return;	//no work to do.
+		if ((colour && colour->image == targ->colour.image) || (!colour && !targ->externalimage))
+		{
+			if (width == 0 || height == 0)
+				targ->restartinfo.renderPass = VK_NULL_HANDLE;	//illegal combination used for destruction.
+			else if (clear || targ->firstuse)
+				targ->restartinfo.renderPass = VK_GetRenderPass(RP_FULLCLEAR|targ->rpassflags);
+			else
+				targ->restartinfo.renderPass = VK_GetRenderPass(RP_DEPTHCLEAR|targ->rpassflags);	//don't care
+			return;	//no work to do.
+		}
 	}
 
 	if (targ->framebuffer)
@@ -4734,6 +4749,8 @@ void VKBE_RT_Gen(struct vk_rendertarg *targ, uint32_t width, uint32_t height, qb
 		purge = VK_AtFrameEnd(VKBE_RT_Purge, NULL, sizeof(*purge));
 		purge->framebuffer = targ->framebuffer; 
 		purge->colour = targ->colour;
+		if (targ->externalimage)
+			purge->colour.image = VK_NULL_HANDLE;
 		purge->mscolour = targ->mscolour;
 		purge->depth = targ->depth;
 		memset(&targ->colour, 0, sizeof(targ->colour));
@@ -4742,6 +4759,7 @@ void VKBE_RT_Gen(struct vk_rendertarg *targ, uint32_t width, uint32_t height, qb
 		targ->framebuffer = VK_NULL_HANDLE;
 	}
 
+	targ->externalimage = !!colour;
 	targ->q_colour.vkimage = &targ->colour;
 	targ->q_depth.vkimage = &targ->depth;
 	targ->q_colour.status = TEX_LOADED;
@@ -4775,7 +4793,13 @@ void VKBE_RT_Gen(struct vk_rendertarg *targ, uint32_t width, uint32_t height, qb
 	colour_imginfo.queueFamilyIndexCount = 0;
 	colour_imginfo.pQueueFamilyIndices = NULL;
 	colour_imginfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	VkAssert(vkCreateImage(vk.device, &colour_imginfo, vkallocationcb, &targ->colour.image));
+	if (targ->externalimage)
+		targ->colour.image = colour->image;
+	else
+	{
+		VkAssert(vkCreateImage(vk.device, &colour_imginfo, vkallocationcb, &targ->colour.image));
+		DebugSetName(VK_OBJECT_TYPE_IMAGE, (uint64_t)targ->colour.image, "RT Colour");
+	}
 
 	depth_imginfo = colour_imginfo;
 	depth_imginfo.format = vk.depthformat;
@@ -4785,11 +4809,16 @@ void VKBE_RT_Gen(struct vk_rendertarg *targ, uint32_t width, uint32_t height, qb
 		mscolour_imginfo = colour_imginfo;
 		depth_imginfo.samples = mscolour_imginfo.samples = vk.multisamplebits;
 		VkAssert(vkCreateImage(vk.device, &mscolour_imginfo, vkallocationcb, &targ->mscolour.image));
+		DebugSetName(VK_OBJECT_TYPE_IMAGE, (uint64_t)targ->mscolour.image, "RT MS Colour");
 		VK_AllocateBindImageMemory(&targ->mscolour, true);
 	}
 	VkAssert(vkCreateImage(vk.device, &depth_imginfo, vkallocationcb, &targ->depth.image));
+	DebugSetName(VK_OBJECT_TYPE_IMAGE, (uint64_t)targ->depth.image, "RT Depth");
 
-	VK_AllocateBindImageMemory(&targ->colour, true);
+	if (targ->externalimage)	//an external image is assumed to already have memory bound. don't allocate it elsewhere.
+		memset(&targ->colour.mem, 0, sizeof(targ->colour.mem));
+	else
+		VK_AllocateBindImageMemory(&targ->colour, true);
 	VK_AllocateBindImageMemory(&targ->depth, true);
 
 	{
@@ -4907,6 +4936,9 @@ void VKBE_RT_Gen_Cube(struct vk_rendertarg_cube *targ, uint32_t size, qboolean c
 	uint32_t f;
 	static VkClearValue clearvalues[2];
 
+	if (targ->size == size && !clear)
+		return;	//no work to do.
+
 	for (f = 0; f < 6; f++)
 	{
 		if (clear)
@@ -4959,11 +4991,13 @@ void VKBE_RT_Gen_Cube(struct vk_rendertarg_cube *targ, uint32_t size, qboolean c
 	colour_imginfo.pQueueFamilyIndices = NULL;
 	colour_imginfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	VkAssert(vkCreateImage(vk.device, &colour_imginfo, vkallocationcb, &targ->colour.image));
+	DebugSetName(VK_OBJECT_TYPE_IMAGE, (uint64_t)targ->colour.image, "RT Cube Colour");
 
 	depth_imginfo = colour_imginfo;
 	depth_imginfo.format = vk.depthformat;
 	depth_imginfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT;
 	VkAssert(vkCreateImage(vk.device, &depth_imginfo, vkallocationcb, &targ->depth.image));
+	DebugSetName(VK_OBJECT_TYPE_IMAGE, (uint64_t)targ->depth.image, "RT Cube Depth");
 
 	VK_AllocateBindImageMemory(&targ->colour, true);
 	VK_AllocateBindImageMemory(&targ->depth, true);
@@ -5195,7 +5229,7 @@ static qboolean BE_GenerateRefraction(batch_t *batch, shader_t *bs)
 		r_refdef.vrect.y = 0;
 		r_refdef.vrect.width = max(1, vid.fbvwidth*bs->portalfboscale);
 		r_refdef.vrect.height = max(1, vid.fbvheight*bs->portalfboscale);
-		VKBE_RT_Gen(&shaderstate.rt_reflection, r_refdef.vrect.width, r_refdef.vrect.height, false, RT_IMAGEFLAGS);
+		VKBE_RT_Gen(&shaderstate.rt_reflection, NULL, r_refdef.vrect.width, r_refdef.vrect.height, false, RT_IMAGEFLAGS);
 		VKBE_RT_Begin(&shaderstate.rt_reflection);
 		R_DrawPortal(batch, cl.worldmodel->batches, NULL, 1);
 		VKBE_RT_End(&shaderstate.rt_reflection);
@@ -5214,7 +5248,7 @@ static qboolean BE_GenerateRefraction(batch_t *batch, shader_t *bs)
 			r_refdef.vrect.y = 0;
 			r_refdef.vrect.width = vid.fbvwidth/2;
 			r_refdef.vrect.height = vid.fbvheight/2;
-			VKBE_RT_Gen(&shaderstate.rt_refraction, r_refdef.vrect.width, r_refdef.vrect.height, false, RT_IMAGEFLAGS);
+			VKBE_RT_Gen(&shaderstate.rt_refraction, NULL, r_refdef.vrect.width, r_refdef.vrect.height, false, RT_IMAGEFLAGS);
 			VKBE_RT_Begin(&shaderstate.rt_refraction);
 			R_DrawPortal(batch, cl.worldmodel->batches, NULL, ((bs->flags & SHADER_HASREFRACTDEPTH)?3:2));	//fixme
 			VKBE_RT_End(&shaderstate.rt_refraction);
@@ -6041,6 +6075,7 @@ qboolean VKBE_BeginShadowmap(qboolean isspot, uint32_t width, uint32_t height)
 		imginfo.pQueueFamilyIndices = NULL;
 		imginfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 		VkAssert(vkCreateImage(vk.device, &imginfo, vkallocationcb, &shad->image));
+		DebugSetName(VK_OBJECT_TYPE_IMAGE, (uint64_t)shad->image, "Shadowmap");
 
 		{
 			VkMemoryRequirements mem_reqs;
@@ -6111,13 +6146,13 @@ qboolean VKBE_BeginShadowmap(qboolean isspot, uint32_t width, uint32_t height)
 
 	sbuf = shad->seq++%countof(shad->buf);
 	shaderstate.currentshadowmap = &shad->buf[sbuf].qimage;
-
+/*
 	{
 		VkImageMemoryBarrier imgbarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
 		imgbarrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 		imgbarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 		imgbarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;	//we don't actually care because we'll be clearing it anyway, making this more of a no-op than anything else.
-		imgbarrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+		imgbarrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 		imgbarrier.image = shad->buf[sbuf].vimage.image;
 		imgbarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
 		imgbarrier.subresourceRange.baseMipLevel = 0;
@@ -6128,7 +6163,7 @@ qboolean VKBE_BeginShadowmap(qboolean isspot, uint32_t width, uint32_t height)
 		imgbarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		vkCmdPipelineBarrier(vk.rendertarg->cbuf, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT|VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &imgbarrier);
 	}
-
+*/
 	{
 		VkClearValue clearval;
 		VkRenderPassBeginInfo rpass = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
@@ -6144,6 +6179,7 @@ qboolean VKBE_BeginShadowmap(qboolean isspot, uint32_t width, uint32_t height)
 		rpass.pClearValues = &clearval;
 		vkCmdBeginRenderPass(vk.rendertarg->cbuf, &rpass, VK_SUBPASS_CONTENTS_INLINE);
 	}
+	shaderstate.currentshadowmap->vkimage->layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
 	//viewport+scissor will be done elsewhere
 	//that wasn't too painful, was it?...
@@ -6202,7 +6238,7 @@ void VKBE_DoneShadows(void)
 		viewport.maxDepth = 1;
 		vkCmdSetViewport(vk.rendertarg->cbuf, 0, 1, &viewport);
 	}
-
+	shaderstate.currentshadowmap->vkimage->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
 	VKBE_SelectEntity(&r_worldentity);
 }

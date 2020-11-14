@@ -160,6 +160,7 @@ struct netprim_s
 		#define COORDTYPE_FIXED_16_8	3			//rmq
 		#define COORDTYPE_FIXED_28_4	4			//rmq, pointless
 		#define COORDTYPE_FLOAT_32		(4|0x80)	//fte/dp/rmq
+		#define COORDTYPE_SIZE_MASK		0xf			//coordtype&mask == number of bytes.
 	qbyte anglesize;
 	qbyte flags;
 		#define NPQ2_ANG16				(1u<<0)
@@ -276,8 +277,10 @@ void MSG_WriteChar (sizebuf_t *sb, int c);
 void MSG_WriteByte (sizebuf_t *sb, int c);
 void MSG_WriteShort (sizebuf_t *sb, int c);
 void MSG_WriteLong (sizebuf_t *sb, int c);
+void MSG_WriteInt64 (sizebuf_t *sb, qint64_t c);
 void MSG_WriteEntity (sizebuf_t *sb, unsigned int e);
 void MSG_WriteFloat (sizebuf_t *sb, float f);
+void MSG_WriteDouble (sizebuf_t *sb, double f);
 void MSG_WriteString (sizebuf_t *sb, const char *s);
 void MSG_WriteCoord (sizebuf_t *sb, float f);
 void MSG_WriteBigCoord (sizebuf_t *sb, float f);
@@ -299,10 +302,12 @@ int MSG_ReadBits(int bits);
 int MSG_ReadByte (void);
 int MSG_ReadShort (void);
 int MSG_ReadLong (void);
+qint64_t MSG_ReadInt64 (void);
 struct client_s;
 unsigned int MSGSV_ReadEntity (struct client_s *fromclient);
 unsigned int MSGCL_ReadEntity (void);
 float MSG_ReadFloat (void);
+double MSG_ReadDouble (void);
 char *MSG_ReadStringBuffer (char *out, size_t outsize);
 char *MSG_ReadString (void);
 char *MSG_ReadStringLine (void);
@@ -430,7 +435,7 @@ unsigned int COM_DeQuake(unsigned int unichar);
 void COM_BiDi_Shutdown(void);
 
 //small macro to tell COM_ParseFunString (and related functions like con_printf) that the input is a utf-8 string.
-#define U8(s) "^`u8:"s"`="
+#define U8(s) "^`u8:" s "`="
 
 //handles whatever charset is active, including ^U stuff.
 unsigned int unicode_byteofsfromcharofs(const char *str, unsigned int charofs, qboolean markup);
@@ -528,12 +533,17 @@ struct vfsfile_s;
 #define FSLF_DONTREFERENCE		(1u<<5) //don't add any reference flags to packages
 #define FSLF_IGNOREPURE			(1u<<6) //use only the client's package list, ignore any lists obtained from the server (including any reordering)
 #define FSLF_IGNORELINKS		(1u<<7) //ignore any pak/pk3 symlinks. system ones may still be followed.
+#define FSLF_QUIET				(1u<<8)	//don't spam warnings about any dodgy paths.
 
 //if loc is valid, loc->search is always filled in, the others are filled on success.
 //standard return value is 0 on failure, or depth on success.
 int FS_FLocateFile(const char *filename, unsigned int flags, flocation_t *loc);
 struct vfsfile_s *FS_OpenReadLocation(flocation_t *location);
-const char *FS_WhichPackForLocation(flocation_t *loc, qboolean makereferenced);
+#define WP_REFERENCE	1
+#define WP_FULLPATH		2
+#define WP_FORCE		4
+const char *FS_WhichPackForLocation(flocation_t *loc, unsigned int flags);
+qboolean FS_GetLocationForPackageHandle(flocation_t *loc, searchpathfuncs_t *spath, const char *fname);
 qboolean FS_GetLocMTime(flocation_t *location, time_t *modtime);
 const char *FS_GetPackageDownloadFilename(flocation_t *loc);	//returns only packages (or null)
 const char *FS_GetRootPackagePath(flocation_t *loc);			//favours packages, but falls back on gamedirs.
@@ -570,6 +580,14 @@ typedef struct vfsfile_s
 #endif
 } vfsfile_t;
 
+#define VFS_ERROR_TRYLATER		0	//nothing to write/read yet.
+#define VFS_ERROR_UNSPECIFIED	-1	//no reason given
+#define VFS_ERROR_NORESPONSE	-2	//no reason given
+#define VFS_ERROR_EOF			-3	//no reason given
+#define VFS_ERROR_DNSFAILURE	-4	//weird one, but oh well
+#define VFS_ERROR_WRONGCERT		-5	//server gave a certificate with the wrong name
+#define VFS_ERROR_UNTRUSTED		-6	//server gave a certificate with the right name, but we don't have a full chain of trust
+
 #define VFS_CLOSE(vf) ((vf)->Close(vf))
 #define VFS_TELL(vf) ((vf)->Tell(vf))
 #define VFS_GETLEN(vf) ((vf)->GetLen(vf))
@@ -582,9 +600,10 @@ char *VFS_GETS(vfsfile_t *vf, char *buffer, size_t buflen);
 void VARGS VFS_PRINTF(vfsfile_t *vf, const char *fmt, ...) LIKEPRINTF(2);
 
 enum fs_relative{
-	FS_BINARYPATH,	//for dlls and stuff
+	//note that many of theses paths can map to multiple system locations. FS_NativePath can vary somewhat in terms of what it returns, generally favouring writable locations rather then the path that actually contains a file.
+	FS_BINARYPATH,	//where the 'exe' is located. we'll check here for dlls too.
 	FS_LIBRARYPATH,	//for system dlls and stuff
-	FS_ROOT,		//./ (effective -homedir if enabled, otherwise effective -basedir arg)
+	FS_ROOT,		//either homedir or basedir,
 	FS_SYSTEM,		//a system path. absolute paths are explicitly allowed and expected, but not required.
 
 	//after this point, all types must be relative to a gamedir
@@ -604,13 +623,14 @@ void FS_CreatePath(const char *pname, enum fs_relative relativeto);
 qboolean FS_Rename(const char *oldf, const char *newf, enum fs_relative relativeto);	//0 on success, non-0 on error
 qboolean FS_Rename2(const char *oldf, const char *newf, enum fs_relative oldrelativeto, enum fs_relative newrelativeto);
 qboolean FS_Remove(const char *fname, enum fs_relative relativeto);	//0 on success, non-0 on error
+qboolean FS_RemoveTree(searchpathfuncs_t *pathhandle, const char *fname);
 qboolean FS_Copy(const char *source, const char *dest, enum fs_relative relativesource, enum fs_relative relativedest);
 qboolean FS_NativePath(const char *fname, enum fs_relative relativeto, char *out, int outlen);	//if you really need to fopen yourself
 qboolean FS_WriteFile (const char *filename, const void *data, int len, enum fs_relative relativeto);
 void *FS_MallocFile(const char *filename, enum fs_relative relativeto, qofs_t *filesize);
 vfsfile_t *QDECL FS_OpenVFS(const char *filename, const char *mode, enum fs_relative relativeto);
 vfsfile_t *FS_OpenTemp(void);
-vfsfile_t *FS_OpenTCP(const char *name, int defaultport);
+vfsfile_t *FS_OpenTCP(const char *name, int defaultport, qboolean assumetls);
 
 vfsfile_t *FS_OpenWithFriends(const char *fname, char *sysname, size_t sysnamesize, int numfriends, ...);
 
@@ -655,7 +675,7 @@ enum manifestdeptype_e
 };
 typedef struct
 {
-	qboolean blockupdate;	//set to block the updateurl from being used this session. this avoids recursive updates when manifests contain the same update url.
+	char *filename;		//filename the manifest was read from. not necessarily writable... NULL when the manifest is synthesised or from http.
 	enum
 	{
 		MANIFEST_SECURITY_NOT,		//don't trust it, don't even allow downloadsurl.
@@ -678,17 +698,20 @@ typedef struct
 	} homedirtype;
 	char *mainconfig;	//eg "fte.cfg", reducing conflicts with other engines, but can be other values...
 	char *updateurl;	//url to download an updated manifest file from.
-	char *updatefile;	//this is the file that needs to be written to update the manifest.
+	qboolean blockupdate;	//set to block the updateurl from being used this session. this avoids recursive updates when manifests contain the same update url.
 	char *installation;	//optional hardcoded commercial name, used for scanning the registry to find existing installs.
 	char *formalname;	//the commercial name of the game. you'll get FULLENGINENAME otherwise.
+#ifdef PACKAGEMANAGER
 	char *downloadsurl;	//optional installable files (menu)
 	char *installupd;	//which download/updated package to install.
+#endif
 	char *protocolname;	//the name used for purposes of dpmaster
 	char *defaultexec;	//execed after cvars are reset, to give game-specific engine-defaults.
 	char *defaultoverrides;	//execed after default.cfg, to give usable defaults even when the mod the user is running is shit.
 	char *eula;			//when running as an installer, the user will be presented with this as a prompt
 	char *rtcbroker;	//the broker to use for webrtc connections.
 	char *basedir;		//this is where we expect to find the data.
+	char *iconname;		//path we can find the icon (relative to the fmf's location)
 	struct
 	{
 		enum
@@ -699,12 +722,13 @@ typedef struct
 			GAMEDIR_READONLY=1u<<2,		//don't write here...
 			GAMEDIR_USEBASEDIR=1u<<3,	//packages will be read from the basedir (and homedir), but not other files. path is an empty string.
 			GAMEDIR_STEAMGAME=1u<<4,	//finds the game via steam. must also be private+readonly.
+			GAMEDIR_QSHACK=1u<<8,
 
 			GAMEDIR_SPECIAL=GAMEDIR_USEBASEDIR|GAMEDIR_STEAMGAME,	//if one of these flags, then the gamedir cannot be simply concatenated to the basedir/homedir.
 		} flags;
 		char *path;
 	} gamepath[8];
-	struct manpack_s
+	struct manpack_s	//FIXME: this struct should be replaced with packagemanager info instead.
 	{
 		int type;
 		char *path;			//the 'pure' name
@@ -718,8 +742,9 @@ typedef struct
 } ftemanifest_t;
 extern ftemanifest_t	*fs_manifest;	//currently active manifest.
 void FS_Manifest_Free(ftemanifest_t *man);
-ftemanifest_t *FS_Manifest_Parse(const char *fname, const char *data);
-void PM_Shutdown(void);
+ftemanifest_t *FS_Manifest_ReadMem(const char *fname, const char *basedir, const char *data);
+ftemanifest_t *FS_Manifest_ReadSystem(const char *fname, const char *basedir);
+void PM_Shutdown(qboolean soft);
 void PM_Command_f(void);
 qboolean PM_CanInstall(const char *packagename);
 
@@ -736,13 +761,15 @@ struct gamepacks
 	char *subpath;	//within the package (for zips)
 };
 void COM_Gamedir (const char *dir, const struct gamepacks *packagespaths);
+qboolean FS_GamedirIsOkay(const char *path);
 char *FS_GetGamedir(qboolean publicpathonly);
 char *FS_GetManifestArgs(void);
 int FS_GetManifestArgv(char **argv, int maxargs);
 
 struct zonegroup_s;
-void *FS_LoadMallocGroupFile(struct zonegroup_s *ctx, char *path, size_t *fsize);
+void *FS_LoadMallocGroupFile(struct zonegroup_s *ctx, char *path, size_t *fsize, qboolean filters);
 qbyte *FS_LoadMallocFile (const char *path, size_t *fsize);
+qbyte *FS_LoadMallocFileFlags (const char *path, unsigned int locateflags, size_t *fsize);
 qofs_t FS_LoadFile(const char *name, void **file);
 void FS_FreeFile(void *file);
 
@@ -847,14 +874,29 @@ qbyte	COM_BlockSequenceCheckByte (qbyte *base, int length, int sequence, unsigne
 qbyte	COM_BlockSequenceCRCByte (qbyte *base, int length, int sequence);
 qbyte	Q2COM_BlockSequenceCRCByte (qbyte *base, int length, int sequence);
 
-typedef size_t hashfunc_t(unsigned char *digest, size_t maxdigestsize, size_t numstrings, const unsigned char **strings, size_t *stringlens);
-#define SHA1 SHA1_quake
-#define HMAC HMAC_quake
-hashfunc_t SHA1_m;
-//int SHA1_m(char *digest, size_t maxdigestsize, size_t numstrings, const char **strings, size_t *stringlens);
-//#define SHA1(digest,maxdigestsize,string,stringlen) SHA1_m(digest, maxdigestsize, 1, &string, &stringlen)
-size_t SHA1(unsigned char *digest, size_t maxdigestsize, const unsigned char *string, size_t stringlen);
-size_t HMAC_fte(hashfunc_t *hashfunc, unsigned char *digest, size_t maxdigestsize, const unsigned char *data, size_t datalen, const unsigned char *key, size_t keylen);
+size_t Base64_EncodeBlock(const qbyte *in, size_t length, char *out, size_t outsize);	//tries to null terminate, but returns length without termination.
+size_t Base64_DecodeBlock(const char *in, const char *in_end, qbyte *out, size_t outsize); // +/ and =
+size_t Base16_EncodeBlock(const char *in, size_t length, qbyte *out, size_t outsize);
+size_t Base16_DecodeBlock(const char *in, qbyte *out, size_t outsize);
+
+#define DIGEST_MAXSIZE	(512/8)	//largest valid digest size, in bytes
+typedef struct
+{
+	unsigned int digestsize;
+	unsigned int contextsize;	//you need to alloca(te) this much memory...
+	void (*init) (void *context);
+	void (*process) (void *context, const void *data, size_t datasize);
+	void (*terminate) (unsigned char *digest, void *context);
+} hashfunc_t;
+extern hashfunc_t hash_sha1;
+extern hashfunc_t hash_sha224;
+extern hashfunc_t hash_sha256;
+extern hashfunc_t hash_sha384;
+extern hashfunc_t hash_sha512;
+#define HMAC HMAC_quake	//stop conflicts...
+size_t CalcHash(hashfunc_t *hash, unsigned char *digest, size_t maxdigestsize, const unsigned char *string, size_t stringlen);
+size_t HMAC(hashfunc_t *hashfunc, unsigned char *digest, size_t maxdigestsize, const unsigned char *data, size_t datalen, const unsigned char *key, size_t keylen);
+
 
 int version_number(void);
 char *version_string(void);
@@ -891,7 +933,15 @@ void Log_ShutDown(void);
 void IPLog_Add(const char *ip, const char *name);	//for associating player ip addresses with names.
 qboolean IPLog_Merge_File(const char *fname);
 #endif
-qboolean CertLog_ConnectOkay(const char *hostname, void *cert, size_t certsize);
+enum certlog_problem_e
+{
+	CERTLOG_WRONGHOST,
+	CERTLOG_EXPIRED,
+	CERTLOG_MISSINGCA,
+
+	CERTLOG_UNKNOWN,
+};
+qboolean CertLog_ConnectOkay(const char *hostname, void *cert, size_t certsize, unsigned int certlogproblems);
 
 #if defined(HAVE_SERVER) && defined(HAVE_CLIENT)
 qboolean Log_CheckMapCompletion(const char *packagename, const char *mapname, float *besttime, float *fulltime, float *bestkills, float *bestsecrets);

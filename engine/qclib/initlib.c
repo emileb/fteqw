@@ -89,7 +89,8 @@ void *PRAddressableExtend(progfuncs_t *progfuncs, void *src, size_t srcsize, int
 	char *ptr;
 	int ammount = (srcsize+pad + 4)&~3;	//round up to 4
 	pad = ammount - srcsize;
-	if (prinst.addressableused + ammount > prinst.addressablesize)
+	pad++;	//make sure there's always a null, to allow strings to be a little more lazy.
+	if (prinst.addressableused + ammount >= prinst.addressablesize)
 	{
 		/*only do this if the caller states that it can cope with addressable-block relocations/resizes*/
 		if (externs->addressablerelocated)
@@ -127,7 +128,7 @@ void *PRAddressableExtend(progfuncs_t *progfuncs, void *src, size_t srcsize, int
 #endif
 		}
 
-		if (prinst.addressableused + ammount > prinst.addressablesize)
+		if (prinst.addressableused + ammount >= prinst.addressablesize)
 			externs->Sys_Error("Not enough addressable memory for progs VM (using %gmb)", prinst.addressablesize/(1024.0*1024));
 	}
 
@@ -135,7 +136,7 @@ void *PRAddressableExtend(progfuncs_t *progfuncs, void *src, size_t srcsize, int
 	progfuncs->funcs.stringtablesize = prinst.addressableused;
 
 #if defined(_WIN32) && !defined(WINRT)
-	if (!VirtualAlloc (prinst.addressablehunk, prinst.addressableused, MEM_COMMIT, PAGE_READWRITE))
+	if (!VirtualAlloc (prinst.addressablehunk, prinst.addressableused+1, MEM_COMMIT, PAGE_READWRITE))
 		externs->Sys_Error("VirtualAlloc failed. Blame windows.");
 #endif
 
@@ -196,7 +197,7 @@ static void PF_fmem_unlink(progfuncs_t *progfuncs, qcmemfreeblock_t *p)
 	}
 }
 
-static void PR_memvalidate (progfuncs_t *progfuncs)
+void PR_memvalidate (progfuncs_t *progfuncs)
 {
 	qcmemfreeblock_t *p;
 	unsigned int b,l;
@@ -447,6 +448,8 @@ static void PDECL PR_memfree (pubprogfuncs_t *ppf, void *memptr)
 void PRAddressableFlush(progfuncs_t *progfuncs, size_t totalammount)
 {
 	prinst.addressableused = 0;
+	prinst.mfreelist = 0;
+
 	if (totalammount <= 0)	//flush
 	{
 		totalammount = prinst.addressablesize;
@@ -607,7 +610,7 @@ static struct entvars_s *PDECL PR_entvars (pubprogfuncs_t *ppf, struct edict_s *
 	return (struct entvars_s *)edvars(ed);
 }
 
-static pbool PDECL PR_GetFunctionInfo(pubprogfuncs_t *ppf, func_t func, int *args, qbyte **argsizes, int *builtinnum, char *funcname, size_t funcnamesize)
+static pbool PDECL PR_GetFunctionInfo(pubprogfuncs_t *ppf, func_t func, int *args, pbyte **argsizes, int *builtinnum, char *funcname, size_t funcnamesize)
 {
 	progfuncs_t *progfuncs = (progfuncs_t*)ppf;
 
@@ -689,6 +692,7 @@ func_t PDECL PR_FindFunc(pubprogfuncs_t *ppf, const char *funcname, progsnum_t p
 		return *(int *)&ps->globals[var16->ofs];
 	case PST_QTEST:
 	case PST_FTE32:
+	case PST_UHEXEN2:
 		var32 = ED_FindTypeGlobalFromProgs32(progfuncs, ps, funcname, ev_function);	//we must make sure we actually have a function def - 'light' is defined as a field before it is defined as a function.
 		if (!var32)
 			return (f - ps->functions) | (pnum << 24);
@@ -736,6 +740,7 @@ static void PDECL QC_FindPrefixedGlobals(pubprogfuncs_t *ppf, int pnum, char *pr
 		break;
 	case PST_QTEST:
 	case PST_FTE32:
+	case PST_UHEXEN2:
 		for (i=1 ; i<pr_progstate[pnum].progs->numglobaldefs ; i++)
 		{
 			def32 = &pr_progstate[pnum].globaldefs32[i];
@@ -786,6 +791,7 @@ eval_t *PDECL PR_FindGlobal(pubprogfuncs_t *ppf, const char *globname, progsnum_
 		return (eval_t *)&cp->globals[var16->ofs];
 	case PST_QTEST:
 	case PST_FTE32:
+	case PST_UHEXEN2:
 		if (!(var32 = ED_FindGlobalFromProgs32(progfuncs, cp, globname)))
 			return NULL;
 
@@ -802,14 +808,14 @@ static char *PDECL PR_VarString (pubprogfuncs_t *ppf, int	first)
 	progfuncs_t *progfuncs = (progfuncs_t*)ppf;
 	int		i;
 	static char out[1024];
-	char *s;
-	
+	const char *s;
+
 	out[0] = 0;
 	for (i=first ; i<progfuncs->funcs.callargc ; i++)
 	{
-		if (G_STRING(OFS_PARM0+i*3))
+		s = PR_StringToNative(ppf, G_STRING(OFS_PARM0+i*3));
+		if (s)
 		{
-			s=G_STRING((OFS_PARM0+i*3)) + progfuncs->funcs.stringtable;
 			if (strlen(out) + strlen(s) + 1 >= sizeof(out))
 				return out;
 			strcat (out, s);
@@ -1029,14 +1035,14 @@ const char *ASMCALL PR_StringToNative				(pubprogfuncs_t *ppf, string_t str)
 
 eval_t *PR_GetReadTempStringPtr(progfuncs_t *progfuncs, string_t str, size_t offset, size_t datasize)
 {
-	static vec3_t dummy;	//don't resize anything when reading.
-	if (((unsigned int)str & STRING_SPECMASK) != STRING_TEMP)
+	static pvec3_t dummy;	//don't resize anything when reading.
+	if (((unsigned int)str & STRING_SPECMASK) == STRING_TEMP)
 	{
 		unsigned int i = str & ~STRING_SPECMASK;
 		tempstr_t *temp;
 		if (i < prinst.maxtempstrings && (temp=prinst.tempstrings[i]))
 		{
-			if (offset + datasize < temp->size)
+			if (offset + datasize <= temp->size)
 				return (eval_t*)(temp->value + offset);
 			else
 				return (eval_t*)dummy;
@@ -1046,7 +1052,7 @@ eval_t *PR_GetReadTempStringPtr(progfuncs_t *progfuncs, string_t str, size_t off
 }
 eval_t *PR_GetWriteTempStringPtr(progfuncs_t *progfuncs, string_t str, size_t offset, size_t datasize)
 {
-	if (((unsigned int)str & STRING_SPECMASK) != STRING_TEMP)
+	if (((unsigned int)str & STRING_SPECMASK) == STRING_TEMP)
 	{
 		unsigned int i = str & ~STRING_SPECMASK;
 		tempstr_t *temp;
@@ -1059,12 +1065,13 @@ eval_t *PR_GetWriteTempStringPtr(progfuncs_t *progfuncs, string_t str, size_t of
 				newsize = offset + datasize;
 				if (newsize > (1u<<20u))
 					return NULL;	//gotta have a cut-off point somewhere.
+				newsize = (newsize+sizeof(float)-1)&~(sizeof(float)-1);
 				newtemp = progfuncs->funcs.parms->memalloc(sizeof(tempstr_t) - sizeof(((tempstr_t*)NULL)->value) + newsize);
+				newtemp->size = newsize;
 				memcpy(newtemp->value, temp->value, temp->size);
 				memset(newtemp->value+temp->size, 0, newsize-temp->size);
 				progfuncs->funcs.parms->memfree(temp);
 				prinst.tempstrings[i] = temp = newtemp;
-
 			}
 			return (eval_t*)(temp->value + offset);
 		}
@@ -1078,10 +1085,10 @@ void QCBUILTIN PF_memgetval (pubprogfuncs_t *inst, struct globalvars_s *globals)
 	//read 32 bits from a pointer.
 	int dst = G_INT(OFS_PARM0);
 	float ofs = G_FLOAT(OFS_PARM1);
-	int size = 4;
+	int size = sizeof(int);
 	if (ofs != (float)(int)ofs)
 		PR_RunWarning(inst, "PF_memgetval: non-integer offset\n");
-	dst += ofs;
+	dst += ofs*size;
 	if (dst < 0 || dst+size >= inst->stringtablesize)
 	{
 		PR_RunError(inst, "PF_memgetval: invalid dest\n");
@@ -1098,10 +1105,10 @@ void QCBUILTIN PF_memsetval (pubprogfuncs_t *inst, struct globalvars_s *globals)
 	int dst = G_INT(OFS_PARM0);
 	float ofs = G_FLOAT(OFS_PARM1);
 	int val = G_INT(OFS_PARM2);
-	int size = 4;
+	int size = sizeof(int);
 	if (ofs != (float)(int)ofs)
 		PR_RunWarning(inst, "PF_memsetval: non-integer offset\n");
-	dst += ofs;
+	dst += ofs*size;
 	if (dst < 0 || dst+size >= inst->stringtablesize)
 	{
 		PR_RunError(inst, "PF_memsetval: invalid dest\n");
@@ -1114,15 +1121,86 @@ void QCBUILTIN PF_memsetval (pubprogfuncs_t *inst, struct globalvars_s *globals)
 
 //#define GCTIMINGS
 
+#ifdef QCGC
+#define smallbool char
+static smallbool *PR_QCGC_Mark(void *mem, size_t memsize, size_t numtemps)
+{
+	unsigned int *str;	//the reference we're considering
+	size_t p;
+	smallbool *marked;	//just booleans. could compact.
+	marked = malloc(sizeof(*marked) * numtemps);
+	memset(marked, 0, sizeof(*marked) * numtemps);
+
+	//mark everything the qc has access to, even if it isn't even a string!
+	//note that I did try specifically checking only data explicitly marked as a string type, but that was:
+	//a) a smidge slower (lots of extra loops and conditions I guess)
+	//b) doesn't work with pointers/structs (yes, we assume it'll all be aligned).
+	//c) both methods got the same number of false positives in my test (2, probably dead strunzoned references)
+	for (str = mem, p = 0; p < memsize; p+=sizeof(*str), str++)
+	{
+		if ((*str & STRING_SPECMASK) == STRING_TEMP)
+		{
+			unsigned int idx = *str &~ STRING_SPECMASK;
+			if (idx < numtemps)
+				marked[idx] = true;
+		}
+	}
+	return marked;
+}
+static size_t PR_QCGC_Sweep(progfuncs_t *progfuncs, smallbool *marked, tempstr_t **tempstrings, unsigned int numtemps)
+{
+	unsigned int p;
+	unsigned int swept = 0;
+#ifdef GCTIMINGS
+	unsigned int unswept = 0;
+	unsigned int errors = 0;
+#endif
+	for (p = 0; p < numtemps; p++)
+	{
+		if (marked[p])
+		{	//still live...
+#ifdef GCTIMINGS
+			unswept++;
+
+			if (!tempstrings[p])
+				errors++;
+#endif
+		}
+		else if (tempstrings[p])
+		{	//not marked, but was valid at the time our snapshot was taken
+
+#ifdef _DEBUG
+			if (tempstrings[p] != prinst.tempstrings[p])
+			{	//something weird happened. tempstrings are supposed to be immutable (at least in length).
+				externs->Sys_Error("tempstring was reallocated while gc was running");
+				continue;
+			}
+#endif
+
+			swept++;
+
+			//FIXME: Security Race: its possible for a mod to do weird manipulations to access the tempstring while we're still freeing it, allowing it to read something outside of its sandbox.
+			//one option would be to have the main thread bounce it back to the worker after its complete, so we can actually free the memory only after main thread has acknowledged that its tempstrings are nulled.
+			prinst.tempstrings[p] = NULL;
+
+			externs->memfree(tempstrings[p]);
+		}
+	}
+
+	free(marked);
+
+	return swept;
+}
+
 #ifdef THREADEDGC
 #include "quakedef.h"
 struct qcgccontext_s
 {
 	int done;
-	size_t clearedtemps;	//number of temps that were swept away
+	unsigned int clearedtemps;	//number of temps that were swept away
 	progfuncs_t *progfuncs;	//careful!
 
-	size_t numtemps;		//so it doesn't go stale
+	size_t maxtemps;		//so it doesn't go stale
 	tempstr_t **tempstrings;//so we don't get confused over temps added while marking
 
 	size_t memsize;
@@ -1136,91 +1214,39 @@ void PR_QCGC_Done(void *ctx, void *data, size_t a, size_t b)
 void PR_QCGC_Thread(void *ctx, void *data, size_t a, size_t b)
 {
 	struct qcgccontext_s *gc = ctx;
-	unsigned int p, r_d;
-	char *marked, *t;
-	unsigned int *str;
-	size_t numtemps = gc->numtemps;
+	progfuncs_t *progfuncs = gc->progfuncs;
+	smallbool *marked;
 
 #ifdef GCTIMINGS
-	unsigned int r_l;
 	double starttime, markedtime, endtime;
 	starttime = Sys_DoubleTime();
 #endif
-
-	marked = malloc(sizeof(*marked) * numtemps);
-	memset(marked, 0, sizeof(*marked) * numtemps);
-
-	//mark everything the qc has access to, even if it isn't even a string!
-	//note that I did try specifically checking only data explicitly marked as a string type, but that was:
-	//a) a smidge slower (lots of extra loops and conditions I guess)
-	//b) doesn't work with pointers/structs (yes, we assume it'll all be aligned).
-	//c) both methods got the same number of false positives in my test (2, probably dead strunzoned references)
-	for (str = gc->amem, p = 0; p < gc->memsize; p+=sizeof(*str), str++)
-	{
-		if ((*str & STRING_SPECMASK) == STRING_TEMP)
-		{
-			unsigned int idx = *str &~ STRING_SPECMASK;
-			if (idx < numtemps)
-				marked[idx] = true;
-		}
-	}
-
+	marked = PR_QCGC_Mark(gc->amem, gc->memsize, gc->maxtemps);
 #ifdef GCTIMINGS
 	markedtime = Sys_DoubleTime();
 #endif
-
-	//sweep
-#ifdef GCTIMINGS
-	r_l = 0;
-#endif
-	r_d = 0;
-	for (p = 0; p < numtemps; p++)
-	{
-		if (marked[p])
-		{
-#ifdef GCTIMINGS
-			r_l++;
-#endif
-		}
-		else
-			break;
-	}
-//	prinst.nexttempstring = p;
-	for (; p < numtemps; p++)
-	{
-		if (marked[p])
-		{	//still live...
-#ifdef GCTIMINGS
-			r_l++;
-#endif
-		}
-		else if (gc->tempstrings[p])
-		{	//not marked, but was valid at the time our snapshot was taken
-			r_d++;
-
-			//FIXME: Security Race: its possible for a mod to do weird manipulations to access the tempstring while we're still freeing it, allowing it to read something outside of its sandbox.
-			//one option would be to have the main thread bounce it back to the worker after its complete, so we can actually free the memory only after main thread has acknowledged that its tempstrings are nulled.
-			gc->prinst.tempstrings[p] = NULL;
-
-			gc->externs->memfree(gc->tempstrings[p]);
-		}
-	}
-	gc->clearedtemps = r_d;
-
-	free(marked);
-
+	gc->clearedtemps = PR_QCGC_Sweep(progfuncs, marked, gc->tempstrings, gc->maxtemps);
 #ifdef GCTIMINGS
 	endtime = Sys_DoubleTime();
-	gc->externs->Printf("live: %u, dead: %u, threadtime: mark=%f, sweep=%f, total=%f\n", r_l, r_d, (markedtime - starttime), (endtime - markedtime), endtime-starttime);
+	gc->externs->Printf("live: %u, dead: %u, threadtime: mark=%f, sweep=%f, total=%f\n", prinst.livetemps-gc->clearedtemps, gc->clearedtemps, (markedtime - starttime), (endtime - markedtime), endtime-starttime);
 #endif
 
 	COM_InsertWork(WG_MAIN, PR_QCGC_Done, gc, NULL, 0, 0);
 }
+#endif
+static void PR_ExpandTempStrings(progfuncs_t *progfuncs, size_t newmax)
+{
+	tempstr_t **ntable = progfuncs->funcs.parms->memalloc(sizeof(*ntable) * newmax);
+	memcpy(ntable, prinst.tempstrings, sizeof(*ntable) * prinst.maxtempstrings);
+	memset(ntable+prinst.maxtempstrings, 0, sizeof(*ntable) * (newmax-prinst.maxtempstrings));
+	prinst.maxtempstrings = newmax;
+	if (prinst.tempstrings)
+		progfuncs->funcs.parms->memfree(prinst.tempstrings);
+	prinst.tempstrings = ntable;
+}
 static string_t PDECL PR_AllocTempStringLen			(pubprogfuncs_t *ppf, char **str, unsigned int len)
 {
-	progfuncs_t *fte_restrict progfuncs = (progfuncs_t *)ppf;
-	tempstr_t **ntable;
-	int newmax;
+	progfuncs_t *progfuncs = (progfuncs_t *)ppf;
 	int i;
 
 	if (!str)
@@ -1228,21 +1254,16 @@ static string_t PDECL PR_AllocTempStringLen			(pubprogfuncs_t *ppf, char **str, 
 
 	if (prinst.livetemps == prinst.maxtempstrings)
 	{
+#ifdef THREADEDGC
 		//need to wait for the gc to finish, otherwise it might be wiping freed strings that we're still using.
 		while (prinst.gccontext)
 		{
 			COM_WorkerPartialSync(prinst.gccontext, &prinst.gccontext->done, false);
 			PR_RunGC(progfuncs);
 		}
+#endif
 
-		newmax = prinst.maxtempstrings*2 + 1024;
-		ntable = progfuncs->funcs.parms->memalloc(sizeof(char*) * newmax);
-		memcpy(ntable, prinst.tempstrings, sizeof(char*) * prinst.maxtempstrings);
-		memset(ntable+prinst.maxtempstrings, 0, sizeof(char*) * (newmax-prinst.maxtempstrings));
-		prinst.maxtempstrings = newmax;
-		if (prinst.tempstrings)
-			progfuncs->funcs.parms->memfree(prinst.tempstrings);
-		prinst.tempstrings = ntable;
+		PR_ExpandTempStrings(progfuncs, prinst.maxtempstrings*2 + 1024);
 	}
 
 	for (i = prinst.nexttempstring; i < prinst.maxtempstrings && prinst.tempstrings[i]; i++)
@@ -1263,15 +1284,18 @@ static string_t PDECL PR_AllocTempStringLen			(pubprogfuncs_t *ppf, char **str, 
 
 	return (string_t)((unsigned int)i | STRING_TEMP);
 }
-pbool PR_RunGC			(progfuncs_t *progfuncs)
+void PR_RunGC (progfuncs_t *progfuncs)
 {
+#ifdef THREADEDGC
 	if (!prinst.gccontext)
+#endif
 	{
 		if (prinst.livetemps < prinst.maxtempstrings/2 || prinst.nexttempstring < prinst.maxtempstrings/2)
 		{	//don't bother yet
-			return false;
+			return;
 		}
-		else
+#ifdef THREADEDGC
+		if (externs->usethreadedgc)
 		{
 #ifdef GCTIMINGS
 			double starttime = Sys_DoubleTime(), endtime;
@@ -1284,9 +1308,9 @@ pbool PR_RunGC			(progfuncs_t *progfuncs)
 			gc->memsize = prinst.addressableused;
 			memcpy(gc->amem, prinst.addressablehunk, prinst.addressableused);
 
-			gc->numtemps = prinst.maxtempstrings;
+			gc->maxtemps = prinst.maxtempstrings;
 			gc->tempstrings = (void*)((char*)gc->amem+prinst.addressableused);
-			memcpy(gc->tempstrings, prinst.tempstrings, sizeof(*gc->tempstrings)*gc->numtemps);
+			memcpy(gc->tempstrings, prinst.tempstrings, sizeof(*gc->tempstrings)*gc->maxtemps);
 
 			COM_InsertWork(WG_LOADER, PR_QCGC_Thread, gc, NULL, 0, 0);
 
@@ -1294,8 +1318,20 @@ pbool PR_RunGC			(progfuncs_t *progfuncs)
 			endtime = Sys_DoubleTime();
 			gc->externs->Printf("preparetime=%f\n", (endtime - starttime));
 #endif
+			return;
+		}
+#endif
+		{	//same-thread gc.
+			smallbool *marked = PR_QCGC_Mark(prinst.addressablehunk, prinst.addressableused, prinst.maxtempstrings);
+			size_t swept = PR_QCGC_Sweep(progfuncs, marked, prinst.tempstrings, prinst.maxtempstrings);
+			prinst.livetemps -= swept;
+
+			//if over half the (max)strings are still live, just increase the max so we are not spamming collections
+			if (prinst.livetemps >= prinst.maxtempstrings/2)
+				PR_ExpandTempStrings(progfuncs, prinst.maxtempstrings * 2);
 		}
 	}
+#ifdef THREADEDGC
 	else if (prinst.gccontext->done)
 	{
 		prinst.livetemps -= prinst.gccontext->clearedtemps;
@@ -1304,29 +1340,21 @@ pbool PR_RunGC			(progfuncs_t *progfuncs)
 
 		//if over half the (max)strings are still live, just increase the max so we are not spamming collections
 		if (prinst.livetemps >= prinst.maxtempstrings/2)
-		{
-			unsigned int newmax = prinst.maxtempstrings * 2;
-			tempstr_t **ntable = progfuncs->funcs.parms->memalloc(sizeof(char*) * newmax);
-			memcpy(ntable, prinst.tempstrings, sizeof(char*) * prinst.maxtempstrings);
-			memset(ntable+prinst.maxtempstrings, 0, sizeof(char*) * (newmax-prinst.maxtempstrings));
-			prinst.maxtempstrings = newmax;
-			if (prinst.tempstrings)
-				progfuncs->funcs.parms->memfree(prinst.tempstrings);
-			prinst.tempstrings = ntable;
-		}
-		return false;
+			PR_ExpandTempStrings(progfuncs, prinst.maxtempstrings * 2);
 	}
-	return true; //running...
+#endif
 }
 
 static void PR_FreeAllTemps			(progfuncs_t *progfuncs)
 {
 	unsigned int i;
+#ifdef THREADEDGC
 	while (prinst.gccontext)
 	{
 		COM_WorkerPartialSync(prinst.gccontext, &prinst.gccontext->done, false);
 		PR_RunGC(progfuncs);
 	}
+#endif
 	for (i = 0; i < prinst.maxtempstrings; i++)
 	{
 		externs->memfree(prinst.tempstrings[i]);
@@ -1334,152 +1362,13 @@ static void PR_FreeAllTemps			(progfuncs_t *progfuncs)
 	}
 	prinst.maxtempstrings = 0;
 	prinst.nexttempstring = 0;
-}
-
-#elif defined(QCGC)
-
-pbool PR_RunGC			(progfuncs_t *progfuncs)
-{
-	unsigned int p;
-	char *marked;
-	unsigned int *str;
-	unsigned int r_l, r_d;
-#ifdef GCTIMINGS
-	double starttime, markedtime, endtime;
-#endif
-	//only run the GC when we've itterated each string at least once.
-	if (prinst.nexttempstring < (prinst.maxtempstrings>>1) || prinst.nexttempstring < 200)
-		return false;
-#ifdef GCTIMINGS
-	starttime = Sys_DoubleTime();
-#endif
-	marked = malloc(sizeof(*marked) * prinst.numtempstrings);
-	memset(marked, 0, sizeof(*marked) * prinst.numtempstrings);
-
-	//mark everything the qc has access to, even if it isn't even a string!
-	//note that I did try specifically checking only data explicitly marked as a string type, but that was:
-	//a) a smidge slower (lots of extra loops and conditions I guess)
-	//b) doesn't work with pointers/structs (yes, we assume it'll all be aligned).
-	//c) both methods got the same number of false positives in my test (2, probably dead strunzoned references)
-	for (str = (unsigned int*)prinst.addressablehunk, p = 0; p < prinst.addressableused; p+=sizeof(*str), str++)
-	{
-		if ((*str & STRING_SPECMASK) == STRING_TEMP)
-		{
-			unsigned int idx = *str &~ STRING_SPECMASK;
-			if (idx < prinst.numtempstrings)
-				marked[idx] = true;
-		}
-	}
-
-	//sweep
-#ifdef GCTIMINGS
-	markedtime = Sys_DoubleTime();
-#endif
-	r_l = 0;
-	r_d = 0;
-	for (p = 0; p < prinst.numtempstrings; p++)
-	{
-		if (marked[p])
-		{
-			r_l++;
-		}
-		else
-			break;
-	}
-	prinst.nexttempstring = p;
-	for (; p < prinst.numtempstrings; p++)
-	{
-		if (marked[p])
-		{
-			r_l++;
-		}
-		else if (prinst.tempstrings[p])
-		{
-			r_d++;
-			externs->memfree(prinst.tempstrings[p]);
-			prinst.tempstrings[p] = NULL;
-		}
-	}
-
-	while (prinst.numtempstrings > 0 && prinst.tempstrings[prinst.numtempstrings-1] == NULL)
-		prinst.numtempstrings--;
-
-	free(marked);
-
-	//if over half the (max)strings are still live, just increase the max so we are not spamming collections
-	r_d += prinst.maxtempstrings - prinst.numtempstrings;
-	if (r_l > r_d)
-	{
-		unsigned int newmax = prinst.maxtempstrings * 2;
-		tempstr_t **ntable = progfuncs->funcs.parms->memalloc(sizeof(char*) * newmax);
-		memcpy(ntable, prinst.tempstrings, sizeof(char*) * prinst.maxtempstrings);
-		memset(ntable+prinst.maxtempstrings, 0, sizeof(char*) * (newmax-prinst.maxtempstrings));
-		prinst.maxtempstrings = newmax;
-		if (prinst.tempstrings)
-			progfuncs->funcs.parms->memfree(prinst.tempstrings);
-		prinst.tempstrings = ntable;
-	}
-
-#ifdef GCTIMINGS
-	endtime = Sys_DoubleTime();
-	externs->Printf("live: %u, dead: %u, time: mark=%f, sweep=%f, total=%f\n", r_l, r_d, markedtime - starttime, endtime - markedtime, endtime-starttime);
-#endif
-
-	return true;
-}
-static string_t PDECL PR_AllocTempStringLen			(pubprogfuncs_t *ppf, char **str, unsigned int len)
-{
-	progfuncs_t *progfuncs = (progfuncs_t*)ppf;
-	tempstr_t **ntable;
-	int newmax;
-	int i;
-
-	if (!str)
-		return 0;
-
-	if (prinst.numtempstrings == prinst.maxtempstrings)
-	{
-		newmax = prinst.maxtempstrings + 1024;
-		ntable = progfuncs->funcs.parms->memalloc(sizeof(char*) * newmax);
-		memcpy(ntable, prinst.tempstrings, sizeof(char*) * prinst.numtempstrings);
-		memset(ntable+prinst.maxtempstrings, 0, sizeof(char*) * (newmax-prinst.numtempstrings));
-		prinst.maxtempstrings = newmax;
-		if (prinst.tempstrings)
-			progfuncs->funcs.parms->memfree(prinst.tempstrings);
-		prinst.tempstrings = ntable;
-	}
-
-	if (prinst.nexttempstring >= 0x10000000)
-		return 0;
-	do
-	{
-		i = prinst.nexttempstring++;
-	} while(prinst.tempstrings[i] != NULL);
-	if (i == prinst.numtempstrings)
-		prinst.numtempstrings++;
-
-	prinst.tempstrings[i] = progfuncs->funcs.parms->memalloc(sizeof(tempstr_t) - sizeof(((tempstr_t*)NULL)->value) + len);
-	prinst.tempstrings[i]->size = len;
-	*str = prinst.tempstrings[i]->value;
-
-	return (string_t)((unsigned int)i | STRING_TEMP);
-}
-static void PR_FreeAllTemps			(progfuncs_t *progfuncs)
-{
-	unsigned int i;
-	for (i = 0; i < prinst.numtempstrings; i++)
-	{
-		externs->memfree(prinst.tempstrings[i]);
-		prinst.tempstrings[i] = NULL;
-	}
-	prinst.numtempstrings = 0;
-	prinst.nexttempstring = 0;
+	prinst.livetemps = 0;
 }
 #else
 static string_t PDECL PR_AllocTempStringLen			(pubprogfuncs_t *ppf, char **str, unsigned int len)
 {
 	progfuncs_t *progfuncs = (progfuncs_t*)ppf;
-	tempstr_t **ntable;
+	tempstr_t **ntable, *n;
 	int newmax;
 	int i;
 
@@ -1503,9 +1392,10 @@ static string_t PDECL PR_AllocTempStringLen			(pubprogfuncs_t *ppf, char **str, 
 
 	prinst.numtempstrings++;
 
-	prinst.tempstrings[i] = progfuncs->funcs.parms->memalloc(sizeof(tempstr_t) - sizeof(((tempstr_t*)NULL)->value) + len);
-	prinst.tempstrings[i]->size = len;
-	*str = prinst.tempstrings[i]->value;
+	n = progfuncs->funcs.parms->memalloc(sizeof(tempstr_t) - sizeof(((tempstr_t*)NULL)->value) + len);
+	n->size = len;
+	*str = n->value;
+	prinst.tempstrings[i] = n;	//doesn't have its value yet...
 
 	return (string_t)((unsigned int)i | STRING_TEMP);
 }
@@ -1684,6 +1574,7 @@ static pubprogfuncs_t deffuncs = {
 	0,		//string table size
 	0,	//max size
 	0,	//field adjust(aditional field offset)
+	0,	//field slots allocated (for builtins to clamp field reference args).
 
 	PR_ForkStack,
 	PR_ResumeThread,
@@ -1735,53 +1626,6 @@ static void PDECL qclib_free(void *ptr)
 #undef printf
 #define printf NULL	//should be some null wrapper instead
 #endif
-
-//defs incase following structure is not passed.
-static struct edict_s *safesv_edicts;
-static int safesv_num_edicts;
-static double safetime=0;
-
-static progexterns_t defexterns = {
-	PROGSTRUCT_VERSION,		
-
-	NULL, //char *(*ReadFile) (char *fname, void *buffer, int len);
-	NULL, //int (*FileSize) (char *fname);	//-1 if file does not exist
-	NULL, //bool (*WriteFile) (char *name, void *data, int len);
-	qclib_null_printf, //void (*printf) (char *, ...);
-	qclib_null_printf, //void (*dprintf) (char *, ...);
-	(void*)exit, //void (*Sys_Error) (char *, ...);
-	NULL, //void (*Abort) (char *, ...);
-	NULL,
-
-	NULL, //void (*entspawn) (struct edict_s *ent);	//ent has been spawned, but may not have all the extra variables (that may need to be set) set
-	NULL, //bool (*entcanfree) (struct edict_s *ent);	//return true to stop ent from being freed
-	NULL, //void (*stateop) (float var, func_t func);
-	NULL,
-	NULL,
-	NULL,
-
-	//used when loading a game
-	NULL, //builtin_t *(*builtinsfor) (int num);	//must return a pointer to the builtins that were used before the state was saved.
-	NULL, //void (*loadcompleate) (int edictsize);	//notification to reset any pointers.
-	NULL,
-
-	qclib_malloc, //void *(*memalloc) (int size);	//small string allocation	malloced and freed randomly by the executor. (use memalloc if you want)
-	qclib_free, //void (*memfree) (void * mem);
-
-	NULL, //int (*useeditor) (char *filename, int line, int nump, char **parms);
-	NULL,	//relocated
-
-	NULL, //builtin_t *globalbuiltins;	//these are available to all progs
-	0, //int numglobalbuiltins;
-
-	PR_NOCOMPILE,
-
-	&safetime, //double *gametime;
-
-	&safesv_edicts, //struct edict_s **sv_edicts;
-	&safesv_num_edicts, //int *sv_num_edicts;
-	sizeof(edictrun_t), //int edictsize;	//size of edict_t
-};
 
 //progfuncs_t *progfuncs = NULL;
 #undef memfree
@@ -1844,34 +1688,52 @@ static void PDECL PR_Shutdown(pubprogfuncs_t *ppf)
 #endif
 
 #if defined(QCLIBDLL_EXPORTS)
-__declspec(dllexport)
+	#ifdef _WIN32
+		__declspec(dllexport)
+	#else
+		__attribute__((visibility("default")))
+	#endif
 #endif
 pubprogfuncs_t * PDECL InitProgs(progexterns_t *ext)
 {	
 	progfuncs_t *funcs;
 
 	if (!ext)
-		ext = &defexterns;
-	else
 	{
-		int i;
-		if (ext->progsversion > PROGSTRUCT_VERSION)
-			return NULL;
+		static progexterns_t defexterns;
+		ext = &defexterns;
+	}
+	else if (ext->progsversion != PROGSTRUCT_VERSION)
+		return NULL;
 
-		for (i=0;i<sizeof(progexterns_t); i+=4)	//make sure there are no items left out.
-			if (!*(int *)((char *)ext+i))
-				*(int *)((char *)ext+i) = *(int *)((char *)&defexterns+i);		
-	}	
 #undef memalloc
 #undef pr_progstate
 #undef pr_argc
-	funcs = ext->memalloc(sizeof(progfuncs_t));	
+	funcs = (ext->memalloc?ext->memalloc:qclib_malloc)(sizeof(progfuncs_t));	
 	memcpy(&funcs->funcs, &deffuncs, sizeof(pubprogfuncs_t));
 	memset(&funcs->inst, 0, sizeof(funcs->inst));
 
 	funcs->funcs.progstate = &funcs->inst.progstate;
 
 	funcs->funcs.parms = ext;
+
+
+	{
+		//defs incase following structure is not passed.
+		static struct edict_s *safe_edicts;
+		static int safe_num_edicts;
+		static double safetime=0;
+		if (!ext->progsversion)	ext->progsversion = PROGSTRUCT_VERSION;
+		if (!ext->Printf)		ext->Printf = qclib_null_printf;
+		if (!ext->DPrintf)		ext->DPrintf = qclib_null_printf;
+		if (!ext->Sys_Error)	ext->Sys_Error = (void*)exit;
+		if (!ext->memalloc)		ext->memalloc = qclib_malloc;
+		if (!ext->memfree)		ext->memfree = qclib_free;
+		if (!ext->gametime)		ext->gametime = &safetime;
+		if (!ext->edicts)		ext->edicts = &safe_edicts;
+		if (!ext->num_edicts)	ext->num_edicts = &safe_num_edicts;
+		if (!ext->edictsize)	ext->edictsize = sizeof(edictrun_t);
+	}
 
 	SetEndian();
 	

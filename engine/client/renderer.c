@@ -4,7 +4,12 @@
 #include "gl_draw.h"
 #include "shader.h"
 #include "glquake.h"
+#include "vr.h"
 #include <string.h>
+
+#ifdef __GLIBC__
+#include <malloc.h>	//for malloc_trim
+#endif
 
 
 #define DEFAULT_WIDTH 640
@@ -25,8 +30,10 @@ int r_regsequence;
 int rspeeds[RSPEED_MAX];
 int rquant[RQUANT_MAX];
 
+static void R_RegisterBuiltinRenderers(void);
 void R_InitParticleTexture (void);
 void R_RestartRenderer (rendererstate_t *newr);
+static void R_UpdateRendererOpts(void);
 
 qboolean vid_isfullscreen;
 
@@ -50,6 +57,7 @@ void QDECL SCR_Fov_Callback (struct cvar_s *var, char *oldvalue);
 void QDECL Image_TextureMode_Callback (struct cvar_s *var, char *oldvalue);
 void QDECL R_SkyBox_Changed (struct cvar_s *var, char *oldvalue)
 {
+	R_SetSky(var->string);
 //	Shader_NeedReload(false);
 }
 void R_ForceSky_f(void)
@@ -91,6 +99,14 @@ static void QDECL R_HDR_FramebufferFormat_Changed(struct cvar_s *var, char *oldv
 	if (var->ival < 0)
 		var->ival = 0;
 }
+static void QDECL R_ClearColour_Changed(struct cvar_s *var, char *oldvalue)
+{	//just exists to force ival=0 when string=="R G B", so we don't have to do it every frame.
+	//don't bother baking the palette. that isn't quite robust when vid_reloading etc.
+	char *e;
+	strtol(var->string, &e, 0);
+	if (*e)
+		var->ival = 0;	//junk at the end means its an RGB value instead of a simple palette index.
+}
 
 #ifdef FTE_TARGET_WEB	//webgl sucks too much to get a stable framerate without vsync.
 cvar_t vid_vsync							= CVARAF  ("vid_vsync", "1",
@@ -111,7 +127,7 @@ cvar_t cl_cursorbiasx						= CVAR  ("cl_cursor_bias_x", "0.0");
 cvar_t cl_cursorbiasy						= CVAR  ("cl_cursor_bias_y", "0.0");
 
 #ifdef QWSKINS
-cvar_t gl_nocolors							= CVARF  ("gl_nocolors", "0", CVAR_ARCHIVE);
+cvar_t gl_nocolors							= CVARFD  ("gl_nocolors", "0", CVAR_ARCHIVE, "Ignores player colours and skins, reducing texture memory usage at the cost of not knowing whether you're killing your team mates.");
 #endif
 cvar_t gl_part_flame						= CVARFD  ("gl_part_flame", "1", CVAR_ARCHIVE, "Enable particle emitting from models. Mainly used for torch and flame effects.");
 
@@ -140,7 +156,7 @@ cvar_t r_bloodstains						= CVARF  ("r_bloodstains", "1", CVAR_ARCHIVE);
 cvar_t r_bouncysparks						= CVARFD ("r_bouncysparks", "1",
 													CVAR_ARCHIVE,
 													"Enables particle interaction with world surfaces, allowing for bouncy particles, stains, and decals.");
-cvar_t r_drawentities						= CVAR  ("r_drawentities", "1");
+cvar_t r_drawentities						= CVARFD  ("r_drawentities", "1", CVAR_CHEAT, "Controls whether to draw entities or not.\n0: Draw no entities.\n1: Draw everything as normal.\n2: Draw everything but bmodels.\n3: Draw bmodels only.");
 cvar_t r_max_gpu_bones						= CVARD  ("r_max_gpu_bones", "", "Specifies the maximum number of bones that can be handled on the GPU. If empty, will guess.");
 cvar_t r_drawflat							= CVARAF ("r_drawflat", "0", "gl_textureless",
 													CVAR_ARCHIVE | CVAR_SEMICHEAT | CVAR_RENDERERCALLBACK | CVAR_SHADERSYSTEM);
@@ -156,9 +172,11 @@ cvar_t r_refractreflect_scale				= CVARD ("r_refractreflect_scale", "0.5", "Use 
 cvar_t r_drawviewmodel						= CVARF  ("r_drawviewmodel", "1", CVAR_ARCHIVE);
 cvar_t r_drawviewmodelinvis					= CVAR  ("r_drawviewmodelinvis", "0");
 cvar_t r_dynamic							= CVARFD ("r_dynamic", IFMINIMAL("0","1"),
-													  CVAR_ARCHIVE, "-1: the engine will use only pvs to determine which surfaces are visible. This can significantly reduce CPU time, but only if there are many surfaces with few textures visible from the camera.\n0: no standard dlights at all.\n1: coloured dlights will be used, they may show through walls. These are not realtime things.\n2: The dlights will be forced to monochrome (this does not affect coronas/flashblends/rtlights attached to the same light).");
+													  CVAR_ARCHIVE, "0: no standard dlights at all.\n1: coloured dlights will be used, they may show through walls. These are not realtime things.\n2: The dlights will be forced to monochrome (this does not affect coronas/flashblends/rtlights attached to the same light).");
+cvar_t r_temporalscenecache					= CVARFD ("r_temporalscenecache", "", CVAR_ARCHIVE, "Controls whether to generate+reuse a scene cache over multiple frames. This is generated on a separate thread to avoid any associated costs. This can significantly boost framerates on complex maps, but can also stress the gpu more (performance tradeoff that varies per map). An outdated cache may be used if the cache takes too long to build (eg: lightmap animations), which could cause the odd glitch when moving fast (but retain more consistent framerates - another tradeoff).\n0: Tranditional quake rendering.\n1: Generate+Use the scene cache.");
 cvar_t r_fastturb							= CVARF ("r_fastturb", "0",
 													CVAR_SHADERSYSTEM);
+cvar_t r_skycloudalpha						= CVARFD ("r_skycloudalpha", "1", CVAR_RENDERERLATCH, "Controls how opaque the front layer of legacy scrolling skies should be.");
 cvar_t r_fastsky							= CVARF ("r_fastsky", "0",
 													CVAR_ARCHIVE);
 cvar_t r_fastskycolour						= CVARF ("r_fastskycolour", "0",
@@ -211,7 +229,7 @@ cvar_t r_menutint							= CVARF	("r_menutint", "0.68 0.4 0.13",
 												CVAR_RENDERERCALLBACK);
 cvar_t r_netgraph							= CVARD	("r_netgraph", "0", "Displays a graph of packet latency. A value of 2 will give additional info about what sort of data is being received from the server.");
 extern cvar_t r_lerpmuzzlehack;
-extern cvar_t mod_h2holey_bugged;
+extern cvar_t mod_h2holey_bugged, mod_halftexel, mod_nomipmap;
 cvar_t r_nolerp								= CVARF	("r_nolerp", "0", CVAR_ARCHIVE);
 cvar_t r_noframegrouplerp					= CVARF	("r_noframegrouplerp", "0", CVAR_ARCHIVE);
 cvar_t r_nolightdir							= CVARF	("r_nolightdir", "0", CVAR_ARCHIVE);
@@ -274,7 +292,7 @@ cvar_t scr_fov_viewmodel					= CVARFD("r_viewmodel_fov", "", CVAR_ARCHIVE,
 												"field of vision, 1-170 degrees, standard fov is 90, nquake defaults to 108.");
 cvar_t scr_printspeed						= CVAR  ("scr_printspeed", "16");
 cvar_t scr_showpause						= CVAR  ("showpause", "1");
-cvar_t scr_showturtle						= CVAR  ("showturtle", "0");
+cvar_t scr_showturtle						= CVARD  ("showturtle", "0", "Enables a low-framerate indicator.");
 cvar_t scr_turtlefps						= CVAR  ("scr_turtlefps", "10");
 cvar_t scr_sshot_compression				= CVAR  ("scr_sshot_compression", "75");
 cvar_t scr_sshot_type						= CVARD  ("scr_sshot_type", "png", "This specifies the default extension(and thus file format) for screenshots.\nKnown extensions are: png, jpg/jpeg, bmp, pcx, tga, ktx, dds.");
@@ -295,7 +313,7 @@ cvar_t vid_conwidth							= CVARF ("vid_conwidth", "0",
 //see R_RestartRenderer_f for the effective default 'if (newr.renderer == -1)'.
 cvar_t vid_renderer							= CVARFD ("vid_renderer", "",
 													 CVAR_ARCHIVE | CVAR_VIDEOLATCH, "Specifies which backend is used. Values that might work are: sv (dedicated server), headless (null renderer), vk (vulkan), gl (opengl), egl (opengl es), d3d9 (direct3d 9), d3d11 (direct3d 11, with default hardware rendering), d3d11 warp (direct3d 11, with software rendering).");
-cvar_t vid_renderer_opts					= CVARFD ("_vid_renderer_opts", "", CVAR_NOSET, "The possible video renderer apis, in \"value\" \"description\" pairs, for gamecode to read.");
+cvar_t vid_renderer_opts					= CVARFD ("_vid_renderer_opts", NULL, CVAR_NOSET, "The possible video renderer apis, in \"value\" \"description\" pairs, for gamecode to read.");
 
 cvar_t vid_bpp								= CVARFD ("vid_bpp", "0",
 												CVAR_ARCHIVE | CVAR_VIDEOLATCH, "The number of colour bits to request from the renedering context");
@@ -327,6 +345,8 @@ cvar_t	r_stereo_method						= CVARFD("r_stereo_method", "0", CVAR_ARCHIVE, "Valu
 
 extern cvar_t r_dodgytgafiles;
 extern cvar_t r_dodgypcxfiles;
+extern cvar_t r_keepimages;
+extern cvar_t r_ignoremapprefixes;
 extern cvar_t r_dodgymiptex;
 extern char *r_defaultimageextensions;
 extern cvar_t r_imageextensions;
@@ -374,8 +394,9 @@ cvar_t	vid_gl_context_robustness			= CVARD	("vid_gl_context_robustness", "1", "A
 cvar_t	vid_gl_context_selfreset			= CVARD	("vid_gl_context_selfreset", "1", "Upon hardware failure, have the engine create a new context instead of depending on the drivers to restore everything. This can help to avoid graphics drivers randomly killing your game, and can help reduce memory requirements.");
 cvar_t	vid_gl_context_noerror				= CVARD	("vid_gl_context_noerror", "", "Disables OpenGL's error checks for a small performance speedup. May cause segfaults if stuff wasn't properly implemented/tested.");
 
-cvar_t	gl_immutable_textures				= CVARD	("gl_immutable_textures", "1", "Controls whether to use immutable GPU memory allocations for OpenGL textures. This potentially means less work for the drivers and thus higher framerates.");
-cvar_t	gl_immutable_buffers				= CVARD	("gl_immutable_buffers", "1", "Controls whether to use immutable GPU memory allocations for static OpenGL vertex buffers. This potentially means less work for the drivers and thus higher framerates.");
+cvar_t	gl_immutable_textures				= CVARFD ("gl_immutable_textures", "1", CVAR_VIDEOLATCH, "Controls whether to use immutable GPU memory allocations for OpenGL textures. This potentially means less work for the drivers and thus higher framerates.");
+cvar_t	gl_immutable_buffers				= CVARFD ("gl_immutable_buffers", "1", CVAR_VIDEOLATCH, "Controls whether to use immutable GPU memory allocations for static OpenGL vertex buffers. This potentially means less work for the drivers and thus higher framerates.");
+cvar_t	gl_pbolightmaps						= CVARFD ("gl_pbolightmaps", "1", CVAR_RENDERERLATCH, "Controls whether to use PBOs for streaming lightmap updates. This prevents CPU stalls while the driver reads out the lightmap data (lightmap updates are still not free though).");
 #endif
 
 #if 1
@@ -396,15 +417,15 @@ cvar_t gl_conback							= CVARFCD ("gl_conback", "",
 //												CVAR_ARCHIVE);
 //cvar_t gl_detailscale						= CVAR  ("gl_detailscale", "5");
 cvar_t gl_font								= CVARFD ("gl_font", "",
-													  CVAR_RENDERERCALLBACK|CVAR_ARCHIVE, ("Specifies the font file to use. a value such as FONT:ALTFONT specifies an alternative font to be used when ^^a is used.\n"
+													  CVAR_RENDERERCALLBACK|CVAR_ARCHIVE, "Specifies the font file to use. a value such as FONT:ALTFONT specifies an alternative font to be used when ^^a is used.\n"
 													  "When using TTF fonts, you will likely need to scale text to at least 150% - vid_conautoscale 1.5 will do this.\n"
 													  "TTF fonts may be loaded from your windows directory. \'gl_font cour?col=1,1,1:couri?col=0,1,0\' loads eg: c:\\windows\\fonts\\cour.ttf, and uses the italic version of courier for alternative text, with specific colour tints."
-													  ));
+													  );
 cvar_t con_textfont							= CVARAFD ("con_textfont", "", "gl_consolefont",
-													  CVAR_RENDERERCALLBACK|CVAR_ARCHIVE, ("Specifies the font file to use. a value such as FONT:ALTFONT specifies an alternative font to be used when ^^a is used.\n"
+													  CVAR_RENDERERCALLBACK|CVAR_ARCHIVE, "Specifies the font file to use. a value such as FONT:ALTFONT specifies an alternative font to be used when ^^a is used.\n"
 													  "When using TTF fonts, you will likely need to scale text to at least 150% - vid_conautoscale 1.5 will do this.\n"
 													  "TTF fonts may be loaded from your windows directory. \'gl_font cour?col=1,1,1:couri?col=0,1,0\' loads eg: c:\\windows\\fonts\\cour.ttf, and uses the italic version of courier for alternative text, with specific colour tints."
-													  ));
+													  );
 cvar_t gl_lateswap							= CVAR  ("gl_lateswap", "0");
 cvar_t gl_lerpimages						= CVARFD  ("gl_lerpimages", "1", CVAR_ARCHIVE, "Enables smoother resampling for images which are not power-of-two, when the drivers do not support non-power-of-two textures.");
 //cvar_t gl_lightmapmode						= SCVARF("gl_lightmapmode", "",
@@ -414,6 +435,7 @@ cvar_t gl_load24bit							= CVARF ("gl_load24bit", "1",
 
 cvar_t	r_clear								= CVARAF("r_clear","0",
 													 "gl_clear", 0);
+cvar_t	r_clearcolour						= CVARAFC("r_clearcolour", "0.12 0.12 0.12", "r_clearcolor"/*american spelling*/, 0, R_ClearColour_Changed);
 cvar_t gl_max_size							= CVARFD  ("gl_max_size", "8192", CVAR_RENDERERLATCH, "Specifies the maximum texture size that the engine may use. Textures larger than this will be downsized. Clamped by the value the driver supports.");
 cvar_t gl_menutint_shader					= CVARD  ("gl_menutint_shader", "1", "Controls the use of GLSL to desaturate the background when drawing the menu, like quake's dos software renderer used to do before the ugly dithering of winquake.");
 
@@ -441,7 +463,7 @@ cvar_t gl_smoothcrosshair					= CVAR  ("gl_smoothcrosshair", "1");
 cvar_t	gl_maxdist							= CVARAD	("gl_maxdist", "0", "gl_farclip", "The distance of the far clip plane. If set to 0, some fancy maths will be used to place it at an infinite distance.");
 
 #ifdef SPECULAR
-cvar_t gl_specular							= CVARF  ("gl_specular", "0.3", CVAR_ARCHIVE|CVAR_SHADERSYSTEM);
+cvar_t gl_specular							= CVARFD  ("gl_specular", "0.3", CVAR_ARCHIVE|CVAR_SHADERSYSTEM, "Multiplier for specular effects.");
 cvar_t gl_specular_power					= CVARF  ("gl_specular_power", "32", CVAR_ARCHIVE|CVAR_SHADERSYSTEM);
 cvar_t gl_specular_fallback					= CVARF  ("gl_specular_fallback", "0.05", CVAR_ARCHIVE|CVAR_RENDERERLATCH);
 cvar_t gl_specular_fallbackexp				= CVARF  ("gl_specular_fallbackexp", "1", CVAR_ARCHIVE|CVAR_RENDERERLATCH);
@@ -463,7 +485,7 @@ cvar_t gl_mipcap							= CVARAFCD("d_mipcap", "0 1000", "gl_miptexLevel",
 cvar_t gl_texturemode2d						= CVARFCD("gl_texturemode2d", "GL_LINEAR",
 												CVAR_ARCHIVE | CVAR_RENDERERCALLBACK, Image_TextureMode_Callback,
 												"Specifies how 2d images are sampled. format is a 3-tupple ");
-cvar_t r_font_linear						= CVARF("r_font_linear", "1", 0);
+cvar_t r_font_linear						= CVARF("r_font_linear", "1", CVAR_ARCHIVE);
 cvar_t r_font_postprocess_outline			= CVARFD("r_font_postprocess_outline", "0", 0, "Controls the number of pixels of dark borders to use around fonts.");
 
 #if defined(HAVE_LEGACY) && defined(AVAIL_FREETYPE)
@@ -491,6 +513,7 @@ cvar_t r_shadow_bumpscale_bumpmap			= CVARD  ("r_shadow_bumpscale_bumpmap", "4",
 cvar_t r_shadow_heightscale_basetexture		= CVARD  ("r_shadow_heightscale_basetexture", "0", "scaler for generation of height maps from legacy paletted content.");
 cvar_t r_shadow_heightscale_bumpmap			= CVARD  ("r_shadow_heightscale_bumpmap", "1", "height scaler for 8bit _bump textures");
 
+cvar_t r_glsl_pbr							= CVARFD  ("r_glsl_pbr", "0", CVAR_ARCHIVE|CVAR_SHADERSYSTEM, "Force PBR shading.");
 cvar_t r_glsl_offsetmapping					= CVARFD  ("r_glsl_offsetmapping", "0", CVAR_ARCHIVE|CVAR_SHADERSYSTEM, "Enables the use of paralax mapping, adding fake depth to textures.");
 cvar_t r_glsl_offsetmapping_scale			= CVAR  ("r_glsl_offsetmapping_scale", "0.04");
 cvar_t r_glsl_offsetmapping_reliefmapping	= CVARFD("r_glsl_offsetmapping_reliefmapping", "0", CVAR_ARCHIVE|CVAR_SHADERSYSTEM, "Changes the paralax sampling mode to be a bit nicer, but noticably more expensive at high resolutions. r_glsl_offsetmapping must be set.");
@@ -511,7 +534,7 @@ cvar_t vid_hardwaregamma					= CVARFD ("vid_hardwaregamma", "1",
 cvar_t vid_desktopgamma						= CVARFD ("vid_desktopgamma", "0",
 												CVAR_ARCHIVE | CVAR_RENDERERLATCH, "Apply gamma ramps upon the desktop rather than the window.");
 
-cvar_t r_fog_cullentities					= CVARD ("r_fog_cullentities", "1", "Automatically cull entities according to fog.");
+cvar_t r_fog_cullentities					= CVARD ("r_fog_cullentities", "1", "0: Never cull entities by fog...\n1: Automatically cull entities according to fog.\n2: Force fog culling regardless ");
 cvar_t r_fog_exp2							= CVARD ("r_fog_exp2", "1", "Expresses how fog fades with distance. 0 (matching DarkPlaces's default) is typically more realistic, while 1 (matching FitzQuake and others) is more common.");
 cvar_t r_fog_permutation					= CVARFD ("r_fog_permutation", "1", CVAR_SHADERSYSTEM, "Renders fog using a material permutation. 0 plays nicer with q3 shaders, but 1 is otherwise a better choice.");
 
@@ -550,7 +573,7 @@ void GLRenderer_Init(void)
 
 	Cvar_Register (&gl_immutable_textures, GLRENDEREROPTIONS);
 	Cvar_Register (&gl_immutable_buffers, GLRENDEREROPTIONS);
-
+	Cvar_Register (&gl_pbolightmaps, GLRENDEREROPTIONS);
 //renderer
 
 	Cvar_Register (&gl_affinemodels, GLRENDEREROPTIONS);
@@ -567,6 +590,8 @@ void GLRenderer_Init(void)
 #endif
 #ifdef MD1MODELS
 	Cvar_Register (&mod_h2holey_bugged, GLRENDEREROPTIONS);
+	Cvar_Register (&mod_halftexel, GLRENDEREROPTIONS);
+	Cvar_Register (&mod_nomipmap, GLRENDEREROPTIONS);
 #endif
 	Cvar_Register (&r_lerpmuzzlehack, GLRENDEREROPTIONS);
 	Cvar_Register (&r_noframegrouplerp, GLRENDEREROPTIONS);
@@ -648,7 +673,9 @@ void	R_InitTextures (void)
 // create a simple checkerboard texture for the default
 	r_notexture_mip = (texture_t*)r_notexture_mip_mem;
 
-	r_notexture_mip->width = r_notexture_mip->height = 16;
+	r_notexture_mip->vwidth = r_notexture_mip->vheight = 16;
+	r_notexture_mip->srcwidth = r_notexture_mip->srcheight = 16;
+	r_notexture_mip->srcfmt = TF_SOLID8;
 
 	for (m=0 ; m<1 ; m++)
 	{
@@ -783,17 +810,6 @@ void Renderer_Init(void)
 	Cmd_AddCommand("r_remapshader", Shader_RemapShader_f);
 	Cmd_AddCommand("r_showshader", Shader_ShowShader_f);
 
-#if defined(D3DQUAKE)
-	GLD3DRenderer_Init();
-#endif
-#if defined(GLQUAKE)
-	GLRenderer_Init();
-#endif
-
-#if defined(GLQUAKE) || defined(VKQUAKE)
-	R_BloomRegister();
-#endif
-
 #ifdef SWQUAKE
 	{
 	extern cvar_t sw_interlace;
@@ -819,26 +835,9 @@ void Renderer_Init(void)
 #endif
 	Cvar_Register (&in_windowed_mouse, VIDCOMMANDGROUP);
 	Cvar_Register (&vid_renderer, VIDCOMMANDGROUP);
-	vid_renderer_opts.enginevalue = 
-#ifdef GLQUAKE
-		"gl \"OpenGL\" "
-#endif
-#ifdef VKQUAKE
-		"vk \"Vulkan\" "
-#endif
-#ifdef D3D8QUAKE
-//		"d3d8 \"Direct3D 8\" "
-#endif
-#ifdef D3D9QUAKE
-		"d3d9 \"Direct3D 9\" "
-#endif
-#ifdef D3D11QUAKE
-		"d3d11 \"Direct3D 11\" "
-#endif
-#ifdef SWQUAKE
-		"sw \"Software Rendering\" "
-#endif
-		"";
+
+	R_UpdateRendererOpts();
+
 	Cvar_Register (&vid_renderer_opts, VIDCOMMANDGROUP);
 
 	Cvar_Register (&vid_fullscreen, VIDCOMMANDGROUP);
@@ -873,6 +872,10 @@ void Renderer_Init(void)
 	Cmd_AddCommand("sky", R_ForceSky_f);	//QS compat
 	Cmd_AddCommand("loadsky", R_ForceSky_f);//DP compat
 
+	Cvar_Register(&r_keepimages, GRAPHICALNICETIES);
+	Cvar_Register(&r_ignoremapprefixes, GRAPHICALNICETIES);
+	Cvar_ForceCallback(&r_keepimages);
+	Cvar_ForceCallback(&r_ignoremapprefixes);
 #ifdef IMAGEFMT_TGA
 	Cvar_Register(&r_dodgytgafiles, "Hacky bug workarounds");
 #endif
@@ -911,6 +914,7 @@ void Renderer_Init(void)
 	Cvar_Register (&r_coronas_fadedist, GRAPHICALNICETIES);
 	Cvar_Register (&r_flashblend, GRAPHICALNICETIES);
 	Cvar_Register (&r_flashblendscale, GRAPHICALNICETIES);
+	Cvar_Register (&r_glsl_pbr, GRAPHICALNICETIES);
 	Cvar_Register (&gl_specular, GRAPHICALNICETIES);
 	Cvar_Register (&gl_specular_power, GRAPHICALNICETIES);
 	Cvar_Register (&gl_specular_fallback, GRAPHICALNICETIES);
@@ -995,6 +999,7 @@ void Renderer_Init(void)
 	Cvar_Register (&r_speeds, SCREENOPTIONS);
 	Cvar_Register (&r_netgraph, SCREENOPTIONS);
 
+	Cvar_Register (&r_temporalscenecache, GRAPHICALNICETIES);
 	Cvar_Register (&r_dynamic, GRAPHICALNICETIES);
 	Cvar_Register (&r_lightmap_saturation, GRAPHICALNICETIES);
 
@@ -1002,6 +1007,7 @@ void Renderer_Init(void)
 	Cvar_Register (&r_nolightdir, GRAPHICALNICETIES);
 
 	Cvar_Register (&r_fastturb, GRAPHICALNICETIES);
+	Cvar_Register (&r_skycloudalpha, GRAPHICALNICETIES);
 	Cvar_Register (&r_fastsky, GRAPHICALNICETIES);
 	Cvar_Register (&r_fastskycolour, GRAPHICALNICETIES);
 	Cvar_Register (&r_wateralpha, GRAPHICALNICETIES);
@@ -1015,6 +1021,7 @@ void Renderer_Init(void)
 	Cvar_Register (&gl_blendsprites, GLRENDEREROPTIONS);
 
 	Cvar_Register (&r_clear, GLRENDEREROPTIONS);
+	Cvar_Register (&r_clearcolour, GLRENDEREROPTIONS);
 	Cvar_Register (&gl_max_size, GLRENDEREROPTIONS);
 	Cvar_Register (&gl_maxdist, GLRENDEREROPTIONS);
 	Cvar_Register (&gl_texturemode, GLRENDEREROPTIONS);
@@ -1071,8 +1078,23 @@ void Renderer_Init(void)
 	Cmd_AddCommand ("listskyboxes", R_ListSkyBoxes_f);
 	Cmd_AddCommand ("listconfigs", R_ListConfigs_f);
 
+
+#if defined(D3DQUAKE)
+	GLD3DRenderer_Init();
+#endif
+#if defined(GLQUAKE)
+	GLRenderer_Init();
+#endif
+
+#if defined(GLQUAKE) || defined(VKQUAKE)
+	R_BloomRegister();
+#endif
+
 	P_InitParticleSystem();
 	R_InitTextures();
+
+
+	R_RegisterBuiltinRenderers();
 }
 
 qboolean Renderer_Started(void)
@@ -1121,9 +1143,49 @@ qboolean (*SCR_UpdateScreen)			(void);
 r_qrenderer_t qrenderer;
 char *q_renderername = "Non-Selected renderer";
 
+static struct
+{
+	void *module;
+	rendererinfo_t *ri;
+} rendererinfo[16];
+
+qboolean R_RegisterRenderer(void *module, rendererinfo_t *ri)
+{
+	size_t i;
+	for (i = 0; i < countof(rendererinfo); i++)
+	{	//already registered
+		if (rendererinfo[i].ri == ri)
+			return true;
+	}
+	for (i = 0; i < countof(rendererinfo); i++)
+	{	//register it in the first empty slot
+		if (!rendererinfo[i].ri)
+		{
+			rendererinfo[i].module = module;
+			rendererinfo[i].ri = ri;
+			return true;
+		}
+	}
+	Sys_Printf("unable to register renderer %s\n", ri->description);
+	return false;
+}
+
+static plugvrfuncs_t *vrfuncs;
+qboolean R_RegisterVRDriver(void *module, plugvrfuncs_t *vr)
+{
+	if (!vrfuncs)
+	{
+		vrfuncs = vr;
+		return true;
+	}
+
+	Sys_Printf("unable to register renderer %s\n", vr->description);
+	return false;
+}
 
 
-rendererinfo_t dedicatedrendererinfo = {
+
+static rendererinfo_t dedicatedrendererinfo = {
 	//ALL builds need a 'none' renderer, as 0.
 	"No renderer",
 	{
@@ -1181,113 +1243,104 @@ rendererinfo_t dedicatedrendererinfo = {
 
 	""
 };
-
-#ifdef GLQUAKE
-	extern rendererinfo_t openglrendererinfo;
-	#ifdef USE_EGL
-		extern rendererinfo_t eglrendererinfo;
-	#endif
-	extern rendererinfo_t rpirendererinfo;
-	#ifdef WAYLANDQUAKE
-		extern rendererinfo_t rendererinfo_wayland_gl;
-	#endif
-	rendererinfo_t fbdevrendererinfo;
-#endif
-#ifdef D3D8QUAKE
-	extern rendererinfo_t d3d8rendererinfo;
-#endif
-#ifdef D3D9QUAKE
-	extern rendererinfo_t d3d9rendererinfo;
-#endif
-#ifdef D3D11QUAKE
-	extern rendererinfo_t d3d11rendererinfo;
-#endif
-#ifdef SWQUAKE
-	extern rendererinfo_t swrendererinfo;
-#endif
-#ifdef VKQUAKE
-	extern rendererinfo_t vkrendererinfo;
-	//rendererinfo_t headlessvkrendererinfo;
-	#if defined(_WIN32) && defined(GLQUAKE) && !defined(FTE_SDL)
-		extern rendererinfo_t nvvkrendererinfo;
-	#endif
-	#ifdef WAYLANDQUAKE
-		extern rendererinfo_t rendererinfo_wayland_vk;
-	#endif
-#endif
-#ifdef HEADLESSQUAKE
-	extern rendererinfo_t headlessrenderer;
-#endif
-
-rendererinfo_t *rendererinfo[16] =
+static void R_RegisterBuiltinRenderers(void)
 {
-#ifdef GLQUAKE
-	#ifdef FTE_RPI
-		&rpirendererinfo,
-	#endif
-	&openglrendererinfo,
-	#ifdef USE_EGL
-		&eglrendererinfo,
-	#endif
-#endif
-#ifdef D3D9QUAKE
-	&d3d9rendererinfo,
-#endif
-#ifdef VKQUAKE
-	&vkrendererinfo,
-	#if defined(_WIN32) && defined(GLQUAKE) && !defined(FTE_SDL)
-		&nvvkrendererinfo,
-	#endif
-#endif
-#ifdef D3D11QUAKE
-	&d3d11rendererinfo,
-#endif
-#ifdef SWQUAKE
-	&swrendererinfo,
-#endif
-#ifdef D3D8QUAKE
-	&d3d8rendererinfo,
-#endif
-#ifdef WAYLANDQUAKE
 	#ifdef GLQUAKE
-		&rendererinfo_wayland_gl,
-	#endif
-	#ifdef VKQUAKE
-		&rendererinfo_wayland_vk,
-	#endif
-#endif
-#ifdef GLQUAKE
-	&fbdevrendererinfo,	//direct stuff that doesn't interact well with the system should always be low priority
-#endif
-#ifndef NPQTV
-	&dedicatedrendererinfo,
-#endif
-#ifdef HEADLESSQUAKE
-	&headlessrenderer,
-	#ifdef VKQUAKE
-		//&headlessvkrendererinfo,
-	#endif
-#endif
-};
-
-void R_RegisterRenderer(rendererinfo_t *ri)
-{
-	size_t i;
-	for (i = 0; i < countof(rendererinfo); i++)
-	{	//already registered
-		if (rendererinfo[i] == ri)
-			return;
-	}
-	for (i = 0; i < countof(rendererinfo); i++)
-	{	//register it in the first empty slot
-		if (!rendererinfo[i])
+	{
+		extern rendererinfo_t openglrendererinfo;
+		#ifdef FTE_RPI
 		{
-			rendererinfo[i] = ri;
-			return;
+			extern rendererinfo_t rpirendererinfo;
+			R_RegisterRenderer(NULL, &rpirendererinfo);
 		}
+		#endif
+		R_RegisterRenderer(NULL, &openglrendererinfo);
+		#ifdef USE_EGL
+		{
+			extern rendererinfo_t eglrendererinfo;
+			R_RegisterRenderer(NULL, &eglrendererinfo);
+		}
+		#endif
 	}
-	Sys_Printf("unable to register renderer %s\n", ri->description);
+	#endif
+
+
+	#ifdef D3D9QUAKE
+	{
+		extern rendererinfo_t d3d9rendererinfo;
+		R_RegisterRenderer(NULL, &d3d9rendererinfo);
+	}
+	#endif
+	#ifdef VKQUAKE
+	{
+		extern rendererinfo_t vkrendererinfo;
+		R_RegisterRenderer(NULL, &vkrendererinfo);
+		#if defined(_WIN32) && defined(GLQUAKE) && !defined(FTE_SDL)
+		{
+			extern rendererinfo_t nvvkrendererinfo;
+			R_RegisterRenderer(NULL, &nvvkrendererinfo);
+		}
+		#endif
+	}
+	#endif
+	#ifdef D3D11QUAKE
+	{
+		extern rendererinfo_t d3d11rendererinfo;
+		R_RegisterRenderer(NULL, &d3d11rendererinfo);
+	}
+	#endif
+	#ifdef SWQUAKE
+	{
+		extern rendererinfo_t swrendererinfo;
+		R_RegisterRenderer(NULL, &swrendererinfo);
+	}
+	#endif
+	#ifdef D3D8QUAKE
+	{
+		extern rendererinfo_t d3d8rendererinfo;
+		R_RegisterRenderer(NULL, &d3d8rendererinfo);
+	}
+	#endif
+	#ifdef WAYLANDQUAKE
+		#ifdef GLQUAKE
+		{
+			extern rendererinfo_t rendererinfo_wayland_gl;
+			R_RegisterRenderer(NULL, &rendererinfo_wayland_gl);
+		}
+		#endif
+		#ifdef VKQUAKE
+		{
+			extern rendererinfo_t rendererinfo_wayland_vk;
+			R_RegisterRenderer(NULL, &rendererinfo_wayland_vk);
+		}
+		#endif
+	#endif
+	#if defined(GLQUAKE) && defined(USE_FBDEV)
+	{
+		extern rendererinfo_t fbdevrendererinfo;
+		R_RegisterRenderer(NULL, &fbdevrendererinfo);	//direct stuff that doesn't interact well with the system should always be low priority
+	}
+	#endif
+	#ifndef NPQTV
+		R_RegisterRenderer(NULL, &dedicatedrendererinfo);
+	#endif
+	#ifdef HEADLESSQUAKE
+	{
+		extern rendererinfo_t headlessrenderer;
+		R_RegisterRenderer(NULL, &headlessrenderer);
+		#ifdef VKQUAKE
+			//R_RegisterRenderer(NULL, &headlessvkrendererinfo);
+		#endif
+	}
+	#endif
+	#if defined(GLQUAKE) && defined(USE_EGL)
+	{
+		extern rendererinfo_t rendererinfo_headless_egl;
+		R_RegisterRenderer(NULL, &rendererinfo_headless_egl);
+	}
+	#endif
 }
+
 
 void R_SetRenderer(rendererinfo_t *ri)
 {
@@ -1371,6 +1424,10 @@ void R_ShutdownRenderer(qboolean devicetoo)
 
 	if (VID_DeInit && devicetoo)
 	{
+		if (vid.vr)
+			vid.vr->Shutdown();
+		vid.vr = NULL;
+
 		TRACE(("dbg: R_ApplyRenderer: VID_DeInit\n"));
 		VID_DeInit();
 	}
@@ -1435,6 +1492,10 @@ qboolean R_ApplyRenderer (rendererstate_t *newr)
 	Media_CaptureDemoEnd();
 	R_ShutdownRenderer(true);
 	Con_DPrintf("video shutdown took %f seconds\n", Sys_DoubleTime() - time);
+
+#ifdef __GLIBC__
+	malloc_trim(0);
+#endif
 
 	if (qrenderer == QR_NONE)
 	{
@@ -1868,6 +1929,9 @@ TRACE(("dbg: R_ApplyRenderer: efrags\n"));
 	Shader_DoReload();
 	CSQC_RendererRestarted();
 #endif
+#ifdef MENU_DAT
+	MP_RendererRestarted();
+#endif
 
 	if (newr && qrenderer != QR_NONE)
 	{
@@ -1954,6 +2018,7 @@ qboolean R_BuildRenderstate(rendererstate_t *newr, char *rendererstring)
 	newr->rate = vid_refreshrate.value;
 	newr->stereo = (r_stereo_method.ival == 1);
 	newr->srgb = vid_srgb.ival;
+	newr->vr = vrfuncs;
 
 #if defined(_WIN32) && !defined(FTE_SDL)
 	if (newr->bpp && newr->bpp < 24)
@@ -1993,9 +2058,9 @@ qboolean R_BuildRenderstate(rendererstate_t *newr, char *rendererstring)
 	{	//special hack so that android doesn't weird out when not focused.
 		for (i = 0; i < countof(rendererinfo); i++)
 		{
-			if (rendererinfo[i] && rendererinfo[i]->name[0] && rendererinfo[i]->rtype == QR_HEADLESS)
+			if (rendererinfo[i].ri && rendererinfo[i].ri->name[0] && rendererinfo[i].ri->rtype == QR_HEADLESS)
 			{
-				newr->renderer = rendererinfo[i];
+				newr->renderer = rendererinfo[i].ri;
 				break;
 			}
 		}
@@ -2008,11 +2073,11 @@ qboolean R_BuildRenderstate(rendererstate_t *newr, char *rendererstring)
 		//I'd like to just qsort the renderers, but that isn't stable and might reorder gl+d3d etc.
 		for (i = 0; i < countof(rendererinfo); i++)
 		{
-			pri = R_PriorityForRenderer(rendererinfo[i]);
+			pri = R_PriorityForRenderer(rendererinfo[i].ri);
 			if (pri > bestpri)
 			{
 				bestpri = pri;
-				newr->renderer = rendererinfo[i];
+				newr->renderer = rendererinfo[i].ri;
 			}
 		}
 	}
@@ -2021,27 +2086,27 @@ qboolean R_BuildRenderstate(rendererstate_t *newr, char *rendererstring)
 		int count;
 		for (i = 0, count = 0; i < countof(rendererinfo); i++)
 		{
-			if (!rendererinfo[i] || !rendererinfo[i]->description)
+			if (!rendererinfo[i].ri || !rendererinfo[i].ri->description)
 				continue;	//not valid in this build. :(
-			if (rendererinfo[i]->rtype == QR_NONE		||	//dedicated servers are not useful
-				rendererinfo[i]->rtype == QR_HEADLESS	||	//headless appears buggy
-				rendererinfo[i]->rtype == QR_SOFTWARE	)	//software is just TOO buggy/limited for us to care.
+			if (rendererinfo[i].ri->rtype == QR_NONE		||	//dedicated servers are not useful
+				rendererinfo[i].ri->rtype == QR_HEADLESS	||	//headless appears buggy
+				rendererinfo[i].ri->rtype == QR_SOFTWARE	)	//software is just TOO buggy/limited for us to care.
 				continue;
 			count++;
 		}
 		count = rand()%count;
 		for (i = 0; i < countof(rendererinfo); i++)
 		{
-			if (!rendererinfo[i] || !rendererinfo[i]->description)
+			if (!rendererinfo[i].ri || !rendererinfo[i].ri->description)
 				continue;	//not valid in this build. :(
-			if (rendererinfo[i]->rtype == QR_NONE		||
-				rendererinfo[i]->rtype == QR_HEADLESS	||
-				rendererinfo[i]->rtype == QR_SOFTWARE	)
+			if (rendererinfo[i].ri->rtype == QR_NONE		||
+				rendererinfo[i].ri->rtype == QR_HEADLESS	||
+				rendererinfo[i].ri->rtype == QR_SOFTWARE	)
 				continue;
 			if (!count--)
 			{
-				newr->renderer = rendererinfo[i];
-				Con_Printf("randomly selected renderer: %s\n", rendererinfo[i]->description);
+				newr->renderer = rendererinfo[i].ri;
+				Con_Printf("randomly selected renderer: %s\n", rendererinfo[i].ri->description);
 				break;
 			}
 		}
@@ -2051,20 +2116,20 @@ qboolean R_BuildRenderstate(rendererstate_t *newr, char *rendererstring)
 		int bestpri = -2, pri;
 		for (i = 0; i < countof(rendererinfo); i++)
 		{
-			if (!rendererinfo[i] || !rendererinfo[i]->description)
+			if (!rendererinfo[i].ri || !rendererinfo[i].ri->description)
 				continue;	//not valid in this build. :(
 			for (j = 4-1; j >= 0; j--)
 			{
-				if (!rendererinfo[i]->name[j])
+				if (!rendererinfo[i].ri->name[j])
 					continue;
-				if (!stricmp(rendererinfo[i]->name[j], com_token))
+				if (!stricmp(rendererinfo[i].ri->name[j], com_token))
 				{
-					pri = R_PriorityForRenderer(rendererinfo[i]);
+					pri = R_PriorityForRenderer(rendererinfo[i].ri);
 
 					if (pri > bestpri)
 					{
 						bestpri = pri;
-						newr->renderer = rendererinfo[i];
+						newr->renderer = rendererinfo[i].ri;
 					}
 					break; //try the next renderer now.
 				}
@@ -2185,6 +2250,12 @@ void R_RestartRenderer (rendererstate_t *newr)
 			rendererinfo_t *skip = newr->renderer;
 			struct sortedrenderers_s sorted[countof(rendererinfo)];
 
+			if (failed && newr->vr)
+			{
+				Con_Printf(CON_NOTICE "Trying without vr\n");
+				newr->vr = NULL;
+				failed = !R_ApplyRenderer(newr);
+			}
 			if (failed && newr->fullscreen == 1)
 			{
 				Con_Printf(CON_NOTICE "Trying fullscreen windowed"CON_DEFAULT"\n");
@@ -2216,7 +2287,7 @@ void R_RestartRenderer (rendererstate_t *newr)
 			for (i = 0; i < countof(sorted); i++)
 			{
 				sorted[i].index = i;
-				sorted[i].r = rendererinfo[i];
+				sorted[i].r = rendererinfo[i].ri;
 				sorted[i].pri = R_PriorityForRenderer(sorted[i].r);
 			}
 			qsort(sorted, countof(sorted), sizeof(sorted[0]), R_SortRenderers);
@@ -2232,7 +2303,7 @@ void R_RestartRenderer (rendererstate_t *newr)
 
 			//if we ended up resorting to our last choice (dedicated) then print some informative message about it
 			//fixme: on unixy systems, we should make sure we're actually printing to something (ie: that we're not running via some x11 shortcut with our stdout redirected to /dev/nul
-			if (!failed && newr->renderer == &dedicatedrendererinfo)
+			if (!failed && (!newr->renderer || newr->renderer->rtype == QR_NONE))
 			{
 				Con_Printf(CON_ERROR "Video mode switch failed. Console forced.\n\nPlease change the following vars to something useable, and then use the setrenderer command.\n");
 				Con_Printf("%s: %s\n", vid_width.name, vid_width.string);
@@ -2298,7 +2369,7 @@ void R_SetRenderer_f (void)
 		for (i = 0; i < countof(sorted); i++)
 		{
 			sorted[i].index = i;
-			sorted[i].r = rendererinfo[i];
+			sorted[i].r = rendererinfo[i].ri;
 			sorted[i].pri = R_PriorityForRenderer(sorted[i].r);
 		}
 		qsort(sorted, countof(sorted), sizeof(sorted[0]), R_SortRenderers);
@@ -2332,12 +2403,35 @@ void R_SetRenderer_f (void)
 		R_RestartRenderer(&newr);
 }
 
+static void R_UpdateRendererOpts(void)
+{
+	char *v = NULL;
+	size_t i;
+	struct sortedrenderers_s sorted[countof(rendererinfo)];
+	for (i = 0; i < countof(sorted); i++)
+	{
+		sorted[i].index = i;
+		sorted[i].r = rendererinfo[i].ri;
+		sorted[i].pri = R_PriorityForRenderer(sorted[i].r);
+	}
+	qsort(sorted, countof(sorted), sizeof(sorted[0]), R_SortRenderers);
 
 
+	v = NULL;
+	for (i = 0; i < countof(rendererinfo); i++)
+	{
+		rendererinfo_t *r = sorted[i].r;
+		if (r && r->description)
+		{
+			if (r->rtype == QR_HEADLESS || r->rtype == QR_NONE)
+				continue;	//skip these, they're kinda dangerous.
+			Z_StrCat(&v, va("%s \"%s\" ", r->name[0], r->description));
+		}
+	}
 
-
-
-
+	Z_Free(vid_renderer_opts.enginevalue);
+	vid_renderer_opts.enginevalue = v;
+}
 
 
 
@@ -2549,6 +2643,7 @@ texture_t *R_TextureAnimation_Q2 (texture_t *base)
 unsigned int	r_viewcontents;
 //mleaf_t		*r_viewleaf, *r_oldviewleaf;
 //mleaf_t		*r_viewleaf2, *r_oldviewleaf2;
+int r_viewarea;
 int		r_viewcluster, r_viewcluster2, r_oldviewcluster, r_oldviewcluster2;
 int r_visframecount;
 mleaf_t		*r_vischain;		// linked list of visible leafs
@@ -3054,7 +3149,7 @@ void R_SetFrustum (float projmat[16], float viewmat[16])
 
 	//do far plane
 	//fog will logically not actually reach 0, though precision issues will force it. we cut off at an exponant of -500
-	if (r_refdef.globalfog.density && r_refdef.globalfog.alpha>=1 && (r_fog_cullentities.ival&&r_skyfog.value>=1) && !r_refdef.globalfog.depthbias)
+	if (r_refdef.globalfog.density && r_refdef.globalfog.alpha>=1 && (r_fog_cullentities.ival==2||(r_fog_cullentities.ival&&r_skyfog.value>=1)) && !r_refdef.globalfog.depthbias)
 	{
 		float culldist;
 		float fog;
@@ -3202,7 +3297,7 @@ void R_InitParticleTexture (void)
 		}
 	}
 
-	TEXASSIGN(particletexture, R_LoadTexture32("dotparticle", 8, 8, data, IF_NOMIPMAP|IF_NOPICMIP|IF_CLAMP));
+	TEXASSIGN(particletexture, R_LoadTexture32("dotparticle", 8, 8, data, IF_NOMIPMAP|IF_NOPICMIP|IF_CLAMP|IF_NOPURGE));
 
 
 	//
@@ -3226,7 +3321,7 @@ void R_InitParticleTexture (void)
 				data[y*32+x][3] = 255;
 		}
 	}
-	particlecqtexture = Image_GetTexture("classicparticle", "particles", IF_NOMIPMAP|IF_NOPICMIP|IF_CLAMP, data, NULL, 32, 32, TF_RGBA32);
+	particlecqtexture = Image_GetTexture("classicparticle", "particles", IF_NOMIPMAP|IF_NOPICMIP|IF_CLAMP|IF_NOPURGE, data, NULL, 32, 32, TF_RGBA32);
 
 	//draw a square in the top left. still a triangle.
 	for (x=0 ; x<16 ; x++)
@@ -3236,7 +3331,7 @@ void R_InitParticleTexture (void)
 			data[y*32+x][3] = 255;
 		}
 	}
-	Image_GetTexture("classicparticle_square", "particles", IF_NOMIPMAP|IF_NOPICMIP|IF_CLAMP, data, NULL, 32, 32, TF_RGBA32);
+	Image_GetTexture("classicparticle_square", "particles", IF_NOMIPMAP|IF_NOPICMIP|IF_CLAMP|IF_NOPURGE, data, NULL, 32, 32, TF_RGBA32);
 
 
 	for (x=0 ; x<16 ; x++)
@@ -3249,7 +3344,7 @@ void R_InitParticleTexture (void)
 			data[y*16+x][3] = exptexture[x][y]*255/9.0;
 		}
 	}
-	explosiontexture = Image_GetTexture("fte_fuzzyparticle", "particles", IF_NOMIPMAP|IF_NOPICMIP, data, NULL, 16, 16, TF_RGBA32);
+	explosiontexture = Image_GetTexture("fte_fuzzyparticle", "particles", IF_NOMIPMAP|IF_NOPICMIP|IF_NOPURGE, data, NULL, 16, 16, TF_RGBA32);
 
 	for (x=0 ; x<16 ; x++)
 	{
@@ -3261,7 +3356,7 @@ void R_InitParticleTexture (void)
 			data[y*16+x][3] = exptexture[x][y]*255/9.0;
 		}
 	}
-	Image_GetTexture("fte_bloodparticle", "particles", IF_NOMIPMAP|IF_NOPICMIP, data, NULL, 16, 16, TF_RGBA32);
+	Image_GetTexture("fte_bloodparticle", "particles", IF_NOMIPMAP|IF_NOPICMIP|IF_NOPURGE, data, NULL, 16, 16, TF_RGBA32);
 
 	for (x=0 ; x<16 ; x++)
 	{
@@ -3273,7 +3368,7 @@ void R_InitParticleTexture (void)
 			data[y*16+x][3] = 255;
 		}
 	}
-	Image_GetTexture("fte_blooddecal", "particles", IF_NOMIPMAP|IF_NOPICMIP, data, NULL, 16, 16, TF_RGBA32);
+	Image_GetTexture("fte_blooddecal", "particles", IF_NOMIPMAP|IF_NOPICMIP|IF_NOPURGE, data, NULL, 16, 16, TF_RGBA32);
 
 	memset(data, 255, sizeof(data));
 	for (y = 0;y < PARTICLETEXTURESIZE;y++)
@@ -3287,7 +3382,7 @@ void R_InitParticleTexture (void)
 			data[y*PARTICLETEXTURESIZE+x][3] = (qbyte) d;
 		}
 	}
-	balltexture = R_LoadTexture32("balltexture", PARTICLETEXTURESIZE, PARTICLETEXTURESIZE, data, IF_NOMIPMAP|IF_NOPICMIP);
+	balltexture = R_LoadTexture32("balltexture", PARTICLETEXTURESIZE, PARTICLETEXTURESIZE, data, IF_NOMIPMAP|IF_NOPICMIP|IF_NOPURGE);
 
 	memset(data, 255, sizeof(data));
 	for (y = 0;y < PARTICLETEXTURESIZE;y++)
@@ -3300,7 +3395,7 @@ void R_InitParticleTexture (void)
 			data[y*PARTICLETEXTURESIZE+x][3] = (qbyte) d;
 		}
 	}
-	beamtexture = R_LoadTexture32("beamparticle", PARTICLETEXTURESIZE, PARTICLETEXTURESIZE, data, IF_NOMIPMAP|IF_NOPICMIP);
+	beamtexture = R_LoadTexture32("beamparticle", PARTICLETEXTURESIZE, PARTICLETEXTURESIZE, data, IF_NOMIPMAP|IF_NOPICMIP|IF_NOPURGE);
 
 	for (y = 0;y < PARTICLETEXTURESIZE;y++)
 	{
@@ -3318,6 +3413,6 @@ void R_InitParticleTexture (void)
 			data[y*PARTICLETEXTURESIZE+x][3] = (qbyte) d/2;
 		}
 	}
-	ptritexture = R_LoadTexture32("ptritexture", PARTICLETEXTURESIZE, PARTICLETEXTURESIZE, data, IF_NOMIPMAP|IF_NOPICMIP);
+	ptritexture = R_LoadTexture32("ptritexture", PARTICLETEXTURESIZE, PARTICLETEXTURESIZE, data, IF_NOMIPMAP|IF_NOPICMIP|IF_NOPURGE);
 }
 

@@ -110,16 +110,17 @@ typedef struct
 	server_state_t	state;			// precache commands are only valid during load
 
 	float		gamespeed;	//time progression multiplier, fixed per-level.
-	qboolean	csqcdebug;
 	unsigned int csqcchecksum;
 	qboolean	mapchangelocked;
+	qboolean	restarting;
 
 #ifdef SAVEDGAMES
 	char		loadgame_on_restart[MAX_QPATH];	//saved game to load on map_restart
 	double		autosave_time;
 #endif
-	double		time;
-	double		starttime;
+	double		time;			//current map time
+	double		restartedtime;	//sv.time from last map restart
+	double		starttime;		//system time we changed map.
 	int framenum;
 	int logindatabase;
 
@@ -172,7 +173,7 @@ typedef struct
 	qbyte		h2cdtrack;
 #endif
 
-	vec3_t		skyroom_pos;	//parsed from world._skyroom
+	pvec3_t		skyroom_pos;	//parsed from world._skyroom
 	qboolean	skyroom_pos_known;
 
 	int			allocated_client_slots;	//number of slots available. (used mostly to stop single player saved games cacking up)
@@ -388,7 +389,7 @@ typedef struct	//merge?
 } q2client_frame_t;
 #endif
 #ifdef Q3SERVER
-#include "clq3defs.h"
+#include "../client/clq3defs.h"
 typedef struct	//merge?
 {
 	int					flags;
@@ -452,6 +453,11 @@ enum
 #define STUFFCMD_BROADCAST    (   1<<2) // everyone sees it.
 #define STUFFCMD_UNRELIABLE   (   1<<3) // someone might not see it. oh well.
 
+#define FIXANGLE_NO		0	//don't override anything
+#define FIXANGLE_AUTO	1	//guess (initial=fixed, spammed=fixed, sporadic=relative)
+#define FIXANGLE_DELTA	2	//send a relative change
+#define FIXANGLE_FIXED	3	//send a absolute angle.
+
 enum serverprotocols_e
 {
 	SCP_BAD,	//don't send (a bot)
@@ -499,7 +505,7 @@ typedef struct client_s
 	usercmd_t		lastcmd;			// for filling in big drops and partial predictions
 	double			localtime;			// of last message
 	qboolean jump_held;
-	qboolean lockangles;	//mod is spamming angle changes, don't do relative changes
+	unsigned int	lockanglesseq;		//mod is spamming angle changes, don't do relative changes. outgoing sequence. v_angles isn't really known until netchan.incoming_acknowledged>=lockangles
 
 	float			maxspeed;			// localized maxspeed
 	float			entgravity;			// localized ent gravity
@@ -616,8 +622,8 @@ typedef struct client_s
 
 	//true/false/persist
 	unsigned int	penalties;
-	qbyte			istobeloaded;	//loadgame creates place holders for clients to connect to. Effectivly loading a game reconnects all clients, but has precreated ents.
-	qboolean		spawned;		//the player's entity was spawned.
+	qbyte			istobeloaded;	//spawnparms are known.
+	qboolean		spawned;		//gamecode knows about it.
 
 	double			floodprotmessage;
 	double			lastspoke;
@@ -710,6 +716,7 @@ typedef struct client_s
 
 	struct client_s *controller;	/*first in splitscreen chain, NULL=nosplitscreen*/
 	struct client_s *controlled;	/*next in splitscreen chain*/
+	qbyte seat;
 
 	/*these are the current rates*/
 	float ratetime;
@@ -730,6 +737,9 @@ typedef struct client_s
 	float delay;
 	laggedpacket_t *laggedpacket;
 	laggedpacket_t *laggedpacket_last;
+
+	size_t lastseen_count;
+	float *lastseen_time;	//timer for cullentities_trace, so we can get away with fewer traces per test
 
 #ifdef VM_Q1
 	int hideentity;
@@ -1081,6 +1091,7 @@ void SV_Master_Shutdown(void);
 void SV_Master_Heartbeat (void);
 
 extern	cvar_t	pr_ssqc_progs;
+extern	cvar_t	sv_csqcdebug;
 extern	cvar_t	spawn;
 extern	cvar_t	teamplay;
 extern	cvar_t	deathmatch;
@@ -1142,6 +1153,7 @@ void SV_AutoAddPenalty (client_t *cl, unsigned int banflag, int duration, char *
 NORETURN void VARGS SV_Error (char *error, ...) LIKEPRINTF(1);
 void SV_Shutdown (void);
 float SV_Frame (void);
+void SV_ReadPacket(void);
 void SV_FinalMessage (char *message);
 void SV_DropClient (client_t *drop);
 struct quakeparms_s;
@@ -1208,24 +1220,6 @@ void SV_FixupName(const char *in, char *out, unsigned int outlen);
 
 #ifdef SUBSERVERS
 //cluster stuff
-typedef struct pubsubserver_s
-{
-	struct
-	{
-		void (*InstructSlave)(struct pubsubserver_s *ps, sizebuf_t *cmd);	//send to. first two bytes of the message should be ignored (overwrite them to carry size)
-		int (*SubServerRead)(struct pubsubserver_s *ps);	//read from. fills up net_message
-	} funcs;
-
-	struct pubsubserver_s *next;
-	unsigned int id;
-	char name[64];
-	int activeplayers;
-	int transferingplayers;
-	netadr_t addrv4;
-	netadr_t addrv6;
-	char printtext[4096]; //to split it into lines.
-} pubsubserver_t;
-extern qboolean isClusterSlave;
 void SSV_UpdateAddresses(void);
 void SSV_InitiatePlayerTransfer(client_t *cl, const char *newserver);
 void SSV_InstructMaster(sizebuf_t *cmd);
@@ -1235,18 +1229,22 @@ void SSV_ReadFromControlServer(void);
 void SSV_SavePlayerStats(client_t *cl, int reason);	//initial, periodic (in case of node crashes), part
 void SSV_RequestShutdown(void); //asks the cluster to not send us new players
 
-pubsubserver_t *Sys_ForkServer(void);
+vfsfile_t *Sys_ForkServer(void);
 void Sys_InstructMaster(sizebuf_t *cmd);	//first two bytes will always be the length of the data
+vfsfile_t *Sys_GetStdInOutStream(void);		//obtains a bi-directional pipe for reading/writing via stdin/stdout. make sure the system code won't be using it.
 
+qboolean MSV_NewNetworkedNode(vfsfile_t *stream, qbyte *reqstart, qbyte *buffered, size_t buffersize, const char *remoteaddr);	//call to register a pipe to a newly discovered node.
+void SSV_SetupControlPipe(vfsfile_t *stream);	//call to register the pipe.
+extern qboolean isClusterSlave;
 #define SSV_IsSubServer() isClusterSlave
 
 
-void MSV_SubServerCommand_f(void);
 void MSV_SubServerCommand_f(void);
 void MSV_MapCluster_f(void);
 void SSV_Send(const char *dest, const char *src, const char *cmd, const char *msg);
 qboolean MSV_ClusterLogin(svconnectinfo_t *info);
 void MSV_PollSlaves(void);
+qboolean MSV_ForwardToAutoServer(void);	//forwards console command to a default subserver. ie: whichever one our client is on.
 void MSV_Status(void);
 void MSV_OpenUserDatabase(void);
 #else
@@ -1254,12 +1252,14 @@ void MSV_OpenUserDatabase(void);
 #define MSV_ClusterLogin(info) false
 #define SSV_IsSubServer() false
 #define MSV_OpenUserDatabase()
+#define MSV_PollSlaves()
+#define MSV_ForwardToAutoServer() false
 #endif
 
 //
 // sv_init.c
 //
-void SV_SpawnServer (const char *server, const char *startspot, qboolean noents, qboolean usecinematic);
+void SV_SpawnServer (const char *server, const char *startspot, qboolean noents, qboolean usecinematic, int playerslots);
 void SV_UnspawnServer (void);
 void SV_FlushSignon (qboolean force);
 void SV_UpdateMaxPlayers(int newmax);
@@ -1282,8 +1282,10 @@ void SVQ2_BuildBaselines(void);
 
 //q3 stuff
 #ifdef Q3SERVER
-void SVQ3_ShutdownGame(void);
-qboolean SVQ3_InitGame(void);
+void SVQ3_ShutdownGame(qboolean restarting);
+qboolean SVQ3_InitGame(qboolean restarting);
+void SVQ3_ServerinfoChanged(const char *key);
+qboolean SVQ3_RestartGamecode(void);
 qboolean SVQ3_ConsoleCommand(void);
 qboolean SVQ3_HandleClient(void);
 void SVQ3_DirectConnect(void);
@@ -1316,7 +1318,7 @@ void SV_MulticastProtExt(vec3_t origin, multicast_t to, int dimension_mask, int 
 void SV_MulticastCB(vec3_t origin, multicast_t to, const char *reliableinfokey, int dimension_mask, void (*callback)(client_t *cl, sizebuf_t *msg, void *ctx), void *ctx);
 
 void SV_StartSound (int ent, vec3_t origin, float *velocity, int seenmask, int channel, const char *sample, int volume, float attenuation, float pitchadj, float timeofs, unsigned int flags);
-void QDECL SVQ1_StartSound (float *origin, wedict_t *entity, int channel, const char *sample, int volume, float attenuation, float pitchadj, float timeofs, unsigned int chflags);
+void QDECL SVQ1_StartSound (vec_t *origin, wedict_t *entity, int channel, const char *sample, int volume, float attenuation, float pitchadj, float timeofs, unsigned int chflags);
 void SV_PrintToClient(client_t *cl, int level, const char *string);
 void SV_TPrintToClient(client_t *cl, int level, const char *string);
 void SV_StuffcmdToClient(client_t *cl, const char *string);
@@ -1328,6 +1330,7 @@ void VARGS SV_BroadcastTPrintf (int level, translation_t fmt, ...);
 void VARGS SV_BroadcastCommand (const char *fmt, ...) LIKEPRINTF(1);
 void SV_SendMessagesToAll (void);
 void SV_FindModelNumbers (void);
+void SV_SendFixAngle(client_t *client, sizebuf_t *msg, int fixtype, qboolean roll);
 
 void SV_BroadcastUserinfoChange(client_t *about, qboolean isbasic, const char *key, const char *newval);
 
@@ -1351,7 +1354,8 @@ void SV_VoiceSendPacket(client_t *client, sizebuf_t *buf);
 #endif
 
 void SV_ClientThink (void);
-void SV_Begin_Core(client_t *split);
+void SV_Begin_Core(client_t *split);	//sets up the player's gamecode state
+void SV_DespawnClient(client_t *cl);	//shuts down the gamecode state.
 
 void VoteFlushAll(void);
 void SV_SetUpClientEdict (client_t *cl, edict_t *ent);
@@ -1428,7 +1432,9 @@ void ClientReliableWrite_Angle16(client_t *cl, float f);
 void ClientReliableWrite_Byte(client_t *cl, int c);
 void ClientReliableWrite_Char(client_t *cl, int c);
 void ClientReliableWrite_Float(client_t *cl, float f);
+void ClientReliableWrite_Double(client_t *cl, double f);
 void ClientReliableWrite_Coord(client_t *cl, float f);
+void ClientReliableWrite_Int64(client_t *cl, qint64_t c);
 void ClientReliableWrite_Long(client_t *cl, int c);
 void ClientReliableWrite_Short(client_t *cl, int c);
 void ClientReliableWrite_Entity(client_t *cl, int c);
@@ -1646,6 +1652,7 @@ int SV_MVD_GotQTVRequest(vfsfile_t *clientstream, char *headerstart, char *heade
 
 // savegame.c
 void SV_Savegame_f (void);
+void SV_DeleteSavegame_f (void);
 void SV_Savegame_c(int argn, const char *partial, struct xcommandargcompletioncb_s *ctx);
 void SV_Loadgame_f (void);
 qboolean SV_Loadgame (const char *unsafe_savename);

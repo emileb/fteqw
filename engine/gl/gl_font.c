@@ -218,6 +218,16 @@ static const char *imgs[] =
 //they're provided as fallbacks.
 #define MAX_FACES 32
 
+enum fontfmt_e
+{
+	FMT_AUTO,		//freetype, or quake
+	FMT_QUAKE,		//first is default
+	FMT_ISO88591,	//latin-1 (first 256 chars of unicode too, c1 glyphs are usually invisible)
+	FMT_WINDOWS1252,//variation of latin-1 with extra glyphs
+	FMT_KOI8U,		//image is 16*16 koi8-u codepage.
+	FMT_HORIZONTAL,	//unicode, charcount=width/(height-2). single strip of chars, like halflife.
+};
+
 typedef struct fontface_s
 {
 	struct fontface_s *fnext;
@@ -228,8 +238,11 @@ typedef struct fontface_s
 	struct
 	{
 		qbyte *data;
-		size_t width;
-		size_t height;
+		size_t rows;	//urgh.
+		size_t stride;
+		size_t charheight;
+		enum fontfmt_e codepage;
+		qboolean paletted;
 	} horiz;
 
 #ifdef HALFLIFEMODELS
@@ -452,7 +465,7 @@ void Font_Init(void)
 
 	for (i = 0; i < FONTPLANES; i++)
 	{
-		TEXASSIGN(fontplanes.texnum[i], Image_CreateTexture("***fontplane***", NULL, IF_UIPIC|(r_font_linear.ival?IF_LINEAR:IF_NEAREST)|IF_NOPICMIP|IF_NOMIPMAP|IF_NOGAMMA));
+		TEXASSIGN(fontplanes.texnum[i], Image_CreateTexture("***fontplane***", NULL, IF_UIPIC|(r_font_linear.ival?IF_LINEAR:IF_NEAREST|IF_NOPURGE)|IF_NOPICMIP|IF_NOMIPMAP|IF_NOGAMMA|IF_NOPURGE));
 	}
 
 	fontplanes.shader = R_RegisterShader("ftefont", SUF_2D,
@@ -497,7 +510,7 @@ static void Font_Flush(void)
 		return;
 	if (fontplanes.planechanged)
 	{
-		Image_Upload(fontplanes.texnum[fontplanes.activeplane], TF_RGBA32, (void*)fontplanes.plane, NULL, PLANEWIDTH, PLANEHEIGHT, IF_UIPIC|IF_NEAREST|IF_NOPICMIP|IF_NOMIPMAP|IF_NOGAMMA);
+		Image_Upload(fontplanes.texnum[fontplanes.activeplane], TF_RGBA32, (void*)fontplanes.plane, NULL, PLANEWIDTH, PLANEHEIGHT, 1, IF_UIPIC|IF_NEAREST|IF_NOPICMIP|IF_NOMIPMAP|IF_NOGAMMA|IF_NOPURGE);
 
 		fontplanes.planechanged = false;
 	}
@@ -563,7 +576,7 @@ void Font_FlushPlane(void)
 
 	if (fontplanes.planechanged)
 	{
-		Image_Upload(fontplanes.texnum[fontplanes.activeplane], TF_RGBA32, (void*)fontplanes.plane, NULL, PLANEWIDTH, PLANEHEIGHT, IF_UIPIC|IF_NEAREST|IF_NOPICMIP|IF_NOMIPMAP|IF_NOGAMMA);
+		Image_Upload(fontplanes.texnum[fontplanes.activeplane], TF_RGBA32, (void*)fontplanes.plane, NULL, PLANEWIDTH, PLANEHEIGHT, 1, IF_UIPIC|IF_NEAREST|IF_NOPICMIP|IF_NOMIPMAP|IF_NOGAMMA|IF_NOPURGE);
 
 		fontplanes.planechanged = false;
 	}
@@ -997,6 +1010,164 @@ static struct charcache_s *Font_LoadPlaceholderGlyph(font_t *f, CHARIDXTYPE char
 	return c;
 }
 
+static struct charcache_s *Font_TryLoadGlyphRaster(font_t *f, fontface_t *qface, CHARIDXTYPE charidx)
+{
+	size_t maxchar = 256;
+	const unsigned short *c1tab;
+	size_t c1tabsize;
+	size_t glyph = charidx;
+
+	safeswitch(qface->horiz.codepage)
+	{
+	safedefault:
+	case FMT_AUTO:		//shouldn't happen.
+	case FMT_ISO88591:	//all identity.
+	case FMT_HORIZONTAL: //erk...
+		c1tab = NULL;
+		c1tabsize = 0;
+		break;
+	case FMT_WINDOWS1252:
+		{
+			static const unsigned short win1252[] = {
+				0x20ac,  0x81,0x201a,0x0192, 0x201e,0x2026,0x2020,0x2021, 0x02c6,0x2030,0x0160,0x2039, 0x0152,  0x8d,0x017d,  0x8f,
+				  0x90,0x2018,0x2019,0x101c, 0x201d,0x2022,0x2013,0x2014, 0x02dc,0x2122,0x0161,0x203a, 0x0153,  0x9d,0x017e,0x0178};
+			c1tab = win1252;
+			c1tabsize = sizeof(win1252);
+		}
+		break;
+	case FMT_KOI8U:
+		{
+			static const unsigned short koi8u[] = {
+				0x2500,0x2502,0x250C,0x2510, 0x2514,0x2518,0x251C,0x2524, 0x252C,0x2534,0x253C,0x2580, 0x2584,0x2588,0x258C,0x2590,
+				0x2591,0x2592,0x2593,0x2320, 0x25A0,0x2219,0x221A,0x2248, 0x2264,0x2265,0x00A0,0x2321, 0x00B0,0x00B2,0x00B7,0x00F7,
+				0x2550,0x2551,0x2552,0x0451, 0x0454,0x2554,0x0456,0x0457, 0x2557,0x2558,0x2559,0x255A, 0x255B,0x0491,0x255D,0x255E,
+				0x255F,0x2560,0x2561,0x0401, 0x0404,0x2563,0x0406,0x0407, 0x2566,0x2567,0x2568,0x2569, 0x256A,0x0490,0x256C,0x00A9,
+				0x044E,0x0430,0x0431,0x0446, 0x0434,0x0435,0x0444,0x0433, 0x0445,0x0438,0x0439,0x043A, 0x043B,0x043C,0x043D,0x043E,
+				0x043F,0x044F,0x0440,0x0441, 0x0442,0x0443,0x0436,0x0432, 0x044C,0x044B,0x0437,0x0448, 0x044D,0x0449,0x0447,0x044A,
+				0x042E,0x0410,0x0411,0x0426, 0x0414,0x0415,0x0424,0x0413, 0x0425,0x0418,0x0419,0x041A, 0x041B,0x041C,0x041D,0x041E,
+				0x041F,0x042F,0x0420,0x0421, 0x0422,0x0423,0x0416,0x0412, 0x042C,0x042B,0x0417,0x0428, 0x042D,0x0429,0x0427,0x042A};
+			c1tab = koi8u;
+			c1tabsize = sizeof(koi8u);
+		}
+		break;
+	case FMT_QUAKE:
+		{
+			c1tab = NULL;
+			c1tabsize = 0;
+			if (glyph >= 0xe000 && glyph < 0xe100)
+				glyph -= 0xe000;
+			else if (glyph < 32 || glyph >= 0x80)
+				return NULL;
+		}
+		break;
+	}
+	if (glyph >= maxchar)
+		return NULL;
+	if (glyph >= 0x80 && glyph < 0x80+c1tabsize)
+	{
+		int i;
+		for (i = 0; ; i++)
+		{
+			if (i == c1tabsize)
+				return NULL;
+			if (glyph == c1tab[i])
+			{
+				glyph = 0x80+i;
+				break;
+			}
+		}
+	}
+
+	{
+		int gw = (qface->horiz.stride)/(maxchar/qface->horiz.rows);
+		int gr = glyph / (maxchar/qface->horiz.rows);
+		int gc = glyph - (gr*(maxchar/qface->horiz.rows));
+		int gs = qface->horiz.stride;
+		int gh = qface->horiz.charheight;
+		struct charcache_s *c;
+		if (qface->horiz.paletted)
+		{
+			qbyte *in = (qbyte*)qface->horiz.data + gc*gw + gr*gs*gh;
+			/*while (gw >= 1)
+			{
+				int y;
+				gw--;	//see if we can strip this column
+				for (y = 0; y < gh; y++)
+					if (in[gw+y*gs])
+						break;
+				if (y < gh)
+				{
+					gw++;
+					break;
+				}
+			}*/
+			{
+				int ngw = (gw * f->charheight) / gh;
+				int ngh = f->charheight;
+				int x, y;
+				unsigned int *out2 = alloca(ngw*ngh*4);
+				if (ngw&&ngh)
+				{
+					unsigned int *out1 = alloca(gw*gh*4);
+					for (y = 0; y < gh; y++)
+						for (x = 0; x < gw; x++)
+							out1[x+y*gw] = in[x+y*gs]?d_8to24rgbtable[in[x+y*gs]]:0;
+					Image_ResampleTexture(PTI_RGBA8, out1, gw, gh, out2, ngw, ngh);
+				}
+				c = Font_LoadGlyphData(f, charidx, FT_PIXEL_MODE_RGBA, out2, ngw, ngh, ngw*4);
+				gw = ngw;
+			}
+		}
+		else
+		{
+			unsigned int *in = (unsigned int*)qface->horiz.data + gc*gw + gr*gs*gh;
+			while (gw >= 1)
+			{
+				int y;
+				gw--;	//see if we can strip this column
+				for (y = 0; y < gh; y++)
+					if (in[gw+y*gs] & 0x00ffffff)
+						break;
+				if (y < gh)
+				{
+					gw++;
+					break;
+				}
+			}
+			if (f->charheight != gh)
+			{
+				int ngw = (gw * f->charheight) / gh;
+				int ngh = f->charheight;
+				int x, y;
+				unsigned int *out2 = alloca(ngw*ngh*4);
+				if (ngw&&ngh)
+				{	//we need to repack the input, because Image_ResampleTexture can't handle strides
+					unsigned int *out1 = alloca(gw*gh*4);
+					for (y = 0; y < gh; y++)
+						for (x = 0; x < gw; x++)
+							out1[x+y*gw] = in[x+y*gs];
+					Image_ResampleTexture(PTI_RGBA8, out1, gw, gh, out2, ngw, ngh);
+				}
+				c = Font_LoadGlyphData(f, charidx, FT_PIXEL_MODE_RGBA, out2, ngw, ngh, ngw*4);
+				gw = ngw;
+			}
+			else
+				c = Font_LoadGlyphData(f, charidx, FT_PIXEL_MODE_RGBA, in, gw, gh, gs*4);
+		}
+		if (!gw)	//for invisble glyphs (eg: space), we attempt to ensure that there's some substance there. missing spaces is weird.
+			gw = gh/3;
+		if (c)
+		{
+			c->advance = gw;
+			c->left = 0;
+			c->top = 0;
+			c->flags &= ~CHARF_FORCEWHITE;
+			return c;
+		}
+	}
+	return NULL;
+}
+
 //loads the given charidx for the given font, importing from elsewhere if needed.
 static struct charcache_s *Font_TryLoadGlyph(font_t *f, CHARIDXTYPE charidx)
 {
@@ -1265,62 +1436,9 @@ static struct charcache_s *Font_TryLoadGlyph(font_t *f, CHARIDXTYPE charidx)
 #endif
 			if (qface->horiz.data)
 			{
-#if 1
-				size_t maxchar = 256;
-				int gw = qface->horiz.width/maxchar;
-#else
-				int gw = qface->horiz.height-(qface->horiz.height/12);
-				size_t maxchar = qface->horiz.width / gw;
-#endif
-				size_t glyph = charidx /* - qface->horiz.firstcodepoint*/;
-				if (glyph < maxchar)
-				{
-					unsigned int *glyphdata = (unsigned int*)qface->horiz.data + glyph*gw;
-					int gh = qface->horiz.height;
-					int gs = qface->horiz.width;
-					unsigned int *out = glyphdata;
-					while (gw >= 1)
-					{
-						int y;
-						gw--;	//see if we can strip this column
-						for (y = 0; y < gh; y++)
-							if (glyphdata[gw+y*gs] & 0x00ffffff)
-								break;
-						if (y < gh)
-						{
-							gw++;
-							break;
-						}
-					}
-					if (f->charheight != gh)
-					{
-						int ngw = (gw * f->charheight) / gh;
-						int ngh = f->charheight;
-						int x, y;
-						unsigned int *out2 = alloca(ngw*ngh*4);
-						if (ngw&&ngh)
-						{	//we need to repack the input, because Image_ResampleTexture can't handle strides
-							unsigned int *out1 = alloca(gw*gh*4);
-							for (y = 0; y < gh; y++)
-								for (x = 0; x < gw; x++)
-									out1[x+y*gw] = out[x+y*gs];
-							Image_ResampleTexture(PTI_RGBA8, out1, gw, gh, out2, ngw, ngh);
-						}
-						c = Font_LoadGlyphData(f, charidx, FT_PIXEL_MODE_RGBA, out2, ngw, ngh, ngw*4); 
-						gw = ngw;
-					}
-					else
-						c = Font_LoadGlyphData(f, charidx, FT_PIXEL_MODE_RGBA, out, gw, gh, gs*4); 
-					if (!gw)	//for invisble glyphs (eg: space), we attempt to ensure that there's some substance there. missing spaces is weird.
-						gw = gh/3;
-					if (c)
-					{
-						c->advance = gw;
-						c->left = 0;
-						c->top = 0;
-						return c;
-					}
-				}
+				c = Font_TryLoadGlyphRaster(f, qface, charidx);
+				if (c)
+					return c;
 			}
 		}
 	}
@@ -1352,6 +1470,13 @@ static struct charcache_s *Font_GetChar(font_t *f, unsigned int codepoint)
 				return Font_GetChar(f, '?');
 			tc.advance = fontplanes.trackerimage->width * ((float)f->charheight / fontplanes.trackerimage->height);
 			return &tc;
+		}
+
+		if (charidx == 0x00a0)	//nbsp
+		{
+			c = Font_GetCharIfLoaded(f, ' ');
+			if (c)
+				return c;
 		}
 
 		//not cached, can't get.
@@ -1440,8 +1565,11 @@ qboolean Font_LoadHorizontalFont(struct font_s *f, int fheight, const char *font
 		if (qface->fnext)
 			qface->fnext->flink = &qface->fnext;
 		qface->horiz.data = rgbadata;
-		qface->horiz.width = width;
-		qface->horiz.height = height;
+		qface->horiz.stride = width;
+		qface->horiz.charheight = height;
+		qface->horiz.rows = 1;
+		qface->horiz.paletted = false;
+		qface->horiz.codepage = FMT_ISO88591;
 		qface->refs++;
 		Q_strncpyz(qface->name, fontfilename, sizeof(qface->name));
 
@@ -1578,7 +1706,7 @@ qboolean Font_LoadFreeTypeFont(struct font_s *f, int height, const char *fontfil
 	}
 
 	error = FT_Err_Cannot_Open_Resource;
-	if (FS_FLocateFile(fontfilename, FSLF_IFFOUND, &loc) || FS_FLocateFile(va("%s.ttf", fontfilename), FSLF_IFFOUND, &loc) || FS_FLocateFile(va("%s.otf", fontfilename), FSLF_IFFOUND, &loc))
+	if (FS_FLocateFile(fontfilename, FSLF_IFFOUND|FSLF_QUIET, &loc) || FS_FLocateFile(va("%s.ttf", fontfilename), FSLF_IFFOUND|FSLF_QUIET, &loc) || FS_FLocateFile(va("%s.otf", fontfilename), FSLF_IFFOUND|FSLF_QUIET, &loc))
 	{
 		if (*loc.rawname && !loc.offset)
 		{
@@ -1684,42 +1812,20 @@ static texid_t Font_LoadReplacementConchars(void)
 {
 	texid_t tex;
 	//q1 replacement
-	tex = R_LoadHiResTexture("gfx/conchars.lmp", NULL, (r_font_linear.ival?IF_LINEAR:IF_NEAREST)|IF_PREMULTIPLYALPHA|IF_LOADNOW|IF_UIPIC|IF_NOMIPMAP|IF_NOGAMMA);
+	tex = R_LoadHiResTexture("gfx/conchars.lmp", NULL, (r_font_linear.ival?IF_LINEAR:IF_NEAREST)|IF_PREMULTIPLYALPHA|IF_LOADNOW|IF_UIPIC|IF_NOMIPMAP|IF_NOGAMMA|IF_NOPURGE);
 	TEXDOWAIT(tex);
 	if (TEXLOADED(tex))
 		return tex;
 	//q2
-	tex = R_LoadHiResTexture("pics/conchars.pcx", NULL, (r_font_linear.ival?IF_LINEAR:IF_NEAREST)|IF_PREMULTIPLYALPHA|IF_LOADNOW|IF_UIPIC|IF_NOMIPMAP|IF_NOGAMMA);
+	tex = R_LoadHiResTexture("pics/conchars.pcx", NULL, (r_font_linear.ival?IF_LINEAR:IF_NEAREST)|IF_PREMULTIPLYALPHA|IF_LOADNOW|IF_UIPIC|IF_NOMIPMAP|IF_NOGAMMA|IF_NOPURGE);
 	TEXDOWAIT(tex);
 	if (TEXLOADED(tex))
 		return tex;
 	//q3
-	tex = R_LoadHiResTexture("gfx/2d/bigchars.tga", NULL, (r_font_linear.ival?IF_LINEAR:IF_NEAREST)|IF_PREMULTIPLYALPHA|IF_LOADNOW|IF_UIPIC|IF_NOMIPMAP|IF_NOGAMMA);
+	tex = R_LoadHiResTexture("gfx/2d/bigchars.tga", NULL, (r_font_linear.ival?IF_LINEAR:IF_NEAREST)|IF_PREMULTIPLYALPHA|IF_LOADNOW|IF_UIPIC|IF_NOMIPMAP|IF_NOGAMMA|IF_NOPURGE);
 	TEXDOWAIT(tex);
 	if (TEXLOADED(tex))
 		return tex;
-	return r_nulltex;
-}
-static texid_t Font_LoadQuakeConchars(void)
-{
-	/*unsigned int i;
-	qbyte *lump;
-	lump = W_SafeGetLumpName ("conchars");
-	if (lump)
-	{
-		// add ocrana leds
-		if (con_ocranaleds.ival)
-		{
-			if (con_ocranaleds.ival != 2 || QCRC_Block(lump, 128*128) == 798)
-				AddOcranaLEDsIndexed (lump, 128, 128);
-		}
-
-		for (i=0 ; i<128*128 ; i++)
-			if (lump[i] == 0)
-				lump[i] = 255;	// proper transparent color
-
-		return R_LoadTexture8("charset", 128, 128, (void*)lump, IF_LOADNOW|IF_UIPIC|IF_NOMIPMAP|IF_NOGAMMA, 1);
-	}*/
 	return r_nulltex;
 }
 
@@ -1863,31 +1969,16 @@ static texid_t Font_LoadFallbackConchars(void)
 		Font_CopyGlyph('|', 131, lump);
 		Font_CopyGlyph('>', 13, lump);
 	}
-	tex = Image_GetTexture("charset", NULL, IF_PREMULTIPLYALPHA|IF_LOADNOW|IF_UIPIC|IF_NOMIPMAP|IF_NOGAMMA, (void*)lump, NULL, width, height, PTI_RGBA8);
+	tex = Image_GetTexture("charset", NULL, IF_PREMULTIPLYALPHA|IF_LOADNOW|IF_UIPIC|IF_NOMIPMAP|IF_NOGAMMA|IF_NOPURGE, (void*)lump, NULL, width, height, PTI_RGBA8);
 	BZ_Free(lump);
 	return tex;
 }
-
-enum fontfmt_e
-{
-	FMT_AUTO,		//freetype, or quake
-	FMT_QUAKE,		//first is default
-	FMT_ISO88591,	//latin-1 (first 256 chars of unicode too, c1 glyphs are usually invisible)
-	FMT_WINDOWS1252,//variation of latin-1 with extra glyphs
-	FMT_KOI8U,		//image is 16*16 koi8-u codepage.
-	FMT_HORIZONTAL,	//unicode, charcount=width/(height-2). single strip of chars, like halflife.
-};
 
 /*loads a fallback image. not allowed to fail (use syserror if needed)*/
 static texid_t Font_LoadDefaultConchars(enum fontfmt_e *fmt)
 {
 	texid_t tex;
 	tex = Font_LoadReplacementConchars();
-	if (TEXLOADED(tex))
-		return tex;
-	tex = Font_LoadQuakeConchars();
-	if (tex && tex->status == TEX_LOADING)
-		COM_WorkerPartialSync(tex, &tex->status, TEX_LOADING);
 	if (TEXLOADED(tex))
 		return tex;
 #ifdef HEXEN2
@@ -1950,6 +2041,54 @@ void Doom_ExpandPatch(doompatch_t *p, unsigned char *b, int stride)
 		}
 		b++;
 	}
+}
+
+static qboolean Font_LoadFontLump(font_t *f, const char *facename)
+{
+	size_t lumpsize = 0;
+	qbyte lumptype = 0;
+	void *lumpdata;
+
+	if (f->faces == MAX_FACES)
+		return false;	//can't store it...
+	lumpdata = W_GetLumpName(facename, &lumpsize, &lumptype);
+	if (!lumpdata)
+		return false;
+	if ((lumptype == TYP_MIPTEX && lumpsize==(8*8)*(16*16)) ||	//proper format
+		(lumptype == TYP_QPIC   && lumpsize==(8*8)*(16*16)+8))	//fucked up buggy format used by some people
+	{
+		fontface_t *fa = Z_Malloc(sizeof(*fa));
+		fa->horiz.data = lumpdata;
+		fa->horiz.stride = 8*16;
+		fa->horiz.charheight = 8;
+		fa->horiz.codepage = FMT_QUAKE;
+		fa->horiz.paletted = true;
+		fa->horiz.rows = 16;
+
+		if (con_ocranaleds.ival)
+		{
+			if (con_ocranaleds.ival != 2 || QCRC_Block(lumpdata, 128*128) == 798)
+				AddOcranaLEDsIndexed (lumpdata, 128, 128);
+		}
+
+		fa->flink = &fa->fnext;
+		fa->refs = 1;
+		f->face[f->faces++] = fa;
+		return true;
+	}
+#ifdef HALFLIFEMODELS
+	else if (lumptype == TYP_HLFONT)
+	{
+		fontface_t *fa = Z_Malloc(sizeof(*fa));
+		fa->halflife = lumpdata;
+		fa->flink = &fa->fnext;
+		fa->refs = 1;
+		f->face[f->faces++] = fa;
+//		f->charheight = fa->halflife->fontheight1;	//force the font to a specific size.
+		return true;
+	}
+#endif
+	return false;	//doesn't match a valid known format
 }
 
 //creates a new font object from the given file, with each text row with the given height.
@@ -2141,7 +2280,7 @@ struct font_s *Font_LoadFont(const char *fontfilename, float vheight, float scal
 			for (x = 0; x < 128; x++)
 				img[x + y*PLANEWIDTH] = w[x + y*128]?d_8to24rgbtable[w[x + y*128]]:0;
 
-		f->singletexture = R_LoadTexture("tinyfont",PLANEWIDTH,PLANEWIDTH,TF_RGBA32,img,IF_PREMULTIPLYALPHA|IF_UIPIC|IF_NOPICMIP|IF_NOMIPMAP);
+		f->singletexture = R_LoadTexture("tinyfont",PLANEWIDTH,PLANEWIDTH,TF_RGBA32,img,IF_PREMULTIPLYALPHA|IF_UIPIC|IF_NOPICMIP|IF_NOMIPMAP|IF_NOPURGE);
 		if (f->singletexture->status == TEX_LOADING)
 			COM_WorkerPartialSync(f->singletexture, &f->singletexture->status, TEX_LOADING);
 		Z_Free(img);
@@ -2210,6 +2349,7 @@ struct font_s *Font_LoadFont(const char *fontfilename, float vheight, float scal
 
 	{
 		const char *start;
+		qboolean success;
 		start = fontfilename;
 		for(;;)
 		{
@@ -2218,11 +2358,23 @@ struct font_s *Font_LoadFont(const char *fontfilename, float vheight, float scal
 				*end = 0;
 
 			if (fmt == FMT_HORIZONTAL)
-				Font_LoadHorizontalFont(f, height, start);
+				success = Font_LoadHorizontalFont(f, height, start);
 #ifdef AVAIL_FREETYPE
-			else if (fmt == FMT_AUTO)
-				Font_LoadFreeTypeFont(f, height, start);
+			else if (fmt == FMT_AUTO && Font_LoadFreeTypeFont(f, height, start))
+				success = true;
 #endif
+			else
+				success = false;
+
+			if (!success && !TEXLOADED(f->singletexture) && *start)
+			{
+				f->singletexture = R_LoadHiResTexture(start, "fonts:charsets", IF_PREMULTIPLYALPHA|(r_font_linear.ival?IF_LINEAR:IF_NEAREST)|IF_UIPIC|IF_NOPICMIP|IF_NOMIPMAP|IF_NOPURGE|IF_LOADNOW);
+				if (f->singletexture->status == TEX_LOADING)
+					COM_WorkerPartialSync(f->singletexture, &f->singletexture->status, TEX_LOADING);
+
+				if (!TEXLOADED(f->singletexture) && f->faces < MAX_FACES)
+					Font_LoadFontLump(f, start);
+			}
 
 			if (end)
 			{
@@ -2234,42 +2386,8 @@ struct font_s *Font_LoadFont(const char *fontfilename, float vheight, float scal
 		}
 	}
 
-#ifdef HALFLIFEMODELS
-	if (!f->faces)
-	{
-		if (f->faces < MAX_FACES)
-		{
-			size_t lumpsize;
-			qbyte lumptype = 0;
-			void *lumpdata = NULL;
-			if ((!lumpdata || lumptype != TYP_HLFONT) && *fontfilename)
-				lumpdata = W_GetLumpName(fontfilename, &lumpsize, &lumptype);
-			if (!lumpdata || lumptype != TYP_HLFONT)
-				lumpdata = W_GetLumpName("conchars", &lumpsize, &lumptype);
-			if (lumpdata && lumptype == TYP_HLFONT)
-			{
-				fontface_t *fa = Z_Malloc(sizeof(*fa));
-				fa->halflife = lumpdata;
-				fa->flink = &fa->fnext;
-				fa->refs = 1;
-				f->face[f->faces++] = fa;
-//				f->charheight = fa->halflife->fontheight1;	//force the font to a specific size.
-				return f;
-			}
-		}
-	}
-#endif
-
-	if (!f->faces)
-	{
-		//default to only map the ascii-compatible chars from the quake font.
-		if (*fontfilename)
-		{
-			f->singletexture = R_LoadHiResTexture(fontfilename, "fonts:charsets", IF_PREMULTIPLYALPHA|(r_font_linear.ival?IF_LINEAR:IF_NEAREST)|IF_UIPIC|IF_NOPICMIP|IF_NOMIPMAP);
-			if (f->singletexture->status == TEX_LOADING)
-				COM_WorkerPartialSync(f->singletexture, &f->singletexture->status, TEX_LOADING);
-		}
-	}
+	if (!f->faces && !TEXLOADED(f->singletexture) && r_font_linear.ival)
+		Font_LoadFontLump(f, "conchars");
 
 	defaultplane = INVALIDPLANE;/*assume the bitmap plane - don't use the fallback as people don't think to use com_parseutf8*/
 	if (TEXLOADED(f->singletexture))
@@ -2659,7 +2777,10 @@ int Font_LineBreaks(conchar_t *start, conchar_t *end, int maxpixelwidth, int max
 				if (codepoint > ' ')
 					l = n;
 				else
+				{
+					l = n;
 					break;
+				}
 			}
 			if (l == start && bt>start)
 				l = Font_DecodeReverse(bt, start, &codeflags, &codepoint);
@@ -2670,6 +2791,16 @@ int Font_LineBreaks(conchar_t *start, conchar_t *end, int maxpixelwidth, int max
 		foundlines++;
 		if (foundlines == maxlines)
 			break;
+
+		for (;;)
+		{
+			if (l >= end)
+				break;
+			n = Font_Decode(l, &codeflags, &codepoint);
+			if (!(codeflags & CON_HIDDEN) && (codepoint != ' '))
+				break;
+			l = n;
+		}
 
 		start=l;
 		if (start == end)

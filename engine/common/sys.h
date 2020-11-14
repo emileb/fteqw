@@ -53,11 +53,11 @@ void Sys_Quit (void);
 void Sys_RecentServer(char *command, char *target, char *title, char *desc);
 qboolean Sys_RunInstaller(void);
 
-typedef struct {
+typedef struct dllfunction_s {
 	void **funcptr;
 	char *name;
 } dllfunction_t;
-typedef void dllhandle_t;	//typically used as void*
+#define dllhandle_t void
 extern qboolean sys_nounload;	//blocks Sys_CloseLibrary. set before stack trace fatal shutdowns.
 dllhandle_t *Sys_LoadLibrary(const char *name, dllfunction_t *funcs);
 void Sys_CloseLibrary(dllhandle_t *lib);
@@ -78,10 +78,10 @@ char *Sys_ConsoleInput (void);
 
 typedef enum
 {
+	CBT_CLIPBOARD,	//ctrl+c, ctrl+v
 	CBT_SELECTION,	//select-to-copy, middle-to-paste
-	CBT_CLIPBOARD	//ctrl+c, ctrl+v
 } clipboardtype_t;
-void Sys_Clipboard_PasteText(clipboardtype_t clipboardtype, void (*callback)(void *cb, char *utf8), void *ctx);	//calls the callback once the text is available (maybe instantly). utf8 arg may be NULL if the clipboard was unavailable.
+void Sys_Clipboard_PasteText(clipboardtype_t clipboardtype, void (*callback)(void *ctx, const char *utf8), void *ctx);	//calls the callback once the text is available (maybe instantly). utf8 arg may be NULL if the clipboard was unavailable.
 void Sys_SaveClipboard(clipboardtype_t clipboardtype, const char *text); //a stub would do nothing.
 
 //stuff for dynamic dedicated console -> gfx and back.
@@ -159,13 +159,13 @@ void *Sys_CreateMutexNamed(char *file, int line);
 		#define Sys_LockMutex(m) Sys_MutexStub()
 		#define Sys_UnlockMutex(m) Sys_MutexStub()
 		#ifndef __cplusplus
-			static inline qboolean Sys_IsThread(void *thread) {return !thread;}
+			static inline qboolean Sys_IsThread(void *thread) {return (!thread)?qtrue:qfalse;}
 		#endif
 	#else
-		#define Sys_IsMainThread() (qboolean)(true)
+		#define Sys_IsMainThread() (qboolean)(qtrue)
 		#define Sys_CreateMutex() (void*)(NULL)
-		#define Sys_LockMutex(m) (qboolean)(true)
-		#define Sys_UnlockMutex(m) (qboolean)(true)
+		#define Sys_LockMutex(m) (qboolean)(qtrue)
+		#define Sys_UnlockMutex(m) (qboolean)(qtrue)
 		#define Sys_DestroyMutex(m) (void)0
 		#define Sys_IsThread(t) (!t)
 	#endif
@@ -182,17 +182,21 @@ void NPQTV_Sys_MainLoop(void);
 #define UPD_STABLE 1
 #define UPD_TESTING 2
 
-#if defined(WEBCLIENT) && defined(_WIN32) && !defined(SERVERONLY) && !defined(_XBOX)
-int StartLocalServer(int close);
+#if defined(WEBCLIENT) && defined(PACKAGEMANAGER)
+	#if defined(_WIN32) && !defined(SERVERONLY) && !defined(_XBOX)
+		#define HAVEAUTOUPDATE
+	#endif
+	#if defined(__linux__) && !defined(ANDROID)
+		#define HAVEAUTOUPDATE
+	#endif
+#endif
 
-#define HAVEAUTOUPDATE
-qboolean Sys_SetUpdatedBinary(const char *fname);	//legacy, so old build can still deal with updates properly
-qboolean Sys_EngineMayUpdate(void);				//says whether the system code is able to invoke new binaries properly
-//qboolean Sys_EngineWasUpdated(char *newbinary);	//invoke the given system-path binary
+#ifdef HAVEAUTOUPDATE
+qboolean Sys_SetUpdatedBinary(const char *fname);	//attempts to overwrite the working binary.
+qboolean Sys_EngineMayUpdate(void);					//says whether the system code is able/allowed to overwrite itself.
 #else
 #define Sys_EngineMayUpdate() false
 #define Sys_SetUpdatedBinary(n) false
-//#define Sys_EngineWasUpdated(n) false
 #endif
 
 void Sys_Init (void);

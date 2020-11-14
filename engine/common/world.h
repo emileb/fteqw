@@ -19,7 +19,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 // world.h
 
-#include "quakedef.h"
+#include "../client/quakedef.h"
 
 typedef struct plane_s
 {
@@ -244,21 +244,21 @@ struct world_s
 
 	/*qc globals*/
 	struct {
-		int     *self;
-		int     *other;
-		int     *newmis;
-		float	*time;
-		float	*frametime;
-		float	*force_retouch;
-		float	*physics_mode;
-		float	*v_forward;
-		float	*v_right;
-		float	*v_up;
-		float	*defaultgravitydir;
+		pint_t     *self;
+		pint_t     *other;
+		pint_t     *newmis;
+		pvec_t	*time;
+		pvec_t	*frametime;
+		pvec_t	*force_retouch;
+		pvec_t	*physics_mode;
+		pvec_t	*v_forward;
+		pvec_t	*v_right;
+		pvec_t	*v_up;
+		pvec_t	*defaultgravitydir;
 
 		//used by menu+csqc.
-		float *drawfont;
-		float *drawfontscale;
+		pvec_t *drawfont;
+		pvec_t *drawfontscale;
 	} g;
 
 #ifdef USERBE
@@ -325,6 +325,11 @@ void QDECL World_LinkEdict (world_t *w, wedict_t *ent, qboolean touch_triggers);
 // flags ent->v.modified
 // sets ent->v.absmin and ent->v.absmax
 // if touchtriggers, calls prog functions for the intersected triggers
+
+#define AREA_ALL 0
+#define AREA_SOLID 1
+#define AREA_TRIGGER 2
+extern int World_AreaEdicts (world_t *w, vec3_t mins, vec3_t maxs, wedict_t **list, int maxcount, int areatype);
 
 #ifdef USEAREAGRID
 void World_TouchAllLinks (world_t *w, wedict_t *ent);

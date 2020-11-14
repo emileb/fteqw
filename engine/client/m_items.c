@@ -3,25 +3,37 @@
 #include "quakedef.h"
 #include "shader.h"
 
-void Draw_TextBox (int x, int y, int width, int lines)
+//draws the size specified, plus a little extra border (about 8 pixels in each direction, could be more though).
+//size is in vpixels.
+void Draw_ApproxTextBox (float x, float y, float width, float height)
 {
 	mpic_t	*p;
-	int		cx, cy;
-	int		n;
+	float	cx, cy;
+	int		n, lines, columns;
 
-	// draw left side
-	cx = x;
-	cy = y;
+	x -= 8;
+	y -= 8;
+
 	p = R2D_SafeCachePic ("gfx/box_tl.lmp");
-
 	if (R_GetShaderSizes(p, NULL, NULL, false) != true)	//assume none exist
-	{
-		R2D_ImageColours(0.0, 0.0, 0.0, 0.5);
-		R2D_FillBlock(x, y, width*8 + 16, 8 * (2 + lines));
+	{	//simple fill.
+		R2D_ImageColours(0.1, 0.1, 0.1, 0.9);
+		R2D_FillBlock(x, y, width + 16, height + 16);
 		R2D_ImageColours(1.0, 1.0, 1.0, 1.0);
 		return;
 	}
 
+	//okay, we're drawing it with pics.
+	//expand the border to keep things centred.
+	lines = ceil(height/8);
+	y -= (lines*8-height)/2;
+
+	columns = ceil(width/16)*2;	//columns must be a multiple of 2.
+	x -= (columns*8-width)/2;
+
+	// draw left side
+	cx = x;
+	cy = y;
 	if (p)
 		R2D_ScalePic (cx, cy, 8, 8, p);
 	p = R2D_SafeCachePic ("gfx/box_ml.lmp");
@@ -37,7 +49,7 @@ void Draw_TextBox (int x, int y, int width, int lines)
 
 	// draw middle
 	cx += 8;
-	while (width > 0)
+	while (columns > 0)
 	{
 		cy = y;
 		p = R2D_SafeCachePic ("gfx/box_tm.lmp");
@@ -55,7 +67,7 @@ void Draw_TextBox (int x, int y, int width, int lines)
 		p = R2D_SafeCachePic ("gfx/box_bm.lmp");
 		if (p)
 			R2D_ScalePic (cx, cy+8, 16, 8, p);
-		width -= 2;
+		columns -= 2;
 		cx += 16;
 	}
 
@@ -468,9 +480,11 @@ static void MenuDrawItems(int xpos, int ypos, menuoption_t *option, emenu_t *men
 	int pw,ph;
 	int framescroll = 0;
 
+	menuframe_t *framescroller = NULL;
+
 	if (option && option->common.type == mt_box && !option->common.ishidden)
-	{
-		Draw_TextBox(xpos+option->common.posx, ypos+option->common.posy, option->box.width, option->box.height);
+	{	//FIXME: why is this here? why is this special?
+		Draw_ApproxTextBox(xpos+option->common.posx, ypos+option->common.posy, option->box.width, option->box.height);
 		option = option->common.next;
 	}
 
@@ -478,6 +492,22 @@ static void MenuDrawItems(int xpos, int ypos, menuoption_t *option, emenu_t *men
 	{
 		if (option->common.ishidden)
 			continue;
+
+		if (framescroller && option == menu->selecteditem)
+		{
+			if (ypos+option->common.posy < framescroller->common.posy)
+			{
+				framescroller->frac -= 0.1;
+				if (framescroller->frac < 0)
+					framescroller->frac = 0;
+			}
+			else if (ypos+option->common.posy+option->common.height > framescroller->common.posy+framescroller->common.height)
+			{
+				framescroller->frac += 0.1;
+				if (framescroller->frac > 1)
+					framescroller->frac = 1;
+			}
+		}
 
 		if (&menu->menu == topmenu && menu->mouseitem == option && option->common.type != mt_frameend)
 		{
@@ -553,6 +583,8 @@ static void MenuDrawItems(int xpos, int ypos, menuoption_t *option, emenu_t *men
 			if (R2D_Flush)
 				R2D_Flush();
 			BE_Scissor(NULL);
+
+			framescroller = NULL;
 			break;
 		case mt_frameend:
 			{
@@ -594,13 +626,14 @@ static void MenuDrawItems(int xpos, int ypos, menuoption_t *option, emenu_t *men
 					srect.y = (1-srect.y) - srect.height;
 					BE_Scissor(&srect);
 
-					framescroll += option->frame.frac * maxy;
-					ypos -= option->frame.frac * maxy;
+					framescroller = &option->frame;
+					framescroll += framescroller->frac * maxy;
+					ypos -= framescroller->frac * maxy;
 				}
 			}
 			break;
 		case mt_box:
-			Draw_TextBox(xpos+option->common.posx, ypos+option->common.posy, option->box.width, option->box.height);
+			Draw_ApproxTextBox(xpos+option->common.posx, ypos+option->common.posy, option->box.width, option->box.height);
 			break;
 		case mt_slider:
 			if (option->slider.var)
@@ -687,7 +720,7 @@ static void MenuDrawItems(int xpos, int ypos, menuoption_t *option, emenu_t *men
 				if (option->edit.slim)
 					x += 8; // more space for cursor
 				else
-					Draw_TextBox(x-8, y-8, 16, 1);
+					Draw_ApproxTextBox(x, y, 16*8, 8);
 				Draw_FunString(x, y, option->edit.text);
 
 				if (menu->selecteditem == option && (int)(realtime*4) & 1)
@@ -779,7 +812,7 @@ static void MenuDraw(emenu_t *menu)
 //			if (omousey > menu->ypos+option->common.posy && omousey < menu->ypos+option->common.posy+option->common.height)
 			{
 				int x = omousex+8;
-				int y = omousey;
+				int y = omousey+8;
 				int w;
 				int h;
 				int l, lines;
@@ -792,11 +825,11 @@ static void MenuDraw(emenu_t *menu)
 				Font_EndString(font_default);
 
 				//figure out how wide that makes the tip
-				w = 16;
-				h = (lines+2)*8;
+				w = 0;
+				h = lines*8;
 				for (l = 0; l < lines; l++)
 				{
-					int lw = 16+Font_LineWidth(line_start[l], line_end[l])*vid.width/vid.pixelwidth;
+					int lw = Font_LineWidth(line_start[l], line_end[l])*vid.width/vid.pixelwidth;
 					if (w < lw)
 						w = lw;
 				}
@@ -808,9 +841,7 @@ static void MenuDraw(emenu_t *menu)
 					y -= h;
 
 				// draw the background
-				Draw_TextBox(x, y, (w-16)/8, lines);
-				x += 8;
-				y += 8;
+				Draw_ApproxTextBox(x, y, w, lines*8);
 
 				//draw the text
 				Font_BeginString(font_default, x, y, &x, &y);
@@ -1684,7 +1715,7 @@ changed:
 }
 
 static qboolean menu_mousedown;
-extern menu_t *menu_script;
+extern emenu_t *menu_script;
 static void M_Draw (menu_t *menu)
 {
 	emenu_t *m = (emenu_t*)menu;
@@ -1985,6 +2016,7 @@ void M_Complex_Key(emenu_t *currentmenu, int key, int unicode)
 	case K_DOWNARROW:
 	case K_KP_DOWNARROW:
 	case K_GP_DPAD_DOWN:
+	godown:
 		currentmenu->selecteditem = M_NextSelectableItem(currentmenu, currentmenu->selecteditem);
 
 		if (currentmenu->selecteditem)
@@ -2003,6 +2035,7 @@ void M_Complex_Key(emenu_t *currentmenu, int key, int unicode)
 	case K_UPARROW:
 	case K_KP_UPARROW:
 	case K_GP_DPAD_UP:
+	goup:
 		currentmenu->selecteditem = M_PrevSelectableItem(currentmenu, currentmenu->selecteditem);
 
 		if (currentmenu->selecteditem)
@@ -2019,6 +2052,46 @@ void M_Complex_Key(emenu_t *currentmenu, int key, int unicode)
 		}
 		break;
 
+	case K_MWHEELUP:
+	case K_MWHEELDOWN:
+		if (currentmenu->mouseitem)
+		{
+			qboolean handled = false;
+			switch(currentmenu->mouseitem->common.type)
+			{
+			case mt_combo:
+				if (mousecursor_x >= currentmenu->xpos + currentmenu->mouseitem->common.posx + currentmenu->mouseitem->combo.captionwidth + 3*8)
+				{
+					MC_Combo_Key(&currentmenu->mouseitem->combo, key);
+					handled = true;
+				}
+				break;
+			case mt_checkbox:
+				if (mousecursor_x >= currentmenu->xpos + currentmenu->mouseitem->common.posx + currentmenu->mouseitem->check.textwidth + 3*8)
+				{
+					MC_CheckBox_Key(&currentmenu->mouseitem->check, currentmenu, key);
+					handled = true;
+				}
+				break;
+			case mt_custom:
+				if (currentmenu->mouseitem->custom.key)
+					handled = currentmenu->mouseitem->custom.key(&currentmenu->mouseitem->custom, currentmenu, key, unicode);
+				break;
+			default:
+				break;
+			}
+
+			if (handled)
+			{
+				currentmenu->selecteditem = currentmenu->mouseitem;
+				if (currentmenu->cursoritem)
+					currentmenu->cursoritem->common.posy = currentmenu->selecteditem->common.posy;
+				break;
+			}
+			else if (key == K_MWHEELUP)
+				goto goup;
+			else goto godown;
+		}
 	case K_MOUSE1:
 	case K_MOUSE3:
 	case K_MOUSE4:
@@ -2028,8 +2101,6 @@ void M_Complex_Key(emenu_t *currentmenu, int key, int unicode)
 	case K_MOUSE8:
 	case K_MOUSE9:
 	case K_MOUSE10:
-	case K_MWHEELUP:
-	case K_MWHEELDOWN:
 		if (!currentmenu->mouseitem)
 			break;
 		if (currentmenu->mouseitem && currentmenu->selecteditem != currentmenu->mouseitem)
@@ -2133,8 +2204,12 @@ static int M_Main_AddExtraOptions(emenu_t *mainm, int y)
 #ifdef WEBCLIENT
 		MC_AddConsoleCommandQBigFont(mainm, 72, y,	"Updates       ", "menu_download\n");	y += 20;
 #else
-		MC_AddConsoleCommandQBigFont(mainm, 72, y,	"Packages      ", "menu_download\n");
+		MC_AddConsoleCommandQBigFont(mainm, 72, y,	"Packages      ", "menu_download\n");	y += 20;
 #endif
+	}
+	if (Cmd_Exists("menu_mods"))
+	{
+		MC_AddConsoleCommandQBigFont(mainm, 72, y,	"Mods          ", "menu_mods\n");	y += 20;
 		y += 20;
 	}
 
@@ -2253,6 +2328,7 @@ void M_Menu_Main_f (void)
 		p = R2D_SafeCachePic("gfx/menu/title0.lmp");
 		if (R_GetShaderSizes(p, NULL, NULL, true) > 0)
 		{
+			int y = 64;
 			mainm = M_CreateMenu(0);
 			mainm->key = MC_Main_Key;
 
@@ -2260,29 +2336,40 @@ void M_Menu_Main_f (void)
 			MC_AddCenterPicture(mainm, 0, 60, "gfx/menu/title0.lmp");
 
 #ifndef CLIENTONLY
-			b=MC_AddConsoleCommandHexen2BigFont	(mainm, 80, 64,	"Single Player", "menu_single\n");
+			b=MC_AddConsoleCommandHexen2BigFont	(mainm, 80, y,	"Single Player", "menu_single\n");
 			mainm->selecteditem = (menuoption_t *)b;
 			b->common.width = 12*20;
 			b->common.height = 20;
+			y += 20;
 #endif
-			b=MC_AddConsoleCommandHexen2BigFont	(mainm, 80, 64+20,	"MultiPlayer", "menu_multi\n");
+			b=MC_AddConsoleCommandHexen2BigFont	(mainm, 80, y,	"MultiPlayer", "menu_multi\n");
 #ifdef CLIENTONLY
 			mainm->selecteditem = (menuoption_t *)b;
 #endif
 			b->common.width = 12*20;
 			b->common.height = 20;
-			b=MC_AddConsoleCommandHexen2BigFont	(mainm, 80, 64+40,	"Options", "menu_options\n");
+			y += 20;
+			b=MC_AddConsoleCommandHexen2BigFont	(mainm, 80, y,	"Options", "menu_options\n");
 			b->common.width = 12*20;
 			b->common.height = 20;
+			y += 20;
 			if (m_helpismedia.value)
-				b=MC_AddConsoleCommandHexen2BigFont	(mainm, 80, 64+60,	"Media", "menu_media\n");
+				b=MC_AddConsoleCommandHexen2BigFont	(mainm, 80, y,	"Media", "menu_media\n");
 			else
-				b=MC_AddConsoleCommandHexen2BigFont	(mainm, 80, 64+60,	"Help", "help\n");
+				b=MC_AddConsoleCommandHexen2BigFont	(mainm, 80, y,	"Help", "help\n");
 			b->common.width = 12*20;
 			b->common.height = 20;
-			b=MC_AddConsoleCommandHexen2BigFont	(mainm, 80, 64+80,	"Quit", "menu_quit\n");
+			y += 20;
+
+			b=MC_AddConsoleCommandHexen2BigFont	(mainm, 80, y,	"Mods", "menu_modshelp\n");
 			b->common.width = 12*20;
 			b->common.height = 20;
+			y += 20;
+
+			b=MC_AddConsoleCommandHexen2BigFont	(mainm, 80, y,	"Quit", "menu_quit\n");
+			b->common.width = 12*20;
+			b->common.height = 20;
+			y += 20;
 
 			mainm->cursoritem = (menuoption_t *)MC_AddCursor(mainm, &resel, 56, mainm->selecteditem->common.posy);
 		}

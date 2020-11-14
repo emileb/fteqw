@@ -27,6 +27,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "winquake.h"
 #include "resource.h"
 #include "shader.h"
+#include "vr.h"
 #include <commctrl.h>
 
 #ifdef USE_EGL
@@ -140,20 +141,17 @@ extern qboolean vid_isfullscreen;
 
 static unsigned short originalgammaramps[3][256];
 
-qboolean vid_initializing;
+static qboolean vid_initializing;
 
 static int			DIBWidth, DIBHeight;
 static RECT		WindowRect;
 static DWORD		WindowStyle, ExWindowStyle;
 
-HWND	mainwindow;
 static HWND dibwindow;
 
 static HDC		maindc;
 
 HWND WINAPI InitializeWindow (HINSTANCE hInstance, int nCmdShow);
-
-viddef_t	vid;				// global video state
 
 //unsigned short	d_8to16rgbtable[256];
 //unsigned	d_8to24rgbtable[256];
@@ -175,10 +173,8 @@ extern cvar_t		vid_desktopgamma;
 extern cvar_t		gl_lateswap;
 extern cvar_t		vid_preservegamma;
 
-int			window_x, window_y;
+static int			window_x, window_y;
 static int			window_width, window_height;
-int					window_center_x, window_center_y;
-RECT				window_rect;
 
 
 static LONG WINAPI GLMainWndProc (HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
@@ -897,9 +893,9 @@ static void Win32NVVK_DoPresent(struct vkframe *theframe)
 			0, 1, 1, 0);	//stst (remember that gl textures are meant to be upside down)
 
 	//and tell our code to expect it.
-	vk.acquirebufferidx[vk.aquirelast%ACQUIRELIMIT] = vk.aquirelast%vk.backbuf_count;
-	fence = vk.acquirefences[vk.aquirelast%ACQUIRELIMIT];
-	vk.aquirelast++;
+	vk.acquirebufferidx[vk.acquirelast%ACQUIRELIMIT] = vk.acquirelast%vk.backbuf_count;
+	fence = vk.acquirefences[vk.acquirelast%ACQUIRELIMIT];
+	vk.acquirelast++;
 	//and actually signal it, so our code can wake up.
 	qglSignalVkFenceNV((GLuint64)fence);
 
@@ -1447,6 +1443,8 @@ static int GLVID_SetMode (rendererstate_t *info, unsigned char *palette)
 #endif
 //	HDC				hdc;
 
+	vrsetup_t setup = {sizeof(setup)};
+
 	TRACE(("dbg: GLVID_SetMode\n"));
 
 // so Con_Printfs don't mess us up by forcing vid and snd updates
@@ -1465,6 +1463,13 @@ static int GLVID_SetMode (rendererstate_t *info, unsigned char *palette)
 #ifdef VKQUAKE
 	case MODE_NVVULKAN:
 #endif
+		setup.vrplatform = VR_WIN_WGL;
+		if (info->vr && !info->vr->Prepare(&setup))
+		{
+			info->vr->Shutdown();
+			info->vr = NULL;
+		}
+
 		// Set either the fullscreen or windowed mode
 		qwglChoosePixelFormatARB = NULL;
 		qwglGetPixelFormatAttribfvARB = NULL;
@@ -1515,10 +1520,18 @@ static int GLVID_SetMode (rendererstate_t *info, unsigned char *palette)
 		if (modestate == MS_FULLWINDOW)
 			ShowWindow (dibwindow, SW_SHOWMAXIMIZED);
 		else
-			ShowWindow (dibwindow, SW_SHOWNORMAL);
+			ShowWindow (dibwindow, SW_SHOWNORMAL);	
 
 		if (!GL_Init(info, getglfunc))
 			return false;
+		setup.wgl.hdc = maindc;
+		setup.wgl.hglrc = baseRC;
+		if (info->vr && !info->vr->Init(&setup, info))
+		{
+			info->vr->Shutdown();
+			return false;
+		}
+		vid.vr = info->vr;
 
 		if (qwglGetPixelFormatAttribfvARB)	//just for debugging info.
 		{
@@ -2361,7 +2374,7 @@ static BOOL CheckForcePixelFormat(rendererstate_t *info)
 			}
 		}
 //		iAttribute[iAttributes++] = WGL_ALPHA_BITS_ARB;					iAttribute[iAttributes++] = 2;
-		iAttribute[iAttributes++] = WGL_DEPTH_BITS_ARB;					iAttribute[iAttributes++] = 16;
+		iAttribute[iAttributes++] = WGL_DEPTH_BITS_ARB;					iAttribute[iAttributes++] = info->depthbits?info->depthbits:16;
 		iAttribute[iAttributes++] = WGL_STENCIL_BITS_ARB;				iAttribute[iAttributes++] = 8;
 		iAttribute[iAttributes++] = WGL_DOUBLE_BUFFER_ARB;				iAttribute[iAttributes++] = GL_TRUE;
 		iAttribute[iAttributes++] = WGL_STEREO_ARB;						iAttribute[iAttributes++] = info->stereo;

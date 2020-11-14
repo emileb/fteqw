@@ -176,7 +176,7 @@ static int SSPI_CopyIntoBuffer(struct sslbuf *buf, const void *data, unsigned in
 	return bytes;
 }
 
-static void SSPI_Error(sslfile_t *f, char *error, ...)
+static void SSPI_Error(sslfile_t *f, const char *error, ...)
 {
 	va_list         argptr;
 	char             string[1024];
@@ -186,7 +186,12 @@ static void SSPI_Error(sslfile_t *f, char *error, ...)
 
 	f->handshaking = HS_ERROR;
 	if (*string)
-		Sys_Printf("%s", string);
+	{
+		if (f->datagram)
+			Con_Printf(CON_ERROR "%s", string);
+		else
+			Sys_Printf(CON_ERROR "%s", string);
+	}
 	if (f->stream)
 		VFS_CLOSE(f->stream);
 
@@ -224,7 +229,7 @@ static int SSPI_CheckNewInCrypt(sslfile_t *f)
 {
 	int newd;
 	if (!f->stream)
-		return -1;
+		return VFS_ERROR_EOF;
 	newd = VFS_READ(f->stream, f->incrypt.data+f->incrypt.avail, f->incrypt.datasize - f->incrypt.avail);
 	if (newd < 0)
 		return newd;
@@ -391,12 +396,19 @@ static DWORD VerifyKnownCertificates(DWORD status, wchar_t *domain, qbyte *data,
 	size_t knownsize;
 	void *knowncert;
 	char realdomain[256];
+	unsigned int probs = 0;
 	if (datagram)
 	{
+		if (status == CERT_E_UNTRUSTEDROOT || status == CERT_E_UNTRUSTEDTESTROOT)
+			probs |= CERTLOG_MISSINGCA;
+		if (status == CERT_E_EXPIRED)
+			probs |= CERTLOG_EXPIRED;
+		if (status == SEC_E_WRONG_PRINCIPAL)
+			probs |= CERTLOG_WRONGHOST;
 		if (status == CERT_E_UNTRUSTEDROOT || SUCCEEDED(status))
 		{
 #ifndef SERVERONLY
-			if (CertLog_ConnectOkay(narrowen(realdomain, sizeof(realdomain), domain), data, datasize))
+			if (CertLog_ConnectOkay(narrowen(realdomain, sizeof(realdomain), domain), data, datasize, probs))
 				status = SEC_E_OK;
 			else
 #endif
@@ -427,8 +439,16 @@ static DWORD VerifyKnownCertificates(DWORD status, wchar_t *domain, qbyte *data,
 #ifndef SERVERONLY
 	//self-signed and expired certs are understandable in many situations.
 	//prompt and cache (although this connection attempt will fail).
+	if (status == CERT_E_UNTRUSTEDROOT || status == CERT_E_UNTRUSTEDTESTROOT)
+		probs |= CERTLOG_MISSINGCA;
+	else if (status == CERT_E_EXPIRED)
+		probs |= CERTLOG_EXPIRED;
+	else if (status == SEC_E_WRONG_PRINCIPAL)
+		probs |= CERTLOG_WRONGHOST;
+	else if (status != SEC_E_OK)
+		probs |= CERTLOG_UNKNOWN;
 	if (status == CERT_E_UNTRUSTEDROOT || status == CERT_E_UNTRUSTEDTESTROOT || status == CERT_E_EXPIRED)
-		if (CertLog_ConnectOkay(realdomain, data, datasize))
+		if (CertLog_ConnectOkay(realdomain, data, datasize, probs))
 			return SEC_E_OK;
 #endif
 
@@ -607,14 +627,14 @@ static void SSPI_GenServerCredentials(sslfile_t *f)
 
 	if (!cred)
 	{
-		SSPI_Error(f, "Unable to load/generate certificate\n");
+		SSPI_Error(f, localtext("Unable to load/generate certificate\n"));
 		return;
 	}
 
 	ss = secur.pAcquireCredentialsHandleA (NULL, UNISP_NAME_A, SECPKG_CRED_INBOUND, NULL, &SchannelCred, NULL, NULL, &f->cred, &Lifetime);
 	if (ss < 0)
 	{
-		SSPI_Error(f, "AcquireCredentialsHandle failed\n");
+		SSPI_Error(f, localtext("WinSSPI: AcquireCredentialsHandle failed\n"));
 		return;
 	}
 }
@@ -677,7 +697,7 @@ retry:
 		ss = secur.pAcquireCredentialsHandleA (NULL, UNISP_NAME_A, SECPKG_CRED_OUTBOUND, NULL, &SchannelCred, NULL, NULL, &f->cred, &Lifetime);
 		if (ss < 0)
 		{
-			SSPI_Error(f, "AcquireCredentialsHandle failed\n");
+			SSPI_Error(f, localtext("WINSSPI: AcquireCredentialsHandle failed\n"));
 			return;
 		}
 
@@ -803,11 +823,11 @@ retry:
 	}
 	else
 		return;
-	
+
 
 	if (ss == SEC_I_INCOMPLETE_CREDENTIALS)
 	{
-		SSPI_Error(f, "server requires credentials\n");
+		SSPI_Error(f, localtext("server requires credentials\n"));
 		return;
 	}
 
@@ -851,14 +871,12 @@ retry:
 				ss = secur.pQueryContextAttributesA(&f->sechnd, SECPKG_ATTR_REMOTE_CERT_CONTEXT, &remotecert);
 				if (ss != SEC_E_OK)
 				{
-					f->handshaking = HS_ERROR;
-					SSPI_Error(f, "unable to read server's certificate\n");
+					SSPI_Error(f, localtext("unable to read server's certificate\n"));
 					return;
 				}
 				if (VerifyServerCertificate(remotecert, f->wpeername, 0, f->datagram))
 				{
-					f->handshaking = HS_ERROR;
-					SSPI_Error(f, "Error validating certificante\n");
+					SSPI_Error(f, localtext("Error validating certificante\n"));
 					return;
 				}
 			}
@@ -988,11 +1006,7 @@ vfsfile_t *SSPI_OpenVFS(const char *servername, vfsfile_t *source, qboolean serv
 	const char *peername;
 
 	if (!source || !SSL_Inited())
-	{
-		if (source)
-			VFS_CLOSE(source);
 		return NULL;
-	}
 	if (server)
 	{
 //		localname = servername;
@@ -1006,10 +1020,7 @@ vfsfile_t *SSPI_OpenVFS(const char *servername, vfsfile_t *source, qboolean serv
 
 /*
 	if (server)	//unsupported
-	{
-		VFS_CLOSE(source);
 		return NULL;
-	}
 */
 
 	newf = Z_Malloc(sizeof(*newf));
@@ -1025,7 +1036,6 @@ vfsfile_t *SSPI_OpenVFS(const char *servername, vfsfile_t *source, qboolean serv
 		if (err)
 		{
 			Z_Free(newf);
-			VFS_CLOSE(source);
 			return NULL;
 		}
 	}
@@ -1214,7 +1224,8 @@ static neterr_t SSPI_DTLS_Transmit(void *ctx, const qbyte *data, size_t datasize
 
 		if (f->handshaking == HS_ERROR)
 			ret = NETERR_DISCONNECTED;
-		ret = NETERR_CLOGGED;	//not ready yet
+		else
+			ret = NETERR_CLOGGED;	//not ready yet
 	}
 	else
 	{
@@ -1289,5 +1300,81 @@ const dtlsfuncs_t *SSPI_DTLS_InitClient(void)
 	return &dtlsfuncs_schannel;
 }
 #endif
+
+
+//#include <ntstatus.h>	//windows sucks too much to actually include this. oh well.
+#define STATUS_SUCCESS ((NTSTATUS)0x00000000)
+#define STATUS_INVALID_SIGNATURE ((NTSTATUS)0xC000A000)
+enum hashvalidation_e SSPI_VerifyHash(qbyte *hashdata, size_t hashsize, const char *authority, qbyte *signdata, size_t signsize)
+{
+	NTSTATUS status;
+	BCRYPT_KEY_HANDLE pubkey;
+	size_t sz;
+	const char *pem = Auth_GetKnownCertificate(authority, &sz);
+	const char *pemend;
+	qbyte *der;
+	size_t dersize;
+
+	static const void *(WINAPI *pCertCreateContext) (DWORD dwContextType, DWORD dwEncodingType, const BYTE *pbEncoded, DWORD cbEncoded, DWORD dwFlags, PCERT_CREATE_CONTEXT_PARA pCreatePara);
+	static BOOL (WINAPI *pCryptImportPublicKeyInfoEx2) (DWORD dwCertEncodingType, PCERT_PUBLIC_KEY_INFO pInfo, DWORD dwFlags, void *pvAuxInfo, BCRYPT_KEY_HANDLE *phKey);
+	static BOOL (WINAPI *pCertFreeCertificateContext) (PCCERT_CONTEXT pCertContext);
+	static dllhandle_t *crypt32;
+	static dllfunction_t crypt32funcs[] = {
+		{(void**)&pCertCreateContext,			"CertCreateContext"},
+		{(void**)&pCryptImportPublicKeyInfoEx2,	"CryptImportPublicKeyInfoEx2"},	//WARNING: fails on wine.
+		{(void**)&pCertFreeCertificateContext,	"CertFreeCertificateContext"},
+		{NULL,NULL}
+	};
+
+	static NTSTATUS (WINAPI *pBCryptVerifySignature) (BCRYPT_KEY_HANDLE hKey, VOID *pPaddingInfo, PUCHAR pbHash, ULONG cbHash, PUCHAR pbSignature, ULONG cbSignature, ULONG dwFlags);
+	static NTSTATUS (WINAPI *pBCryptDestroyKey) (BCRYPT_KEY_HANDLE hKey);
+	static dllhandle_t *bcrypt;
+	static dllfunction_t bcryptfuncs[] = {
+		{(void**)&pBCryptVerifySignature,		"BCryptVerifySignature"},
+		{(void**)&pBCryptDestroyKey,			"BCryptDestroyKey"},
+		{NULL,NULL}
+	};
+
+	if (!crypt32)
+		crypt32 = Sys_LoadLibrary("crypt32.dll", crypt32funcs);
+	if (!bcrypt)
+		bcrypt = Sys_LoadLibrary("bcrypt.dll", bcryptfuncs);
+	if (!crypt32 || !bcrypt)
+	{
+		Con_Printf("Unable to obtain required crypto functions\n");
+		return VH_UNSUPPORTED;
+	}
+
+	if (!pem)
+		return VH_AUTHORITY_UNKNOWN;	//no public cert/key for authority.
+	pem = strstr(pem, "-----BEGIN CERTIFICATE-----");
+	if (!pem)
+		return VH_UNSUPPORTED;	//not a pem
+	pem += strlen("-----BEGIN CERTIFICATE-----");
+	pemend = strstr(pem, "-----END CERTIFICATE-----");
+	if (!pemend)
+		return VH_UNSUPPORTED;
+	dersize = Base64_DecodeBlock(pem, pemend, NULL, 0);	//guess
+	der = alloca(dersize);
+	dersize = Base64_DecodeBlock(pem, pemend, der, dersize);
+	//okay, now its in binary der format.
+
+	//make sense of the cert and pull out its public key...
+	{
+		const CERT_CONTEXT* cert = pCertCreateContext(CERT_STORE_CERTIFICATE_CONTEXT, X509_ASN_ENCODING, der, dersize, 0, NULL);
+		if (!pCryptImportPublicKeyInfoEx2(X509_ASN_ENCODING, &cert->pCertInfo->SubjectPublicKeyInfo, 0, NULL, &pubkey))
+            return VH_UNSUPPORTED;
+        pCertFreeCertificateContext(cert);
+	}
+
+	//yay, now we can do what we actually wanted in the first place.
+	status = pBCryptVerifySignature(pubkey, NULL, hashdata, hashsize, signdata, signsize, 0);
+	pBCryptDestroyKey(pubkey);
+	if (status == STATUS_SUCCESS)
+		return VH_CORRECT;		//its okay
+	else if (status == STATUS_INVALID_SIGNATURE)
+		return VH_INCORRECT;	//its bad
+	return VH_UNSUPPORTED;		//some weird transient error...?
+}
 
 #endif

@@ -21,6 +21,13 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 
+#ifdef __GNUC__
+	#define fte_weakstruct __attribute__((weak))
+#else
+	//msvc's uninitialised symbols are always weak, so this is fine.
+	#define fte_weakstruct
+#endif
+
 #ifdef CSQC_DAT
 //for sounds following csqc ents
 	#include "pr_common.h"
@@ -80,11 +87,18 @@ cvar_t volume					= CVARAFD(	"volume", "0.7", /*q3*/"s_volume",CVAR_ARCHIVE,
 
 cvar_t nosound					= CVARFD(	"nosound", "0", CVAR_ARCHIVE,
 											"Disable all sound from the engine. Cannot be overriden by configs or anything if set via the -nosound commandline argument.");
-cvar_t precache					= CVARAF(	"s_precache", "1",
+cvar_t snd_precache				= CVARAF(	"s_precache", "1",
 											"precache", 0);
-cvar_t loadas8bit				= CVARAFD(	"s_loadas8bit", "0",
+cvar_t snd_loadas8bit			= CVARAFD(	"s_loadas8bit", "0",
 											"loadas8bit", CVAR_ARCHIVE,
-											"Downsample sounds on load as lower quality 8-bit sound.");
+											"Downsample sounds on load as lower quality 8-bit sound, to save memory.");
+#ifdef FTE_TARGET_WEB
+cvar_t snd_loadasstereo			= CVARD(	"snd_loadasstereo", "1",
+											"Force mono sounds to load as if stereo ones, to waste memory. Used to work around stupid browser bugs.");
+#else
+cvar_t snd_loadasstereo			= CVARD(	"snd_loadasstereo", "0",
+											"Force mono sounds to load as if stereo ones, to waste memory. Not normally useful.");
+#endif
 cvar_t ambient_level			= CVARAFD(	"s_ambientlevel", "0.3",
 											"ambient_level", CVAR_ARCHIVE,
 											"This controls the volume levels of automatic area-based sounds (like water or sky), and is quite annoying. If you're playing deathmatch you'll definitely want this OFF.");
@@ -133,6 +147,7 @@ cvar_t snd_doppler_max			= CVARAFD(	"s_doppler_max", "2",
 cvar_t snd_playbackrate			= CVARFD(	"snd_playbackrate", "1", CVAR_CHEAT, "Debugging cvar that changes the playback rate of all new sounds.");
 cvar_t snd_ignoregamespeed		= CVARFD(	"snd_ignoregamespeed", "0", 0, "When set, allows sounds to desynchronise with game time or demo speeds.");
 
+cvar_t snd_ignorecueloops		= CVARD(	"snd_ignorecueloops", "0", "Ignores cue commands in wav files, for q3 compat.");
 cvar_t snd_linearresample		= CVARAF(	"s_linearresample", "1",
 											"snd_linearresample", 0);
 cvar_t snd_linearresample_stream = CVARAF(	"s_linearresample_stream", "0",
@@ -553,13 +568,17 @@ static qboolean S_Speex_Init(void)
 #ifdef AVAIL_OPENAL
 extern snd_capture_driver_t OPENAL_Capture;
 #endif
-snd_capture_driver_t DSOUND_Capture;
-snd_capture_driver_t OSS_Capture;
-snd_capture_driver_t SDL_Capture;
+#ifdef _WIN32
+snd_capture_driver_t fte_weakstruct DSOUND_Capture;
+#endif
+snd_capture_driver_t fte_weakstruct OSS_Capture;
+snd_capture_driver_t fte_weakstruct SDL_Capture;
 
 snd_capture_driver_t *capturedrivers[] =
 {
+#ifdef _WIN32
 	&DSOUND_Capture,
+#endif
 	&SDL_Capture,
 	&OSS_Capture,
 #ifdef AVAIL_OPENAL
@@ -1814,12 +1833,12 @@ extern sounddriver_t XAUDIO2_Output;
 #ifdef AVAIL_DSOUND
 extern sounddriver_t DSOUND_Output;
 #endif
-sounddriver_t SDL_Output;
+sounddriver_t fte_weakstruct SDL_Output;
 #ifdef __linux__
-sounddriver_t ALSA_Output;
-sounddriver_t Pulse_Output;
+extern sounddriver_t ALSA_Output;
+extern sounddriver_t Pulse_Output;
 #endif
-sounddriver_t OSS_Output;
+sounddriver_t fte_weakstruct OSS_Output;
 #ifdef AVAIL_OPENAL
 extern sounddriver_t OPENAL_Output;
 #endif
@@ -1831,19 +1850,19 @@ extern sounddriver_t WaveOut_Output;
 #endif
 
 #ifdef MACOSX
-sounddriver_t MacOS_AudioOutput;	//prefered on mac
+sounddriver_t fte_weakstruct MacOS_AudioOutput;	//prefered on mac
 #endif
 #ifdef ANDROID
-sounddriver_t OSL_Output;			//general audio library, but android has all kinds of quirks.
-sounddriver_t Droid_AudioOutput;
+sounddriver_t fte_weakstruct OSL_Output;			//general audio library, but android has all kinds of quirks.
+sounddriver_t fte_weakstruct Droid_AudioOutput;
 #endif
 #if defined(__MORPHOS__)
-sounddriver_t AHI_AudioOutput;		//prefered on morphos
+sounddriver_t fte_weakstruct AHI_AudioOutput;		//prefered on morphos
 #endif
 #ifdef NACL
 extern sounddriver_t PPAPI_AudioOutput;	//nacl
 #endif
-sounddriver_t SNDIO_AudioOutput;	//bsd
+sounddriver_t fte_weakstruct SNDIO_AudioOutput;	//bsd
 
 //in order of preference
 static sounddriver_t *outputdrivers[] =
@@ -1864,11 +1883,15 @@ static sounddriver_t *outputdrivers[] =
 #endif
 
 	&SDL_Output,		//prefered on linux. distros can ensure that its configured correctly.
-#ifdef __linux__
+#ifdef AUDIO_PULSE
 	&Pulse_Output,		//wasteful, and availability generally means Alsa is broken/defective.
+#endif
+#ifdef AUDIO_ALSA
 	&ALSA_Output,		//pure shite, and availability generally means OSS is broken/defective.
 #endif
+#ifdef AUDIO_OSS
 	&OSS_Output,		//good for low latency audio, but not likely to work any more on linux (unlike every other unix system with a decent opengl driver)
+#endif
 #ifdef __DJGPP__
 	&SBLASTER_Output,	//zomgwtfdos?
 #endif
@@ -2291,8 +2314,9 @@ void S_Init (void)
 	Cvar_Register(&nosound,				"Sound controls");
 	Cvar_Register(&mastervolume,		"Sound controls");
 	Cvar_Register(&volume,				"Sound controls");
-	Cvar_Register(&precache,			"Sound controls");
-	Cvar_Register(&loadas8bit,			"Sound controls");
+	Cvar_Register(&snd_precache,		"Sound controls");
+	Cvar_Register(&snd_loadas8bit,		"Sound controls");
+	Cvar_Register(&snd_loadasstereo,	"Sound controls");
 	Cvar_Register(&bgmvolume,			"Sound controls");
 	Cvar_Register(&snd_nominaldistance,	"Sound controls");
 	Cvar_Register(&ambient_level,		"Sound controls");
@@ -2321,6 +2345,7 @@ void S_Init (void)
 	Cvar_Register(&snd_device,		"Sound controls");
 	Cvar_Register(&snd_device_opts,		"Sound controls");
 
+	Cvar_Register(&snd_ignorecueloops, "Sound controls");
 	Cvar_Register(&snd_linearresample, "Sound controls");
 	Cvar_Register(&snd_linearresample_stream, "Sound controls");
 
@@ -2580,7 +2605,7 @@ sfx_t *S_PrecacheSound2 (const char *name, qboolean syspath)
 	sfx = S_FindName (name, true, syspath);
 
 // cache it in
-	if (precache.ival && sndcardinfo)
+	if (snd_precache.ival && snd_precache.ival != 2 && sndcardinfo)
 		S_LoadSound (sfx, true);
 
 	return sfx;
@@ -2832,8 +2857,9 @@ static void SND_Spatialize(soundcardinfo_t *sc, channel_t *ch)
 		scale = 1;
 		scale = (1.0 - dist) * scale;
 		v = ch->master_vol * scale * volscale;
+		v = bound(0, v, 255);
 		for (i = 0; i < sc->sn.numchannels; i++)
-			ch->vol[i] = bound(0, v, 255);
+			ch->vol[i] = v;
 		return;
 	}
 
@@ -2865,7 +2891,8 @@ static void SND_Spatialize(soundcardinfo_t *sc, channel_t *ch)
 		scale = 1 + DotProduct(listener_vec, sc->speakerdir[i]);
 		scale = (1.0 - dist) * scale * sc->dist[i];
 		v = ch->master_vol * scale * volscale;
-		ch->vol[i] = bound(0, v, 255);
+		v = bound(0, v, 255);
+		ch->vol[i] = v;
 	}
 }
 
@@ -3156,18 +3183,30 @@ float S_GetChannelLevel(int entnum, int entchannel)
 				{
 					spos -= scache->soundoffset;
 					spos *= scache->numchannels;
-					switch(scache->width)
+					switch(scache->format)
 					{
-					case 1:
+#ifdef FTE_TARGET_WEB
+					case QAF_BLOB:
+						result = 0;	//sorry. you're going to have to use .wav :(
+						break;
+#endif
+					case QAF_S8:
 						for (j = 0; j < scache->numchannels; j++)	//average the channels
 							result += abs(((signed char*)scache->data)[spos+j]);
 						result /= scache->numchannels*127.0;
 						break;
-					case 2:
+					case QAF_S16:
 						for (j = 0; j < scache->numchannels; j++)	//average the channels
 							result += abs(((signed short*)scache->data)[spos+j]);
 						result /= scache->numchannels*32767.0;
 						break;
+#ifdef MIXER_F32
+					case QAF_F32:
+						for (j = 0; j < scache->numchannels; j++)	//average the channels
+							result += fabs(((float*)scache->data)[spos+j]);
+						result /= scache->numchannels;
+						break;
+#endif
 					}
 				}
 				else
@@ -3440,18 +3479,27 @@ void S_UpdateAmbientSounds (soundcardinfo_t *sc)
 		if (!chan->sfx)
 		{
 			float time = 0;
-			sfx_t *newmusic = Media_NextTrack(i-MUSIC_FIRST, &time);
-			if (newmusic && newmusic->loadstate != SLS_FAILED)
+			sfx_t *newmusic;
+			if (!S_Music_Playing(i-MUSIC_FIRST))
 			{
-				chan->sfx = newmusic;
-				chan->rate = 1<<PITCHSHIFT;
-				chan->pos = (int)(time * sc->sn.speed) * chan->rate;
-				changed = CUR_EVERYTHING;
+				newmusic = Media_NextTrack(i-MUSIC_FIRST, &time);
+				if (newmusic && newmusic->loadstate != SLS_FAILED)
+				{	//okay, now we know which track we're meant to be playing, all devices can play it at once.
+					soundcardinfo_t *sc2;
+					for (sc2 = sndcardinfo; sc2; sc2=sc2->next)
+					{
+						channel_t	*chan = &sc2->channel[i];
+						chan->sfx = newmusic;
+						chan->rate = 1<<PITCHSHIFT;
+						chan->pos = (int)(time * sc->sn.speed) * chan->rate;
+						changed = CUR_EVERYTHING;
 
-				chan->master_vol = bound(0, 1, 255);
-				chan->vol[0] = chan->vol[1] = chan->vol[2] = chan->vol[3] = chan->vol[4] = chan->vol[5] = chan->master_vol;
-				if (sc->ChannelUpdate)
-					sc->ChannelUpdate(sc, chan, changed);
+						chan->master_vol = bound(0, 1, 255);
+						chan->vol[0] = chan->vol[1] = chan->vol[2] = chan->vol[3] = chan->vol[4] = chan->vol[5] = chan->master_vol;
+						if (sc->ChannelUpdate)
+							sc->ChannelUpdate(sc, chan, changed);
+					}
+				}
 			}
 		}
 		if (chan->sfx)
@@ -4105,14 +4153,14 @@ void S_SoundList_f(void)
 			Con_Printf("?(      )            : %s\n", sfx->name);
 			continue;
 		}
-		size = (sc->soundoffset+sc->length)*sc->width*(sc->numchannels);
+		size = (sc->soundoffset+sc->length)*QAF_BYTES(sc->format)*(sc->numchannels);
 		duration = (sc->soundoffset+sc->length) / sc->speed;
 		total += size;
 		if (sfx->loopstart >= 0)
 			Con_Printf ("L");
 		else
 			Con_Printf (" ");
-		Con_Printf("(%2db%2ic) %6i %2is : %s\n",sc->width*8, sc->numchannels, size, duration, sfx->name);
+		Con_Printf("(%2db%2ic) %6i %2is : %s\n",QAF_BYTES(sc->format)*8, sc->numchannels, size, duration, sfx->name);
 	}
 	Con_Printf ("Total resident: %i\n", total);
 
@@ -4160,7 +4208,7 @@ typedef struct {
 	sfx_t *sfx;
 
 	int numchannels;
-	int width;
+	qaudiofmt_t format;
 	int length;
 	void *data;
 } streaming_t;
@@ -4183,7 +4231,7 @@ sfxcache_t *QDECL S_Raw_Locate(sfx_t *sfx, sfxcache_t *buf, ssamplepos_t start, 
 		buf->numchannels = s->numchannels;
 		buf->soundoffset = 0;
 		buf->speed = snd_speed;
-		buf->width = s->width;
+		buf->format = s->format;
 	}
 	if (start >= s->length)
 		return NULL;	//eof...
@@ -4207,7 +4255,7 @@ void QDECL S_Raw_Purge(sfx_t *sfx)
 }
 
 //streaming audio.	//this is useful when there is one source, and the sound is to be played with no attenuation
-void S_RawAudio(int sourceid, qbyte *data, int speed, int samples, int channels, int width, float volume)
+void S_RawAudio(int sourceid, qbyte *data, int speed, int samples, int channels, qaudiofmt_t format, float volume)
 {
 	soundcardinfo_t *si;
 	int i;
@@ -4273,7 +4321,7 @@ void S_RawAudio(int sourceid, qbyte *data, int speed, int samples, int channels,
 		s->sfx->loadstate = SLS_LOADED;
 
 		s->numchannels = channels;
-		s->width = width;
+		s->format = format;
 		s->data = NULL;
 		s->length = 0;
 
@@ -4283,9 +4331,9 @@ void S_RawAudio(int sourceid, qbyte *data, int speed, int samples, int channels,
 	}
 	S_LockMixer();
 
-	if (s->width != width || s->numchannels != channels)
+	if (s->format != format || s->numchannels != channels)
 	{
-		s->width = width;
+		s->format = format;
 		s->numchannels = channels;
 		s->length = 0;
 		Con_Printf("Restarting raw stream\n");
@@ -4333,8 +4381,8 @@ void S_RawAudio(int sourceid, qbyte *data, int speed, int samples, int channels,
 		}
 	}
 
-	newcache = BZ_Malloc((spare+outsamples) * (s->numchannels) * s->width);
-	memcpy(newcache, (qbyte*)s->data + prepadl * (s->numchannels) * s->width, spare * (s->numchannels) * s->width);
+	newcache = BZ_Malloc((spare+outsamples) * (s->numchannels) * QAF_BYTES(s->format));
+	memcpy(newcache, (qbyte*)s->data + prepadl * (s->numchannels) * QAF_BYTES(s->format), spare * (s->numchannels) * QAF_BYTES(s->format));
 
 	BZ_Free(s->data);
 	s->data = newcache;
@@ -4343,15 +4391,15 @@ void S_RawAudio(int sourceid, qbyte *data, int speed, int samples, int channels,
 
 	{
 		extern cvar_t snd_linearresample_stream;
-		short *outpos = (short *)((char*)s->data + spare * (s->numchannels) * s->width);
+		short *outpos = (short *)((char*)s->data + spare * (s->numchannels) * QAF_BYTES(s->format));
 		SND_ResampleStream(data,
 			speed,
-			width,
+			format,
 			channels,
 			samples,
 			outpos,
 			snd_speed,
-			s->width,
+			s->format,
 			s->numchannels,
 			snd_linearresample_stream.ival);
 	}

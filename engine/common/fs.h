@@ -78,9 +78,18 @@ unsigned int PM_MarkUpdates (void);	//mark new/updated packages as needing insta
 void PM_ApplyChanges(void);	//for -install/-doinstall args
 void PM_ManifestPackage(const char *name, int security);
 qboolean PM_FindUpdatedEngine(char *syspath, size_t syspathsize);	//names the engine we should be running
+void PM_AddManifestPackages(ftemanifest_t *man);
 void Menu_Download_Update(void);
 
 int FS_EnumerateKnownGames(qboolean (*callback)(void *usr, ftemanifest_t *man), void *usr);
+
+struct modlist_s
+{
+	ftemanifest_t *manifest;
+	char *gamedir;
+	char *description;
+};
+struct modlist_s *Mods_GetMod(size_t diridx);
 
 #define SPF_REFERENCED		1	//something has been loaded from this path. should filter out client references...
 #define SPF_COPYPROTECTED	2	//downloads are not allowed fom here.
@@ -90,6 +99,7 @@ int FS_EnumerateKnownGames(qboolean (*callback)(void *usr, ftemanifest_t *man), 
 #define SPF_PRIVATE			32	//private to the client. ie: the fte dir. name is not networked.
 #define SPF_WRITABLE		64	//safe to write here. lots of weird rules etc.
 #define SPF_BASEPATH		128	//part of the basegames, and not the mod gamedir(s).
+#define SPF_QSHACK			256	//part of the basegames, and not the mod gamedir(s).
 qboolean FS_LoadPackageFromFile(vfsfile_t *vfs, char *pname, char *localname, int *crc, unsigned int flags);
 
 #ifdef AVAIL_XZDEC

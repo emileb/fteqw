@@ -35,12 +35,12 @@ static cvar_t	cl_movement = CVARD("cl_movement","1", "Specifies whether to send 
 cvar_t	cl_nodelta = CVAR("cl_nodelta","0");
 
 cvar_t	cl_c2sdupe = CVAR("cl_c2sdupe", "0");
-cvar_t	cl_c2spps = CVAR("cl_c2spps", "0");
-cvar_t	cl_c2sImpulseBackup = CVAR("cl_c2sImpulseBackup","3");
-cvar_t	cl_netfps = CVAR("cl_netfps", "150");
-cvar_t	cl_sparemsec = CVARC("cl_sparemsec", "10", CL_SpareMsec_Callback);
-cvar_t  cl_queueimpulses = CVAR("cl_queueimpulses", "0");
-cvar_t	cl_smartjump = CVAR("cl_smartjump", "1");
+cvar_t	cl_c2spps = CVARD("cl_c2spps", "0", "Reduces outgoing packet rates by dropping up to a third of outgoing packets.");
+cvar_t	cl_c2sImpulseBackup = CVARD("cl_c2sImpulseBackup","3", "Prevents the cl_c2spps setting from dropping redundant packets that contain impulses, in an attempt to keep impulses more reliable.");
+cvar_t	cl_netfps = CVARD("cl_netfps", "150", "Send up to this many packets to the server per second. The rate used is also limited by the server which usually forces a cap to this setting of 77. Low packet rates can result in extra extrapolation to try to hide the resulting latencies.");
+cvar_t	cl_sparemsec = CVARCD("cl_sparemsec", "10", CL_SpareMsec_Callback, "Allows the 'banking' of a little extra time, so that one slow frame will not delay the timing of the following frame so much.");
+cvar_t  cl_queueimpulses = CVARD("cl_queueimpulses", "0", "Queues unsent impulses instead of replacing them. This avoids the need for extra wait commands (and the timing issues of such commands), but potentially increases latency and can cause scripts to be desynced with regard to buttons and impulses.");
+cvar_t	cl_smartjump = CVARD("cl_smartjump", "1", "Makes the jump button act as +moveup when in water. This is typically quieter and faster.");
 cvar_t	cl_iDrive = CVARFD("cl_iDrive", "1", CVAR_SEMICHEAT, "Effectively releases movement keys when the opposing key is pressed. This avoids dead-time when both keys are pressed. This can be emulated with various scripts, but that's messy.");
 cvar_t	cl_run = CVARD("cl_run", "0", "Enables autorun, inverting the state of the +speed key.");
 cvar_t	cl_fastaccel = CVARD("cl_fastaccel", "1", "Begin moving at full speed instantly, instead of waiting a frame or so.");
@@ -155,6 +155,26 @@ static kbutton_t	in_button[19+1];
 static int			in_impulse[MAX_SPLITS][IN_IMPULSECACHE];
 static int			in_nextimpulse[MAX_SPLITS];
 static int			in_impulsespending[MAX_SPLITS];
+static void CL_QueueImpulse (int pnum, int newimp)
+{
+	if (cl_queueimpulses.ival)
+	{
+		if (in_impulsespending[pnum]>=IN_IMPULSECACHE)
+		{
+			Con_Printf("Too many impulses, ignoring %i\n", newimp);
+			return;
+		}
+		in_impulse[pnum][(in_nextimpulse[pnum]+in_impulsespending[pnum])%IN_IMPULSECACHE] = newimp;
+		in_impulsespending[pnum]++;
+	}
+	else
+	{
+		if (in_impulsespending[pnum])
+			Con_DPrintf("Too many impulses, forgetting %i\n", in_impulse[pnum][(in_nextimpulse[pnum])%IN_IMPULSECACHE]);
+		in_impulse[pnum][(in_nextimpulse[pnum])%IN_IMPULSECACHE] = newimp;
+		in_impulsespending[pnum]=1;
+	}
+}
 
 qboolean	cursor_active;
 
@@ -349,10 +369,7 @@ static void IN_DoPostSelect(void)
 		int pnum = CL_TargettedSplit(false);
 		int best = IN_BestWeapon_Pre(pnum);
 		if (best)
-		{
-			in_impulse[pnum][(in_nextimpulse[pnum])%IN_IMPULSECACHE] = best;
-			in_impulsespending[pnum]=1;
-		}
+			CL_QueueImpulse(pnum, best);
 	}
 }
 //The weapon command autoselects a prioritised weapon like multi-arg impulse does.
@@ -391,21 +408,7 @@ void IN_Weapon (void)
 	if (mode == 2 && !(in_attack.state[pnum]&3))
 		return;	//2 changes instantly only when already firing.
 
-	if (cl_queueimpulses.ival)
-	{
-		if (in_impulsespending[pnum]>=IN_IMPULSECACHE)
-		{
-			Con_Printf("Too many impulses, ignoring %i\n", newimp);
-			return;
-		}
-		in_impulse[pnum][(in_nextimpulse[pnum]+in_impulsespending[pnum])%IN_IMPULSECACHE] = newimp;
-		in_impulsespending[pnum]++;
-	}
-	else
-	{
-		in_impulse[pnum][(in_nextimpulse[pnum])%IN_IMPULSECACHE] = newimp;
-		in_impulsespending[pnum]=1;
-	}
+	CL_QueueImpulse(pnum, newimp);
 }
 
 //+fire 8 7 [keycode]
@@ -425,10 +428,7 @@ void IN_FireDown(void)
 
 	impulse = IN_BestWeapon_Args(pnum, 1, impulse);
 	if (impulse)
-	{
-		in_impulse[pnum][(in_nextimpulse[pnum])%IN_IMPULSECACHE] = impulse;
-		in_impulsespending[pnum]=1;
-	}
+		CL_QueueImpulse(pnum, impulse);
 	else
 		IN_DoPostSelect();
 
@@ -452,8 +452,7 @@ static void IN_DoWeaponHide(void)
 		}
 		if (best)
 		{	//looks like we're switching away
-			in_impulse[pnum][(in_nextimpulse[pnum])%IN_IMPULSECACHE] = best;
-			in_impulsespending[pnum]=1;
+			CL_QueueImpulse(pnum, best);
 		}
 	}
 }
@@ -656,22 +655,7 @@ void IN_Impulse (void)
 	}
 #endif
 
-	if (in_impulsespending[pnum]>=IN_IMPULSECACHE)
-	{
-		Con_Printf("Too many impulses, ignoring %i\n", newimp);
-		return;
-	}
-
-	if (cl_queueimpulses.ival)
-	{
-		in_impulse[pnum][(in_nextimpulse[pnum]+in_impulsespending[pnum])%IN_IMPULSECACHE] = newimp;
-		in_impulsespending[pnum]++;
-	}
-	else
-	{
-		in_impulse[pnum][(in_nextimpulse[pnum])%IN_IMPULSECACHE] = newimp;
-		in_impulsespending[pnum]=1;
-	}
+	CL_QueueImpulse(pnum, newimp);
 }
 
 void IN_Restart (void)
@@ -1182,9 +1166,9 @@ static void CL_FinishMove (usercmd_t *cmd, int pnum)
 
 	if (in_impulsespending[pnum] && !cl.paused)
 	{
+		cmd->impulse = in_impulse[pnum][(in_nextimpulse[pnum])%IN_IMPULSECACHE];
 		in_nextimpulse[pnum]++;
 		in_impulsespending[pnum]--;
-		cmd->impulse = in_impulse[pnum][(in_nextimpulse[pnum]-1)%IN_IMPULSECACHE];
 	}
 	else
 		cmd->impulse = 0;
@@ -1620,12 +1604,13 @@ void CL_UseIndepPhysics(qboolean allow)
 	}
 	else
 	{
+		CL_AllowIndependantSendCmd(true);
 		//shut it down.
 		runningindepphys = false;	//tell thread to exit gracefully
-		Sys_LockMutex(indeplock);
 		Sys_WaitOnThread(indepthread);
-		Sys_UnlockMutex(indeplock);
+		indepthread = NULL;
 		Sys_DestroyMutex(indeplock);
+		indeplock = NULL;
 	}
 }
 #else
@@ -2296,7 +2281,7 @@ void CL_SendCmd (double frametime, qboolean mainloop)
 		cl_pendingcmd[plnum].upmove += mousemovements[2];
 #endif
 
-		if (!cl_pendingcmd[plnum].msec)
+		if (!cl_pendingcmd[plnum].msec && framemsecs)
 		{
 			CL_FinishMove(&cl_pendingcmd[plnum], plnum);
 			Cbuf_Waited();	//its okay to stop waiting now

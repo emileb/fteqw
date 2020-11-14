@@ -37,7 +37,8 @@
 //#define Q3SURF_DUST			0x00040000
 cvar_t q3bsp_surf_meshcollision_flag = CVARD("q3bsp_surf_meshcollision_flag", "0x80000000", "The surfaceparm flag(s) that enables q3bsp trisoup collision");
 cvar_t q3bsp_surf_meshcollision_force = CVARD("q3bsp_surf_meshcollision_force", "0", "Force mesh-based collisions on all q3bsp trisoup surfaces.");
-cvar_t q3bsp_mergeq3lightmaps = CVARD("q3bsp_mergedlightmaps", "16", "Specifies the maximum number of lightmaps that may be merged for performance reasons. Unfortunately this breaks tcgen on lightmap passes - if you care, set this to 1.");
+cvar_t q3bsp_mergeq3lightmaps = CVARD("q3bsp_mergelightmaps", "1", "Specifies whether to merge lightmaps into atlases in order to boost performance. Unfortunately this breaks tcgen on lightmap passes - if you care, set this to 0.");
+cvar_t q3bsp_ignorestyles = CVARD("q3bsp_ignorestyles", "0", "Ignores multiple lightstyles in Raven's q3bsp variant(and derivatives) for better batch/rendering performance.");
 cvar_t q3bsp_bihtraces = CVARFD("_q3bsp_bihtraces", "0", CVAR_RENDERERLATCH, "Uses runtime-generated bih collision culling for faster traces.");
 
 #if Q3SURF_NODRAW != TI_NODRAW
@@ -360,6 +361,7 @@ typedef struct cminfo_s
 	q2dvis_t		*q2vis;
 	q3dvis_t		*q3pvs;
 	q3dvis_t		*q3phs;
+	qbyte			*phscalced;
 
 	int				numareas;
 	int				floodvalid;
@@ -1322,9 +1324,11 @@ static texture_t *Mod_LoadWall(model_t *loadmodel, char *mapname, char *texname,
 		wal->width = 64;
 		wal->height = 64;
 	}
-
-	wal->width = LittleLong(wal->width);
-	wal->height = LittleLong(wal->height);
+	else
+	{
+		wal->width = LittleLong(wal->width);
+		wal->height = LittleLong(wal->height);
+	}
 	{
 		int i;
 
@@ -1338,10 +1342,10 @@ static texture_t *Mod_LoadWall(model_t *loadmodel, char *mapname, char *texname,
 
 	tex = ZG_Malloc(&loadmodel->memgroup, sizeof(texture_t));
 
-	tex->width = wal->width;
-	tex->height = wal->height;
+	tex->vwidth = tex->srcwidth = wal->width;
+	tex->vheight = tex->srcheight = wal->height;
 
-	if (!tex->width || !tex->height || wal == &replacementwal)
+	if (!tex->vwidth || !tex->vheight || wal == &replacementwal)
 	{
 		imageflags |= IF_LOADNOW;	//make sure the size is known BEFORE it returns.
 		if (wal->offsets[0])
@@ -1358,8 +1362,8 @@ static texture_t *Mod_LoadWall(model_t *loadmodel, char *mapname, char *texname,
 		{
 			if (base->status == TEX_LOADED||base->status==TEX_LOADING)
 			{
-				tex->width = base->width;
-				tex->height = base->height;
+				tex->vwidth = base->width;
+				tex->vheight = base->height;
 			}
 			else
 				Con_Printf("Unable to load textures/%s.wal\n", wal->name);
@@ -1368,21 +1372,24 @@ static texture_t *Mod_LoadWall(model_t *loadmodel, char *mapname, char *texname,
 	}
 	else
 	{
+		qbyte *out;
 		unsigned int size = 
 		(wal->width>>0)*(wal->height>>0) +
 		(wal->width>>1)*(wal->height>>1) +
 		(wal->width>>2)*(wal->height>>2) +
 		(wal->width>>3)*(wal->height>>3);
 
-		tex->mips[0] = BZ_Malloc(size);
+		tex->srcdata = out = BZ_Malloc(size);
+		tex->srcfmt = TF_MIP4_8PAL24_T255;
 		tex->palette = host_basepal;
-		tex->mips[1] = tex->mips[0] + (wal->width>>0)*(wal->height>>0);
-		tex->mips[2] = tex->mips[1] + (wal->width>>1)*(wal->height>>1);
-		tex->mips[3] = tex->mips[2] + (wal->width>>2)*(wal->height>>2);
-		memcpy(tex->mips[0], (qbyte *)wal + wal->offsets[0], (wal->width>>0)*(wal->height>>0));
-		memcpy(tex->mips[1], (qbyte *)wal + wal->offsets[1], (wal->width>>1)*(wal->height>>1));
-		memcpy(tex->mips[2], (qbyte *)wal + wal->offsets[2], (wal->width>>2)*(wal->height>>2));
-		memcpy(tex->mips[3], (qbyte *)wal + wal->offsets[3], (wal->width>>3)*(wal->height>>3));
+		memcpy(out, (qbyte *)wal + wal->offsets[0], (wal->width>>0)*(wal->height>>0));
+		out += (wal->width>>0)*(wal->height>>0);
+		memcpy(out, (qbyte *)wal + wal->offsets[1], (wal->width>>1)*(wal->height>>1));
+		out += (wal->width>>1)*(wal->height>>1);
+		memcpy(out, (qbyte *)wal + wal->offsets[2], (wal->width>>2)*(wal->height>>2));
+		out += (wal->width>>2)*(wal->height>>2);
+		memcpy(out, (qbyte *)wal + wal->offsets[3], (wal->width>>3)*(wal->height>>3));
+		out += (wal->width>>3)*(wal->height>>3);
 
 		BZ_Free(wal);
 	}
@@ -1476,7 +1483,7 @@ static qboolean CModQ2_LoadTexInfo (model_t *mod, qbyte *mod_base, lump_t *l, ch
 					*lwr = *lwr - 'A' + 'a';
 			}
 			out->texture = Mod_LoadWall (mod, mapname, in->texture, sname, (out->flags&TEX_SPECIAL)?0:IF_NOALPHA);
-			if (!out->texture || !out->texture->width || !out->texture->height)
+			if (!out->texture || !out->texture->srcwidth || !out->texture->srcheight)
 			{
 				out->texture = ZG_Malloc(&mod->memgroup, sizeof(texture_t) + 16*16+8*8+4*4+2*2);
 
@@ -1694,7 +1701,7 @@ static qboolean CModQ2_LoadFaces (model_t *mod, qbyte *mod_base, lump_t *l, lump
 				out->styles[i] = style;
 			}
 		}
-		for ( ; i<MAXQ1LIGHTMAPS ; i++)
+		for ( ; i<MAXCPULIGHTMAPS ; i++)
 			out->styles[i] = INVALID_LIGHTSTYLE;
 		if (overrides.offsets)
 			i = overrides.offsets[surfnum];
@@ -2251,6 +2258,9 @@ static qboolean CModQ3_LoadSubmodels (model_t *mod, qbyte *mod_base, lump_t *l)
 		}
 		out->firstsurface = LittleLong (in->firstsurface);
 		out->numsurfaces = LittleLong (in->num_surfaces);
+
+		out->firstbrush = LittleLong(in->firstbrush);
+		out->num_brushes = LittleLong(in->num_brushes);
 		if (!i)
 		{
 			out->headnode = mod->nodes;
@@ -2261,9 +2271,6 @@ static qboolean CModQ3_LoadSubmodels (model_t *mod, qbyte *mod_base, lump_t *l)
 //create a new leaf to hold the brushes and be directly clipped
 			out->headleaf = bleaf;
 			out->headnode = NULL;
-
-//			out->firstbrush = LittleLong(in->firstbrush);
-//			out->num_brushes = LittleLong(in->num_brushes);
 
 			bleaf->numleafbrushes = LittleLong ( in->num_brushes );
 			bleaf->firstleafbrush = prv->numleafbrushes;
@@ -2474,11 +2481,11 @@ static qboolean CModRBSP_LoadVertexes (model_t *mod, qbyte *mod_base, lump_t *l)
 		}
 		for ( j=0 ; j < 2 ; j++)
 		{
-			stout[i][j] = LittleFloat ( ((float *)in->texcoords)[j] );
-			for (sty = 0; sty < MAXRLIGHTMAPS; sty++)
-				prv->vertlstmexcoords[sty][i][j] = LittleFloat ( ((float *)in->texcoords)[j+2*(sty+1)] );
+			stout[i][j] = LittleFloat (in->stcoords[j]);
+			for (sty = 0; sty < min(MAXRLIGHTMAPS, RBSP_STYLESPERSURF); sty++)
+				prv->vertlstmexcoords[sty][i][j] = LittleFloat(in->lmtexcoords[sty][j]);
 		}
-		for (sty = 0; sty < MAXRLIGHTMAPS; sty++)
+		for (sty = 0; sty < min(MAXRLIGHTMAPS, RBSP_STYLESPERSURF); sty++)
 		{
 			prv->colors4f_array[sty][i][0] = lmgamma[in->color[sty][0]]/255.0f;
 			prv->colors4f_array[sty][i][1] = lmgamma[in->color[sty][1]]/255.0f;
@@ -3017,6 +3024,10 @@ static void CModRBSP_BuildSurfMesh(model_t *mod, msurface_t *out, builddata_t *b
 	{
 		GL_CreateMeshForPatch(mod, out->mesh, LittleLong(in->patchwidth), LittleLong(in->patchheight), LittleLong(in->num_vertices), LittleLong(in->firstvertex));
 	}
+	else if (LittleLong(in->facetype) == MST_PATCH_FIXED)
+	{
+		GL_CreateMeshForPatchFixed(mod, out->mesh, LittleLong(in->patchwidth), LittleLong(in->patchheight), LittleLong(in->num_vertices), LittleLong(in->firstvertex));
+	}
 	else if (LittleLong(in->facetype) == MST_PLANAR || LittleLong(in->facetype) == MST_TRIANGLE_SOUP)
 	{
 		unsigned int fv = LittleLong(in->firstvertex), i;
@@ -3197,17 +3208,17 @@ static qboolean CModQ3_LoadRFaces (model_t *mod, qbyte *mod_base, lump_t *l)
 		else if (out->lightmaptexturenums[0] < 0 /*|| facetype == MST_TRIANGLE_SOUP*/ || r_vertexlight.value)
 			out->texinfo += mod->numtexinfo;	//various surfaces use a different version of the same shader (with all the lightmaps collapsed)
 
-		out->light_s[0] = LittleLong(in->lightmap_x);
-		out->light_t[0] = LittleLong(in->lightmap_y);
+		out->light_s[0] = LittleLong(in->lightmap_offs[0]);
+		out->light_t[0] = LittleLong(in->lightmap_offs[1]);
 		out->styles[0] = INVALID_LIGHTSTYLE;
-		out->vlstyles[0] = 255;
+		out->vlstyles[0] = INVALID_VLIGHTSTYLE;
 		for (sty = 1; sty < MAXRLIGHTMAPS; sty++)
 		{
 			out->styles[sty] = INVALID_LIGHTSTYLE;
-			out->vlstyles[sty] = 255;
+			out->vlstyles[sty] = INVALID_VLIGHTSTYLE;
 			out->lightmaptexturenums[sty] = -1;
 		}
-		for (;  sty < MAXQ1LIGHTMAPS; sty++)
+		for (;  sty < MAXCPULIGHTMAPS; sty++)
 			out->styles[sty] = INVALID_LIGHTSTYLE;
 		out->lmshift = LMSHIFT_DEFAULT;
 		//fixme: determine texturemins from lightmap_origin
@@ -3294,6 +3305,8 @@ static qboolean CModRBSP_LoadRFaces (model_t *mod, qbyte *mod_base, lump_t *l)
 
 	mesh_t *mesh;
 
+	int maxstyle = q3bsp_ignorestyles.ival?1:min(MAXRLIGHTMAPS, RBSP_STYLESPERSURF);
+
 
 	in = (void *)(mod_base + l->fileofs);
 	if (l->filelen % sizeof(*in))
@@ -3314,18 +3327,26 @@ static qboolean CModRBSP_LoadRFaces (model_t *mod, qbyte *mod_base, lump_t *l)
 		out->plane = pl;
 		facetype = LittleLong(in->facetype);
 		out->texinfo = mod->texinfo + LittleLong(in->shadernum);
-		for (j = 0; j < 4 && j < MAXRLIGHTMAPS; j++)
+		for (j = 0; j < maxstyle; j++)
 		{
 			out->lightmaptexturenums[j] = LittleLong(in->lightmapnum[j]);
 			out->light_s[j] = LittleLong(in->lightmap_offs[0][j]);
 			out->light_t[j] = LittleLong(in->lightmap_offs[1][j]);
 			out->styles[j] = (in->lm_styles[j]!=255)?in->lm_styles[j]:INVALID_LIGHTSTYLE;
-			out->vlstyles[j] = in->vt_styles[j];
+			out->vlstyles[j] = (in->vt_styles[j]!=255)?in->vt_styles[j]:INVALID_VLIGHTSTYLE;
 
 			if (mod->lightmaps.count < out->lightmaptexturenums[j]+1)
 				mod->lightmaps.count = out->lightmaptexturenums[j]+1;
 		}
-		for (;  j < MAXQ1LIGHTMAPS; j++)
+		for (; j < MAXRLIGHTMAPS; j++)
+		{
+			out->lightmaptexturenums[j] = -1;
+			out->light_s[j] = 0;
+			out->light_t[j] = 0;
+			out->styles[j] = INVALID_LIGHTSTYLE;
+			out->vlstyles[j] = INVALID_VLIGHTSTYLE;
+		}
+		for (;  j < MAXCPULIGHTMAPS; j++)
 			out->styles[j] = INVALID_LIGHTSTYLE;
 		if (facetype == MST_FLARE)
 			out->texinfo = mod->texinfo + mod->numtexinfo*2;
@@ -3787,12 +3808,16 @@ static void CModQ3_LoadLighting (model_t *loadmodel, qbyte *mod_base, lump_t *l)
 	qbyte *in = mod_base + l->fileofs;
 	qbyte *out;
 	unsigned int samples = l->filelen;
-	int m, s;
-	int mapsize = loadmodel->lightmaps.width*loadmodel->lightmaps.height*3;
+	int m, s, t;
+	int mapstride = loadmodel->lightmaps.width*3;
+	int mapsize = mapstride*loadmodel->lightmaps.height;
 	int maps;
+	int merge;
+	int mergestride;
 
 	extern cvar_t gl_overbright;
-	extern qbyte lmgamma[256];
+	float scale = (1<<(2-gl_overbright.ival));
+
 	loadmodel->lightmaps.fmt = LM_L8;
 
 	//round up the samples, in case the last one is partial.
@@ -3803,7 +3828,8 @@ static void CModQ3_LoadLighting (model_t *loadmodel, qbyte *mod_base, lump_t *l)
 	gl_overbright.flags |= CVAR_RENDERERLATCH;
 	BuildLightMapGammaTable(1, (1<<(2-gl_overbright.ival)));
 
-	loadmodel->lightmaps.merge = 0;
+	loadmodel->lightmaps.mergew = 0;
+	loadmodel->lightmaps.mergeh = 0;
 
 	loadmodel->engineflags |= MDLF_NEEDOVERBRIGHT;
 
@@ -3816,11 +3842,28 @@ static void CModQ3_LoadLighting (model_t *loadmodel, qbyte *mod_base, lump_t *l)
 		maps /= 2;
 
 	{
-		int limit = min(sh_config.texture2d_maxsize / loadmodel->lightmaps.height, q3bsp_mergeq3lightmaps.ival);
-		loadmodel->lightmaps.merge = 1;
-		while (loadmodel->lightmaps.merge*2 <= limit && loadmodel->lightmaps.merge < maps)
-			loadmodel->lightmaps.merge *= 2;
+		int limitw = sh_config.texture2d_maxsize / loadmodel->lightmaps.width;
+		int limith = sh_config.texture2d_maxsize / loadmodel->lightmaps.height;
+		if (!q3bsp_mergeq3lightmaps.ival)
+		{
+			limitw = 1;
+			limith = 1;
+		}
+		loadmodel->lightmaps.mergeh = loadmodel->lightmaps.mergew = 1;
+		while (loadmodel->lightmaps.mergew*loadmodel->lightmaps.mergeh < maps)
+		{	//this could probably be smarter.
+			if (loadmodel->lightmaps.mergew*2 <= limitw && loadmodel->lightmaps.mergew < loadmodel->lightmaps.mergeh)
+				loadmodel->lightmaps.mergew *= 2;
+			else if (loadmodel->lightmaps.mergeh*2 <= limith)
+				loadmodel->lightmaps.mergeh *= 2;
+			else if (loadmodel->lightmaps.mergew*2 <= limitw)
+				loadmodel->lightmaps.mergew *= 2;
+			else
+				break;	//can't expand in either direction.
+		}
 	}
+	merge = loadmodel->lightmaps.mergew*loadmodel->lightmaps.mergeh;
+	mergestride = loadmodel->lightmaps.mergew*mapstride;
 
 	//q3bsp itself does not support deluxemapping.
 	//the way it works is by interleaving the data in lightmap+deluxemap pairs.
@@ -3833,16 +3876,19 @@ static void CModQ3_LoadLighting (model_t *loadmodel, qbyte *mod_base, lump_t *l)
 	//if we have deluxemapping data then we split it here. beware externals.
 	if (loadmodel->lightmaps.deluxemapping)
 	{
-		m = loadmodel->lightmaps.merge;
+		m = merge;
 		while (m < maps)
-			m += loadmodel->lightmaps.merge;
+			m += merge;
 		loadmodel->lightdata = ZG_Malloc(&loadmodel->memgroup, mapsize*m*2);
 		loadmodel->lightdatasize = mapsize*m*2;
 	}
 	else
 	{
-		loadmodel->lightdatasize = samples;
-		loadmodel->lightdata = ZG_Malloc(&loadmodel->memgroup, samples);
+		m = merge;
+		while (m < maps)
+			m += merge;
+		loadmodel->lightdata = ZG_Malloc(&loadmodel->memgroup, mapsize*m);
+		loadmodel->lightdatasize = mapsize*m;
 	}
 
 	if (!loadmodel->lightdata)
@@ -3854,57 +3900,65 @@ static void CModQ3_LoadLighting (model_t *loadmodel, qbyte *mod_base, lump_t *l)
 	{
 		out = loadmodel->lightdata;
 		//figure out which merged lightmap we're putting it into
-		out += (m/loadmodel->lightmaps.merge)*loadmodel->lightmaps.merge*mapsize * (loadmodel->lightmaps.deluxemapping?2:1);
+		out += (m/merge)*merge*mapsize * (loadmodel->lightmaps.deluxemapping?2:1);
 		//and the submap
-		out += (m%loadmodel->lightmaps.merge)*mapsize;
+		s = m%merge;
+		t = s/loadmodel->lightmaps.mergew;
+		s = s%loadmodel->lightmaps.mergew;
+		out += s*mapstride;
+		out += t*mergestride*loadmodel->lightmaps.height;
 
-#if 1
 		//q3bsp has 4-fold overbrights, so if we're not using overbrights then we basically need to scale the values up by 4
 		//this will require clamping, which can result in oversaturation of channels, meaning discolouration
-		for(s = 0; s < mapsize; )
+		for (t = 0; t < loadmodel->lightmaps.height; t++)
 		{
-			float scale = (1<<(2-gl_overbright.ival));
-			float i;
-			vec3_t l;
-			l[0] = *in++;
-			l[1] = *in++;
-			l[2] = *in++;
-			VectorScale(l, scale, l);		//it should be noted that this maths is wrong if you're trying to use srgb lightmaps.
-			i = max(l[0], max(l[1], l[2]));
-			if (i > 255)
-				VectorScale(l, 255/i, l);	//clamp the brightest channel, scaling the others down to retain chromiance.
-			out[s++] = l[0];
-			out[s++] = l[1];
-			out[s++] = l[2];
+			for (s = 0; s < loadmodel->lightmaps.width; s++)
+			{
+				float i;
+				vec3_t l;
+				l[0] = *in++;
+				l[1] = *in++;
+				l[2] = *in++;
+				VectorScale(l, scale, l);		//it should be noted that this maths is wrong if you're trying to use srgb lightmaps.
+				i = max(l[0], max(l[1], l[2]));
+				if (i > 255)
+					VectorScale(l, 255/i, l);	//clamp the brightest channel, scaling the others down to retain chromiance.
+				*out++ = l[0];
+				*out++ = l[1];
+				*out++ = l[2];
+			}
+			out += mergestride-mapstride;
 		}
-#else
-		for(s = 0; s < mapsize; s++)
-			out[s] = lmgamma[*in++];
-#endif
+
 		if (r_lightmap_saturation.value != 1.0f)
 			SaturateR8G8B8(out, mapsize, r_lightmap_saturation.value);
 		
 		if (loadmodel->lightmaps.deluxemapping)
 		{
-			out+= loadmodel->lightmaps.merge*mapsize;
+			out -= mergestride*loadmodel->lightmaps.height;
+			out += merge*mapsize;
 
 			//no gamma for deluxemap
-			for(s = 0; s < mapsize; s+=3)
+			for (t = 0; t < loadmodel->lightmaps.height; t++)
 			{
-				*out++ = in[0];
-				*out++ = in[1];
-				*out++ = in[2];
-				in += 3;
+				for (s = 0; s < loadmodel->lightmaps.width; s++)
+				{
+					*out++ = in[0];
+					*out++ = in[1];
+					*out++ = in[2];
+					in += 3;
+				}
+				out += mergestride-mapstride;
 			}
 		}
 	}
-	/*for (; m%loadmodel->lightmaps.merge; m++)
+	/*for (; m%merge; m++)
 	{
 		out = loadmodel->lightdata;
 		//figure out which merged lightmap we're putting it into
-		out += (m/loadmodel->lightmaps.merge)*loadmodel->lightmaps.merge*mapsize * (loadmodel->lightmaps.deluxemapping?2:1);
+		out += (m/merge)*merge*mapsize * (loadmodel->lightmaps.deluxemapping?2:1);
 		//and the submap
-		out += (m%loadmodel->lightmaps.merge)*mapsize;
+		out += (m%merge)*mapsize;
 
 		for(s = 0; s < mapsize; s+=3)
 		{
@@ -4086,6 +4140,49 @@ static void CM_OpenAllPortals(model_t *mod, char *ents)	//this is a compleate ha
 
 
 #if !defined(CLIENTONLY) && defined(Q3BSPS)
+static void CalcClusterPHS(cminfo_t	*prv, int cluster)
+{
+	int j, k, l, index;
+	int bitbyte;
+	unsigned int *dest, *src;
+	qbyte *scan;
+
+	int numclusters = prv->q3pvs->numclusters;
+	int rowbytes = prv->q3pvs->rowsize;
+	int rowwords = rowbytes / sizeof(int);
+
+	scan = (qbyte *)prv->q3pvs->data;
+	dest = (unsigned int *)(prv->q3phs->data);
+
+	dest += rowwords*cluster;
+	scan += rowbytes*cluster;
+	for (j=0 ; j<rowbytes ; j++)
+	{
+		bitbyte = scan[j];
+		if (!bitbyte)
+			continue;
+		for (k=0 ; k<8 ; k++)
+		{
+			if (! (bitbyte & (1<<k)) )
+				continue;
+			// OR this pvs row into the phs
+			index = (j<<3) + k;
+			if (index >= numclusters)
+			{
+//				if (!buggytools)
+//					Con_Printf ("CM_CalcPHS: Bad bit(s) in PVS (%i >= %i)\n", index, numclusters);	// pad bits should be 0
+//				buggytools = true;
+			}
+			else
+			{
+				src = (unsigned int *)(prv->q3pvs->data) + index*rowwords;
+				for (l=0 ; l<rowwords ; l++)
+					dest[l] |= src[l];
+			}
+		}
+	}
+	prv->phscalced[cluster>>3] |= 1<<(cluster&7);
+}
 static void CMQ3_CalcPHS (model_t *mod)
 {
 	cminfo_t	*prv = (cminfo_t*)mod->meshinfo;
@@ -4097,6 +4194,7 @@ static void CMQ3_CalcPHS (model_t *mod)
 	int		count, vcount;
 	int		numclusters;
 	qboolean buggytools = false;
+	extern cvar_t sv_calcphs;
 
 	Con_DPrintf ("Building PHS...\n");
 
@@ -4129,41 +4227,55 @@ static void CMQ3_CalcPHS (model_t *mod)
 	scan = (qbyte *)prv->q3pvs->data;
 	dest = (unsigned int *)(prv->q3phs->data);
 
-	for (i=0 ; i<numclusters ; i++, dest += rowwords, scan += rowbytes)
-	{
-		memcpy (dest, scan, rowbytes);
-		for (j=0 ; j<rowbytes ; j++)
+	if (sv_calcphs.ival >= 2)
+	{	//delay-calculate it.
+		prv->phscalced = ZG_Malloc(&mod->memgroup, (prv->q3pvs->numclusters+7)/8);
+		memcpy(dest, scan, rowbytes*numclusters);
+		Con_DPrintf ("Average clusters visible / total: %i / %i\n"
+			, vcount/numclusters, numclusters);
+	}
+	else if (!sv_calcphs.ival)
+	{	//disable calcs (behaves like broadcast so just fill with 1s)
+		memset(dest, 0xff, rowbytes*numclusters);
+	}
+	else
+	{	//the original slow logic like q3.
+		for (i=0 ; i<numclusters ; i++, dest += rowwords, scan += rowbytes)
 		{
-			bitbyte = scan[j];
-			if (!bitbyte)
-				continue;
-			for (k=0 ; k<8 ; k++)
+			memcpy (dest, scan, rowbytes);
+			for (j=0 ; j<rowbytes ; j++)
 			{
-				if (! (bitbyte & (1<<k)) )
+				bitbyte = scan[j];
+				if (!bitbyte)
 					continue;
-				// OR this pvs row into the phs
-				index = (j<<3) + k;
-				if (index >= numclusters)
+				for (k=0 ; k<8 ; k++)
 				{
-					if (!buggytools)
-						Con_Printf ("CM_CalcPHS: Bad bit(s) in PVS (%i >= %i)\n", index, numclusters);	// pad bits should be 0
-					buggytools = true;
-				}
-				else
-				{
-					src = (unsigned int *)(prv->q3pvs->data) + index*rowwords;
-					for (l=0 ; l<rowwords ; l++)
-						dest[l] |= src[l];
+					if (! (bitbyte & (1<<k)) )
+						continue;
+					// OR this pvs row into the phs
+					index = (j<<3) + k;
+					if (index >= numclusters)
+					{
+						if (!buggytools)
+							Con_Printf ("CM_CalcPHS: Bad bit(s) in PVS (%i >= %i)\n", index, numclusters);	// pad bits should be 0
+						buggytools = true;
+					}
+					else
+					{
+						src = (unsigned int *)(prv->q3pvs->data) + index*rowwords;
+						for (l=0 ; l<rowwords ; l++)
+							dest[l] |= src[l];
+					}
 				}
 			}
+			for (j=0 ; j<numclusters ; j++)
+				if ( ((qbyte *)dest)[j>>3] & (1<<(j&7)) )
+					count++;
 		}
-		for (j=0 ; j<numclusters ; j++)
-			if ( ((qbyte *)dest)[j>>3] & (1<<(j&7)) )
-				count++;
-	}
 
-	Con_DPrintf ("Average clusters visible / hearable / total: %i / %i / %i\n"
-		, vcount/numclusters, count/numclusters, numclusters);
+		Con_DPrintf ("Average clusters visible / hearable / total: %i / %i / %i\n"
+			, vcount/numclusters, count/numclusters, numclusters);
+	}
 }
 #endif
 
@@ -4178,7 +4290,7 @@ static qbyte *CM_LeafnumPVS (model_t *model, int leafnum, qbyte *buffer, unsigne
 #define GLQ2BSP_LightPointValues GLQ1BSP_LightPointValues
 
 extern int	r_dlightframecount;
-static void Q2BSP_MarkLights (dlight_t *light, int bit, mnode_t *node)
+static void Q2BSP_MarkLights (dlight_t *light, dlightbitmask_t bit, mnode_t *node)
 {
 	mplane_t	*splitplane;
 	float		dist;
@@ -4225,7 +4337,7 @@ static void Q2BSP_MarkLights (dlight_t *light, int bit, mnode_t *node)
 	{
 		if (surf->dlightframe != r_dlightframecount)
 		{
-			surf->dlightbits = 0;
+			surf->dlightbits = 0u;
 			surf->dlightframe = r_dlightframecount;
 		}
 		surf->dlightbits |= bit;
@@ -4283,18 +4395,18 @@ CM_LoadMap
 Loads in the map and all submodels
 ==================
 */
-static cmodel_t *CM_LoadMap (model_t *mod, qbyte *filein, size_t filelen, qboolean clientload, unsigned *checksum)
+static cmodel_t *CM_LoadMap (model_t *mod, qbyte *filein, size_t filelen, qboolean clientload)
 {
 	unsigned		*buf;
 	int				i;
 	q2dheader_t		header;
 	int				length;
-	static unsigned	last_checksum;
 	qboolean noerrors = true;
 	model_t			*wmod = mod;
 	char			loadname[32];
 	qbyte			*mod_base = (qbyte *)filein;
 	bspx_header_t	*bspx = NULL;
+	unsigned int	checksum;
 #ifdef Q3BSPS
 	extern cvar_t	gl_overbright;
 #endif
@@ -4321,7 +4433,7 @@ static cmodel_t *CM_LoadMap (model_t *mod, qbyte *filein, size_t filelen, qboole
 		mod->leafs = ZG_Malloc(&mod->memgroup, 1 * sizeof(*mod->leafs));
 		prv->numcmodels = 1;
 		prv->numareas = 1;
-		*checksum = 0;
+		mod->checksum = mod->checksum2 = 0;
 		prv->cmodels[0].headnode = (mnode_t*)mod->leafs;	//directly start with the empty leaf
 		return &prv->cmodels[0];			// cinematic servers won't have anything at all
 	}
@@ -4337,8 +4449,7 @@ static cmodel_t *CM_LoadMap (model_t *mod, qbyte *filein, size_t filelen, qboole
 		return NULL;
 	}
 
-	last_checksum = LittleLong (Com_BlockChecksum (buf, length));
-	*checksum = last_checksum;
+	checksum = LittleLong (Com_BlockChecksum (buf, length));
 
 	header = *(q2dheader_t *)(buf);
 	header.ident = LittleLong(header.ident);
@@ -4736,7 +4847,7 @@ static cmodel_t *CM_LoadMap (model_t *mod, qbyte *filein, size_t filelen, qboole
 #endif
 	FloodAreaConnections (prv);
 
-	mod->checksum = mod->checksum2 = *checksum;
+	mod->checksum = mod->checksum2 = checksum;
 
 	mod->nummodelsurfaces = mod->numsurfaces;
 	memset(&mod->batches, 0, sizeof(mod->batches));
@@ -5139,8 +5250,8 @@ int CM_PointContents (model_t *mod, const vec3_t p)
 	if (!mod)	// map not loaded
 		return 0;
 
-	if (mod->fromgame != fg_quake2 && ((cminfo_t*)mod->meshinfo)->bihnodes)
-		contents = CM_PointContentsBIH(((cminfo_t*)mod->meshinfo)->bihnodes, p);
+	if (mod->fromgame != fg_quake2 && prv->bihnodes)	//just use leaf contents for q2. its faster and should be robust
+		contents = CM_PointContentsBIH(prv->bihnodes, p);
 	else
 	{
 		i = CM_PointLeafnum_r (mod, p, mod->hulls[0].firstclipnode);
@@ -6251,15 +6362,24 @@ return;
 	CM_RecursiveHullCheck (mod, node->childnum[side^1], midf, p2f, mid, p2);
 }
 
+#define BIH_USEBIH
+//#define BIH_USEBVH
 struct bihnode_s
 {
 	//in a bih tree there are two values per node instead of a kd-tree's single midpoint
 	//this allows the two sides to overlap, which prevents the need to chop large objects into multiple leafs
 	//(it also allows gaps in the middle, which can further skip recursion)
 	enum {
+#ifdef BIH_USEBIH
 		BIH_X,
 		BIH_Y,
 		BIH_Z,
+#endif
+#ifdef BIH_USEBVH
+		BVH_X,
+		BVH_Y,
+		BVH_Z,
+#endif
 		BIH_GROUP,
 		BIH_BRUSH,
 		BIH_PATCHBRUSH,
@@ -6271,11 +6391,21 @@ struct bihnode_s
 			int firstchild;
 			int numchildren;
 		} group;
+#ifdef BIH_USEBVH
+		struct{
+			int firstchild;
+			vec3_t min, max;
+			float cmin;
+			float cmax;
+		} bvhnode;
+#endif
+#ifdef BIH_USEBIH
 		struct{
 			int firstchild;
 			float cmin[2];
 			float cmax[2];
-		} node;
+		} bihnode;
+#endif
 		struct bihdata_s{
 			unsigned int contents;
 			union {
@@ -6338,6 +6468,7 @@ static void CM_RecursiveBIHTrace (struct bihtrace_s *fte_restrict tr, const stru
 				CM_RecursiveBIHTrace(tr, node+node->group.firstchild+i, movesubbounds, nodebox);
 		}
 		return;
+#ifdef BIH_USEBIH
 	case BIH_X:
 	case BIH_Y:
 	case BIH_Z:
@@ -6345,31 +6476,31 @@ static void CM_RecursiveBIHTrace (struct bihtrace_s *fte_restrict tr, const stru
 			struct bihbox_s bounds;
 			struct bihbox_s newbounds;
 			float distnear, distfar, nearfrac, farfrac, min, max;
-			unsigned int axis = node->type, child;
+			unsigned int axis = node->type-BIH_X, child, a, s;
 			vec3_t points[2];
 
 			if (!tr->totalmove[axis])
 			{	//doesn't move with respect to this axis. don't allow infinities.
 				for (child = 0; child < 2; child++)
 				{	//only recurse if we are actually within the child
-					min = node->node.cmin[child] - tr->expand[axis];
-					max = node->node.cmax[child] + tr->expand[axis];
+					min = node->bihnode.cmin[child] - tr->expand[axis];
+					max = node->bihnode.cmax[child] + tr->expand[axis];
 					if (min <= tr->startpos[axis] && tr->startpos[axis] <= max)
 					{
 						bounds = *nodebox;
 						bounds.min[axis] = min;
 						bounds.max[axis] = max;
-						CM_RecursiveBIHTrace(tr, node+node->node.firstchild+child, movesubbounds, &bounds);
+						CM_RecursiveBIHTrace(tr, node+node->bihnode.firstchild+child, movesubbounds, &bounds);
 					}
 				}
 			}
 			else if (tr->negativedir[axis])
 			{	//trace goes from right to left so favour the right.
+				bounds = *nodebox;
 				for (child = 2; child-- > 0;)
 				{
-					bounds = *nodebox;
-					bounds.min[axis] = node->node.cmin[child] - tr->expand[axis];
-					bounds.max[axis] = node->node.cmax[child] + tr->expand[axis];	//expand the bounds according to the player's size
+					bounds.min[axis] = node->bihnode.cmin[child] - tr->expand[axis];
+					bounds.max[axis] = node->bihnode.cmax[child] + tr->expand[axis];	//expand the bounds according to the player's size
 
 					if (!BoundsIntersect(movesubbounds->min, movesubbounds->max, bounds.min, bounds.max))
 						continue;
@@ -6387,20 +6518,23 @@ static void CM_RecursiveBIHTrace (struct bihtrace_s *fte_restrict tr, const stru
 						farfrac = distfar/tr->totalmove[axis];
 						VectorMA(tr->startpos, farfrac, tr->totalmove, points[1]);	//clip the new movebounds (this is more to clip the other axis too)
 
-						newbounds.min[0] = max(points[tr->negativedir[0]][0]-tr->expand[axis], bounds.min[0]); newbounds.max[0] = min(points[!tr->negativedir[0]][0]+tr->expand[axis], bounds.max[0]);
-						newbounds.min[1] = max(points[tr->negativedir[1]][1]-tr->expand[axis], bounds.min[1]); newbounds.max[1] = min(points[!tr->negativedir[1]][1]+tr->expand[axis], bounds.max[1]);
-						newbounds.min[2] = max(points[tr->negativedir[2]][2]-tr->expand[axis], bounds.min[2]); newbounds.max[2] = min(points[!tr->negativedir[2]][2]+tr->expand[axis], bounds.max[2]);
-						CM_RecursiveBIHTrace(tr, node+node->node.firstchild+child, &newbounds, &bounds);
+						for (a = 0; a < 3; a++)
+						{
+							s = points[0][a] > points[1][a];
+							newbounds.min[a] = max(movesubbounds->min[a], points[s][a] - tr->expand[a]);
+							newbounds.max[a] = min(movesubbounds->max[a], points[!s][a] + tr->expand[a]);
+						}
+						CM_RecursiveBIHTrace(tr, node+node->bihnode.firstchild+child, &newbounds, &bounds);
 					}
 				}
 			}
 			else
 			{	//trace goes from left to right
+				bounds = *nodebox;
 				for (child = 0; child < 2; child++)
 				{
-					bounds = *nodebox;
-					bounds.min[axis] = node->node.cmin[child] - tr->expand[axis];
-					bounds.max[axis] = node->node.cmax[child] + tr->expand[axis];	//expand the bounds according to the player's size
+					bounds.min[axis] = node->bihnode.cmin[child] - tr->expand[axis];
+					bounds.max[axis] = node->bihnode.cmax[child] + tr->expand[axis];	//expand the bounds according to the player's size
 
 					if (!BoundsIntersect(movesubbounds->min, movesubbounds->max, bounds.min, bounds.max))
 						continue;
@@ -6418,15 +6552,143 @@ static void CM_RecursiveBIHTrace (struct bihtrace_s *fte_restrict tr, const stru
 						farfrac = distfar/tr->totalmove[axis];
 						VectorMA(tr->startpos, farfrac, tr->totalmove, points[1]);	//clip the new movebounds (this is more to clip the other axis too)
 
-						newbounds.min[0] = max(points[tr->negativedir[0]][0]-tr->expand[axis], bounds.min[0]); newbounds.max[0] = min(points[!tr->negativedir[0]][0]+tr->expand[axis], bounds.max[0]);
-						newbounds.min[1] = max(points[tr->negativedir[1]][1]-tr->expand[axis], bounds.min[1]); newbounds.max[1] = min(points[!tr->negativedir[1]][1]+tr->expand[axis], bounds.max[1]);
-						newbounds.min[2] = max(points[tr->negativedir[2]][2]-tr->expand[axis], bounds.min[2]); newbounds.max[2] = min(points[!tr->negativedir[2]][2]+tr->expand[axis], bounds.max[2]);
-						CM_RecursiveBIHTrace(tr, node+node->node.firstchild+child, &newbounds, &bounds);
+						for (a = 0; a < 3; a++)
+						{
+							s = points[0][a] > points[1][a];
+							newbounds.min[a] = max(movesubbounds->min[a], points[s][a] - tr->expand[a]);
+							newbounds.max[a] = min(movesubbounds->max[a], points[!s][a] + tr->expand[a]);
+						}
+						CM_RecursiveBIHTrace(tr, node+node->bihnode.firstchild+child, &newbounds, &bounds);
 					}
 				}
 			}
 		}
 		return;
+#endif
+#ifdef BIH_USEBVH
+	case BVH_X:
+	case BVH_Y:
+	case BVH_Z:
+		{
+			struct bihbox_s bounds;
+			struct bihbox_s newbounds;
+			float distnear, distfar, nearfrac, farfrac, min, max;
+			unsigned int axis = node->type-BVH_X, child, a, s;
+			vec3_t points[2];
+
+			if (!tr->totalmove[axis])
+			{	//doesn't move with respect to this axis. don't allow infinities.
+				for (child = 0; child < 2; child++)
+				{	//only recurse if we are actually within the child
+					if (child == 0)
+					{
+						min = node->bvhnode.min[axis] - tr->expand[axis];
+						max = node->bvhnode.cmax + tr->expand[axis];
+					}
+					else
+					{
+						min = node->bvhnode.cmin - tr->expand[axis];
+						max = node->bvhnode.max[axis] + tr->expand[axis];
+					}
+					if (min <= tr->startpos[axis] && tr->startpos[axis] <= max)
+					{
+						VectorCopy(node->bvhnode.min, bounds.min);
+						VectorCopy(node->bvhnode.max, bounds.max);
+						bounds.min[axis] = min;
+						bounds.max[axis] = max;
+						CM_RecursiveBIHTrace(tr, node+node->bvhnode.firstchild+child, movesubbounds, &bounds);
+					}
+				}
+			}
+			else if (tr->negativedir[axis])
+			{	//trace goes from right to left so favour the right.
+				VectorCopy(node->bvhnode.min, bounds.min);
+				VectorCopy(node->bvhnode.max, bounds.max);
+				for (child = 2; child-- > 0;)
+				{
+					if (child == 0)
+					{
+						bounds.min[axis] = node->bvhnode.min[axis] - tr->expand[axis];
+						bounds.max[axis] = node->bvhnode.cmax + tr->expand[axis];	//expand the bounds according to the player's size
+					}
+					else
+					{
+						bounds.min[axis] = node->bvhnode.cmin - tr->expand[axis];
+						bounds.max[axis] = node->bvhnode.max[axis] + tr->expand[axis];	//expand the bounds according to the player's size
+					}
+
+					if (!BoundsIntersect(movesubbounds->min, movesubbounds->max, bounds.min, bounds.max))
+						continue;
+//					if (movesubbounds->max[axis] < bounds.min[axis])
+//						continue;	//(clipped) move bounds is outside this child
+//					if (bounds.max[axis] < movesubbounds->min[axis])
+//						continue;	//(clipped) move bounds is outside this child
+
+					distnear = bounds.max[axis] - tr->startpos[axis];
+					nearfrac = (distnear+DIST_EPSILON)/tr->totalmove[axis];
+					if (nearfrac <= trace_truefraction)
+					{
+						VectorMA(tr->startpos, nearfrac, tr->totalmove, points[0]);	//clip the new movebounds (this is more to clip the other axis too)
+						distfar = bounds.min[axis] - tr->startpos[axis];
+						farfrac = (distfar-DIST_EPSILON)/tr->totalmove[axis];
+						VectorMA(tr->startpos, farfrac, tr->totalmove, points[1]);	//clip the new movebounds (this is more to clip the other axis too)
+
+						for (a = 0; a < 3; a++)
+						{
+							s = points[0][a] > points[1][a];
+							newbounds.min[a] = max(movesubbounds->min[a], points[s][a] - tr->expand[a]);
+							newbounds.max[a] = min(movesubbounds->max[a], points[!s][a] + tr->expand[a]);
+						}
+						CM_RecursiveBIHTrace(tr, node+node->bvhnode.firstchild+child, &newbounds, &bounds);
+					}
+				}
+			}
+			else
+			{	//trace goes from left to right
+				VectorCopy(node->bvhnode.min, bounds.min);
+				VectorCopy(node->bvhnode.max, bounds.max);
+				for (child = 0; child < 2; child++)
+				{
+					if (child == 0)
+					{
+						bounds.min[axis] = node->bvhnode.min[axis] - tr->expand[axis];
+						bounds.max[axis] = node->bvhnode.cmax + tr->expand[axis];	//expand the bounds according to the player's size
+					}
+					else
+					{
+						bounds.min[axis] = node->bvhnode.cmin - tr->expand[axis];
+						bounds.max[axis] = node->bvhnode.max[axis] + tr->expand[axis];	//expand the bounds according to the player's size
+					}
+
+					if (!BoundsIntersect(movesubbounds->min, movesubbounds->max, bounds.min, bounds.max))
+						continue;
+//					if (movesubbounds->max[axis] < bounds.min[axis])
+//						continue;	//(clipped) move bounds is outside this child
+//					if (bounds.max[axis] < movesubbounds->min[axis])
+//						continue;	//(clipped) move bounds is outside this child
+
+					distnear = bounds.min[axis] - tr->startpos[axis];
+					nearfrac = (distnear-DIST_EPSILON)/tr->totalmove[axis];
+					if (nearfrac <= trace_truefraction)
+					{
+						VectorMA(tr->startpos, nearfrac, tr->totalmove, points[0]);	//clip the new movebounds (this is more to clip the other axis too)
+						distfar = bounds.max[axis] - tr->startpos[axis];
+						farfrac = (distfar+DIST_EPSILON)/tr->totalmove[axis];
+						VectorMA(tr->startpos, farfrac, tr->totalmove, points[1]);	//clip the new movebounds (this is more to clip the other axis too)
+
+						for (a = 0; a < 3; a++)
+						{
+							s = points[0][a] > points[1][a];
+							newbounds.min[a] = max(movesubbounds->min[a], points[s][a] - tr->expand[a]);
+							newbounds.max[a] = min(movesubbounds->max[a], points[!s][a] + tr->expand[a]);
+						}
+						CM_RecursiveBIHTrace(tr, node+node->bvhnode.firstchild+child, &newbounds, &bounds);
+					}
+				}
+			}
+		}
+		return;
+#endif
 	}
 	FTE_UNREACHABLE;
 }
@@ -6470,30 +6732,58 @@ static void CM_RecursiveBIHTest (struct bihtrace_s *fte_restrict tr, const struc
 			}
 		}
 		return;
+#ifdef BIH_USEBIH
 	case BIH_X:
 	case BIH_Y:
 	case BIH_Z:
 		{	//node (x y or z)
 			float min; float max;
-			int axis = node->type;
-			min = node->node.cmin[0] - tr->expand[axis];
-			max = node->node.cmax[0] + tr->expand[axis];	//expand the bounds according to the player's size
+			int axis = node->type - BIH_X;
+			min = node->bihnode.cmin[0] - tr->expand[axis];
+			max = node->bihnode.cmax[0] + tr->expand[axis];	//expand the bounds according to the player's size
 
 			//the point can potentially be within both children, or neither.
 			//it doesn't really matter which order we walk the tree, just be sure to do it efficiently.
 			if (min <= tr->startpos[axis] && tr->startpos[axis] <= max)
 			{
-				CM_RecursiveBIHTest(tr, node+node->node.firstchild+0);
+				CM_RecursiveBIHTest(tr, node+node->bihnode.firstchild+0);
 				if (trace_trace.allsolid)
 					return;
 			}
 
-			min = node->node.cmin[1] - tr->expand[axis];
-			max = node->node.cmax[1] + tr->expand[axis];
+			min = node->bihnode.cmin[1] - tr->expand[axis];
+			max = node->bihnode.cmax[1] + tr->expand[axis];
 			if (min <= tr->startpos[axis] && tr->startpos[axis] <= max)
-				return CM_RecursiveBIHTest(tr, node+node->node.firstchild+1);
+				return CM_RecursiveBIHTest(tr, node+node->bihnode.firstchild+1);
 		}
 		return;
+#endif
+#ifdef BIH_USEBVH
+	case BVH_X:
+	case BVH_Y:
+	case BVH_Z:
+		{	//node (x y or z)
+			float min; float max;
+			int axis = node->type - BVH_X;
+			min = node->bvhnode.min[axis] - tr->expand[axis];
+			max = node->bvhnode.cmax + tr->expand[axis];	//expand the bounds according to the player's size
+
+			//the point can potentially be within both children, or neither.
+			//it doesn't really matter which order we walk the tree, just be sure to do it efficiently.
+			if (min <= tr->startpos[axis] && tr->startpos[axis] <= max)
+			{
+				CM_RecursiveBIHTest(tr, node+node->bvhnode.firstchild+0);
+				if (trace_trace.allsolid)
+					return;
+			}
+
+			min = node->bvhnode.cmin - tr->expand[axis];
+			max = node->bvhnode.max[axis] + tr->expand[axis];
+			if (min <= tr->startpos[axis] && tr->startpos[axis] <= max)
+				return CM_RecursiveBIHTest(tr, node+node->bvhnode.firstchild+1);
+		}
+		return;
+#endif
 	}
 	FTE_UNREACHABLE;
 }
@@ -6535,23 +6825,46 @@ static unsigned int CM_PointContentsBIH (const struct bihnode_s *fte_restrict no
 				contents |= CM_PointContentsBIH(node+node->group.firstchild+i, p);
 			return contents;
 		}
+#ifdef BIH_USEBIH
 	case BIH_X:
 	case BIH_Y:
 	case BIH_Z:
 		{	//node (x y or z)
 			unsigned int contents;
+			unsigned int axis = node->type - BIH_X;
 
 			//the point can potentially be within both children, or neither.
 			//it doesn't really matter which order we walk the tree, just be sure to do it efficiently.
-			if (node->node.cmin[0] <= p[node->type] && p[node->type] <= node->node.cmax[0])
-				contents = CM_PointContentsBIH(node+node->node.firstchild+0, p);
+			if (node->bihnode.cmin[0] <= p[axis] && p[axis] <= node->bihnode.cmax[0])
+				contents = CM_PointContentsBIH(node+node->bihnode.firstchild+0, p);
 			else
 				contents = 0;
 
-			if (node->node.cmin[1] <= p[node->type] && p[node->type] <= node->node.cmax[1])
-				contents |= CM_PointContentsBIH(node+node->node.firstchild+1, p);
+			if (node->bihnode.cmin[1] <= p[axis] && p[axis] <= node->bihnode.cmax[1])
+				contents |= CM_PointContentsBIH(node+node->bihnode.firstchild+1, p);
 			return contents;
 		}
+#endif
+#ifdef BIH_USEBVH
+	case BVH_X:
+	case BVH_Y:
+	case BVH_Z:
+		{	//node (x y or z)
+			unsigned int contents;
+			unsigned int axis = node->type - BVH_X;
+
+			//the point can potentially be within both children, or neither.
+			//it doesn't really matter which order we walk the tree, just be sure to do it efficiently.
+			if (node->bvhnode.min[axis] <= p[axis] && p[axis] <= node->bvhnode.cmax)
+				contents = CM_PointContentsBIH(node+node->bvhnode.firstchild+0, p);
+			else
+				contents = 0;
+
+			if (node->bvhnode.cmin <= p[axis] && p[axis] <= node->bvhnode.max[axis])
+				contents |= CM_PointContentsBIH(node+node->bvhnode.firstchild+1, p);
+			return contents;
+		}
+#endif
 	}
 	FTE_UNREACHABLE;
 }
@@ -6564,6 +6877,7 @@ struct bihleaf_s
 	struct bihdata_s data;
 };
 
+#if defined(BIH_USEBIH) || defined(BIH_USEBVH)
 static int QDECL CM_SortBIH_X (const void *va, const void *vb)
 {
 	const struct bihleaf_s *a = va, *b = vb;
@@ -6591,6 +6905,7 @@ static int QDECL CM_SortBIH_Z (const void *va, const void *vb)
 		return 0;
 	return am > bm;
 }
+#endif
 static struct bihbox_s CM_BuildBIHNode (struct bihnode_s *node, struct bihnode_s **freenodes, struct bihleaf_s *leafs, size_t numleafs)
 {
 	struct bihbox_s bounds;
@@ -6609,27 +6924,8 @@ static struct bihbox_s CM_BuildBIHNode (struct bihnode_s *node, struct bihnode_s
 			bounds.max[i] += 1;
 		}
 	}
-	else if (numleafs < 8)	//the leaf just gives the brush pointer.
-	{
-		struct bihnode_s *cnodes;
-		struct bihbox_s cb;
-		size_t i;
-		node->type = BIH_GROUP;
-
-		cnodes = *freenodes;
-		*freenodes += numleafs;
-		node->group.firstchild = cnodes - node;
-		node->group.numchildren = numleafs;
-
-		bounds = CM_BuildBIHNode(cnodes+0, freenodes, leafs+0, 1);
-		for (i = 1; i < numleafs; i++)
-		{
-			cb = CM_BuildBIHNode(cnodes+i, freenodes, leafs+i, 1);
-			AddPointToBounds(cb.min, bounds.min, bounds.max);
-			AddPointToBounds(cb.max, bounds.min, bounds.max);
-		}
-	}
-	else
+#ifdef BIH_USEBIH
+	else if (numleafs >= 8)	//the leaf just gives the brush pointer.
 	{
 		size_t i, j;
 		size_t numleft = numleafs / 2;	//this ends up splitting at the median point.
@@ -6688,22 +6984,125 @@ static struct bihbox_s CM_BuildBIHNode (struct bihnode_s *node, struct bihnode_s
 				node->type = BIH_Z;*/
 		}
 #endif
-		qsort(leafs, numleafs, sizeof(*leafs), sorts[node->type]);
+		qsort(leafs, numleafs, sizeof(*leafs), sorts[node->type-BIH_X]);
 
 		cnodes = *freenodes;
 		*freenodes += 2;
-		node->node.firstchild = cnodes - node;
+		node->bihnode.firstchild = cnodes - node;
 		left = CM_BuildBIHNode (cnodes+0, freenodes, leafs, numleft);
 		right = CM_BuildBIHNode (cnodes+1, freenodes, &leafs[numleft], numright);
 
-		node->node.cmin[0] = left.min[node->type];
-		node->node.cmax[0] = left.max[node->type];
-		node->node.cmin[1] = right.min[node->type];
-		node->node.cmax[1] = right.max[node->type];
+		node->bihnode.cmin[0] = left.min[node->type-BIH_X];
+		node->bihnode.cmax[0] = left.max[node->type-BIH_X];
+		node->bihnode.cmin[1] = right.min[node->type-BIH_X];
+		node->bihnode.cmax[1] = right.max[node->type-BIH_X];
 
 		bounds = left;
 		AddPointToBounds(right.min, bounds.min, bounds.max);
 		AddPointToBounds(right.max, bounds.min, bounds.max);
+	}
+#endif
+#ifdef BIH_USEBVH
+	else if (numleafs >= 8)	//the leaf just gives the brush pointer.
+	{
+		size_t i, j;
+		size_t numleft = numleafs / 2;	//this ends up splitting at the median point.
+		size_t numright = numleafs - numleft;
+		struct bihbox_s left, right;
+		struct bihnode_s *cnodes;
+		static int (QDECL *sorts[3]) (const void *va, const void *vb) = {CM_SortBIH_X, CM_SortBIH_Y, CM_SortBIH_Z};
+		VectorCopy(leafs[0].mins, bounds.min);
+		VectorCopy(leafs[0].maxs, bounds.max);
+		for (i = 1; i < numleafs; i++)
+		{
+			for(j = 0; j < 3; j++)
+			{
+				if (bounds.min[j] > leafs[i].mins[j])
+					bounds.min[j] = leafs[i].mins[j];
+				if (bounds.max[j] < leafs[i].maxs[j])
+					bounds.max[j] = leafs[i].maxs[j];
+			}
+		}
+#if 1
+		{	//balanced by counts
+			vec3_t mid;
+			int onleft[3], onright[3], weight[3];
+			VectorAvg(bounds.max, bounds.min, mid);
+			VectorClear(onleft);
+			VectorClear(onright);
+			for (i = 0; i < numleafs; i++)
+			{
+				for (j = 0; j < 3; j++)
+				{	//ignore leafs that split the node.
+					if (leafs[i].maxs[j] < mid[j])
+						onleft[j]++;
+					if (mid[j] > leafs[i].mins[j])
+						onright[j]++;
+				}
+			}
+			for (j = 0; j < 3; j++)
+				weight[j] = onleft[j]+onright[j] - abs(onleft[j]-onright[j]);
+			//pick the most balanced.
+			if (weight[0] > weight[1] && weight[0] > weight[2])
+				node->type = BVH_X;
+			else if (weight[1] > weight[2])
+				node->type = BVH_Y;
+			else
+				node->type = BVH_Z;
+		}
+#else
+		{	//balanced by volume
+			vec3_t size;
+			VectorSubtract(bounds.max, bounds.min, size);
+			if (size[0] > size[1] && size[0] > size[2])
+				node->type = BVH_X;
+			else if (size[1] > size[2])
+				node->type = BVH_Y;
+			else
+				node->type = BVH_Z;*/
+		}
+#endif
+		qsort(leafs, numleafs, sizeof(*leafs), sorts[node->type-BVH_X]);
+
+		cnodes = *freenodes;
+		*freenodes += 2;
+		node->bvhnode.firstchild = cnodes - node;
+		left = CM_BuildBIHNode (cnodes+0, freenodes, leafs, numleft);
+		right = CM_BuildBIHNode (cnodes+1, freenodes, &leafs[numleft], numright);
+
+		node->bvhnode.min[0] = min(left.min[0], right.min[0]);
+		node->bvhnode.min[1] = min(left.min[1], right.min[1]);
+		node->bvhnode.min[2] = min(left.min[2], right.min[2]);
+		node->bvhnode.cmax = left.max[node->type-BVH_X];
+		node->bvhnode.cmin = right.min[node->type-BVH_X];
+		node->bvhnode.max[0] = max(left.max[0], right.max[0]);
+		node->bvhnode.max[1] = max(left.max[1], right.max[1]);
+		node->bvhnode.max[2] = max(left.max[2], right.max[2]);
+
+		bounds = left;
+		AddPointToBounds(right.min, bounds.min, bounds.max);
+		AddPointToBounds(right.max, bounds.min, bounds.max);
+	}
+#endif
+	else
+	{
+		struct bihnode_s *cnodes;
+		struct bihbox_s cb;
+		size_t i;
+		node->type = BIH_GROUP;
+
+		cnodes = *freenodes;
+		*freenodes += numleafs;
+		node->group.firstchild = cnodes - node;
+		node->group.numchildren = numleafs;
+
+		bounds = CM_BuildBIHNode(cnodes+0, freenodes, leafs+0, 1);
+		for (i = 1; i < numleafs; i++)
+		{
+			cb = CM_BuildBIHNode(cnodes+i, freenodes, leafs+i, 1);
+			AddPointToBounds(cb.min, bounds.min, bounds.max);
+			AddPointToBounds(cb.max, bounds.min, bounds.max);
+		}
 	}
 	return bounds;
 }
@@ -6712,15 +7111,20 @@ static struct bihnode_s *CM_BuildBIH (model_t *mod, cminfo_t *prv)
 	size_t numleafs, numnodes, i, j;
 	struct bihnode_s *nodes, *tmpnodes;
 	struct bihleaf_s *leafs, *leaf;
-	numleafs = prv->numbrushes;
+
+	int firstbrush = prv->cmodels[0].firstbrush;
+	int numbrushes = prv->cmodels[0].num_brushes;
+
+
+	numleafs = numbrushes;
 	for (i = 0; i < prv->numpatches; i++)
 		numleafs += prv->patches[i].numfacets;
 	numnodes = numleafs*2-1;
 	leafs = BZ_Malloc(sizeof(*leafs)*numleafs);
 	nodes = ZG_Malloc(&mod->memgroup, sizeof(*nodes)*numnodes);
-	for (leaf=leafs, i = 0; i < prv->numbrushes; i++, leaf++)
+	for (leaf=leafs, i = 0; i < numbrushes; i++, leaf++)
 	{
-		q2cbrush_t *b = &prv->brushes[i];
+		q2cbrush_t *b = &prv->brushes[firstbrush+i];
 		leaf->type = BIH_BRUSH;
 		leaf->data.contents = b->contents;
 		leaf->data.brush = b;
@@ -6882,11 +7286,12 @@ static trace_t		CM_BoxTrace (model_t *mod, const vec3_t start, const vec3_t end,
 	}
 	else
 #endif
-	if (((cminfo_t*)mod->meshinfo)->bihnodes)
+	if (!mod->submodelof && ((cminfo_t*)mod->meshinfo)->bihnodes)
 	{
 		cminfo_t *prv = mod->meshinfo;
 		struct bihtrace_s tr;
 		int j;
+
 		VectorCopy(trace_mins, tr.size.min);
 		VectorCopy(trace_maxs, tr.size.max);
 		VectorCopy(trace_absmins, tr.bounds.min);
@@ -7239,6 +7644,8 @@ qbyte	*CM_ClusterPHS (model_t *mod, int cluster, pvsbuffer_t *buffer)
 	{
 		if (cluster != -1 && prv->q3phs->numclusters)
 		{
+			if (prv->phscalced && !(prv->phscalced[cluster>>3] & (1<<(cluster&7))))
+				CalcClusterPHS(prv, cluster);
 			return (qbyte *)prv->q3phs->data + cluster * prv->q3phs->rowsize;
 		}
 		else
@@ -7663,11 +8070,10 @@ unsigned int Q2BSP_PointContents(model_t *mod, const vec3_t axis[3], const vec3_
 
 
 
-int map_checksum;
 qboolean QDECL Mod_LoadQ2BrushModel (model_t *mod, void *buffer, size_t fsize)
 {
 	mod->fromgame = fg_quake2;
-	return CM_LoadMap(mod, buffer, fsize, true, &map_checksum) != NULL;
+	return CM_LoadMap(mod, buffer, fsize, true) != NULL;
 }
 
 void CM_Init(void)	//register cvars.
@@ -7679,6 +8085,7 @@ void CM_Init(void)	//register cvars.
 	Cvar_Register(&q3bsp_surf_meshcollision_flag, MAPOPTIONS);
 	Cvar_Register(&q3bsp_surf_meshcollision_force, MAPOPTIONS);
 	Cvar_Register(&q3bsp_mergeq3lightmaps, MAPOPTIONS);
+	Cvar_Register(&q3bsp_ignorestyles, MAPOPTIONS);
 	Cvar_Register(&q3bsp_bihtraces, MAPOPTIONS);
 	Cvar_Register(&r_subdivisions, MAPOPTIONS);
 

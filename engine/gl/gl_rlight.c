@@ -107,6 +107,7 @@ void R_AnimateLight (void)
 {
 	int			i,j;
 	float f;
+	static int fbmodcount;
 
 
 	//if (r_lightstylescale.value > 2)
@@ -121,7 +122,12 @@ void R_AnimateLight (void)
 	i = (int)f;
 	f -= i;	//this can require updates at 1000 times a second.. Depends on your framerate of course
 
-	for (j=0 ; j<cl_max_lightstyles ; j++)
+	if (r_fullbright.value)
+	{
+		for (j=0 ; j<cl_max_lightstyles ; j++)
+			d_lightstylevalue[j] = r_fullbright.value*255;
+	}
+	else for (j=0 ; j<cl_max_lightstyles ; j++)
 	{
 		int v1, v2, vd;
 		if (!cl_lightstyle[j].length)
@@ -147,6 +153,18 @@ void R_AnimateLight (void)
 			d_lightstylevalue[j] = v1*22*r_lightstylescale.value;
 		else
 			d_lightstylevalue[j] = (v1*(1-f) + v2*(f))*22*r_lightstylescale.value;
+	}
+
+	if (r_fullbright.modified != fbmodcount)
+	{
+		fbmodcount = r_fullbright.modified;
+		for (j=0 ; j<cl_max_lightstyles ; j++)
+		{
+			if (r_fullbright.value)
+				cl_lightstyle[j].colourkey = 0xff;
+			else
+				cl_lightstyle[j].colourkey = (int)(cl_lightstyle[j].colours[0]*0x400) ^ (int)(cl_lightstyle[j].colours[1]*0x100000) ^ (int)(cl_lightstyle[j].colours[2]*0x40000000);
+		}
 	}
 }
 
@@ -536,10 +554,10 @@ qboolean Sh_CullLight(dlight_t *dl, qbyte *vvis);
 void R_GenDlightMesh(struct batch_s *batch)
 {
 	static mesh_t *meshptr;
-	dlight_t	*l = cl_dlights + batch->surf_first;
+	dlight_t	*l = cl_dlights + batch->user.dlight.lightidx;
 	vec3_t colour;
 
-	int lightflags = batch->surf_count;
+	int lightflags = batch->user.dlight.lightmode;
 
 	VectorCopy(l->color, colour);
 	if (l->style>=0 && l->style < cl_max_lightstyles)
@@ -683,8 +701,8 @@ void R_GenDlightBatches(batch_t *batches[])
 		b->texture = NULL;
 		for (j = 0; j < MAXRLIGHTMAPS; j++)
 			b->lightmap[j] = -1;
-		b->surf_first = i;
-		b->surf_count = lmode;
+		b->user.dlight.lightidx = i;
+		b->user.dlight.lightmode = lmode;
 		b->flags |= BEF_NOSHADOWS|BEF_NODLIGHT;	//that would be weeird
 		b->vbo = NULL;
 		b->next = batches[sort];
@@ -735,7 +753,7 @@ void R_PushDlights (void)
 	{
 		if (!l->radius || !(l->flags & LFLAG_LIGHTMAP))
 			continue;
-		currentmodel->funcs.MarkLights( l, 1<<i, currentmodel->nodes );
+		currentmodel->funcs.MarkLights( l, (dlightbitmask_t)1u<<i, currentmodel->nodes );
 	}
 }
 
@@ -2268,6 +2286,7 @@ void R_EditLights_RegisterCommands(void)
 	Cvar_Register (&r_editlights_import_ambient,	"Realtime Light editing/importing");
 	Cvar_Register (&r_editlights_import_diffuse,	"Realtime Light editing/importing");
 	Cvar_Register (&r_editlights_import_specular,	"Realtime Light editing/importing");
+	Cvar_Register (&r_shadow_realtime_world_importlightentitiesfrommap,	"Realtime Light editing/importing");
 
 	Cvar_Register (&r_editlights,					"Realtime Light editing/importing");
 	Cvar_Register (&r_editlights_cursordistance,	"Realtime Light editing/importing");
@@ -2524,7 +2543,7 @@ static int GLRecursiveLightPoint (mnode_t *node, vec3_t start, vec3_t end)
 			{
 			case LM_E5BGR9:
 				lightmap += (dt * ((surf->extents[0]>>surf->lmshift)+1) + ds)<<2;
-				for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
+				for (maps = 0 ; maps < MAXCPULIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
 				{
 					unsigned int l = *(unsigned int*)lightmap;
 					scale = d_lightstylevalue[surf->styles[maps]];
@@ -2537,7 +2556,7 @@ static int GLRecursiveLightPoint (mnode_t *node, vec3_t start, vec3_t end)
 				break;
 			case LM_RGB8:
 				lightmap += (dt * ((surf->extents[0]>>surf->lmshift)+1) + ds)*3;
-				for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
+				for (maps = 0 ; maps < MAXCPULIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
 				{
 					scale = d_lightstylevalue[surf->styles[maps]];
 					r += max3(lightmap[0],lightmap[1],lightmap[2]) * scale;
@@ -2546,7 +2565,7 @@ static int GLRecursiveLightPoint (mnode_t *node, vec3_t start, vec3_t end)
 				break;
 			case LM_L8:
 				lightmap += dt * ((surf->extents[0]>>surf->lmshift)+1) + ds;
-				for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
+				for (maps = 0 ; maps < MAXCPULIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
 				{
 					scale = d_lightstylevalue[surf->styles[maps]];
 					r += *lightmap * scale;
@@ -2698,7 +2717,7 @@ static float *GLRecursiveLightPoint3C (model_t *mod, mnode_t *node, const vec3_t
 
 					lightmap += (dt * ((surf->extents[0]>>surf->lmshift)+1) + ds)<<2;
 					deluxmap += (dt * ((surf->extents[0]>>surf->lmshift)+1) + ds)<<4;
-					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
+					for (maps = 0 ; maps < MAXCPULIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
 					{
 						unsigned int lm = *(unsigned int*)lightmap;
 						scale = d_lightstylevalue[surf->styles[maps]]*overbright;
@@ -2723,7 +2742,7 @@ static float *GLRecursiveLightPoint3C (model_t *mod, mnode_t *node, const vec3_t
 
 					lightmap += (dt * ((surf->extents[0]>>surf->lmshift)+1) + ds)*3;
 					deluxmap += (dt * ((surf->extents[0]>>surf->lmshift)+1) + ds)*3;
-					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
+					for (maps = 0 ; maps < MAXCPULIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
 					{
 						scale = d_lightstylevalue[surf->styles[maps]]*overbright;
 
@@ -2746,7 +2765,7 @@ static float *GLRecursiveLightPoint3C (model_t *mod, mnode_t *node, const vec3_t
 
 					lightmap += (dt * ((surf->extents[0]>>surf->lmshift)+1) + ds);
 					deluxmap += (dt * ((surf->extents[0]>>surf->lmshift)+1) + ds)*3;
-					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
+					for (maps = 0 ; maps < MAXCPULIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
 					{
 						scale = d_lightstylevalue[surf->styles[maps]]*overbright;
 
@@ -2773,7 +2792,7 @@ static float *GLRecursiveLightPoint3C (model_t *mod, mnode_t *node, const vec3_t
 				{
 				case LM_E5BGR9:
 					lightmap += (dt * ((surf->extents[0]>>surf->lmshift)+1) + ds)<<2;
-					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
+					for (maps = 0 ; maps < MAXCPULIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
 					{
 						unsigned int lm = *(unsigned int*)lightmap;
 						scale = d_lightstylevalue[surf->styles[maps]]*overbright;
@@ -2789,7 +2808,7 @@ static float *GLRecursiveLightPoint3C (model_t *mod, mnode_t *node, const vec3_t
 					break;
 				case LM_RGB8:
 					lightmap += (dt * ((surf->extents[0]>>surf->lmshift)+1) + ds)*3;
-					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
+					for (maps = 0 ; maps < MAXCPULIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
 					{
 						scale = d_lightstylevalue[surf->styles[maps]]*overbright;
 
@@ -2803,7 +2822,7 @@ static float *GLRecursiveLightPoint3C (model_t *mod, mnode_t *node, const vec3_t
 					break;
 				case LM_L8:
 					lightmap += (dt * ((surf->extents[0]>>surf->lmshift)+1) + ds);
-					for (maps = 0 ; maps < MAXQ1LIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
+					for (maps = 0 ; maps < MAXCPULIGHTMAPS && surf->styles[maps] != INVALID_LIGHTSTYLE ; maps++)
 					{
 						scale = d_lightstylevalue[surf->styles[maps]]*overbright;
 
@@ -2836,8 +2855,10 @@ void GLQ1BSP_LightPointValues(model_t *model, const vec3_t point, vec3_t res_dif
 	extern cvar_t r_shadow_realtime_world, r_shadow_realtime_world_lightmaps;
 #endif
 
-	if (!model->lightdata || r_fullbright.ival)
+	if (!model->lightdata || r_fullbright.ival || model->loadstate != MLS_LOADED)
 	{
+		if (model->loadstate != MLS_LOADED)
+			Sys_Error("GLQ1BSP_LightPointValues: model not loaded...\n");
 		res_diffuse[0] = 0;
 		res_diffuse[1] = 0;
 		res_diffuse[2] = 0;

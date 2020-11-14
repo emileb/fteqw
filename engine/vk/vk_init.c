@@ -5,6 +5,8 @@
 #include "shader.h"
 #include "renderque.h"	//is anything still using this?
 
+#include "vr.h"
+
 extern qboolean vid_isfullscreen;
 
 cvar_t vk_stagingbuffers						= CVARFD ("vk_stagingbuffers",			"", CVAR_RENDERERLATCH, "Configures which dynamic buffers are copied into gpu memory for rendering, instead of reading from shared memory. Empty for default settings.\nAccepted chars are u(niform), e(lements), v(ertex), 0(none).");
@@ -23,6 +25,8 @@ static cvar_t vk_amd_rasterization_order		= CVARFD("vk_amd_rasterization_order",
 static cvar_t vk_ext_astc_decode_mode			= CVARFD("vk_ext_astc_decode_mode",		"",	CVAR_VIDEOLATCH, "Enables reducing texture cache sizes for LDR ASTC-compressed textures.");
 #endif
 extern cvar_t vid_srgb, vid_vsync, vid_triplebuffer, r_stereo_method, vid_multisample, vid_bpp;
+
+texid_t r_blackcubeimage, r_whitecubeimage;
 
 
 void VK_RegisterVulkanCvars(void)
@@ -57,6 +61,8 @@ extern qboolean		scr_con_forcedraw;
 const char *vklayerlist[] =
 {
 #if 1
+	"VK_LAYER_KHRONOS_validation"
+#elif 1
 	"VK_LAYER_LUNARG_standard_validation"
 #else
 		//older versions of the sdk were crashing out on me,
@@ -181,9 +187,9 @@ char *VK_VKErrorToString(VkResult err)
 #endif
 
 	//irrelevant parts of the enum
-	case VK_RESULT_RANGE_SIZE:
+//	case VK_RESULT_RANGE_SIZE:
 	case VK_RESULT_MAX_ENUM:
-	//default:
+	default:
 		break;
 	}
 	return va("%d", (int)err);
@@ -242,15 +248,19 @@ char *DebugAnnotObjectToString(VkObjectType t)
 	case VK_OBJECT_TYPE_DISPLAY_KHR:					return "VK_OBJECT_TYPE_DISPLAY_KHR";
 	case VK_OBJECT_TYPE_DISPLAY_MODE_KHR:				return "VK_OBJECT_TYPE_DISPLAY_MODE_KHR";
 	case VK_OBJECT_TYPE_DEBUG_REPORT_CALLBACK_EXT:		return "VK_OBJECT_TYPE_DEBUG_REPORT_CALLBACK_EXT";
+#ifdef VK_NVX_device_generated_commands
 	case VK_OBJECT_TYPE_OBJECT_TABLE_NVX:				return "VK_OBJECT_TYPE_OBJECT_TABLE_NVX";
 	case VK_OBJECT_TYPE_INDIRECT_COMMANDS_LAYOUT_NVX:	return "VK_OBJECT_TYPE_INDIRECT_COMMANDS_LAYOUT_NVX";
+#endif
 	case VK_OBJECT_TYPE_DEBUG_UTILS_MESSENGER_EXT:		return "VK_OBJECT_TYPE_DEBUG_UTILS_MESSENGER_EXT";
 	case VK_OBJECT_TYPE_VALIDATION_CACHE_EXT:			return "VK_OBJECT_TYPE_VALIDATION_CACHE_EXT";
 #ifdef VK_NV_ray_tracing
 	case VK_OBJECT_TYPE_ACCELERATION_STRUCTURE_NV:		return "VK_OBJECT_TYPE_ACCELERATION_STRUCTURE_NV";
 #endif
-	case VK_OBJECT_TYPE_RANGE_SIZE:
+//	case VK_OBJECT_TYPE_RANGE_SIZE:
     case VK_OBJECT_TYPE_MAX_ENUM:
+		break;
+	default:
 		break;
 	}
 	return "UNKNOWNTYPE";
@@ -461,6 +471,30 @@ static void VK_DestroySwapChain(void)
 		vk.frame = NULL;
 	}
 
+	if (vk.dopresent)
+		vk.dopresent(NULL);
+
+	//wait for it to all finish first...
+	if (vk.device)
+		vkDeviceWaitIdle(vk.device);
+#if 0	//don't bother waiting as they're going to be destroyed anyway, and we're having a lot of fun with drivers that don't bother signalling them on teardown
+	vk.acquirenext = vk.acquirelast;
+#else
+	//clean up our acquires so we know the driver isn't going to update anything.
+	while (vk.acquirenext < vk.acquirelast)
+	{
+		if (vk.acquirefences[vk.acquirenext%ACQUIRELIMIT])
+			VkWarnAssert(vkWaitForFences(vk.device, 1, &vk.acquirefences[vk.acquirenext%ACQUIRELIMIT], VK_FALSE, 1000000000u));	//drivers suck, especially in times of error, and especially if its nvidia's vulkan driver.
+		vk.acquirenext++;
+	}
+#endif
+	for (i = 0; i < ACQUIRELIMIT; i++)
+	{
+		if (vk.acquirefences[i])
+			vkDestroyFence(vk.device, vk.acquirefences[i], vkallocationcb);
+		vk.acquirefences[i] = VK_NULL_HANDLE;
+	}
+
 	for (i = 0; i < vk.backbuf_count; i++)
 	{
 		//swapchain stuff
@@ -472,23 +506,7 @@ static void VK_DestroySwapChain(void)
 		vk.backbufs[i].colour.view = VK_NULL_HANDLE;
 		VK_DestroyVkTexture(&vk.backbufs[i].depth);
 		VK_DestroyVkTexture(&vk.backbufs[i].mscolour);
-	}
-
-	if (vk.dopresent)
-		vk.dopresent(NULL);
-	while (vk.aquirenext < vk.aquirelast)
-	{
-		if (vk.acquirefences[vk.aquirenext%ACQUIRELIMIT])
-			VkWarnAssert(vkWaitForFences(vk.device, 1, &vk.acquirefences[vk.aquirenext%ACQUIRELIMIT], VK_FALSE, UINT64_MAX));
-		vk.aquirenext++;
-	}
-	if (vk.device)
-		vkDeviceWaitIdle(vk.device);
-	for (i = 0; i < ACQUIRELIMIT; i++)
-	{
-		if (vk.acquirefences[i])
-			vkDestroyFence(vk.device, vk.acquirefences[i], vkallocationcb);
-		vk.acquirefences[i] = VK_NULL_HANDLE;
+		vkDestroySemaphore(vk.device, vk.backbufs[i].presentsemaphore, vkallocationcb);
 	}
 
 	while(vk.unusedframes)
@@ -566,7 +584,7 @@ static qboolean VK_CreateSwapChain(void)
 		memories = malloc(sizeof(VkDeviceMemory)*vk.backbuf_count);
 		memset(memories, 0, sizeof(VkDeviceMemory)*vk.backbuf_count);
 
-		vk.aquirelast = vk.aquirenext = 0;
+		vk.acquirelast = vk.acquirenext = 0;
 		for (i = 0; i < ACQUIRELIMIT; i++)
 		{
 			if (1)
@@ -580,11 +598,12 @@ static qboolean VK_CreateSwapChain(void)
 			{
 				VkSemaphoreCreateInfo sci = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
 				VkAssert(vkCreateSemaphore(vk.device, &sci, vkallocationcb, &vk.acquiresemaphores[i]));
+				DebugSetName(VK_OBJECT_TYPE_SEMAPHORE, (uint64_t)vk.acquiresemaphores[i], "vk.acquiresemaphores");
 				vk.acquirefences[i] = VK_NULL_HANDLE;
 			}
 
-			vk.acquirebufferidx[vk.aquirelast%ACQUIRELIMIT] = vk.aquirelast%vk.backbuf_count;
-			vk.aquirelast++;
+			vk.acquirebufferidx[vk.acquirelast%ACQUIRELIMIT] = vk.acquirelast%vk.backbuf_count;
+			vk.acquirelast++;
 		}
 
 		for (i = 0; i < vk.backbuf_count; i++)
@@ -878,7 +897,7 @@ static qboolean VK_CreateSwapChain(void)
 		memories = NULL;
 		VkAssert(vkGetSwapchainImagesKHR(vk.device, vk.swapchain, &vk.backbuf_count, images));
 
-		vk.aquirelast = vk.aquirenext = 0;
+		vk.acquirelast = vk.acquirenext = 0;
 		for (i = 0; i < ACQUIRELIMIT; i++)
 		{
 			if (vk_waitfence.ival || !*vk_waitfence.string)
@@ -891,18 +910,19 @@ static qboolean VK_CreateSwapChain(void)
 			{
 				VkSemaphoreCreateInfo sci = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
 				VkAssert(vkCreateSemaphore(vk.device, &sci, vkallocationcb, &vk.acquiresemaphores[i]));
+				DebugSetName(VK_OBJECT_TYPE_SEMAPHORE, (uint64_t)vk.acquiresemaphores[i], "vk.acquiresemaphores");
 				vk.acquirefences[i] = VK_NULL_HANDLE;
 			}
 		}
 		if (!vk_submissionthread.value && *vk_submissionthread.string)
-			preaquirecount = 1;
+			preaquirecount = 1;	//no real point asking for more.
 		else
 			preaquirecount = vk.backbuf_count;
 		/*-1 to hide any weird thread issues*/
-		while (vk.aquirelast < ACQUIRELIMIT-1 && vk.aquirelast < preaquirecount && vk.aquirelast <= vk.backbuf_count-surfcaps.minImageCount)
+		while (vk.acquirelast < ACQUIRELIMIT-1 && vk.acquirelast < preaquirecount && vk.acquirelast <= vk.backbuf_count-surfcaps.minImageCount)
 		{
-			VkAssert(vkAcquireNextImageKHR(vk.device, vk.swapchain, UINT64_MAX, vk.acquiresemaphores[vk.aquirelast%ACQUIRELIMIT], vk.acquirefences[vk.aquirelast%ACQUIRELIMIT], &vk.acquirebufferidx[vk.aquirelast%ACQUIRELIMIT]));
-			vk.aquirelast++;
+			VkAssert(vkAcquireNextImageKHR(vk.device, vk.swapchain, UINT64_MAX, vk.acquiresemaphores[vk.acquirelast%ACQUIRELIMIT], vk.acquirefences[vk.acquirelast%ACQUIRELIMIT], &vk.acquirebufferidx[vk.acquirelast%ACQUIRELIMIT]));
+			vk.acquirelast++;
 		}
 	}
 
@@ -1085,6 +1105,7 @@ static qboolean VK_CreateSwapChain(void)
 		{
 			VkSemaphoreCreateInfo seminfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
 			VkAssert(vkCreateSemaphore(vk.device, &seminfo, vkallocationcb, &vk.backbufs[i].presentsemaphore));
+			DebugSetName(VK_OBJECT_TYPE_SEMAPHORE, (uint64_t)vk.backbufs[i].presentsemaphore, "vk.backbufs.presentsemaphore");
 		}
 	}
 	free(images);
@@ -1105,8 +1126,8 @@ void	VK_Draw_Init(void)
 void	VK_Draw_Shutdown(void)
 {
 	R2D_Shutdown();
-	Image_Shutdown();
 	Shader_Shutdown();
+	Image_Shutdown();
 }
 
 void VK_CreateSampler(unsigned int flags, vk_image_t *img)
@@ -1381,10 +1402,10 @@ vk_image_t VK_CreateTexture2DArray(uint32_t width, uint32_t height, uint32_t lay
 	case PTI_BC2_RGBA_SRGB:		format = VK_FORMAT_BC2_SRGB_BLOCK;				break;
 	case PTI_BC3_RGBA:			format = VK_FORMAT_BC3_UNORM_BLOCK;				break;
 	case PTI_BC3_RGBA_SRGB:		format = VK_FORMAT_BC3_SRGB_BLOCK;				break;
-	case PTI_BC4_R8:			format = VK_FORMAT_BC4_UNORM_BLOCK;				break;
-	case PTI_BC4_R8_SNORM:		format = VK_FORMAT_BC4_SNORM_BLOCK;				break;
-	case PTI_BC5_RG8:			format = VK_FORMAT_BC5_UNORM_BLOCK;				break;
-	case PTI_BC5_RG8_SNORM:		format = VK_FORMAT_BC5_SNORM_BLOCK;				break;
+	case PTI_BC4_R:				format = VK_FORMAT_BC4_UNORM_BLOCK;				break;
+	case PTI_BC4_R_SNORM:		format = VK_FORMAT_BC4_SNORM_BLOCK;				break;
+	case PTI_BC5_RG:			format = VK_FORMAT_BC5_UNORM_BLOCK;				break;
+	case PTI_BC5_RG_SNORM:		format = VK_FORMAT_BC5_SNORM_BLOCK;				break;
 	case PTI_BC6_RGB_UFLOAT:	format = VK_FORMAT_BC6H_UFLOAT_BLOCK;			break;
 	case PTI_BC6_RGB_SFLOAT:	format = VK_FORMAT_BC6H_SFLOAT_BLOCK;			break;
 	case PTI_BC7_RGBA:			format = VK_FORMAT_BC7_UNORM_BLOCK;				break;
@@ -1459,6 +1480,39 @@ vk_image_t VK_CreateTexture2DArray(uint32_t width, uint32_t height, uint32_t lay
 	case PTI_ASTC_10X10_HDR:	format = VK_FORMAT_ASTC_10x10_UNORM_BLOCK;	break;
 	case PTI_ASTC_12X10_HDR:	format = VK_FORMAT_ASTC_12x10_UNORM_BLOCK;	break;
 	case PTI_ASTC_12X12_HDR:	format = VK_FORMAT_ASTC_12x12_UNORM_BLOCK;	break;
+#endif
+
+#ifdef ASTC3D
+	case PTI_ASTC_3X3X3_HDR:	//vulkan doesn't support these for some reason
+	case PTI_ASTC_4X3X3_HDR:
+	case PTI_ASTC_4X4X3_HDR:
+	case PTI_ASTC_4X4X4_HDR:
+	case PTI_ASTC_5X4X4_HDR:
+	case PTI_ASTC_5X5X4_HDR:
+	case PTI_ASTC_5X5X5_HDR:
+	case PTI_ASTC_6X5X5_HDR:
+	case PTI_ASTC_6X6X5_HDR:
+	case PTI_ASTC_6X6X6_HDR:
+	case PTI_ASTC_3X3X3_LDR:
+	case PTI_ASTC_4X3X3_LDR:
+	case PTI_ASTC_4X4X3_LDR:
+	case PTI_ASTC_4X4X4_LDR:
+	case PTI_ASTC_5X4X4_LDR:
+	case PTI_ASTC_5X5X4_LDR:
+	case PTI_ASTC_5X5X5_LDR:
+	case PTI_ASTC_6X5X5_LDR:
+	case PTI_ASTC_6X6X5_LDR:
+	case PTI_ASTC_6X6X6_LDR:
+	case PTI_ASTC_3X3X3_SRGB:
+	case PTI_ASTC_4X3X3_SRGB:
+	case PTI_ASTC_4X4X3_SRGB:
+	case PTI_ASTC_4X4X4_SRGB:
+	case PTI_ASTC_5X4X4_SRGB:
+	case PTI_ASTC_5X5X4_SRGB:
+	case PTI_ASTC_5X5X5_SRGB:
+	case PTI_ASTC_6X5X5_SRGB:
+	case PTI_ASTC_6X6X5_SRGB:
+	case PTI_ASTC_6X6X6_SRGB:	break;
 #endif
 
 	//depth formats
@@ -1573,20 +1627,20 @@ vk_image_t VK_CreateTexture2DArray(uint32_t width, uint32_t height, uint32_t lay
 		break;
 
 #ifdef VK_EXT_astc_decode_mode
-	case PTI_ASTC_4X4:	//set these to use rgba8 decoding, because we know they're not hdr and the format is basically 8bit anyway.
-	case PTI_ASTC_5X4:	//we do NOT do this for the hdr, as that would cause data loss.
-	case PTI_ASTC_5X5:	//we do NOT do this for sRGB because its pointless.
-	case PTI_ASTC_6X5:
-	case PTI_ASTC_6X6:
-	case PTI_ASTC_8X5:
-	case PTI_ASTC_8X6:
-	case PTI_ASTC_8X8:
-	case PTI_ASTC_10X5:
-	case PTI_ASTC_10X6:
-	case PTI_ASTC_10X8:
-	case PTI_ASTC_10X10:
-	case PTI_ASTC_12X10:
-	case PTI_ASTC_12X12:
+	case PTI_ASTC_4X4_LDR:	//set these to use rgba8 decoding, because we know they're not hdr and the format is basically 8bit anyway.
+	case PTI_ASTC_5X4_LDR:	//we do NOT do this for the hdr, as that would cause data loss.
+	case PTI_ASTC_5X5_LDR:	//we do NOT do this for sRGB because its pointless.
+	case PTI_ASTC_6X5_LDR:
+	case PTI_ASTC_6X6_LDR:
+	case PTI_ASTC_8X5_LDR:
+	case PTI_ASTC_8X6_LDR:
+	case PTI_ASTC_8X8_LDR:
+	case PTI_ASTC_10X5_LDR:
+	case PTI_ASTC_10X6_LDR:
+	case PTI_ASTC_10X8_LDR:
+	case PTI_ASTC_10X10_LDR:
+	case PTI_ASTC_12X10_LDR:
+	case PTI_ASTC_12X12_LDR:
 		viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
 		viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
 		viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -1797,7 +1851,7 @@ qboolean VK_LoadTextureMips (texid_t tex, const struct pendingtextureinfo *mips)
 	VkCommandBuffer vkloadcmd;
 	vk_image_t target;
 	uint32_t i;
-	uint32_t blockwidth, blockheight;
+	uint32_t blockwidth, blockheight, blockdepth;
 	uint32_t blockbytes;
 	uint32_t layers;
 	uint32_t mipcount = mips->mipcount;
@@ -1828,14 +1882,14 @@ qboolean VK_LoadTextureMips (texid_t tex, const struct pendingtextureinfo *mips)
 		{
 			if (mips->mip[i].width != max(1,(mips->mip[i-1].width>>1)) ||
 				mips->mip[i].height != max(1,(mips->mip[i-1].height>>1)))
-			{	//okay, this mip looks like it was sized wrongly. this can easily happen with dds files.
+			{	//okay, this mip looks like it was sized wrongly.
 				mipcount = i;
 				break;
 			}
 		}
 	}
 
-	Image_BlockSizeForEncoding(mips->encoding, &blockbytes, &blockwidth, &blockheight);
+	Image_BlockSizeForEncoding(mips->encoding, &blockbytes, &blockwidth, &blockheight, &blockdepth);
 
 	fence = VK_FencedBegin(VK_TextureLoaded, sizeof(*fence));
 	fence->mips = mipcount;
@@ -1890,7 +1944,7 @@ qboolean VK_LoadTextureMips (texid_t tex, const struct pendingtextureinfo *mips)
 	}
 	else
 	{
-		target = VK_CreateTexture2DArray(mips->mip[0].width, mips->mip[0].height, layers, mipcount/layers, mips->encoding, mips->type, !!(tex->flags&IF_RENDERTARGET), tex->ident);
+		target = VK_CreateTexture2DArray(mips->mip[0].width, mips->mip[0].height, layers, mipcount, mips->encoding, mips->type, !!(tex->flags&IF_RENDERTARGET), tex->ident);
 
 		if (target.mem.memory == VK_NULL_HANDLE)
 		{
@@ -1925,7 +1979,7 @@ qboolean VK_LoadTextureMips (texid_t tex, const struct pendingtextureinfo *mips)
 	{
 		uint32_t blockswidth = (mips->mip[i].width+blockwidth-1) / blockwidth;
 		uint32_t blocksheight = (mips->mip[i].height+blockheight-1) / blockheight;
-		uint32_t blocksdepth = (mips->mip[i].depth+1-1) / 1;
+		uint32_t blocksdepth = (mips->mip[i].depth+blockdepth-1) / blockdepth;
 		bci.size += blockswidth*blocksheight*blocksdepth*blockbytes;
 	}
 	bci.flags = 0;
@@ -1961,31 +2015,34 @@ qboolean VK_LoadTextureMips (texid_t tex, const struct pendingtextureinfo *mips)
 		//for compressed formats (ie: s3tc/dxt) we need to round up to deal with npot.
 		uint32_t blockswidth = (mips->mip[i].width+blockwidth-1) / blockwidth;
 		uint32_t blocksheight = (mips->mip[i].height+blockheight-1) / blockheight;
-		uint32_t blocksdepth = (mips->mip[i].depth+1-1) / 1;
+		uint32_t blocksdepth = (mips->mip[i].depth+blockdepth-1) / blockdepth, z;
 
-		if (mips->mip[i].data)
-			memcpy((char*)mapdata + bci.size, (char*)mips->mip[i].data, blockswidth*blockbytes*blocksheight*blocksdepth);
-		else
-			memset((char*)mapdata + bci.size, 0, blockswidth*blockbytes*blocksheight*blocksdepth);
+		//build it in layers...
+		for (z = 0; z < blocksdepth; z++)
+		{
+			if (mips->mip[i].data)
+				memcpy((char*)mapdata + bci.size, (char*)mips->mip[i].data, blockswidth*blockbytes*blocksheight*blockdepth);
+			else
+				memset((char*)mapdata + bci.size, 0, blockswidth*blockbytes*blocksheight*blockdepth);
 
-		//queue up a buffer->image copy for this mip
-		region.bufferOffset = bci.size;
-		region.bufferRowLength = blockswidth*blockwidth;
-		region.bufferImageHeight = blocksheight*blockheight;
-		region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		region.imageSubresource.mipLevel = i;
-		region.imageSubresource.baseArrayLayer = 0;
-		region.imageSubresource.layerCount = mips->mip[i].depth;
-		region.imageOffset.x = 0;
-		region.imageOffset.y = 0;
-		region.imageOffset.z = 0;
-		region.imageExtent.width = mips->mip[i].width;
-		region.imageExtent.height = mips->mip[i].height;
-		region.imageExtent.depth = mips->mip[i].depth;
+			//queue up a buffer->image copy for this mip
+			region.bufferOffset = bci.size;
+			region.bufferRowLength = blockswidth*blockwidth;
+			region.bufferImageHeight = blocksheight*blockheight;
+			region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			region.imageSubresource.mipLevel = i;
+			region.imageSubresource.baseArrayLayer = z*blockdepth;
+			region.imageSubresource.layerCount = blockdepth;
+			region.imageOffset.x = 0;
+			region.imageOffset.y = 0;
+			region.imageOffset.z = 0;
+			region.imageExtent.width = mips->mip[i].width;
+			region.imageExtent.height = mips->mip[i].height;
+			region.imageExtent.depth = blockdepth;
 
-		vkCmdCopyBufferToImage(vkloadcmd, fence->stagingbuffer, target.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-
-		bci.size += blockswidth*blocksheight*blockbytes;
+			vkCmdCopyBufferToImage(vkloadcmd, fence->stagingbuffer, target.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+			bci.size += blockdepth*blockswidth*blocksheight*blockbytes;
+		}
 	}
 	vkUnmapMemory(vk.device, fence->stagingmemory);
 
@@ -2039,6 +2096,12 @@ void    VK_DestroyTexture			(texid_t tex)
 
 void	VK_R_Init					(void)
 {
+	uint32_t white[6] = {~0u,~0u,~0u,~0u,~0u,~0u};
+	r_blackcubeimage = Image_CreateTexture("***blackcube***", NULL, IF_NEAREST|IF_TEXTYPE_CUBE);
+	Image_Upload(r_blackcubeimage, TF_RGBX32, NULL, NULL, 1, 1, 6, IF_NEAREST|IF_NOMIPMAP|IF_NOGAMMA|IF_TEXTYPE_CUBE);
+
+	r_whitecubeimage = Image_CreateTexture("***whitecube***", NULL, IF_NEAREST|IF_TEXTYPE_CUBE);
+	Image_Upload(r_whitecubeimage, TF_RGBX32, white, NULL, 1, 1, 6, IF_NEAREST|IF_NOMIPMAP|IF_NOGAMMA|IF_TEXTYPE_CUBE);
 }
 void	VK_R_DeInit					(void)
 {
@@ -2047,6 +2110,8 @@ void	VK_R_DeInit					(void)
 	VK_Shutdown_PostProc();
 	VK_DestroySwapChain();
 	VKBE_Shutdown();
+
+	R2D_Shutdown();
 	Shader_Shutdown();
 	Image_Shutdown();
 }
@@ -2184,7 +2249,7 @@ static void VK_Shutdown_PostProc(void)
 	if (vk.device)
 	{
 		for (i = 0; i < countof(postproc); i++)
-			VKBE_RT_Gen(&postproc[i], 0, 0, true, RT_IMAGEFLAGS);
+			VKBE_RT_Gen(&postproc[i], NULL, 0, 0, true, RT_IMAGEFLAGS);
 		VK_R_BloomShutdown();
 	}
 
@@ -2229,7 +2294,7 @@ static void VK_Init_PostProc(void)
 			}
 		}
 
-		Image_Upload(scenepp_texture_warp, TF_RGBX32, pp_warp_tex, NULL, PP_WARP_TEX_SIZE, PP_WARP_TEX_SIZE, IF_LINEAR|IF_NOMIPMAP|IF_NOGAMMA);
+		Image_Upload(scenepp_texture_warp, TF_RGBX32, pp_warp_tex, NULL, PP_WARP_TEX_SIZE, PP_WARP_TEX_SIZE, 1, IF_LINEAR|IF_NOMIPMAP|IF_NOGAMMA);
 
 		// TODO: init edge texture - this is ampscale * 2, with ampscale calculated
 		// init warp texture - this specifies offset in
@@ -2273,7 +2338,7 @@ static void VK_Init_PostProc(void)
 			}
 		}
 
-		Image_Upload(scenepp_texture_edge, TF_RGBX32, pp_edge_tex, NULL, PP_AMP_TEX_SIZE, PP_AMP_TEX_SIZE, IF_LINEAR|IF_NOMIPMAP|IF_NOGAMMA);
+		Image_Upload(scenepp_texture_edge, TF_RGBX32, pp_edge_tex, NULL, PP_AMP_TEX_SIZE, PP_AMP_TEX_SIZE, 1, IF_LINEAR|IF_NOMIPMAP|IF_NOGAMMA);
 	}
 
 
@@ -2589,6 +2654,52 @@ static qboolean VK_R_RenderScene_Cubemap(struct vk_rendertarg *fb)
 	return true;
 }
 
+void VK_R_RenderEye(texid_t image, vec4_t fovoverride, vec3_t axisorg[4])
+{
+	struct vk_rendertarg *rt;
+
+	VK_SetupViewPortProjection(false);
+
+	rt = &postproc[postproc_buf++%countof(postproc)];
+	VKBE_RT_Gen(rt, image?image->vkimage:NULL, 320, 200, false, RT_IMAGEFLAGS);
+	VKBE_RT_Begin(rt);
+
+
+	if (!vk.rendertarg->depthcleared)
+	{
+		VkClearAttachment clr;
+		VkClearRect rect;
+		clr.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+		clr.clearValue.depthStencil.depth = 1;
+		clr.clearValue.depthStencil.stencil = 0;
+		clr.colorAttachment = 1;
+		rect.rect.offset.x = r_refdef.pxrect.x;
+		rect.rect.offset.y = r_refdef.pxrect.y;
+		rect.rect.extent.width = r_refdef.pxrect.width;
+		rect.rect.extent.height = r_refdef.pxrect.height;
+		rect.layerCount = 1;
+		rect.baseArrayLayer = 0;
+		vkCmdClearAttachments(vk.rendertarg->cbuf, 1, &clr, 1, &rect);
+		vk.rendertarg->depthcleared = true;
+	}
+
+	VKBE_SelectEntity(&r_worldentity);
+
+	R_SetFrustum (r_refdef.m_projection_std, r_refdef.m_view);
+	RQ_BeginFrame();
+	if (!(r_refdef.flags & RDF_NOWORLDMODEL))
+	{
+		if (cl.worldmodel)
+			P_DrawParticles ();
+	}
+	Surf_DrawWorld();
+	RQ_RenderBatchClear();
+
+	vk.rendertarg->depthcleared = false;
+
+	VKBE_RT_End(rt);
+}
+
 void	VK_R_RenderView				(void)
 {
 	extern unsigned int r_viewcontents;
@@ -2607,6 +2718,12 @@ void	VK_R_RenderView				(void)
 	VKBE_Set2D(false);
 
 	Surf_SetupFrame();
+
+	if (vid.vr && vid.vr->Render(VK_R_RenderEye))
+	{
+		VK_Set2D ();
+		return;
+	}
 
 	//check if we can do underwater warp
 	if (cls.protocol != CP_QUAKE2)	//quake2 tells us directly
@@ -2710,7 +2827,7 @@ void	VK_R_RenderView				(void)
 			rt->rpassflags |= RP_MULTISAMPLE;
 		if (r_refdef.flags&RDF_SCENEGAMMA)	//if we're doing scenegamma here, use an fp16 target for extra precision
 			rt->rpassflags |= RP_FP16;
-		VKBE_RT_Gen(rt, r_refdef.pxrect.width, r_refdef.pxrect.height, false, (r_renderscale.value < 0)?RT_IMAGEFLAGS-IF_LINEAR+IF_NEAREST:RT_IMAGEFLAGS);
+		VKBE_RT_Gen(rt, NULL, r_refdef.pxrect.width, r_refdef.pxrect.height, false, (r_renderscale.value < 0)?RT_IMAGEFLAGS-IF_LINEAR+IF_NEAREST:RT_IMAGEFLAGS);
 	}
 	else
 		rt = rtscreen;
@@ -2805,7 +2922,7 @@ void	VK_R_RenderView				(void)
 			{
 				rt = &postproc[postproc_buf++];
 				rt->rpassflags = 0;
-				VKBE_RT_Gen(rt, 320, 200, false, RT_IMAGEFLAGS);
+				VKBE_RT_Gen(rt, NULL, 320, 200, false, RT_IMAGEFLAGS);
 			}
 			else
 				rt = rtscreen;
@@ -2827,7 +2944,7 @@ void	VK_R_RenderView				(void)
 			{
 				rt = &postproc[postproc_buf++];
 				rt->rpassflags = 0;
-				VKBE_RT_Gen(rt, 320, 200, false, RT_IMAGEFLAGS);
+				VKBE_RT_Gen(rt, NULL, 320, 200, false, RT_IMAGEFLAGS);
 			}
 			else
 				rt = rtscreen;
@@ -2846,7 +2963,7 @@ void	VK_R_RenderView				(void)
 			{
 				rt = &postproc[postproc_buf++];
 				rt->rpassflags = 0;
-				VKBE_RT_Gen(rt, 320, 200, false, RT_IMAGEFLAGS);
+				VKBE_RT_Gen(rt, NULL, 320, 200, false, RT_IMAGEFLAGS);
 			}
 			else
 				rt = rtscreen;
@@ -2866,7 +2983,7 @@ void	VK_R_RenderView				(void)
 			{
 				rt = &postproc[postproc_buf++];
 				rt->rpassflags = 0;
-				VKBE_RT_Gen(rt, 320, 200, false, RT_IMAGEFLAGS);
+				VKBE_RT_Gen(rt, NULL, 320, 200, false, RT_IMAGEFLAGS);
 			}
 			else
 				rt = rtscreen;
@@ -3334,7 +3451,7 @@ qboolean VK_SCR_GrabBackBuffer(void)
 		vk.unusedframes = newframe;
 	}
 
-	while (vk.aquirenext == vk.aquirelast)
+	while (vk.acquirenext == vk.acquirelast)
 	{	//we're still waiting for the render thread to increment acquirelast.
 		//shouldn't really happen, but can if the gpu is slow.
 		if (vk.neednewswapchain)
@@ -3360,14 +3477,14 @@ qboolean VK_SCR_GrabBackBuffer(void)
 #endif
 	}
 
-	if (vk.acquirefences[vk.aquirenext%ACQUIRELIMIT] != VK_NULL_HANDLE)
+	if (vk.acquirefences[vk.acquirenext%ACQUIRELIMIT] != VK_NULL_HANDLE)
 	{
 		//wait for the queued acquire to actually finish
 		if (vk_busywait.ival)
 		{	//busy wait, to try to get the highest fps possible
 			for (;;)
 			{
-				switch(vkGetFenceStatus(vk.device, vk.acquirefences[vk.aquirenext%ACQUIRELIMIT]))
+				switch(vkGetFenceStatus(vk.device, vk.acquirefences[vk.acquirenext%ACQUIRELIMIT]))
 				{
 				case VK_SUCCESS:
 					break;	//hurrah
@@ -3389,7 +3506,7 @@ qboolean VK_SCR_GrabBackBuffer(void)
 			int failures = 0;
 			for(;;)
 			{
-				VkResult err = vkWaitForFences(vk.device, 1, &vk.acquirefences[vk.aquirenext%ACQUIRELIMIT], VK_FALSE, 1000000000);
+				VkResult err = vkWaitForFences(vk.device, 1, &vk.acquirefences[vk.acquirenext%ACQUIRELIMIT], VK_FALSE, 1000000000);
 
 				if (err == VK_SUCCESS)
 					break;
@@ -3406,12 +3523,12 @@ qboolean VK_SCR_GrabBackBuffer(void)
 				return false;
 			}
 		}
-		VkAssert(vkResetFences(vk.device, 1, &vk.acquirefences[vk.aquirenext%ACQUIRELIMIT]));
+		VkAssert(vkResetFences(vk.device, 1, &vk.acquirefences[vk.acquirenext%ACQUIRELIMIT]));
 	}
-	vk.bufferidx = vk.acquirebufferidx[vk.aquirenext%ACQUIRELIMIT];
+	vk.bufferidx = vk.acquirebufferidx[vk.acquirenext%ACQUIRELIMIT];
 
-	sem = vk.acquiresemaphores[vk.aquirenext%ACQUIRELIMIT];
-	vk.aquirenext++;
+	sem = vk.acquiresemaphores[vk.acquirenext%ACQUIRELIMIT];
+	vk.acquirenext++;
 
 	//grab the first unused
 	Sys_LockConditional(vk.submitcondition);
@@ -3888,6 +4005,8 @@ VkRenderPass VK_GetRenderPass(int pass)
 		attachments[depth_reference.attachment].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 //		attachments[color_reference.attachment].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 		attachments[depth_reference.attachment].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+
+		attachments[depth_reference.attachment].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	}
 
 	VkAssert(vkCreateRenderPass(vk.device, &rp_info, vkallocationcb, &vk.renderpass[pass]));
@@ -3928,14 +4047,49 @@ void VK_DoPresent(struct vkframe *theframe)
 		}
 		else
 		{
-			err = vkAcquireNextImageKHR(vk.device, vk.swapchain, 0, vk.acquiresemaphores[vk.aquirelast%ACQUIRELIMIT], vk.acquirefences[vk.aquirelast%ACQUIRELIMIT], &vk.acquirebufferidx[vk.aquirelast%ACQUIRELIMIT]);
-			if (err)
+			int r = vk.acquirelast%ACQUIRELIMIT;
+			uint64_t timeout = (vk.acquirelast==vk.acquirenext)?UINT64_MAX:0;	//
+			err = vkAcquireNextImageKHR(vk.device, vk.swapchain, timeout, vk.acquiresemaphores[r], vk.acquirefences[r], &vk.acquirebufferidx[r]);
+			switch(err)
 			{
+			case VK_SUBOPTIMAL_KHR:	//success, but with a warning.
+				vk.neednewswapchain = true;
+				vk.acquirelast++;
+				break;
+			case VK_SUCCESS:	//success
+				vk.acquirelast++;
+				break;
+
+			//we gave the presentation engine an image, but its refusing to give us one back.
+			//logically this means the implementation lied about its VkSurfaceCapabilitiesKHR::minImageCount
+			case VK_TIMEOUT:	//'success', yet still no result
+			case VK_NOT_READY:
+				//no idea how to handle. let it slip?
+				if (vk.acquirelast == vk.acquirenext)
+					vk.neednewswapchain = true;	//slipped too much
+				break;
+
+			case VK_ERROR_OUT_OF_DATE_KHR:
+				//unable to present, but we at least don't need to throw everything away.
+				vk.neednewswapchain = true;
+				break;
+			case VK_ERROR_DEVICE_LOST:
+			case VK_ERROR_OUT_OF_HOST_MEMORY:
+			case VK_ERROR_OUT_OF_DEVICE_MEMORY:
+			case VK_ERROR_SURFACE_LOST_KHR:
+				//something really bad happened.
 				Con_Printf("ERROR: vkAcquireNextImageKHR: %s\n", VK_VKErrorToString(err));
 				vk.neednewswapchain = true;
-				vk.devicelost |= (err == VK_ERROR_DEVICE_LOST);
+				vk.devicelost = true;
+				break;
+			default:
+			//case VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT:
+				//we don't know why we're getting this. vendor problem.
+				Con_Printf("ERROR: vkAcquireNextImageKHR: undocumented/extended %s\n", VK_VKErrorToString(err));
+				vk.neednewswapchain = true;
+				vk.devicelost = true;	//this might be an infinite loop... no idea how to handle it.
+				break;
 			}
-			vk.aquirelast++;
 		}
 		RSpeedEnd(RSPEED_ACQUIRE);
 	}
@@ -4147,10 +4301,10 @@ void VK_CheckTextureFormats(void)
 		{PTI_BC1_RGBA_SRGB,		VK_FORMAT_BC1_RGBA_SRGB_BLOCK,		VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT},
 		{PTI_BC2_RGBA_SRGB,		VK_FORMAT_BC2_SRGB_BLOCK,			VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT},
 		{PTI_BC3_RGBA_SRGB,		VK_FORMAT_BC3_SRGB_BLOCK,			VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT},
-		{PTI_BC4_R8,			VK_FORMAT_BC4_UNORM_BLOCK,			VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT},
-		{PTI_BC4_R8_SNORM,		VK_FORMAT_BC4_SNORM_BLOCK,			VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT},
-		{PTI_BC5_RG8,			VK_FORMAT_BC5_UNORM_BLOCK,			VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT},
-		{PTI_BC5_RG8_SNORM,		VK_FORMAT_BC5_SNORM_BLOCK,			VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT},
+		{PTI_BC4_R,				VK_FORMAT_BC4_UNORM_BLOCK,			VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT},
+		{PTI_BC4_R_SNORM,		VK_FORMAT_BC4_SNORM_BLOCK,			VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT},
+		{PTI_BC5_RG,			VK_FORMAT_BC5_UNORM_BLOCK,			VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT},
+		{PTI_BC5_RG_SNORM,		VK_FORMAT_BC5_SNORM_BLOCK,			VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT},
 		{PTI_BC6_RGB_UFLOAT,	VK_FORMAT_BC6H_UFLOAT_BLOCK,		VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT},
 		{PTI_BC6_RGB_SFLOAT,	VK_FORMAT_BC6H_SFLOAT_BLOCK,		VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT},
 		{PTI_BC7_RGBA,			VK_FORMAT_BC7_UNORM_BLOCK,			VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT},
@@ -4220,6 +4374,7 @@ void VK_CheckTextureFormats(void)
 
 	sh_config.texture2d_maxsize = props.limits.maxImageDimension2D;
 	sh_config.texturecube_maxsize = props.limits.maxImageDimensionCube;
+	sh_config.texture2darray_maxlayers = props.limits.maxImageArrayLayers;
 
 	for (i = 0; i < countof(texfmt); i++)
 	{
@@ -4231,7 +4386,7 @@ void VK_CheckTextureFormats(void)
 			sh_config.texfmt[texfmt[i].pti] = true;
 	}
 
-	if (sh_config.texfmt[PTI_BC1_RGBA] && sh_config.texfmt[PTI_BC2_RGBA] && sh_config.texfmt[PTI_BC3_RGBA] && sh_config.texfmt[PTI_BC5_RG8] && sh_config.texfmt[PTI_BC7_RGBA])
+	if (sh_config.texfmt[PTI_BC1_RGBA] && sh_config.texfmt[PTI_BC2_RGBA] && sh_config.texfmt[PTI_BC3_RGBA] && sh_config.texfmt[PTI_BC5_RG] && sh_config.texfmt[PTI_BC7_RGBA])
 		sh_config.hw_bc = 3;
 	if (sh_config.texfmt[PTI_ETC2_RGB8] && sh_config.texfmt[PTI_ETC2_RGB8A1] && sh_config.texfmt[PTI_ETC2_RGB8A8] && sh_config.texfmt[PTI_EAC_RG11])
 		sh_config.hw_etc = 2;
@@ -4239,6 +4394,47 @@ void VK_CheckTextureFormats(void)
 		sh_config.hw_astc = 1;	//the core vulkan formats refer to the ldr profile. hdr is a separate extension, which is still not properly specified..
 	if (sh_config.texfmt[PTI_ASTC_4X4_HDR])
 		sh_config.hw_astc = 2;	//the core vulkan formats refer to the ldr profile. hdr is a separate extension, which is still not properly specified..
+}
+
+//creates a vulkan instance with the additional extensions, and hands a copy of the instance to the caller.
+qboolean VK_CreateInstance(vrsetup_t *info, char *vrexts, void *result)
+{
+	VkInstanceCreateInfo inst_info = *(VkInstanceCreateInfo*)info->userctx;
+	VkResult err;
+	const char *ext[64];
+	unsigned int numext = inst_info.enabledExtensionCount;
+	memcpy(ext, inst_info.ppEnabledExtensionNames, numext*sizeof(*ext));
+	while (vrexts && numext < countof(ext))
+	{
+		ext[numext++] = vrexts;
+		vrexts = strchr(vrexts, ' ');
+		if (!vrexts)
+			break;
+		*vrexts++ = 0;
+	}
+
+	err = vkCreateInstance(&inst_info, vkallocationcb, &vk.instance);
+	switch(err)
+	{
+	case VK_ERROR_INCOMPATIBLE_DRIVER:
+		Con_Printf("VK_ERROR_INCOMPATIBLE_DRIVER: please install an appropriate vulkan driver\n");
+		return false;
+	case VK_ERROR_EXTENSION_NOT_PRESENT:
+		Con_Printf("VK_ERROR_EXTENSION_NOT_PRESENT: something on a system level is probably misconfigured\n");
+		return false;
+	case VK_ERROR_LAYER_NOT_PRESENT:
+		Con_Printf("VK_ERROR_LAYER_NOT_PRESENT: requested layer is not known/usable\n");
+		return false;
+	default:
+		Con_Printf("Unknown vulkan instance creation error: %x\n", err);
+		return false;
+	case VK_SUCCESS:
+		break;
+	}
+
+	if (result)
+		*(VkInstance*)result = vk.instance;
+	return true;
 }
 
 //initialise the vulkan instance, context, device, etc.
@@ -4251,6 +4447,9 @@ qboolean VK_Init(rendererstate_t *info, const char **sysextnames, qboolean (*cre
 	int gpuidx = 0;
 	const char *extensions[8];
 	uint32_t extensions_count = 0;
+
+	qboolean okay;
+	vrsetup_t vrsetup = {sizeof(vrsetup)};
 
 	//device extensions that want to enable
 	//initialised in reverse order, so superseeded should name later extensions.
@@ -4279,9 +4478,6 @@ qboolean VK_Init(rendererstate_t *info, const char **sysextnames, qboolean (*cre
 
 	for (e = 0; e < countof(knowndevexts); e++)
 		*knowndevexts[e].flag = false;
-#ifdef MULTITHREAD
-	vk.allowsubmissionthread = true;
-#endif
 	vk.neednewswapchain = true;
 	vk.triplebuffer = info->triplebuffer;
 	vk.vsync = info->wait;
@@ -4293,7 +4489,7 @@ qboolean VK_Init(rendererstate_t *info, const char **sysextnames, qboolean (*cre
 #ifdef VK_NO_PROTOTYPES
 	if (!vkGetInstanceProcAddr)
 	{
-		Con_Printf("vkGetInstanceProcAddr is null\n");
+		Con_Printf(CON_ERROR"vkGetInstanceProcAddr is null\n");
 		return false;
 	}
 #define VKFunc(n) vk##n = (PFN_vk##n)vkGetInstanceProcAddr(VK_NULL_HANDLE, "vk"#n);
@@ -4312,9 +4508,11 @@ qboolean VK_Init(rendererstate_t *info, const char **sysextnames, qboolean (*cre
 #ifdef VK_EXT_debug_report
 		qboolean havedebugreport = false;
 #endif
-		vkEnumerateInstanceExtensionProperties(NULL, &count, NULL);
+		if (VK_SUCCESS!=vkEnumerateInstanceExtensionProperties(NULL, &count, NULL))
+			count = 0;
 		ext = malloc(sizeof(*ext)*count);
-		vkEnumerateInstanceExtensionProperties(NULL, &count, ext);
+		if (!ext || VK_SUCCESS!=vkEnumerateInstanceExtensionProperties(NULL, &count, ext))
+			count = 0;
 		for (i = 0; i < count && extensions_count < countof(extensions); i++)
 		{
 			Con_DLPrintf(2, " vki: %s\n", ext[i].extensionName);
@@ -4360,7 +4558,7 @@ qboolean VK_Init(rendererstate_t *info, const char **sysextnames, qboolean (*cre
 
 		if (sysextnames && (!vk.khr_swapchain || !surfext))
 		{
-			Con_Printf("Vulkan instance lacks driver support for %s\n", sysextnames[0]);
+			Con_TPrintf(CON_ERROR"Vulkan instance lacks driver support for %s\n", sysextnames[0]);
 			return false;
 		}
 	}
@@ -4383,24 +4581,33 @@ qboolean VK_Init(rendererstate_t *info, const char **sysextnames, qboolean (*cre
 	inst_info.enabledExtensionCount = extensions_count;
 	inst_info.ppEnabledExtensionNames = extensions;
 
-	err = vkCreateInstance(&inst_info, vkallocationcb, &vk.instance);
-	switch(err)
+	vrsetup.vrplatform = VR_VULKAN;
+	vrsetup.userctx = &inst_info;
+	vrsetup.createinstance = VK_CreateInstance;
+	if (info->vr)
 	{
-	case VK_ERROR_INCOMPATIBLE_DRIVER:
-		Con_Printf("VK_ERROR_INCOMPATIBLE_DRIVER: please install an appropriate vulkan driver\n");
-		return false;
-	case VK_ERROR_EXTENSION_NOT_PRESENT:
-		Con_Printf("VK_ERROR_EXTENSION_NOT_PRESENT: something on a system level is probably misconfigured\n");
-		return false;
-	case VK_ERROR_LAYER_NOT_PRESENT:
-		Con_Printf("VK_ERROR_LAYER_NOT_PRESENT: requested layer is not known/usable\n");
-		return false;
-	default:
-		Con_Printf("Unknown vulkan instance creation error: %x\n", err);
-		return false;
-	case VK_SUCCESS:
-		break;
+		okay = info->vr->Prepare(&vrsetup);
+		if (!okay)
+		{
+			info->vr->Shutdown();
+			info->vr = NULL;
+		}
 	}
+	else
+		okay = false;
+	if (!okay)
+		okay = vrsetup.createinstance(&vrsetup, NULL, NULL);
+	if (!okay)
+	{
+		if (info->vr)
+			info->vr->Shutdown();
+		return false;
+	}
+	vid.vr = info->vr;
+
+#ifdef MULTITHREAD
+	vk.allowsubmissionthread = !vid.vr;
+#endif
 
 	//third set of functions...
 #ifdef VK_NO_PROTOTYPES
@@ -4475,7 +4682,7 @@ qboolean VK_Init(rendererstate_t *info, const char **sysextnames, qboolean (*cre
 		vkEnumeratePhysicalDevices(vk.instance, &gpucount, NULL);
 		if (!gpucount)
 		{
-			Con_Printf("vulkan: no devices known!\n");
+			Con_Printf(CON_ERROR"vulkan: no devices known!\n");
 			return false;
 		}
 		devs = malloc(sizeof(VkPhysicalDevice)*gpucount);
@@ -4529,7 +4736,12 @@ qboolean VK_Init(rendererstate_t *info, const char **sysextnames, qboolean (*cre
 				pri = 4;
 				break;
 			}
-			if (wantdev >= 0)
+			if (vrsetup.vk.physicaldevice != VK_NULL_HANDLE)
+			{	//if we're using vr, use the gpu our vr context requires.
+				if (devs[i] == vrsetup.vk.physicaldevice)
+					pri = 0;
+			}
+			else if (wantdev >= 0)
 			{
 				if (wantdev == i)
 					pri = 0;
@@ -4551,7 +4763,7 @@ qboolean VK_Init(rendererstate_t *info, const char **sysextnames, qboolean (*cre
 
 		if (!vk.gpu)
 		{
-			Con_Printf("vulkan: unable to pick a usable device\n");
+			Con_Printf(CON_ERROR"vulkan: unable to pick a usable device\n");
 			return false;
 		}
 	}
@@ -4603,7 +4815,7 @@ qboolean VK_Init(rendererstate_t *info, const char **sysextnames, qboolean (*cre
 		case VK_PHYSICAL_DEVICE_TYPE_CPU:				type = "software"; break;
 		}
 
-		Con_Printf("Vulkan %u.%u.%u: GPU%i %s %s %s (%u.%u.%u)\n", VK_VERSION_MAJOR(props.apiVersion), VK_VERSION_MINOR(props.apiVersion), VK_VERSION_PATCH(props.apiVersion),
+		Con_TPrintf("Vulkan %u.%u.%u: GPU%i %s %s %s (%u.%u.%u)\n", VK_VERSION_MAJOR(props.apiVersion), VK_VERSION_MINOR(props.apiVersion), VK_VERSION_PATCH(props.apiVersion),
 			gpuidx, type, vendor, props.deviceName,
 			VK_VERSION_MAJOR(props.driverVersion), VK_VERSION_MINOR(props.driverVersion), VK_VERSION_PATCH(props.driverVersion)
 			);
@@ -4673,7 +4885,7 @@ qboolean VK_Init(rendererstate_t *info, const char **sysextnames, qboolean (*cre
 		if (vk.queuefam[0] == ~0u || vk.queuefam[1] == ~0u)
 		{
 			free(queueprops);
-			Con_Printf("unable to find suitable queues\n");
+			Con_Printf(CON_ERROR"vulkan: unable to find suitable queues\n");
 			return false;
 		}
 	}
@@ -4824,7 +5036,7 @@ qboolean VK_Init(rendererstate_t *info, const char **sysextnames, qboolean (*cre
 		switch(err)
 		{
 		case VK_ERROR_INCOMPATIBLE_DRIVER:
-			Con_Printf("VK_ERROR_INCOMPATIBLE_DRIVER: please install an appropriate vulkan driver\n");
+			Con_TPrintf(CON_ERROR"VK_ERROR_INCOMPATIBLE_DRIVER: please install an appropriate vulkan driver\n");
 			return false;
 		case VK_ERROR_EXTENSION_NOT_PRESENT:
 		case VK_ERROR_FEATURE_NOT_PRESENT:
@@ -4832,10 +5044,10 @@ qboolean VK_Init(rendererstate_t *info, const char **sysextnames, qboolean (*cre
 		case VK_ERROR_DEVICE_LOST:
         case VK_ERROR_OUT_OF_HOST_MEMORY:
         case VK_ERROR_OUT_OF_DEVICE_MEMORY:
-			Con_Printf("%s: something on a system level is probably misconfigured\n", VK_VKErrorToString(err));
+			Con_Printf(CON_ERROR"%s: something on a system level is probably misconfigured\n", VK_VKErrorToString(err));
 			return false;
 		default:
-			Con_Printf("Unknown vulkan device creation error: %x\n", err);
+			Con_Printf(CON_ERROR"Unknown vulkan device creation error: %x\n", err);
 			return false;
 		case VK_SUCCESS:
 			break;
@@ -4852,6 +5064,19 @@ qboolean VK_Init(rendererstate_t *info, const char **sysextnames, qboolean (*cre
 	vkGetDeviceQueue(vk.device, vk.queuefam[0], vk.queuenum[0], &vk.queue_render);
 	vkGetDeviceQueue(vk.device, vk.queuefam[1], vk.queuenum[1], &vk.queue_present);
 
+	vrsetup.vk.instance = vk.instance;
+	vrsetup.vk.device = vk.device;
+	vrsetup.vk.physicaldevice = vk.gpu;
+	vrsetup.vk.queuefamily = vk.queuefam[1];
+	vrsetup.vk.queueindex = vk.queuenum[1];
+	if (vid.vr)
+	{
+		if (!vid.vr->Init(&vrsetup, info))
+		{
+			vid.vr->Shutdown();
+			vid.vr = NULL;
+		}
+	}
 
 	vkGetPhysicalDeviceMemoryProperties(vk.gpu, &vk.memory_properties);
 
@@ -4901,11 +5126,22 @@ qboolean VK_Init(rendererstate_t *info, const char **sysextnames, qboolean (*cre
 	sh_config.pValidateProgram = NULL;
 	sh_config.pProgAutoFields = NULL;
 
-	if (sh_config.texfmt[PTI_DEPTH24])
+	if (info->depthbits == 16 && sh_config.texfmt[PTI_DEPTH16])
+		vk.depthformat = VK_FORMAT_D16_UNORM;
+	else if (info->depthbits == 32 && sh_config.texfmt[PTI_DEPTH32])
+		vk.depthformat = VK_FORMAT_D32_SFLOAT;
+//	else if (info->depthbits == 32 && sh_config.texfmt[PTI_DEPTH32_8])
+//		vk.depthformat = VK_FORMAT_D32_SFLOAT_S8_UINT;
+	else if (info->depthbits == 24 && sh_config.texfmt[PTI_DEPTH24_8])
+		vk.depthformat = VK_FORMAT_D24_UNORM_S8_UINT;
+	else if (info->depthbits == 24 && sh_config.texfmt[PTI_DEPTH24])
+		vk.depthformat = VK_FORMAT_X8_D24_UNORM_PACK32;
+
+	else if (sh_config.texfmt[PTI_DEPTH24])
 		vk.depthformat = VK_FORMAT_X8_D24_UNORM_PACK32;
 	else if (sh_config.texfmt[PTI_DEPTH24_8])
 		vk.depthformat = VK_FORMAT_D24_UNORM_S8_UINT;
-	else if (sh_config.texfmt[PTI_DEPTH32])	//nvidia recommend to de-prioritise 32bit (float) depth.
+	else if (sh_config.texfmt[PTI_DEPTH32])	//nvidia: "Don’t use 32-bit floating point depth formats, due to the performance cost, unless improved precision is actually required"
 		vk.depthformat = VK_FORMAT_D32_SFLOAT;
 	else	//16bit depth is guarenteed in vulkan
 		vk.depthformat = VK_FORMAT_D16_UNORM;
@@ -4936,6 +5172,7 @@ qboolean VK_Init(rendererstate_t *info, const char **sysextnames, qboolean (*cre
 	}
 	if (info->srgb > 0 && (vid.flags & VID_SRGB_FB))
 		vid.flags |= VID_SRGBAWARE;
+
 	return true;
 }
 void VK_Shutdown(void)
@@ -4945,7 +5182,7 @@ void VK_Shutdown(void)
 	VK_DestroySwapChain();
 
 	for (i = 0; i < countof(postproc); i++)
-		VKBE_RT_Gen(&postproc[i], 0, 0, false, RT_IMAGEFLAGS);
+		VKBE_RT_Gen(&postproc[i], NULL, 0, 0, false, RT_IMAGEFLAGS);
 	VKBE_RT_Gen_Cube(&vk_rt_cubemap, 0, false);
 	VK_R_BloomShutdown();
 

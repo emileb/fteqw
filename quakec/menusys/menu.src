@@ -1,30 +1,28 @@
 #pragma progs_dat "../menu.dat"
 
-//#pragma target fte
 
-#define MENU		//select the module
+#pragma target fte
+
+#define MENU					//select the module
 
 #includelist
-fteextensions.qc	//also sets up system defs
+fteextensions.qc				//also sets up system defs
 
-menusys/mitems.qc		//root item type
-menusys/mitems_common.qc	//basic types
-menusys/mitem_desktop.qc	//other sort of root item
-menusys/mitem_exmenu.qc	//fullscreen/exclusive menus
-menusys/mitem_edittext.qc	//simple text editor
-menusys/mitem_tabs.qc		//tabs
-menusys/mitem_colours.qc	//colour picker
-menusys/mitem_checkbox.qc	//checkbox (boolean thingies)
-menusys/mitem_slider.qc	//scrollbars
-menusys/mitem_combo.qc	//multiple-choice thingies
-menusys/mitem_bind.qc		//key binding thingie
+menusys/mitems.qc				//root item type
+menusys/mitems_common.qc		//basic types
+menusys/mitem_desktop.qc		//other sort of root item
+menusys/mitem_exmenu.qc			//fullscreen/exclusive menus
+menusys/mitem_edittext.qc		//simple text editor
+menusys/mitem_tabs.qc			//tabs
+menusys/mitem_colours.qc		//colour picker
+menusys/mitem_checkbox.qc		//checkbox (boolean thingies)
+menusys/mitem_slider.qc			//scrollbars
+menusys/mitem_combo.qc			//multiple-choice thingies
+menusys/mitem_bind.qc			//key binding thingie
 menusys/mitem_spinnymodel.qc	//menu art
 #endlist
 
-
-
 //might as well put this here.
-
 void(mitem_desktop desktop) M_Pop =
 {
 	mitem it = desktop.item_kactivechild;
@@ -48,20 +46,16 @@ void(mitem_desktop desktop) M_Pop =
 	cmd("m_load",		M_Load,			menu/loadsave.qc)		\
 	cmd("m_save",		M_Save,			)				\
 	cmd("m_quit",		M_Quit,			menu/quit.qc)			\
+	cmd("m_mods",		M_Menu_Mods,		menu/mods.qc)			\
+	cmd("m_updates",	M_Menu_Updates,		menu/updates.qc)		\
+	cmd("m_cvars",		M_Menu_Cvars,		menu/cvars.qc)			\
 	cmd("m_newgame",	M_NewGame,		menu/newgame.qc)		\
 	cmd("m_servers",	M_Servers,		menu/servers.qc)		\
 	cmd("m_configs",	M_Configs,		menu/options_configs.qc)	\
 	cmd("m_reset",		M_Reset,		)				\
+	cmd("m_dir",		M_Dir,		)				\
 	cmd("m_preset",		M_Preset,		menu/presets.qc)
 	
-
-#if 0
-#append concommandslist	cmd("m_servers",	M_Servers,		menu/servers.qc)
-#define serverbrowser "m_servers"
-#else
-#define serverbrowser "menu_servers"
-#endif
-
 //make sure all the right files are included
 #define cmd(n,fnc,inc) inc
 #includelist
@@ -71,9 +65,15 @@ void(mitem_desktop desktop) M_Pop =
 
 mitem_desktop desktop;
 void() m_shutdown = {};
-void(vector screensize) m_draw = {items_draw(desktop);};
-void(float scan, float chr) m_keydown = {items_keypress(desktop, scan, chr, TRUE);};
-void(float scan, float chr) m_keyup = {items_keypress(desktop, scan, chr, FALSE);};
+void(vector screensize) m_draw =
+{
+	if (dp_workarounds)
+		cltime = gettime(0);
+	items_draw(desktop, screensize);
+};
+float(float evtype, float scanx, float chary, float devid) Menu_InputEvent = {return items_keypress(desktop, evtype, scanx, chary, devid);};
+void(float scan, float chr) m_keydown = {ui.mousepos = getmousepos();queryscreensize();items_keypress(desktop, IE_KEYDOWN, scan, chr, 0);};	//for DP compat.
+void(float scan, float chr) m_keyup = {ui.mousepos = getmousepos();queryscreensize();items_keypress(desktop, IE_KEYUP, scan, chr, 0);};		//for DP compat.
 void(float mode) m_toggle
 {	//mode is stupid. 1=enable,0=disable,-1=actually toggle.
 	if (mode < 0)
@@ -90,24 +90,47 @@ void(float mode) m_toggle
 
 	items_updategrabs(TRUE);
 };
-
-var float autocvar_dp_workarounds_allow = TRUE;
-var float autocvar_dp_workarounds_force = FALSE;
-void() m_init =
+float(string cstr) m_consolecommand =
 {
-	desktop = spawn(mitem_desktop);
+	tokenize(cstr);
+	string cmd = argv(0);
 
-	//register the console commands via the alias command.
-#define cmd(n,f) localcmd("alias " n " \"menu_cmd " n " $*\"\n");
+	switch(cmd)
+	{
+//switch on the known commands.
+#define cmd(n,f) case n: f(desktop); break;
 	concommandslist
 #undef cmd
+	default:
+		return FALSE;
+	}
+	items_updategrabs(TRUE);
+	return TRUE;
+}
+
+var float autocvar_dp_workarounds = FALSE;
+void() m_init =
+{
+	FingerprintEngine();
+
+	desktop = spawn(mitem_desktop);
+
+	if (checkbuiltin(registercommand))
+	{
+#define cmd(n,f) registercommand(n);
+		concommandslist
+#undef cmd
+	}
+	else
+	{
+	//register the console commands via the alias command.
+#define cmd(n,f) localcmd("alias " n " \"menu_cmd " n " $*\"\n");
+		concommandslist
+#undef cmd
+	}
 
 	//work around some dp differences/bugs.
-	//this check identifies one significant bug in DP.
-	//if anyone actually cares to fix DP, then there is no reason they cannot do so by just removing DP_QC_RENDERSCENE and then fixing anything else that arises.
-	if (checkextension("DP_QC_RENDER_SCENE") && !checkextension("DP_CON_SET"))
-		dp_workarounds = autocvar(dp_workarounds_allow, TRUE);
-	if (autocvar(dp_workarounds_force, FALSE))
+	if (autocvar(dp_workarounds, FALSE))
 		dp_workarounds = TRUE;
 	
 	if (dp_workarounds)
@@ -140,3 +163,4 @@ void(string cstr) GameCommand =
 	}
 	items_updategrabs(TRUE);
 };
+

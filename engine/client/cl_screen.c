@@ -222,7 +222,7 @@ qboolean        scr_drawloading;
 float           scr_disabled_time;
 
 cvar_t	con_stayhidden = CVARFD("con_stayhidden", "1", CVAR_NOTFROMSERVER, "0: allow console to pounce on the user\n1: console stays hidden unless explicitly invoked\n2:toggleconsole command no longer works\n3: shift+escape key no longer works");
-cvar_t	show_fps	= CVARFD("show_fps", "0", CVAR_ARCHIVE, "Displays the current framerate on-screen.\n1: framerate average over a second.\n2: Slowest frame over the last second (the game will play like shit if this is significantly lower than the average).\n3: Shows the rate of the fastest frame (not very useful).\n4: Shows the current frame's timings (this depends upon timer precision).\n5: Display a graph of how long it took to render each frame, large spikes are BAD BAD BAD.\n6: Displays the standard deviation of the frame times, if its greater than 3 then something is probably badly made, or you've a virus scanner running...\n7: Framegraph, for use with slower frames.");
+cvar_t	show_fps	= CVARAFD("show_fps"/*qw*/, "0", "scr_showfps"/*qs*/, CVAR_ARCHIVE, "Displays the current framerate on-screen.\n0: Off.\n1: framerate average over a second.\n2: Show a frametimes graph (with additional timing info).\n-1: Normalized graph that focuses on the variation ignoring base times.");
 cvar_t	show_fps_x	= CVAR("show_fps_x", "-1");
 cvar_t	show_fps_y	= CVAR("show_fps_y", "-1");
 cvar_t	show_clock	= CVAR("cl_clock", "0");
@@ -650,7 +650,7 @@ static char *SCR_CopyCenterPrint(cprint_t *p)	//reads the link under the mouse c
 }
 
 #define MAX_CPRINT_LINES 512
-int SCR_DrawCenterString (vrect_t *rect, cprint_t *p, struct font_s *font)
+int SCR_DrawCenterString (vrect_t *playerrect, cprint_t *p, struct font_s *font)
 {
 	int				l;
 	int				y, x;
@@ -661,10 +661,13 @@ int SCR_DrawCenterString (vrect_t *rect, cprint_t *p, struct font_s *font)
 	int				remaining;
 	shader_t		*pic;
 	int				ch;
+	int mousex,mousey;
 
 	conchar_t *line_start[MAX_CPRINT_LINES];
 	conchar_t *line_end[MAX_CPRINT_LINES];
 	int linecount;
+
+	vrect_t rect = *playerrect;
 
 // the finale prints the characters one at a time
 	if (p->flags & CPRINT_TYPEWRITER)
@@ -681,34 +684,20 @@ int SCR_DrawCenterString (vrect_t *rect, cprint_t *p, struct font_s *font)
 
 	if (p->flags & CPRINT_BACKGROUND)
 	{	//hexen2 style plaque.
-		int w = 320, h=200;
-		if (pic)
-			R_GetShaderSizes(pic, &w, &h, false);
-		if (rect->width > w)
+		int w = 320;
+		if (rect.width > w)
 		{
-			rect->x = (rect->x + rect->width/2) - (w / 2);
-			rect->width = w;
+			rect.x = (rect.x + rect.width/2) - (w / 2);
+			rect.width = w;
 		}
 
-		if (rect->width < 32)
+		if (rect.width < 32)
 			return 0;
-		rect->x += 16;
-		rect->width -= 32;
-
-		/*keep the text inside the image too*/
-		if (pic)
-		{
-			if (rect->height > h)
-			{
-				rect->y = (rect->y + rect->height/2) - (h/2);
-				rect->height = h;
-			}
-			rect->y += 16;
-			rect->height -= 32;
-		}
+		rect.x += 16;
+		rect.width -= 32;
 	}
 
-	y = rect->y;
+	y = rect.y;
 
 	if (pic)
 	{
@@ -720,14 +709,15 @@ int SCR_DrawCenterString (vrect_t *rect, cprint_t *p, struct font_s *font)
 			w *= 24.0/h;
 			h = 24;
 			y+= 16;
-			R2D_ScalePic ( (vid.width-w)/2, 16, w, h, pic);
+			R2D_ScalePic (rect.x + (rect.width-w)/2, y, w, h, pic);
 			y+= h;
 			y+= 8;
 		}
 	}
 
-	Font_BeginString(font, rect->x, y, &left, &top);
-	Font_BeginString(font, rect->x+rect->width, rect->y+rect->height, &right, &bottom);
+	Font_BeginString(font, mousecursor_x, mousecursor_y, &mousex, &mousey);
+	Font_BeginString(font, rect.x, y, &left, &top);
+	Font_BeginString(font, rect.x+rect.width, rect.y+rect.height, &right, &bottom);
 	linecount = Font_LineBreaks(p->string, p->string + p->charcount, (p->flags & CPRINT_NOWRAP)?0x7fffffff:(right - left), MAX_CPRINT_LINES, line_start, line_end);
 
 	ch = Font_CharHeight();
@@ -755,18 +745,18 @@ int SCR_DrawCenterString (vrect_t *rect, cprint_t *p, struct font_s *font)
 
 	if (p->flags & CPRINT_BACKGROUND)
 	{	//hexen2 style plaque.
-		int px, py, pw;
-		px = rect->x;
-		py = (     y * vid.height) / (float)vid.pixelheight;
-		pw = rect->width+8;
 		Font_EndString(font);
 
-		if (*p->titleimage)
-			R2D_ScalePic (rect->x + ((int)rect->width - pic->width)/2, rect->y + ((int)rect->height - pic->height)/2, pic->width, pic->height, pic);
+		if (*p->titleimage && pic)
+		{
+			int w, h;
+			R_GetShaderSizes(pic, &w, &h, false);
+			R2D_Letterbox(playerrect->x, playerrect->y, playerrect->width, playerrect->height, pic, w, h);
+		}
 		else
-			Draw_TextBox(px-16, py-8-8, pw/8, linecount+2);
+			Draw_ApproxTextBox(rect.x, (y * (float)vid.height) / (float)vid.pixelheight, rect.width, linecount*Font_CharVHeight(font));
 
-		Font_BeginString(font, rect->x, y, &left, &top);
+		Font_BeginString(font, rect.x, y, &left, &top);
 	}
 
 	for (l = 0; l < linecount; l++, y += ch)
@@ -780,9 +770,9 @@ int SCR_DrawCenterString (vrect_t *rect, cprint_t *p, struct font_s *font)
 		else
 			x = left + (right - left - Font_LineWidth(line_start[l], line_end[l]))/2;
 
-		if (mousecursor_y >= y && mousecursor_y < y+ch)
+		if (mousey >= y && mousey < y+ch)
 		{
-			p->cursorchar = Font_CharAt(mousecursor_x - x, line_start[l], line_end[l]);
+			p->cursorchar = Font_CharAt(mousex - x, line_start[l], line_end[l]);
 		}
 
 		remaining -= line_end[l]-line_start[l];
@@ -913,7 +903,9 @@ int R_DrawTextField(int x, int y, int w, int h, const char *text, unsigned int d
 	cprint_t p;
 	vrect_t r;
 	conchar_t buffer[16384];	//FIXME: make dynamic.
+	int lines;
 
+	p.cursorchar = NULL;
 	p.string = buffer;
 	p.stringbytes = sizeof(buffer);
 	r.x = x;
@@ -927,7 +919,11 @@ int R_DrawTextField(int x, int y, int w, int h, const char *text, unsigned int d
 	p.time_start = cl.time;
 	*p.titleimage = 0;
 
-	return SCR_DrawCenterString(&r, &p, font);
+
+	lines = SCR_DrawCenterString(&r, &p, font);
+
+//	SCR_CopyCenterPrint(&p);
+	return lines;
 }
 
 qboolean SCR_HardwareCursorIsActive(void)
@@ -1716,11 +1712,7 @@ void SCR_DrawFPS (void)
 	double t;
 	extern int fps_count;
 	static float lastfps;
-	static double deviationtimes[64];
-	static int deviationframe;
 	char str[80];
-	int sfps, frame;
-	qboolean usemsecs = false;
 
 	float frametime;
 
@@ -1737,76 +1729,11 @@ void SCR_DrawFPS (void)
 	frametime = t - lastsystemtime;
 	lastsystemtime = t;
 
-	sfps = show_fps.ival;
-	if (sfps < 0)
-	{
-		sfps = -sfps;
-		usemsecs = true;
-	}
-
-	switch (sfps)
-	{
-	case 1:
-	default:
-		break;
-	case 2: // lowest FPS, highest MS encountered
-		if (lastfps > 1/frametime)
-		{
-			lastfps = 1/frametime;
-			fps_count = 0;
-			lastupdatetime = t;
-		}
-		break;
-	case 3: // highest FPS, lowest MS encountered
-		if (lastfps < 1/frametime)
-		{
-			lastfps = 1/frametime;
-			fps_count = 0;
-			lastupdatetime = t;
-		}
-		break;
-	case 4: // immediate FPS/MS
-		lastfps = 1/frametime;
-		lastupdatetime = t;
-		break;
-	case 5:
-		R_FrameTimeGraph(1000.0*2*frametime);
-		break;
-	case 7:
-		R_FrameTimeGraph(1000.0*1*frametime);
-		break;
-	case 6:
-		{
-			float mean, deviation;
-			deviationtimes[deviationframe++&63] = frametime*1000;
-			mean = 0;
-			for (frame = 0; frame < 64; frame++)
-			{
-				mean += deviationtimes[frame];
-			}
-			mean /= 64;
-			deviation = 0;
-			for (frame = 0; frame < 64; frame++)
-			{
-				deviation += (deviationtimes[frame] - mean)*(deviationtimes[frame] - mean);
-			}
-			deviation /= 64;
-			deviation = sqrt(deviation);
-
-
-			SCR_StringXY(va("%f deviation", deviation), show_fps_x.value, show_fps_y.value-8);
-		}
-		break;
-	case 8:
-		if (cls.timedemo)
-			Con_Printf("%f\n", frametime);
-		break;
-	}
-
-	if (usemsecs)
-		sprintf(str, "%4.1f MS", 1000.0/lastfps);
-	else
-		sprintf(str, "%3.1f FPS", lastfps);
+	if (show_fps.value < 0)
+		R_FrameTimeGraph(frametime, 0);
+	else if (show_fps.value > 1)
+		R_FrameTimeGraph(frametime, show_fps.value-1);
+	sprintf(str, "%3.1f FPS", lastfps);
 	SCR_StringXY(str, show_fps_x.value, show_fps_y.value);
 }
 
@@ -2850,7 +2777,7 @@ void SCR_ScreenShot_Cubemap_f(void)
 		qboolean horizontalflip;
 	} sides[] =
 	{
-		//standard cubemap
+		//standard cubemap (flipping is done on save)
 		{{0, 0, 90}, "_px", true},
 		{{0, 180, -90}, "_nx", true},
 		{{0, 90, 0}, "_py", true},	//upside down
@@ -2867,7 +2794,7 @@ void SCR_ScreenShot_Cubemap_f(void)
 		{{-90, 0, 0}, "_up"}
 	};
 	const char *ext;
-	unsigned int bb, bw, bh;
+	unsigned int bb, bw, bh, bd;
 
 	if (!cls.state || !cl.worldmodel || cl.worldmodel->loadstate != MLS_LOADED)
 	{
@@ -2899,7 +2826,7 @@ void SCR_ScreenShot_Cubemap_f(void)
 	{
 		qboolean fail = false;
 		mips.type = PTI_CUBE;
-		mips.encoding = 0;
+		mips.encoding = PTI_INVALID;
 		mips.extrafree = NULL;
 		mips.mipcount = 1;
 
@@ -2909,13 +2836,14 @@ void SCR_ScreenShot_Cubemap_f(void)
 			VectorCopy(sides[i].angle, cl.playerview->simangles);
 			VectorCopy(cl.playerview->simangles, cl.playerview->viewangles);
 
-			facedata = SCR_ScreenShot_Capture(fbwidth, fbheight, &stride, &fmt, true, true);
+			//don't use hdr when saving dds files. it generally means dx10 dds files and most tools suck too much and then I get blamed for writing 'corrupt' dds files.
+			facedata = SCR_ScreenShot_Capture(fbwidth, fbheight, &stride, &fmt, true, !!strcmp(ext, ".dds"));
 			if (!facedata)
 				break;
-			if (!i)
+			if (!bb)
 			{
-				Image_BlockSizeForEncoding(fmt, &bb, &bw, &bh);
-				if (bw != 1 || bh != 1)
+				Image_BlockSizeForEncoding(fmt, &bb, &bw, &bh, &bd);
+				if (!bb || bw != 1 || bh != 1 || bd != 1 || fbwidth != fbheight)
 				{	//erk, no block compression here...
 					BZ_Free(facedata);
 					break;	//zomgwtfbbq
@@ -2936,23 +2864,27 @@ void SCR_ScreenShot_Cubemap_f(void)
 				break;	//zomgwtfbbq
 			}
 
-			Image_FlipImage(facedata, (qbyte*)mips.mip[0].data + i*mips.mip[0].datasize/6, &fbwidth, &fbheight, bb, sides[i].horizontalflip, sides[i].verticalflip, false);
+			Image_FlipImage(facedata, (qbyte*)mips.mip[0].data + i*(mips.mip[0].datasize/6), &fbwidth, &fbheight, bb, sides[i].horizontalflip, sides[i].verticalflip^(stride<0), false);
 			BZ_Free(facedata);
 		}
 		if (i == 6)
 		{
-			qboolean pixelformats[PTI_MAX] = {0};
-			pixelformats[PTI_E5BGR9] = true;
-			Image_ChangeFormat(&mips, pixelformats, mips.encoding, fname);
+			if (mips.encoding == PTI_RGB32F || mips.encoding == PTI_RGBA16F || mips.encoding == PTI_RGBA32F)
+			{	//convert to a more memory-efficient hdr format.
+				qboolean pixelformats[PTI_MAX] = {0};
+				pixelformats[PTI_E5BGR9] = true;
+				Image_ChangeFormat(&mips, pixelformats, mips.encoding, fname);
+			}
+			else if ((mips.encoding == PTI_RGBX8 || mips.encoding == PTI_BGRX8) && !strcmp(ext, ".dds"))
+			{	//gimp-dds plugin is buggy. convert to a less problematic format, so that I don't get invalid complaints.
+				qboolean pixelformats[PTI_MAX] = {0};
+				pixelformats[PTI_BGR8] = true;
+				Image_ChangeFormat(&mips, pixelformats, mips.encoding, fname);
+			}
 
 			Q_snprintfz(filename, sizeof(filename), "textures/%s", fname);
 			COM_DefaultExtension (filename, ext, sizeof(filename));
-#ifdef IMAGEFMT_KTX
-			COM_DefaultExtension (filename, ".ktx", sizeof(filename));
-#endif
-#ifdef IMAGEFMT_DDS
-			COM_DefaultExtension (filename, ".dds", sizeof(filename));
-#endif
+
 			ext = COM_GetFileExtension(filename, NULL);
 			if (fail)
 				Con_Printf("Unable to generate cubemap data\n");
@@ -2992,7 +2924,7 @@ void SCR_ScreenShot_Cubemap_f(void)
 			buffer = SCR_ScreenShot_Capture(fbwidth, fbheight, &stride, &fmt, true, false);
 			if (buffer)
 			{
-				Image_BlockSizeForEncoding(fmt, &bb, &bw, &bh);
+				Image_BlockSizeForEncoding(fmt, &bb, &bw, &bh, &bd);
 				if (sides[i].horizontalflip)
 				{
 					int y, x, p;

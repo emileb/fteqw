@@ -23,7 +23,7 @@
 #endif
 
 #if SDL_MAJOR_VERSION >= 2
-SDL_Window *sdlwindow;
+extern SDL_Window *sdlwindow;
 #endif
 
 #ifndef isDedicated
@@ -882,7 +882,8 @@ int QDECL main(int argc, char **argv)
 			sleeptime = Host_Frame (time);
 			oldtime = newtime;
 
-			Sys_Sleep(sleeptime);
+			if (sleeptime)
+				Sys_Sleep(sleeptime);
 		}
 	}
 
@@ -931,7 +932,7 @@ qboolean Sys_GetDesktopParameters(int *width, int *height, int *bpp, int *refres
 
 #if SDL_MAJOR_VERSION >= 2	//probably could include 1.3
 #include <SDL_clipboard.h>
-void Sys_Clipboard_PasteText(clipboardtype_t cbt, void (*callback)(void *cb, char *utf8), void *ctx)
+void Sys_Clipboard_PasteText(clipboardtype_t cbt, void (*callback)(void *cb, const char *utf8), void *ctx)
 {
 	callback(ctx, SDL_GetClipboardText());
 }
@@ -942,7 +943,7 @@ void Sys_SaveClipboard(clipboardtype_t cbt, const char *text)
 }
 #else
 static char *clipboard_buffer;
-void Sys_Clipboard_PasteText(clipboardtype_t cbt, void (*callback)(void *cb, char *utf8), void *ctx)
+void Sys_Clipboard_PasteText(clipboardtype_t cbt, void (*callback)(void *cb, const char *utf8), void *ctx)
 {
 	callback(ctx, clipboard_buffer);
 }
@@ -1083,17 +1084,14 @@ qboolean Sys_RunInstaller(void)
 #endif
 
 #ifdef HAVEAUTOUPDATE
-//legacy, so old build can still deal with updates properly
-void Sys_SetUpdatedBinary(const char *fname)
+//returns true if we could sucessfull overwrite the engine binary.
+qboolean Sys_SetUpdatedBinary(const char *fname)
 {
+	return false;
 }
-//says whether the system code is able to invoke new binaries properly
-qboolean Sys_EngineCanUpdate(void)
-{
-	return false;	//nope, nothing here
-}
-//invoke the given system-path binary
-qboolean Sys_EngineWasUpdated(char *newbinary)
+//says whether the system code is able/allowed to overwrite itself.
+//(ie: return false if we don't know the binary name or if its write-protected etc)
+qboolean Sys_EngineMayUpdate(void)
 {
 	return false;	//sorry
 }

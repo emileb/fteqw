@@ -53,7 +53,7 @@ Cvars are restricted from having the same names as commands to keep this
 interface from being ambiguous.
 */
 
-#include "hash.h"
+#include "../qclib/hash.h"
 
 typedef struct cvar_s
 {
@@ -82,7 +82,6 @@ typedef struct cvar_s
 #ifdef HLSERVER
 	struct hlcvar_s	*hlcvar;
 #endif
-	bucket_t hbn1, hbn2;
 } cvar_t;
 
 #ifdef MINIMAL
@@ -102,8 +101,6 @@ typedef struct cvar_s
 #define CVARCD(ConsoleName,Value,Callback,Description)			CVARAFCD(ConsoleName, Value, NULL, 0, Callback, Description)
 #define CVARD(ConsoleName,Value,Description)					CVARAFCD(ConsoleName, Value, NULL, 0, NULL, Description)
 #define CVAR(ConsoleName,Value)									CVARD(ConsoleName, Value, NULL)
-
-#define CVARDP4(Flags,ConsoleName,Value,Description) CVARFD(ConsoleName, Value, Flags,Description)
 
 typedef struct cvar_group_s
 {

@@ -36,7 +36,6 @@ vfile_t *qcc_vfiles;
 extern QCC_def_t *sourcefilesdefs[];
 extern int sourcefilesnumdefs;
 
-int qccpersisthunk = 1;
 int Grep(const char *filename, const char *string)
 {
 	int foundcount = 0;
@@ -201,12 +200,67 @@ void GoToDefinition(const char *name)
 	}
 }
 
+pbool GenAutoCompleteList(char *prefix, char *buffer, int buffersize)
+{
+	QCC_def_t *def;
+	int prefixlen = strlen(prefix);
+	int usedbuffer = 0;
+	int l;
+	int fno;
+	for (fno = 0; fno < sourcefilesnumdefs; fno++)
+	{
+		for (def = sourcefilesdefs[fno]; def; def = def->next)
+		{
+			if (def->scope)
+				continue;	//ignore locals, because we don't know where we are, and they're probably irrelevent.
+
+			//make sure it has the right prefix
+			if (!strncmp(def->name, prefix, prefixlen))
+			//but ignore it if its one of those special things that you're not meant to know about.
+			if (strcmp(def->name, "IMMEDIATE") && !strchr(def->name, ':') && !strchr(def->name, '.') && !strchr(def->name, '*') && !strchr(def->name, '['))
+			{
+				l = strlen(def->name);
+				if (l && usedbuffer+2+l < buffersize)
+				{
+					if (usedbuffer)
+						buffer[usedbuffer++] = ' ';
+					memcpy(buffer+usedbuffer, def->name, l);
+					usedbuffer += l;
+				}
+			}
+		}
+	}
+	buffer[usedbuffer] = 0;
+	return usedbuffer>0;
+}
+
+static pbool GUI_NeedsQuotes(const char *str)
+{
+	//true if an empty string.
+	if (!*str)
+		return true;
+	for(; *str; str++)
+	{	//true if any char is not alpha-numeric
+		if (*str >= 'a' && *str <= 'z')
+			;
+		else if (*str >= 'A' && *str <= 'Z')
+			;
+		else if (*str >= '0' && *str <= '9')
+			;
+		else if (*str == '_')
+			;
+		else
+			return true;
+	}
+	return false;
+}
+
 static void GUI_WriteConfigLine(FILE *file, char *part1, char *part2, char *part3, char *desc)
 {
 	int align = 0;
 	if (part1)
 	{
-		if (strchr(part1, ' '))
+		if (GUI_NeedsQuotes(part1))
 			align += fprintf(file, "\"%s\" ", part1);
 		else
 			align += fprintf(file, "%s ", part1);
@@ -215,7 +269,7 @@ static void GUI_WriteConfigLine(FILE *file, char *part1, char *part2, char *part
 	}
 	if (part2)
 	{
-		if (strchr(part2, ' '))
+		if (GUI_NeedsQuotes(part2))
 			align += fprintf(file, "\"%s\" ", part2);
 		else
 			align += fprintf(file, "%s ", part2);
@@ -224,7 +278,7 @@ static void GUI_WriteConfigLine(FILE *file, char *part1, char *part2, char *part
 	}
 	if (part3)
 	{
-		if (strchr(part3, ' '))
+		if (GUI_NeedsQuotes(part3))
 			align += fprintf(file, "\"%s\" ", part3);
 		else
 			align += fprintf(file, "%s ", part3);
@@ -316,7 +370,7 @@ void GUI_SaveConfig(void)
 static char *GUI_ParseInPlace(char **state)
 {
 	char *str = *state, *end;
-	while(*str == ' ' || *str == '\t')
+	while(*str == ' ' || *str == '\t' || *str == '\r' || *str == '\n')
 		str++;
 	if (*str == '\"')
 	{
@@ -325,7 +379,10 @@ static char *GUI_ParseInPlace(char **state)
 		for (end = str, fmt = str; *end; )
 		{
 			if (*end == '\"')
+			{
+				*end++ = 0;
 				break;
+			}
 			else if (*end == '\'' && end[1] == '\\')
 				*fmt = '\\';
 			else if (*end == '\'' && end[1] == '\"')
@@ -346,10 +403,26 @@ static char *GUI_ParseInPlace(char **state)
 		}
 	}
 	else
-		for (end = str; *end&&*end!=' '&&*end !='\t' && *end != '#'; end++)
-			;
-	*end = 0;
-	*state = end+1;
+	{
+		for (end = str; *end; end++)
+		{
+			if (*end == '#')
+			{
+				*end = 0;
+				while (*end && *end != '\n')
+					end++;
+				break;
+			}
+			if (*end==' ' || *end =='\t' || *end == '\n' || *end == '\r')
+				break;
+		}
+	}
+	if (end && *end)
+	{
+		*end = 0;
+		*state = end+1;
+	}
+	else *state = end;
 	return str;
 }
 static int GUI_ParseIntInPlace(char **state, int defaultval)
@@ -392,6 +465,7 @@ void GUI_LoadConfig(void)
 	while (fgets(buf, sizeof(buf), file))
 	{
 		str = buf;
+
 		token = GUI_ParseInPlace(&str);
 		if (!stricmp(token, "optimisation") || !stricmp(token, "opt"))
 		{
@@ -410,7 +484,9 @@ void GUI_LoadConfig(void)
 						optimisations[p].flags &= ~FLAG_SETINGUI;
 					break;
 				}
-			//don't worry if its not known	
+			//don't worry too much if its not known
+			if (!optimisations[p].enabled)
+				printf("Unknown flag: \"%s\"\n", item);
 		}
 		else if (!stricmp(token, "flag") || !stricmp(token, "fl") || !stricmp(token, "keyword"))
 		{
@@ -427,6 +503,8 @@ void GUI_LoadConfig(void)
 						compiler_flag[p].flags &= ~FLAG_SETINGUI;
 					break;
 				}
+			if (!compiler_flag[p].enabled)
+				printf("Unknown flag/keyword: \"%s\"\n", item);
 			//don't worry if its not known
 		}
 		else if (!stricmp(token, "enginebinary"))
@@ -435,10 +513,10 @@ void GUI_LoadConfig(void)
 			QC_strlcpy(enginebasedir, GUI_ParseInPlace(&str), sizeof(enginebasedir));
 		else if (!stricmp(token, "engineargs"))
 			QC_strlcpy(enginecommandline, GUI_ParseInPlace(&str), sizeof(enginecommandline));
-//		else if (!stricmp(token, "srcfile"))
-//			QC_strlcpy(progssrcname, GUI_ParseInPlace(&str), sizeof(progssrcname));
-//		else if (!stricmp(token, "src"))
-//			QC_strlcpy(progssrcdir, GUI_ParseInPlace(&str), sizeof(progssrcdir));
+		else if (!stricmp(token, "srcfile"))
+			QC_strlcpy(progssrcname, GUI_ParseInPlace(&str), sizeof(progssrcname));
+		else if (!stricmp(token, "src"))
+			QC_strlcpy(progssrcdir, GUI_ParseInPlace(&str), sizeof(progssrcdir));
 		else if (!stricmp(token, "parameters"))
 			QC_strlcpy(parameters, GUI_ParseInPlace(&str), sizeof(parameters));
 
@@ -459,7 +537,7 @@ void GUI_LoadConfig(void)
 			fl_ftetarg = GUI_ParseBooleanInPlace(&str, false);
 		else if (*token)
 		{
-			puts("Unknown setting: "); puts(token); puts("\n");
+			printf("Unknown setting: \"%s\"\n", token);
 		}
 	}
 	fclose(file);
@@ -473,6 +551,7 @@ int GUI_ParseCommandLine(const char *args, pbool keepsrcanddir)
 	int l, p;
 	const char *next;
 	int mode = 0;
+	extern int qccpersisthunk;
 
 	if (!*args)
 	{
@@ -695,6 +774,10 @@ int GUI_ParseCommandLine(const char *args, pbool keepsrcanddir)
 		{
 			fl_log = true;
 		}
+		else if (!strnicmp(parameters+paramlen, "-nolog", 4) || !strnicmp(parameters+paramlen, "/nolog", 4))
+		{
+			fl_log = false;
+		}
 		else if (!strnicmp(parameters+paramlen, "-engine", 7) || !strnicmp(parameters+paramlen, "/engine", 7))
 		{
 			while (*next == ' ')
@@ -810,6 +893,8 @@ int GUI_ParseCommandLine(const char *args, pbool keepsrcanddir)
 		parameters[paramlen-1] = '\0';
 	else
 		*parameters = '\0';
+
+	qccpersisthunk = (mode!=1);
 	return mode;
 }
 
@@ -1049,7 +1134,7 @@ vfile_t *QCC_AddVFile(const char *name, void *data, size_t size)
 void QCC_CatVFile(vfile_t *f, const char *fmt, ...)
 {
 	va_list argptr;
-	char msg[8192];
+	char msg[65536];
 	size_t n;
 
 	va_start (argptr,fmt);
@@ -1069,7 +1154,7 @@ void QCC_CatVFile(vfile_t *f, const char *fmt, ...)
 void QCC_InsertVFile(vfile_t *f, size_t pos, const char *fmt, ...)
 {
 	va_list argptr;
-	char msg[8192];
+	char msg[65536];
 	size_t n;
 	va_start (argptr,fmt);
 	QC_vsnprintf (msg,sizeof(msg)-1, fmt, argptr);

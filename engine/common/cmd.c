@@ -58,7 +58,7 @@ cmdalias_t	*cmd_alias;
 cvar_t	cfg_save_all = CVARFD("cfg_save_all", "", CVAR_ARCHIVE|CVAR_NOTFROMSERVER, "If 1, cfg_save ALWAYS saves all cvars. If 0, cfg_save only ever saves archived cvars. If empty, cfg_save saves all cvars only when an explicit filename was given (ie: when not used internally via quit menu options).");
 cvar_t	cfg_save_auto = CVARFD("cfg_save_auto", "0", CVAR_ARCHIVE|CVAR_NOTFROMSERVER, "If 1, the config will automatically be saved and without prompts. If 0, you'll have to save your config manually (possibly via prompts from the quit menu).");
 cvar_t	cfg_save_infos = CVARFD("cfg_save_infos", "1", CVAR_ARCHIVE|CVAR_NOTFROMSERVER, "If 1, saves userinfo and serverinfo to configs.");
-cvar_t	cfg_save_aliases = CVARFD("cfg_save_aliases", "1", CVAR_ARCHIVE|CVAR_NOTFROMSERVER, "If 1, saves userinfo and serverinfo to configs.");
+cvar_t	cfg_save_aliases = CVARFD("cfg_save_aliases", "1", CVAR_ARCHIVE|CVAR_NOTFROMSERVER, "If 1, saves aliases to configs. Note that aliases sent from servers are assumed to be server-specific and are never saved (and are forgotten on map changes, too).");
 cvar_t	cfg_save_binds = CVARFD("cfg_save_binds", "1", CVAR_ARCHIVE|CVAR_NOTFROMSERVER, "If 1, saves all key bindings to configs.");
 cvar_t	cfg_save_buttons = CVARFD("cfg_save_buttons", "0", CVAR_ARCHIVE|CVAR_NOTFROMSERVER, "If 1, saves the state of things such as +mlook or +forward to configs.");
 
@@ -81,7 +81,7 @@ cvar_t tp_disputablemacros	= CVARF("tp_disputablemacros", "1", CVAR_SEMICHEAT);
 
 
 
-#define MAX_MACROS 64
+#define MAX_MACROS 70
 
 typedef struct {
 	char name[32];
@@ -104,9 +104,9 @@ void Cmd_AddMacro(char *s, char *(*f)(void), int disputableintentions)
 	if (i == MAX_MACROS)
 		Sys_Error("Cmd_AddMacro: macro_count == MAX_MACROS");
 
-	Q_strncpyz(macro_commands[macro_count].name, s, sizeof(macro_commands[macro_count].name));
-	macro_commands[macro_count].func = f;
-	macro_commands[macro_count].disputableintentions = disputableintentions;
+	Q_strncpyz(macro_commands[i].name, s, sizeof(macro_commands[macro_count].name));
+	macro_commands[i].func = f;
+	macro_commands[i].disputableintentions = disputableintentions;
 
 	if (i == macro_count)
 		macro_count++;
@@ -739,7 +739,7 @@ static void Cmd_Exec_f (void)
 		Con_TPrintf ("couldn't exec %s. check permissions.\n", name);
 		return;
 	}
-	if (cl_warncmd.ival || developer.ival || cvar_watched)
+	if (cl_warncmd.ival || developer.ival || cvar_watched || dpcompat_console.ival)
 	{
 		if (loc.search)
 			Con_TPrintf ("execing ^[^7%s\\tip\\from %s/%s^]\n", name, loc.search->logicalpath, name);
@@ -805,37 +805,56 @@ static void Cmd_Exec_f (void)
 #ifndef QUAKETC
 	//hack to try to work around nquake's b0rkedness
 	if (!strncmp(s, "// This is nQuake's Frogbot config", 33))
-		s = "echo Refusing to exec nQuake's Frogbot config";	//otherwise many people with nquake installed will be fucked over whenever they try playing singleplayer
-	else if (!strncmp(s, "// ", 3))
 	{
-		char *eol = strstr(s, "\n");
-		if (eol)
-		{
-			*eol = 0;
-			s = eol+1;
-			if (strstr(f, "nQuake"))
-			{	//this is evil, but if we're running quake then com_parseutf8 will be 0 and we can just convert to quake chars.
-				char *in = s;
-				char *out = s;
-				int foundone = 0;
-				while (*in)
-				{
-					if (*in == '^')
-					{
-						*out++ = 0x80|*++in;
-						foundone++;
-					}
-					else
-						*out++ = *in;
-					in++;
-				}
-				if (foundone)
-					Cbuf_InsertText(va("echo fixups for nquake config %s: %i replacements\n", buf, foundone), level, false);
-			}
-		}
+		s = "echo Refusing to exec nQuake's Frogbot config";	//otherwise many people with nquake installed will be fucked over whenever they try playing singleplayer
+		Cbuf_InsertText (s, level, true);
 	}
-#endif
+	else
+	{
+		int foundone = 0;
+		while (!strncmp(s, "//", 2))
+		{
+			char *eol = strstr(s, "\n");
+			if (eol)
+			{
+				*eol++ = 0;
+				if (strstr(s, "nQuake") || strstr(s, "N Q U A K E"))
+				{	//this is evil, but if we're running quake then com_parseutf8 will be 0 and we can just convert to quake chars (less text).
+					char *out = s = eol;
+					const char *in = s;
+					while (*in)
+					{
+						if (*in == '\n' && !strncmp(in,"\nexec configs/config.cfg", 24))
+						{	//ezquake writes its configs elsewhere, and nquake stomps on everything in its autoexec.cfg, so we need to try to work around its breakages
+							memmove(out, in, 6);out+=6;in+=6;
+							in += 8;
+							foundone++;
+							continue;
+						}
+						if (*in == '^')
+						{
+							*out++ = 0x80|*++in;
+							foundone++;
+						}
+						else
+							*out++ = *in;
+						in++;
+					}
+					*out = 0;
+					break;
+				}
+				s = eol;
+				continue;
+			}
+			break;
+		}
+		Cbuf_InsertText (s, level, true);
+		if (foundone)
+			Cbuf_InsertText(va("\necho \""CON_ERROR"fixups for nquake config %s: %i replacements\"\n", buf, foundone), level, false);
+	}
+#else
 	Cbuf_InsertText (s, level, true);
+#endif
 	if (cvar_watched)
 		Cbuf_InsertText (va("echo BEGIN %s", buf), level, true);
 	BZ_Free(f);
@@ -1913,7 +1932,8 @@ qboolean Cmd_AddCommandAD (const char *cmd_name, xcommand_t function, xcommandar
 	cmd_function_t	*cmd;
 
 // fail if the command is a variable name
-	if (Cvar_VariableString(cmd_name)[0])
+	cvar_t *var = Cvar_FindVar (cmd_name);
+	if (var && function)
 	{
 		Con_Printf ("Cmd_AddCommand: %s already defined as a var\n", cmd_name);
 		return false;
@@ -2520,15 +2540,17 @@ static void Cmd_Apropos_f (void)
 	char escapedvalue[1024];
 	char latchedvalue[1024];
 	char *query = Cmd_Argv(1);
+	const char *d;
 
 	for (grp=cvar_groups ; grp ; grp=grp->next)
 	for (var=grp->cvars ; var ; var=var->next)
 	{
+		d = var->description?localtext(var->description):NULL;
 		if (var->name && Q_strcasestr(var->name, query))
 			name = var->name;
 		else if (var->name2 && Q_strcasestr(var->name2, query))
 			name = var->name2;
-		else if (var->description && Q_strcasestr(var->description, query))
+		else if (d && Q_strcasestr(d, query))
 			name = var->name;
 		else
 			continue;
@@ -2538,21 +2560,34 @@ static void Cmd_Apropos_f (void)
 		if (var->latched_string)
 		{
 			COM_QuotedString(var->latched_string, latchedvalue, sizeof(latchedvalue), false);
-			Con_Printf("cvar ^2%s^7: %s (effective %s): %s\n", name, latchedvalue, escapedvalue, var->description?var->description:"no description");
+			if (d)
+				Con_TPrintf("cvar ^2%s^7: %s (effective %s): ^3%s\n", name, latchedvalue, escapedvalue, d);
+			else
+				Con_TPrintf("cvar ^2%s^7: %s (effective %s): ^3no description\n", name, latchedvalue, escapedvalue);
 		}
 		else
-			Con_Printf("cvar ^2%s^7: %s : %s\n", name, escapedvalue, var->description?var->description:"no description");
+		{
+			if (d)
+				Con_TPrintf("cvar ^2%s^7: %s : ^3%s\n", name, escapedvalue, d);
+			else
+				Con_TPrintf("cvar ^2%s^7: %s : ^3no description\n", name, escapedvalue);
+		}
 	}
 
 	for (cmd=cmd_functions ; cmd ; cmd=cmd->next)
 	{
+		d = cmd->description?localtext(cmd->description):NULL;
 		if (cmd->name && Q_strcasestr(cmd->name, query))
 			;
-		else if (cmd->description && strstr(cmd->description, query))
+		else if (d && strstr(d, query))
 			;
 		else
 			continue;
-		Con_Printf("command ^2%s^7: %s\n", cmd->name, cmd->description?cmd->description:"no description");
+
+		if (d)
+			Con_TPrintf("command ^2%s^7: ^3%s\n", cmd->name, d);
+		else
+			Con_TPrintf("command ^2%s^7: ^3no description\n", cmd->name);
 	}
 	//FIXME: add aliases.
 }
@@ -3963,7 +3998,7 @@ static void Cmd_WriteConfig_f(void)
 		MasterInfo_WriteServers();
 #endif
 
-		f = FS_OpenWithFriends(fname, sysname, sizeof(sysname), 4, "quake.rc", "hexen.rc", "*.cfg", "configs/*.cfg");
+		f = FS_OpenWithFriends(fname, sysname, sizeof(sysname), 4, "quake.rc", "hexen.rc", "*.cfg", "configs/*.cfg", "dlcache/*.pk3*");
 
 		all = cfg_save_all.ival;
 	}
@@ -4250,9 +4285,6 @@ void Cmd_Init (void)
 
 	Cmd_AddCommandAD ("showalias", Cmd_ShowAlias_f, Key_Alias_c, NULL);
 
-//	Cmd_AddCommand ("msg_trigger", Cmd_Msg_Trigger_f);
-//	Cmd_AddCommand ("filter", Cmd_Msg_Filter_f);
-
 	Cmd_AddCommandAD ("toggle", Cmd_toggle_f, Cmd_Set_c, "Toggles a cvar between two values\ntoggle CVARNAME [newval [altval]]");
 	Cmd_AddCommandAD ("set", Cmd_set_f, Cmd_Set_c, "Changes the current value of the named cvar, creating it if it doesn't yet exist.");
 	Cmd_AddCommandAD ("setfl", Cmd_set_f, Cmd_Set_c, "Changes the current value of the named cvar, creating it if it doesn't yet exist. The third arg allows setting cvar flags and should be u, s, or a. This command should normally be used only inside default.cfg.");
@@ -4264,7 +4296,6 @@ void Cmd_Init (void)
 	Cmd_AddCommandAD ("seta_calc", Cmd_set_f, Cmd_Set_c, "Sets the named cvar to the result of a (complex) expression. Also forces the archive flag so that the cvar will always be written into any saved configs.");
 	Cmd_AddCommandD ("vstr", Cmd_Vstr_f, "Executes the string value of the cvar, much like if it were an alias. For compatibility with q3.");
 	Cmd_AddCommandAD ("inc", Cvar_Inc_f, Cmd_Set_c, "Adds a value to the named cvar. Use a negative value if you wish to decrease the cvar's value.");
-	//FIXME: Add seta some time.
 	Cmd_AddCommand ("if", Cmd_if_f);
 
 	Cmd_AddCommand ("cmdlist", Cmd_List_f);
@@ -4299,6 +4330,7 @@ void Cmd_Init (void)
 	Cmd_AddCommandD ("in", Cmd_In_f, "Issues the given command after a time delay. Disabled if ruleset_allow_in is 0.");
 
 #ifdef HAVE_LEGACY
+	Cmd_AddCommandD ("defer", Cmd_In_f, "Issues the given command after a time delay. Disabled if ruleset_allow_in is 0.");
 	Cvar_Register(&dpcompat_set, "Darkplaces compatibility");
 	Cvar_Register(&dpcompat_console, "Darkplaces compatibility");
 #endif

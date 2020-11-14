@@ -193,6 +193,8 @@ void VM_fcloseall (int owner)
 
 
 
+//filesystem searches result in a tightly-packed blob of null-terminated filenames (along with a count for how many entries)
+//$modlist searches give both gamedir AND description strings (in that order) instead of just one string per entry (loaded via fs_game cvar along with a vid_restart).
 typedef struct {
 	char *initialbuffer;
 	char *buffer;
@@ -280,6 +282,8 @@ static int QDECL VMEnumMods(const char *match, qofs_t size, time_t modtime, void
 	}
 
 	memcpy(((vmsearch_t *)args)->buffer, match, newlen);
+	if (newlen > 1 && match[newlen-2] == '/')
+		((vmsearch_t *)args)->buffer[--newlen-1] = 0;
 	((vmsearch_t *)args)->buffer+=newlen;
 	((vmsearch_t *)args)->bufferleft-=newlen;
 
@@ -325,7 +329,7 @@ int VM_GetFileList(const char *path, const char *ext, char *output, int buffersi
 
 #include "clq3defs.h"	//okay, urr, this is bad for dedicated servers. urhum. Maybe they're not looking? It's only typedefs and one extern.
 
-#define MAX_VMQ3_CVARS 256	//can be blindly increased
+#define MAX_VMQ3_CVARS 512	//can be blindly increased
 cvar_t *q3cvlist[MAX_VMQ3_CVARS];
 int VMQ3_Cvar_Register(q3vmcvar_t *v, char *name, char *defval, int flags)
 {

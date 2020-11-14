@@ -80,6 +80,7 @@ void SCR_ShowPic_Remove_f(void);
 
 //a header is better than none...
 void Draw_TextBox (int x, int y, int width, int lines);
+void Draw_ApproxTextBox (float x, float y, float width, float height);
 enum fs_relative;
 
 
@@ -139,10 +140,10 @@ typedef enum uploadfmt
 	PTI_BC2_RGBA_SRGB,	/*8bpp*/
 	PTI_BC3_RGBA,		/*8bpp*/ //maybe add a bc3 normalmapswizzle type for d3d9?
 	PTI_BC3_RGBA_SRGB,	/*8bpp*/
-	PTI_BC4_R8,			/*4bpp*/ //greyscale, kinda
-	PTI_BC4_R8_SNORM,	/*4bpp*/
-	PTI_BC5_RG8,		/*8bpp*/ //useful for normalmaps
-	PTI_BC5_RG8_SNORM,	/*8bpp*/ //useful for normalmaps
+	PTI_BC4_R,			/*4bpp*/ //greyscale, kinda
+	PTI_BC4_R_SNORM,	/*4bpp*/
+	PTI_BC5_RG,			/*8bpp*/ //useful for normalmaps
+	PTI_BC5_RG_SNORM,	/*8bpp*/ //useful for normalmaps
 	PTI_BC6_RGB_UFLOAT,	/*8bpp*/ //unsigned (half) floats!
 	PTI_BC6_RGB_SFLOAT,	/*8bpp*/ //signed (half) floats!
 	PTI_BC7_RGBA,		/*8bpp*/ //multimode compression, using as many bits as bc2/bc3
@@ -160,6 +161,7 @@ typedef enum uploadfmt
 	PTI_EAC_RG11,		/*8bpp*/ //useful for normalmaps (calculate blue)
 	PTI_EAC_RG11_SNORM,	/*8bpp*/ //useful for normalmaps (calculate blue)
 	//astc... zomg.
+#define PTI_ASTC_FIRST	PTI_ASTC_4X4_LDR
 	PTI_ASTC_4X4_LDR,	/*8bpp*/ //ldr/srgb/hdr formats are technically all the same.
 	PTI_ASTC_5X4_LDR,	/*6.40*/ //srgb formats are different because of an extra srgb lookup step
 	PTI_ASTC_5X5_LDR,	/*5.12*/ //ldr formats are identical to hdr except for the extended colour modes disabled.
@@ -174,6 +176,19 @@ typedef enum uploadfmt
 	PTI_ASTC_10X10_LDR,	/*1.28*/
 	PTI_ASTC_12X10_LDR,	/*1.07*/
 	PTI_ASTC_12X12_LDR,	/*0.89*/
+//	#define ASTC3D
+#ifdef ASTC3D
+	PTI_ASTC_3X3X3_LDR,	/*4.74*/	//astc volume ldr textures are worth tracking only to provide hints to cache them as 8bit instead of 16bit (reducing gpu cache needed).
+	PTI_ASTC_4X3X3_LDR,	/*3.56*/
+	PTI_ASTC_4X4X3_LDR,	/*2.67*/
+	PTI_ASTC_4X4X4_LDR,	/*2.00*/
+	PTI_ASTC_5X4X4_LDR,	/*1.60*/
+	PTI_ASTC_5X5X4_LDR,	/*1.28*/
+	PTI_ASTC_5X5X5_LDR,	/*1.02*/
+	PTI_ASTC_6X5X5_LDR,	/*0.85*/
+	PTI_ASTC_6X6X5_LDR,	/*0.71*/
+	PTI_ASTC_6X6X6_LDR,	/*0.59*/
+#endif
 	PTI_ASTC_4X4_SRGB,
 	PTI_ASTC_5X4_SRGB,
 	PTI_ASTC_5X5_SRGB,
@@ -188,6 +203,18 @@ typedef enum uploadfmt
 	PTI_ASTC_10X10_SRGB,
 	PTI_ASTC_12X10_SRGB,
 	PTI_ASTC_12X12_SRGB,
+#ifdef ASTC3D
+	PTI_ASTC_3X3X3_SRGB,
+	PTI_ASTC_4X3X3_SRGB,
+	PTI_ASTC_4X4X3_SRGB,
+	PTI_ASTC_4X4X4_SRGB,
+	PTI_ASTC_5X4X4_SRGB,
+	PTI_ASTC_5X5X4_SRGB,
+	PTI_ASTC_5X5X5_SRGB,
+	PTI_ASTC_6X5X5_SRGB,
+	PTI_ASTC_6X6X5_SRGB,
+	PTI_ASTC_6X6X6_SRGB,
+#endif
 	PTI_ASTC_4X4_HDR,	//these are not strictly necessary, and are likely to be treated identically to the ldr versions, but they may use extra features that the hardware does not support
 	PTI_ASTC_5X4_HDR,
 	PTI_ASTC_5X5_HDR,
@@ -202,8 +229,21 @@ typedef enum uploadfmt
 	PTI_ASTC_10X10_HDR,
 	PTI_ASTC_12X10_HDR,
 	PTI_ASTC_12X12_HDR,
-#define PTI_ASTC_FIRST	PTI_ASTC_4X4_LDR
+#ifdef ASTC3D
+	PTI_ASTC_3X3X3_HDR,
+	PTI_ASTC_4X3X3_HDR,
+	PTI_ASTC_4X4X3_HDR,
+	PTI_ASTC_4X4X4_HDR,
+	PTI_ASTC_5X4X4_HDR,
+	PTI_ASTC_5X5X4_HDR,
+	PTI_ASTC_5X5X5_HDR,
+	PTI_ASTC_6X5X5_HDR,
+	PTI_ASTC_6X6X5_HDR,
+	PTI_ASTC_6X6X6_HDR,
+#define PTI_ASTC_LAST	PTI_ASTC_6X6X6_HDR
+#else
 #define PTI_ASTC_LAST	PTI_ASTC_12X12_HDR
+#endif
 
 	//depth formats
 	PTI_DEPTH16,
@@ -251,6 +291,7 @@ typedef enum uploadfmt
 	//these are emulated formats. this 'case' value allows drivers to easily ignore them
 #define PTI_EMULATED 	TF_INVALID:case TF_BGR24_FLIP:case TF_MIP4_P8:case TF_MIP4_SOLID8:case TF_MIP4_8PAL24:case TF_MIP4_8PAL24_T255:case TF_SOLID8:case TF_TRANS8:case TF_TRANS8_FULLBRIGHT:case TF_HEIGHT8:case TF_HEIGHT8PAL:case TF_H2_T7G1:case TF_H2_TRANS8_0:case TF_H2_T4A4:case TF_8PAL24:case TF_8PAL32:case PTI_LLLX8:case PTI_LLLA8
 } uploadfmt_t;
+#define PTI_FULLMIPCHAIN 0x80000000	//valid for Image_GetTexture (and thus GenMip0) to signify that there's a full round-down mipchain there, not a single one (or 4)
 
 qboolean SCR_ScreenShot (char *filename, enum fs_relative fsroot, void **buffer, int numbuffers, qintptr_t bytestride, int width, int height, enum uploadfmt fmt, qboolean writemeta);
 
@@ -346,4 +387,4 @@ fte_inline float M_LinearToSRGB(float x, float mag)
 
 void R_NetgraphInit(void);
 void R_NetGraph (void);
-void R_FrameTimeGraph (float frametime);
+void R_FrameTimeGraph (float frametime, float scale);

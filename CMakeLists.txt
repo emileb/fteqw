@@ -163,7 +163,7 @@ IF(CMAKE_C_COMPILER_ID MATCHES "GNU")
 	SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wpointer-arith")				#void* stuff
 	SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wvla")							#msvc doesn't support vla
 	SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wdeclaration-after-statement")	#msvc doesn't allow defs after statements, and they're so very tempting...
-	#SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wc++-compat")	#lul
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wformat-truncation=1")
 	#TODO SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wmissing-prototypes")			#for finding missing statics.
 	#SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-function")			#
 
@@ -174,9 +174,13 @@ IF(CMAKE_C_COMPILER_ID MATCHES "GNU")
 	ELSE()
 		set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O3")
 	ENDIF()
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wl,--warn-common")
+	#SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wc++-compat")	#lul, thousands of errors!
 ENDIF()
 IF(CMAKE_BUILD_TYPE MATCHES "Debug")
-	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fstack-protector-strong")
+	IF(NOT ${WIN32})
+		set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fstack-protector-strong")
+	ENDIF()
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu89")
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -D_DEBUG")
 ENDIF()
@@ -251,9 +255,10 @@ ELSEIF(${UNIX})	#linux(ish)
 	ENDIF()
 
 	FIND_PACKAGE(ALSA)
-	IF(NOT ALSA_FOUND)
+	IF(ALSA_FOUND)
+		SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES};AUDIO_ALSA;AUDIO_PULSE)
+	ELSE()
 		MESSAGE(WARNING "asound (alsa) library NOT available.")
-		SET(FTE_LIB_DEFINES ${FTE_LIB_DEFINES};NO_ALSA)
 	ENDIF()
 
 	FIND_PACKAGE(X11)
@@ -299,7 +304,7 @@ ELSEIF(${UNIX})	#linux(ish)
 		NAMES ossaudio
 	)
 	IF(OSSAUDIO_LIBRARY)
-	SET(FTE_LIBS ${FTE_LIBS} ${OSSAUDIO_LIBRARY})
+		SET(FTE_LIBS ${FTE_LIBS} ${OSSAUDIO_LIBRARY})
 	ENDIF()
 
 	#on linux, use wayland.
@@ -307,13 +312,21 @@ ELSEIF(${UNIX})	#linux(ish)
 		WAYLAND_CLIENT_LIBRARY
 		NAMES wayland-client libwayland-client
 	)
+	FIND_LIBRARY(
+		HAVE_XKBCOMMON
+		NAMES xkbcommon
+	)
+	IF(NOT HAVE_XKBCOMMON)
+		MESSAGE(WARNING "xkbcommon library not found, needed for wayland to be usable.")
+		UNSET(WAYLAND_CLIENT_LIBRARY)
+	ENDIF()
 	IF(WAYLAND_CLIENT_LIBRARY)
 		SET(FTE_DEFINES ${FTE_DEFINES};WAYLANDQUAKE;USE_EGL)
 		SET(FTE_ARCH_FILES ${FTE_ARCH_FILES}
 			engine/gl/gl_vidwayland.c
 		)
 	ELSE()
-		MESSAGE(WARNING "Wayland library NOT available")
+		MESSAGE(WARNING "Wayland library NOT available. X11 will live forever anyway.")
 		IF(NOT X11_FOUND)
 			MESSAGE(WARNING "No renderers supported!")
 			SET(FTE_NO_RENDERERS 1)
@@ -469,6 +482,7 @@ SET(FTE_COMMON_FILES
 	engine/common/q3common.c
 	engine/common/qvm.c
 	engine/common/sha1.c
+	engine/common/sha2.c
 	engine/common/translate.c
 	engine/common/zone.c
 
@@ -479,6 +493,7 @@ SET(FTE_COMMON_FILES
 	engine/common/config_nocompat.h
 	engine/common/config_wastes.h
 	engine/common/config_freecs.h
+	engine/common/config_fteqw_noweb.h
 
 	#useless headers that I'll never search for
 	engine/client/api_menu.h
@@ -773,7 +788,7 @@ ELSE()
 		${FTE_CLIENT_FILES}
 	)
 	SET_TARGET_PROPERTIES(fteqw PROPERTIES COMPILE_DEFINITIONS "${FTE_LIB_DEFINES};${FTE_DEFINES};${FTE_REVISON}")
-	TARGET_LINK_LIBRARIES(fteqw ${FTE_LIBS} )
+	TARGET_LINK_LIBRARIES(fteqw ${FTE_LIBS})
 	SET(INSTALLTARGS ${INSTALLTARGS} fteqw)
 
 	ADD_EXECUTABLE(fteqw-sv
@@ -786,9 +801,13 @@ ELSE()
 
 	ADD_EXECUTABLE(iqmtool
 		iqm/iqm.cpp
+		plugins/models/gltf.c
+		engine/client/image.c
+		imgtool.c
 		iqm/iqm.h
 	)
-	SET_TARGET_PROPERTIES(iqmtool PROPERTIES COMPILE_DEFINITIONS "${FTE_REVISON}")
+	SET_TARGET_PROPERTIES(iqmtool PROPERTIES COMPILE_DEFINITIONS "IQMTOOL;${FTE_REVISON}")
+	TARGET_LINK_LIBRARIES(iqmtool ${CMAKE_DL_LIBS})
 	SET(INSTALLTARGS ${INSTALLTARGS} iqmtool)
 
 	ADD_EXECUTABLE(imgtool
@@ -948,8 +967,10 @@ SET(INSTALLTARGS ${INSTALLTARGS} qi)
 
 #ODE Physics library plugin
 FIND_PATH(LIBODE_INCLUDE_DIR ode/ode.h)
-FIND_LIBRARY(LIBODE_LIBRARY ode)
 IF (LIBODE_INCLUDE_DIR)
+	FIND_LIBRARY(LIBODE_LIBRARY ode)
+ENDIF()
+IF (LIBODE_LIBRARY)
 	ADD_LIBRARY(ode MODULE
 		plugins/plugin.c
 		engine/common/com_phys_ode.c
@@ -1067,7 +1088,57 @@ ELSE()
 	MESSAGE(WARNING "ffmpeg library NOT available. Quake shouldn't be playing fmv anyway.")
 ENDIF()
 
-#TODO: cef plugin
+#openxr plugin
+FIND_PACKAGE(PkgConfig)
+IF (PKGCONFIG_FOUND)
+	IF (NOT CMAKE_CROSSCOMPILING)	#its picking up the linux headers then complaining that they're missing in mingw. also almost entirely untested so no great loss.
+		PKG_SEARCH_MODULE(OPENXR openxr)
+	ENDIF()
+	IF (OPENXR_FOUND)
+		ADD_LIBRARY(openxr MODULE
+			plugins/plugin.c
+			plugins/openxr.c
+		)
+		TARGET_INCLUDE_DIRECTORIES(openxr PRIVATE ${OPENXR_INCLUDE_DIRS} )
+
+		SET_TARGET_PROPERTIES(openxr PROPERTIES PREFIX "fteplug_")
+		SET_TARGET_PROPERTIES(openxr PROPERTIES LINK_FLAGS "-Wl,--no-undefined")
+		IF (1)	#dynamically link
+			SET_TARGET_PROPERTIES(openxr PROPERTIES COMPILE_DEFINITIONS "FTEPLUGIN;${FTE_LIB_DEFINES};${FTE_DEFINES};XR_NO_PROTOTYPES")
+			TARGET_LINK_LIBRARIES(openxr ${SYS_LIBS})
+		ELSE()	#statically link
+			SET_TARGET_PROPERTIES(openxr PROPERTIES COMPILE_DEFINITIONS "FTEPLUGIN;${FTE_LIB_DEFINES};${FTE_DEFINES}")
+			TARGET_LINK_LIBRARIES(openxr ${SYS_LIBS} ${OPENXR_LIBRARIES})
+		ENDIF()
+		SET(INSTALLTARGS ${INSTALLTARGS} openxr)
+	ELSE()
+		MESSAGE(WARNING "openxr library NOT available. Quake is already a reality anyway.")
+	ENDIF()
+ENDIF()
+
+#cef plugin
+#libcef itself can be obtained from http://opensource.spotify.com/cefbuilds/index.html (minimal builds, which still ends up with a 940mb libcef.so - yes, actual size)
+#(be sure to manually strip the binary of its debug info)
+IF (0)
+	FIND_PATH (CEF_PATH include/cef_version.h /tmp/cef/cef_binary_81.3.1+gb2b49f1+chromium-81.0.4044.113_linux64_minimal)
+	#FIND_LIBRARY(CEF_LIBRARIES cef ${CEF_PATH}/Release)
+	IF (CEF_PATH)
+		ADD_LIBRARY(cef MODULE
+			plugins/plugin.c
+			plugins/cef/cef.c
+		)
+		TARGET_INCLUDE_DIRECTORIES(cef PRIVATE ${CEF_PATH}/..)
+		if (CEF_LIBRARIES)
+			SET_TARGET_PROPERTIES(cef PROPERTIES COMPILE_DEFINITIONS "FTEPLUGIN;${FTE_LIB_DEFINES};${FTE_DEFINES};LIBCEF_STATIC")
+			TARGET_LINK_LIBRARIES(cef ${SYS_LIBS} ${CEF_LIBRARIES} ${CMAKE_DL_LIBS})
+		ELSE()
+			SET_TARGET_PROPERTIES(cef PROPERTIES COMPILE_DEFINITIONS "FTEPLUGIN;${FTE_LIB_DEFINES};${FTE_DEFINES};LIBCEF_DYNAMIC")
+			TARGET_LINK_LIBRARIES(cef ${SYS_LIBS} ${CMAKE_DL_LIBS})
+		ENDIF()
+		SET_TARGET_PROPERTIES(cef PROPERTIES PREFIX "fteplug_")
+		SET_TARGET_PROPERTIES(cef PROPERTIES LINK_FLAGS "-Wl,--no-undefined")
+	ENDIF()
+ENDIF()
 
 IF(NOT ANDROID)
 	#XMPP/jabber client plugin
@@ -1097,37 +1168,44 @@ INSTALL(TARGETS ${INSTALLTARGS}
 	LIBRARY DESTINATION "${CMAKE_INSTALL_FULL_LIBDIR}"
 )
 
-ADD_CUSTOM_TARGET(menusys ALL
-	VERBATIM
-	COMMAND fteqcc -srcfile "${CMAKE_CURRENT_SOURCE_DIR}/quakec/menusys/menu.src" -o "${CMAKE_CURRENT_BINARY_DIR}/menu.dat"
-	BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/menu.dat" "${CMAKE_CURRENT_BINARY_DIR}/menu.lno"
-	SOURCES
-		quakec/menusys/menu.src
-		quakec/menusys/menusys/mitems.qc
-		quakec/menusys/menusys/mitems_common.qc
-		quakec/menusys/menusys/mitem_desktop.qc
-		quakec/menusys/menusys/mitem_exmenu.qc
-		quakec/menusys/menusys/mitem_edittext.qc
-		quakec/menusys/menusys/mitem_tabs.qc
-		quakec/menusys/menusys/mitem_colours.qc
-		quakec/menusys/menusys/mitem_checkbox.qc
-		quakec/menusys/menusys/mitem_slider.qc
-		quakec/menusys/menusys/mitem_combo.qc
-		quakec/menusys/menusys/mitem_bind.qc
-		quakec/menusys/menusys/mitem_spinnymodel.qc
-		quakec/menusys/menu/loadsave.qc
-		quakec/menusys/menu/newgame.qc
-		quakec/menusys/menu/options_basic.qc
-		quakec/menusys/menu/options_effects.qc
-		quakec/menusys/menu/options_keys.qc
-		quakec/menusys/menu/options.qc
-		quakec/menusys/menu/presets.qc
-		quakec/menusys/menu/servers.qc
-		quakec/menusys/menu/main.qc
-		quakec/menusys/menu/options_audio.qc
-		quakec/menusys/menu/options_configs.qc
-		quakec/menusys/menu/options_hud.qc
-		quakec/menusys/menu/options_particles.qc
-		quakec/menusys/menu/options_video.qc
-		quakec/menusys/menu/quit.qc
-)
+IF (0)
+	ADD_CUSTOM_TARGET(menusys ALL
+		VERBATIM
+		COMMAND fteqcc -srcfile "${CMAKE_CURRENT_SOURCE_DIR}/quakec/menusys/menu.src" -o "${CMAKE_CURRENT_BINARY_DIR}/menu.dat"
+		BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/menu.dat" "${CMAKE_CURRENT_BINARY_DIR}/menu.lno"
+		SOURCES
+			quakec/menusys/menu.src
+			quakec/menusys/fteextensions.qc
+			quakec/menusys/menusys/mitems.qc
+			quakec/menusys/menusys/mitems_common.qc
+			quakec/menusys/menusys/mitem_frame.qc
+			quakec/menusys/menusys/mitem_desktop.qc
+			quakec/menusys/menusys/mitem_exmenu.qc
+			quakec/menusys/menusys/mitem_edittext.qc
+			quakec/menusys/menusys/mitem_tabs.qc
+			quakec/menusys/menusys/mitem_colours.qc
+			quakec/menusys/menusys/mitem_checkbox.qc
+			quakec/menusys/menusys/mitem_slider.qc
+			quakec/menusys/menusys/mitem_combo.qc
+			quakec/menusys/menusys/mitem_bind.qc
+			quakec/menusys/menusys/mitem_spinnymodel.qc
+			quakec/menusys/menu/loadsave.qc
+			quakec/menusys/menu/newgame.qc
+			quakec/menusys/menu/options_basic.qc
+			quakec/menusys/menu/options_effects.qc
+			quakec/menusys/menu/options_keys.qc
+			quakec/menusys/menu/options.qc
+			quakec/menusys/menu/presets.qc
+			quakec/menusys/menu/servers.qc
+			quakec/menusys/menu/main.qc
+			quakec/menusys/menu/mods.qc
+			quakec/menusys/menu/cvars.qc
+			quakec/menusys/menu/updates.qc
+			quakec/menusys/menu/options_audio.qc
+			quakec/menusys/menu/options_configs.qc
+			quakec/menusys/menu/options_hud.qc
+			quakec/menusys/menu/options_particles.qc
+			quakec/menusys/menu/options_video.qc
+			quakec/menusys/menu/quit.qc
+	)
+ENDIF()

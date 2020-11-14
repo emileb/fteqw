@@ -63,6 +63,7 @@ LOCAL_SRC_FILES := \
     engine/common/log.c \
     engine/common/mathlib.c \
     engine/common/md4.c \
+     engine/common/sha2.c \
     engine/common/net_chan.c \
     engine/common/net_ice.c \
     engine/common/net_wins.c \

@@ -38,7 +38,9 @@ void QDECL SV_NQPhysicsUpdate(cvar_t *var, char *oldvalue)
 {
 	if (!strcmp(var->string, "auto") || !strcmp(var->string, ""))
 	{	//prediction requires nq physics, so use it by default in multiplayer.
-		if (progstype <= PROG_QW || (!isDedicated &&  sv.allocated_client_slots > 1))
+		if (	progstype <= PROG_QW ||	//none or qw use qw physics by default
+				(!isDedicated &&  sv.allocated_client_slots > 1) ||	//multiplayer dedicated servers use qw physics for nq mods too. server admins are expected to be able to spend a little more time to configure things properly.
+				(svprogfuncs&&PR_FindFunction(svprogfuncs, "SV_RunClientCommand", PR_ANY)))	//mods that use explicit custom player physics/pred ALWAYS want qw physics (just hope noone forces it off)
 			var->ival = 0;
 		else
 			var->ival = 1;
@@ -55,6 +57,8 @@ extern cvar_t	cl_rollangle;
 #endif
 cvar_t	sv_spectalk	= CVAR("sv_spectalk", "1");
 
+#define nqcompat_spawnbeforeready 1
+
 cvar_t	sv_mapcheck	= CVAR("sv_mapcheck", "1");
 
 cvar_t	sv_fullredirect = CVARD("sv_fullredirect", "", "This is the ip:port to redirect players to when the server is full");
@@ -66,7 +70,7 @@ cvar_t	sv_cheatspeedchecktime	= CVARD("sv_cheatspeedchecktime", "30", "The inter
 #endif
 cvar_t	sv_playermodelchecks	= CVAR("sv_playermodelchecks", "0");
 cvar_t	sv_ping_ignorepl		= CVARD("sv_ping_ignorepl", "0", "If 1, ping times reported for players will ignore the effects of packetloss on ping times. 0 is slightly more honest, but less useful for connection diagnosis.");
-cvar_t	sv_protocol_nq		= CVARD("sv_protocol_nq", "", "Specifies the default protocol to use for new NQ clients. This is only relevent for clients that do not report their supported protocols. Supported values are\n0 = autodetect\n15 = vanilla\n666 = fitzquake\n999 = rmq protocol\nThe sv_bigcoords cvar forces upgrades as required.");
+cvar_t	sv_protocol_nq			= CVARD("sv_protocol_nq", "", "Specifies the default protocol to use for new NQ clients. This is only relevent for clients that do not report their supported protocols. Supported values are\n0 = autodetect\n15 = vanilla\n666 = fitzquake\n999 = rmq protocol\nThe sv_bigcoords cvar forces upgrades as required.");
 
 cvar_t	sv_minpitch		 = CVARAFD("minpitch", "",	"sv_minpitch", CVAR_SERVERINFO, "Assumed to be -70");
 cvar_t	sv_maxpitch		 = CVARAFD("maxpitch", "",	"sv_maxpitch", CVAR_SERVERINFO, "Assumed to be 80");
@@ -273,7 +277,7 @@ void SV_New_f (void)
 
 	if (dpcompat_nopreparse.ival && progstype != PROG_QW)
 	{
-		SV_PrintToClient(host_client, PRINT_HIGH, "This server now has network preparsing disabled, and thus only supports NetQuake clients\n");
+		SV_PrintToClient(host_client, PRINT_HIGH, "This server has network preparsing disabled, and thus only supports NetQuake clients\n");
 		Con_Printf("%s was not using NQ protocols\n", host_client->name);
 		host_client->drop = true;
 		return;
@@ -362,7 +366,6 @@ void SV_New_f (void)
 		#ifdef SVRANKING
 			split->stats_started = realtime;
 		#endif
-			splitnum++;
 		}
 	}
 	else
@@ -531,7 +534,7 @@ void SVNQ_New_f (void)
 
 	if (dpcompat_nopreparse.ival && progstype == PROG_QW)
 	{
-		SV_PrintToClient(host_client, PRINT_HIGH, "This server now has network preparsing disabled, and thus only supports QuakeWorld clients\n");
+		SV_PrintToClient(host_client, PRINT_HIGH, "This server has network preparsing disabled, and thus only supports QuakeWorld clients\n");
 		Con_Printf("%s was not using QW protocols\n", host_client->name);
 		host_client->drop = true;
 		return;
@@ -558,17 +561,25 @@ void SVNQ_New_f (void)
 		{
 			int id;
 			qboolean big;	//used as a filter to exclude protocols that don't match our coord+angles mode
+			qboolean pextonly;
 		} preferedprot[] =
 		{
+			//favour fitz over dp's. this is on the assumption that we can use pext stuff when both are available.
+			{SCP_FITZ666, true,		true},	//actually fte+999... shh...
+			{SCP_FITZ666, false,	true},	//actually fte+666.
+			//next best is probably dp's stuff
 			{SCP_DARKPLACES7, true},
 			{SCP_DARKPLACES6, true},
+			//unextended fitz is kinda lame, but has some bells on it.
 			{SCP_FITZ666, true},	//actually 999... shh...
 			{SCP_FITZ666, false},
+			//well, we can still get bigger model/soundindexes out of this
 			{SCP_BJP3, false}	//should we only use this when we have >255 models/sounds?
 		};
 		for (i = 0; i < countof(preferedprot); i++)
 		{
 			if (preferedprot[i].big == !!(protext1 & PEXT_FLOATCOORDS))
+			if (!preferedprot[i].pextonly || (protext2&PEXT2_REPLACEMENTDELTAS))
 			{
 				if (host_client->supportedprotocols & (1u<<preferedprot[i].id))
 				{
@@ -695,14 +706,14 @@ void SVNQ_New_f (void)
 		//which isn't all that useful. so lets customise it to advertise properly, as well as provide gamedir and map (file)name info
 		if (protext2 & PEXT2_REPLACEMENTDELTAS)
 		{
-			Q_snprintfz (message, sizeof(message), "%c\n%s - "DISTRIBUTION" (FTENQ, %s) - %s", 2, gamedir,
-				build,	mapname);
+			Q_snprintfz (message, sizeof(message), "%c\n"DISTRIBUTION" %s - %s - %s", 2,
+				build,gamedir, mapname);
 		}
 		else
 		{
-			Q_snprintfz (message, sizeof(message), "%c\n%s - "DISTRIBUTION" (%s%s%s, %s) - %s", 2, gamedir,
+			Q_snprintfz (message, sizeof(message), "%c\n"DISTRIBUTION" (%s%s%s, %s) - %s - %s", 2,
 				protoname,(protext1||(protext2&~PEXT2_VOICECHAT))?"+":"",(protext2&PEXT2_VOICECHAT)?"Voip":"",
-				build,	mapname);
+				build,gamedir, mapname);
 		}
 		MSG_WriteByte (&host_client->netchan.message, svc_print);
 		MSG_WriteString (&host_client->netchan.message,message);
@@ -710,17 +721,21 @@ void SVNQ_New_f (void)
 
 	if (host_client->protocol == SCP_DARKPLACES6 || host_client->protocol == SCP_DARKPLACES7)
 	{
-		size_t sz;
+		char buf[1024];
+		size_t sz = 0;
 		char *f;
+		char *csprogsname = InfoBuf_ValueForKey(&svs.info, "*csprogsname");
+		if (!*csprogsname && *InfoBuf_ValueForKey(&svs.info, "*csprogs"))
+			csprogsname = "csprogs.dat";
 
 		MSG_WriteByte (&host_client->netchan.message, svc_stufftext);
 		MSG_WriteString (&host_client->netchan.message, "cl_serverextension_download 1\n");
 
-		f = COM_LoadTempFile("csprogs.dat", 0, &sz);
+		f = *csprogsname?COM_LoadTempFile(csprogsname, 0, &sz):NULL;
 		if (f)
 		{
 			MSG_WriteByte (&host_client->netchan.message, svc_stufftext);
-			MSG_WriteString (&host_client->netchan.message, va("csqc_progname %s\n", "csprogs.dat"));
+			MSG_WriteString (&host_client->netchan.message, va("csqc_progname %s\n", COM_QuotedString(csprogsname, buf, sizeof(buf), false)));
 			MSG_WriteByte (&host_client->netchan.message, svc_stufftext);
 			MSG_WriteString (&host_client->netchan.message, va("csqc_progsize %u\n", (unsigned int)sz));
 			MSG_WriteByte (&host_client->netchan.message, svc_stufftext);
@@ -728,6 +743,11 @@ void SVNQ_New_f (void)
 
 			MSG_WriteByte (&host_client->netchan.message, svc_stufftext);
 			MSG_WriteString (&host_client->netchan.message, "cmd enablecsqc\n");
+		}
+		else
+		{
+			MSG_WriteByte (&host_client->netchan.message, svc_stufftext);
+			MSG_WriteString (&host_client->netchan.message, "csqc_progcrc \"\"\n");
 		}
 	}
 	else if (allow_download.value && (protext1||protext2))
@@ -1035,6 +1055,11 @@ void SV_SendClientPrespawnInfo(client_t *client)
 	{
 		char buffer[1024];
 
+#ifdef PEXT_CSQC
+		if (sv.csqcchecksum && !(client->fteprotocolextensions & PEXT_CSQC) && !ISDPCLIENT(client))
+			SV_PrintToClient(client, PRINT_HIGH, "This server is using CSQC - you are missing out due to your choice of outdated client / protocol!\n");
+#endif
+
 		while (client->netchan.message.cursize < maxsize)
 		{
 			if (client->prespawn_idx == 0)
@@ -1055,18 +1080,14 @@ void SV_SendClientPrespawnInfo(client_t *client)
 			}
 			else if (client->prespawn_idx == 2)
 			{
-				if (!ISNQCLIENT(client) || (client->fteprotocolextensions2 & PEXT2_PREDINFO))
+				static const char *prioritykeys[] = {"*", "fpd", "teamplay", "deathmatch", "maxfps", NULL};	//make sure these are in there.
+				static const char *ignorekeys[] = {"mapname"/*here for q3, useless for qw*/, NULL};
+				if (!ISNQCLIENT(client) || (client->fteprotocolextensions & PEXT_CSQC) || (client->fteprotocolextensions2 & PEXT2_PREDINFO))
 				{	//nq does not normally get serverinfo sent to it.
-					i = InfoBuf_ToString(&svs.info, buffer, sizeof(buffer), NULL, NULL, NULL, &client->infosync, &svs.info);
+					i = InfoBuf_ToString(&svs.info, buffer, sizeof(buffer), prioritykeys, ignorekeys, NULL, &client->infosync, &svs.info);
 					Info_SetValueForStarKey(buffer, "*z_ext", va("%i", client->zquake_extensions), sizeof(buffer)); //should already be in there, so this should only ever make it shorter.
 					ClientReliableWrite_Begin(client, svc_stufftext, 20 + i);
 					ClientReliableWrite_String (client, va("fullserverinfo \"%s\"\n", buffer) );
-				}
-				else if (sv.csqcdebug)
-				{
-					i = InfoBuf_ToString(&svs.info, buffer, sizeof(buffer), NULL, NULL, NULL, &client->infosync, &svs.info);
-					ClientReliableWrite_Begin(client, svc_stufftext, 22 + i);
-					ClientReliableWrite_String (client, va("//fullserverinfo \"%s\"\n", buffer) );
 				}
 			}
 			else if (client->prespawn_idx == 3)
@@ -1205,7 +1226,7 @@ void SV_SendClientPrespawnInfo(client_t *client)
 			if (client->fteprotocolextensions & PEXT_SOUNDDBL)
 				maxclientsupportedsounds = MAX_PRECACHE_SOUNDS;
 #endif
-#ifdef PEXT_SOUNDDBL
+#ifdef PEXT2_REPLACEMENTDELTAS
 			if (client->fteprotocolextensions2 & PEXT2_REPLACEMENTDELTAS)
 				maxclientsupportedsounds = MAX_PRECACHE_SOUNDS;
 #endif
@@ -1890,7 +1911,7 @@ void SVQW_Spawn_f (void)
 		{
 			ent = split->edict;
 
-			if (split->istobeloaded)	//minimal setup
+			if (split->spawned)	//minimal setup
 			{
 				split->entgravity = ent->xv->gravity;
 				split->maxspeed = ent->xv->maxspeed;
@@ -1941,6 +1962,18 @@ void SVQW_Spawn_f (void)
 	// when that is completed, a begin command will be issued
 	ClientReliableWrite_Begin (host_client, svc_stufftext, 8);
 	ClientReliableWrite_String (host_client, "skins\n" );
+
+	if (sv.allocated_client_slots > 1)
+	{	//okay, so nq player physics don't suppot prediction.
+		//if we use qw physics in nq mods then we risk breaking things.
+		//the only progs many players will have is the vanilla nq one.
+		//so prediction is broken on most people's quicky servers.
+		//which really sucks.
+		//so let multiplayer people know what's going on so that they don't think its an actual bug, and can harass the admin to get it fixed in mods that allow for it.
+		if (!strcmp(sv_nqplayerphysics.string, "auto") || !strcmp(sv_nqplayerphysics.string, ""))
+			if (sv_nqplayerphysics.ival)
+				SV_PrintToClient(host_client, PRINT_HIGH, CON_WARNING"Movement prediction is disabled in favour of non-quakeworld mod compatibilty\n");
+	}
 }
 
 /*
@@ -1972,6 +2005,62 @@ void SV_SpawnSpectator (void)
 	}
 }
 
+void SV_DespawnClient(client_t *cl)
+{	//this disconnects the client from its entity state
+	if (!cl->spawned)
+		return;	//nothing to do.
+	cl->spawned = false;
+
+#ifdef Q2SERVER
+	if (ge)
+	{
+		ge->ClientDisconnect(cl->q2edict);
+		return;
+	}
+#endif
+
+
+	if (svprogfuncs)
+	{
+		if (host_initialized)
+		{
+#ifdef VM_Q1
+			if (svs.gametype == GT_Q1QVM)
+			{
+				Q1QVM_DropClient(cl);
+			}
+			else
+#endif
+			{
+				if (!cl->spectator)
+				{
+				// call the prog function for removing a client
+				// this will set the body to a dead frame, among other things
+					pr_global_struct->self = EDICT_TO_PROG(svprogfuncs, cl->edict);
+					if (pr_global_ptrs->ClientDisconnect)
+						PR_ExecuteProgram (svprogfuncs, pr_global_struct->ClientDisconnect);
+					sv.spawned_client_slots--;
+				}
+				else
+				{
+					// call the prog function for removing a client
+					// this will set the body to a dead frame, among other things
+					pr_global_struct->self = EDICT_TO_PROG(svprogfuncs, cl->edict);
+					if (SpectatorDisconnect)
+						PR_ExecuteProgram (svprogfuncs, SpectatorDisconnect);
+					sv.spawned_observer_slots--;
+				}
+			}
+
+			if (progstype == PROG_NQ)
+				ED_Clear(svprogfuncs, cl->edict);
+		}
+
+		if (svprogfuncs && cl->edict && cl->edict->v)
+			cl->edict->v->frags = 0;
+	}
+}
+
 void SV_Begin_Core(client_t *split)
 {	//this is the client-protocol-independant core, for q1/q2 gamecode
 	client_t	*oh;
@@ -1981,7 +2070,27 @@ void SV_Begin_Core(client_t *split)
 #endif
 
 	if (split->spawned)
+	{
+		if (svprogfuncs)
+		{
+			//NEH_RESTOREGAME
+			//officially RestoreGame tells the mod when the game has been loaded.
+			//this allows mods to send any stuffcmds the client will have forgotten.
+			//the original intention would not have been client-specific (and indeed nehahra only saves in singleplayer)
+			//doing it elsewhere unfortunately results in race conditions.
+			func_t f = PR_FindFunction(svprogfuncs, "RestoreGame", PR_ANY);
+			if (f)
+			{
+				pr_global_struct->time = sv.world.physicstime;
+				pr_global_struct->self = EDICT_TO_PROG(svprogfuncs, split->edict);
+				PR_ExecuteProgram (svprogfuncs, f);
+			}
+
+			SV_SendFixAngle(split, NULL, FIXANGLE_FIXED, false);
+			split->edict->v->fixangle = FIXANGLE_NO;	//no point doing it again
+		}
 		return;
+	}
 	split->spawned = true;
 
 #ifdef Q2SERVER
@@ -1998,20 +2107,6 @@ void SV_Begin_Core(client_t *split)
 	}
 	else
 #endif
-	if (split->istobeloaded)
-	{
-		func_t f;
-		split->istobeloaded = false;
-
-		f = PR_FindFunction(svprogfuncs, "RestoreGame", PR_ANY);
-		if (f)
-		{
-			pr_global_struct->time = sv.world.physicstime;
-			pr_global_struct->self = EDICT_TO_PROG(svprogfuncs, split->edict);
-			PR_ExecuteProgram (svprogfuncs, f);
-		}
-	}
-	else
 	{
 #ifdef HAVE_LEGACY
 		split->edict->xv->clientcolors = split->playercolor;
@@ -2161,17 +2256,19 @@ void SV_Begin_Core(client_t *split)
 				}
 			}
 		}
-	}
+		SV_SendFixAngle(split, NULL, FIXANGLE_FIXED, false);
+		split->edict->v->fixangle = FIXANGLE_NO;	//no point doing it again
 
 #ifdef HAVE_LEGACY
-	split->dp_ping = NULL;
-	split->dp_pl = NULL;
-	if (progstype == PROG_NQ)
-	{
-		split->dp_ping = (float*)sv.world.progs->GetEdictFieldValue(sv.world.progs, split->edict, "ping", ev_float, NULL);
-		split->dp_pl = (float*)sv.world.progs->GetEdictFieldValue(sv.world.progs, split->edict, "ping_packetloss", ev_float, NULL);
-	}
+		split->dp_ping = NULL;
+		split->dp_pl = NULL;
+		if (progstype == PROG_NQ)
+		{
+			split->dp_ping = (float*)sv.world.progs->GetEdictFieldValue(sv.world.progs, split->edict, "ping", ev_float, NULL);
+			split->dp_pl = (float*)sv.world.progs->GetEdictFieldValue(sv.world.progs, split->edict, "ping_packetloss", ev_float, NULL);
+		}
 #endif
+	}
 }
 
 /*
@@ -2183,7 +2280,6 @@ void SV_Begin_f (void)
 {
 	client_t	*split;
 	unsigned pmodel = 0, emodel = 0;
-	qboolean sendangles=false;
 
 	if (!SV_CheckRealIP(host_client, true))
 	{
@@ -2209,12 +2305,6 @@ void SV_Begin_f (void)
 		return;
 	}
 
-	if (host_client->istobeloaded)
-		sendangles = true;
-	if (host_client->protocol == SCP_QUAKE2)
-		sendangles = false;
-
-
 	for (split = host_client; split; split = split->controlled)
 	{	//tell the gamecode they're ready
 		SV_Begin_Core(split);
@@ -2235,22 +2325,6 @@ void SV_Begin_f (void)
 		if (pmodel != sv.model_player_checksum ||
 			emodel != sv.eyes_player_checksum)
 			SV_BroadcastTPrintf (PRINT_HIGH, "warning: %s eyes or player model does not match\n", host_client->name);
-	}
-
-	if (sendangles)
-	{
-//
-// send a fixangle over the reliable channel to make sure it gets there
-// Never send a roll angle, because savegames can catch the server
-// in a state where it is expecting the client to correct the angle
-// and it won't happen if the game was just loaded, so you wind up
-// with a permanent head tilt
-		MSG_WriteByte (&host_client->netchan.message, svc_setangle);
-		if (host_client->ezprotocolextensions1 & EZPEXT1_SETANGLEREASON)
-			MSG_WriteByte (&host_client->netchan.message, 0);
-		MSG_WriteAngle (&host_client->netchan.message, 0 );
-		MSG_WriteAngle (&host_client->netchan.message, host_client->edict->v->angles[1] );
-		MSG_WriteAngle (&host_client->netchan.message, 0 );
 	}
 
 #ifdef MVD_RECORDING
@@ -2960,6 +3034,58 @@ void SV_Voice_UnmuteAll_f(void)
 }
 #endif
 
+qboolean SV_FindRemotePackage(const char *package, char *url, size_t urlsize)
+{
+	//FIXME: interrogate the package manager first? it probably doesn't have source urls though. I guess that should be done clientside.
+
+	//basedir/gamedir/curl_urls.txt contains something like:
+	//maps_*.pk3 https://host/maps/
+	//* https://host/gamedir/
+
+	//or something.
+
+	extern cvar_t sv_dlURL;
+	vfsfile_t *f;
+	char line[512];
+
+	//filter out the gamedir, so different gamedirs can have different sets of urls.
+	//(useful for eg pakN.pak, if it were not blocked elsewhere)
+	char *sep = strchr(package, '/');
+	if (!sep || sep-package>=strlen(line))
+		return false;
+	memcpy(line, package, sep-package+1);
+	line[sep-package+1] = 0;
+	package = sep+1;
+
+	Q_strncatz(line, "curl_urls.txt", sizeof(line));
+	f = FS_OpenVFS(line, "rb", FS_ROOT);	//this is for server admins to deal with. urls are too unreliable for paks.
+	if (f)
+	{
+		char pattern[256];
+		char *e;
+		while (VFS_GETS(f, line, sizeof(line)))
+		{
+			e = COM_ParseOut(line, pattern, sizeof(pattern));
+			if (*pattern && wildcmp(pattern, package))
+			{
+				COM_ParseOut(e, url, urlsize);
+				Q_strncatz(url, package, urlsize);
+				VFS_CLOSE(f);
+				return true;
+			}
+		}
+		VFS_CLOSE(f);
+	}
+
+	if (*sv_dlURL.string)
+	{	//a fallback, though the above mechanism allows for a wildcard for all.
+		Q_strncatz(sv_dlURL.string, package, urlsize);
+		Q_strncatz(url, package, urlsize);
+		return true;
+	}
+	return false;
+}
+
 //Use of this function is on name only.
 //Be aware that the maps directory should be restricted based on weather the file was from a pack file
 //this is to preserve copyright - please do not breach due to a bug.
@@ -3151,7 +3277,14 @@ static int SV_LocateDownload(const char *name, flocation_t *loc, char **replacem
 
 	if (!Q_strncasecmp(name, "package/", 8))
 	{
-		vfsfile_t *f = FS_OpenVFS(name+8, "rb", FS_ROOT);
+		vfsfile_t *f;
+		if (redirectpaks && SV_FindRemotePackage(name+8, tmpname, sizeof(tmpname)))
+		{
+			*replacementname = tmpname;
+			return DLERR_REDIRECTFILE;
+		}
+
+		f = FS_OpenVFS(name+8, "rb", FS_ROOT);
 		if (f)
 		{
 			loc->len = VFS_GETLEN(f);
@@ -4220,27 +4353,8 @@ static void SV_UpdateSeats(client_t *controller)
 
 	for (curclients = 0, cl = controller; cl; cl = cl->controlled, curclients++)
 	{
-// send a fixangle over the reliable channel to make sure it gets there
-// Never send a roll angle, because savegames can catch the server
-// in a state where it is expecting the client to correct the angle
-// and it won't happen if the game was just loaded, so you wind up
-// with a permanent head tilt
-		ClientReliableWrite_Begin(controller, svcfte_choosesplitclient, 2+curclients);
-		ClientReliableWrite_Byte (controller, curclients);
-		ClientReliableWrite_Byte (controller, svc_setangle);
-		if (cl->edict->v->fixangle)
-		{
-			ClientReliableWrite_Angle(controller, cl->edict->v->angles[0]);
-			ClientReliableWrite_Angle(controller, cl->edict->v->angles[1]);
-			ClientReliableWrite_Angle(controller, 0);//cl->edict->v->angles[2]);
-			cl->edict->v->fixangle = 0;
-		}
-		else
-		{
-			ClientReliableWrite_Angle(controller, cl->edict->v->v_angle[0]);
-			ClientReliableWrite_Angle(controller, cl->edict->v->v_angle[1]);
-			ClientReliableWrite_Angle(controller, 0);//cl->edict->v->v_angle[2]);
-		}
+		SV_SendFixAngle(cl, NULL, FIXANGLE_FIXED, false);
+		cl->edict->v->fixangle = FIXANGLE_NO;	//no point doing it again
 	}
 }
 
@@ -5021,7 +5135,7 @@ void Cmd_Fly_f (void)
 	}
 }
 
-#ifdef SUBSERVERS
+#if defined(_DEBUG) && defined(SUBSERVERS)
 void Cmd_SSV_Transfer_f(void)
 {
 	char *dest = Cmd_Argv(1);
@@ -5117,7 +5231,7 @@ void Cmd_SetPos_f(void)
 		sv_player->v->angles[0] = atof(Cmd_Argv(4));
 		sv_player->v->angles[1] = atof(Cmd_Argv(5));
 		sv_player->v->angles[2] = atof(Cmd_Argv(6));
-		sv_player->v->fixangle = true;
+		sv_player->v->fixangle = FIXANGLE_FIXED;
 	}
 }
 
@@ -5337,17 +5451,7 @@ void Cmd_Join_f (void)
 		if (!host_client->spectator)
 			continue;
 
-		// call the prog function for removing a client
-		// this will set the body to a dead frame, among other things
-		pr_global_struct->self = EDICT_TO_PROG(svprogfuncs, sv_player);
-#ifdef VM_Q1
-		if (svs.gametype == GT_Q1QVM)
-			Q1QVM_DropClient(host_client);
-		else
-#endif
-			if (SpectatorDisconnect)
-			PR_ExecuteProgram (svprogfuncs, SpectatorDisconnect);
-		sv.spawned_observer_slots--;
+		SV_DespawnClient(host_client);
 
 		SV_SetUpClientEdict (host_client, host_client->edict);
 
@@ -5471,18 +5575,8 @@ void Cmd_Observe_f (void)
 		if (host_client->spectator)
 			continue;
 
-		// call the prog function for removing a client
-		// this will set the body to a dead frame, among other things
-#ifdef VM_Q1
-		if (svs.gametype == GT_Q1QVM)
-			Q1QVM_DropClient(host_client);
-		else
-#endif
-		{
-			pr_global_struct->self = EDICT_TO_PROG(svprogfuncs, sv_player);
-			PR_ExecuteProgram (svprogfuncs, pr_global_struct->ClientDisconnect);
-		}
-		sv.spawned_client_slots--;
+		SV_DespawnClient(host_client);
+
 
 		SV_SetUpClientEdict (host_client, host_client->edict);
 
@@ -5611,10 +5705,17 @@ static void Cmd_FPSList_f(void)
 
 void SV_EnableClientsCSQC(void)
 {
+	size_t e;
 	if (host_client->controller)
 		return;
 
 	host_client->csqcactive = true;
+
+	//if the csqc has just restarted, its probably going to want us to resend all csqc ents from scratch because of all the setup it might do.
+	if (host_client->pendingcsqcbits)
+		for (e = 1; e < host_client->max_net_ents; e++)
+			if (host_client->pendingcsqcbits[e] & SENDFLAGS_PRESENT)
+				host_client->pendingcsqcbits[e] |= SENDFLAGS_USABLE;
 }
 void SV_DisableClientsCSQC(void)
 {
@@ -5717,8 +5818,7 @@ static void SVNQ_Spawn_f (void)
 	//qw servers hold off until the last possible moment.
 	//so qw servers prevent the player from getting shot too early.
 	//while nq ensures that reliables sent in ClientConnect are actually flushed before unreliables/entities start to arrive.
-//	if (nqcompat_spawnbeforeready.ival)
-		SV_Begin_Core(host_client);
+	SV_Begin_Core(host_client);
 
 	ClientReliableWrite_Begin (host_client, svcnq_signonnum, 2);
 	ClientReliableWrite_Byte (host_client, 3);
@@ -5728,14 +5828,14 @@ static void SVNQ_Spawn_f (void)
 static void SVNQ_Begin_f (void)
 {
 	unsigned pmodel = 0, emodel = 0;
-	qboolean sendangles=false;
 
 	if (host_client->state == cs_spawned)
 		return; // don't begin again
 
 	host_client->state = cs_spawned;
 
-	SV_Begin_Core(host_client);
+	//while qw spawns player entity in the 'begin' stage, nq spawns in the 'spawn' stage rather than here.
+//	SV_Begin_Core(host_client);
 
 	// clear the net statistics, because connecting gives a bogus picture
 	host_client->netchan.frame_latency = 0;
@@ -5753,20 +5853,6 @@ static void SVNQ_Begin_f (void)
 		if (pmodel != sv.model_player_checksum ||
 			emodel != sv.eyes_player_checksum)
 			SV_BroadcastTPrintf (PRINT_HIGH, "warning: %s eyes or player model not verified\n", host_client->name);
-	}
-
-	if (sendangles)
-	{
-//
-// send a fixangle over the reliable channel to make sure it gets there
-// Never send a roll angle, because savegames can catch the server
-// in a state where it is expecting the client to correct the angle
-// and it won't happen if the game was just loaded, so you wind up
-// with a permanent head tilt
-		MSG_WriteByte (&host_client->netchan.message, svc_setangle);
-		MSG_WriteAngle (&host_client->netchan.message, 0 );
-		MSG_WriteAngle (&host_client->netchan.message, host_client->edict->v->angles[1] );
-		MSG_WriteAngle (&host_client->netchan.message, 0 );
 	}
 
 //	MSG_WriteByte (&host_client->netchan.message, svc_signonnum);
@@ -6070,12 +6156,12 @@ void SV_Pext_f(void)
 		}
 	}
 
+	SV_ClientProtocolExtensionsChanged(host_client);
+
 	if (!host_client->supportedprotocols && Cmd_Argc() == 1)
 		Con_DPrintf("%s reports no extended capabilities.\n", host_client->name);
 	else
 		Con_DPrintf("%s now using pext: %x, %x, %x\n", host_client->name, host_client->fteprotocolextensions, host_client->fteprotocolextensions2, host_client->ezprotocolextensions1);
-
-	SV_ClientProtocolExtensionsChanged(host_client);
 
 #ifdef NQPROT
 	if (ISNQCLIENT(host_client))
@@ -6121,6 +6207,10 @@ ucmd_t ucmds[] =
 	{"efpslist",	Cmd_FPSList_f},	//don't conflict with the ktpro one
 	{"vote",		SV_Vote_f},
 
+	//{"ban",		Cmd_Ban_f},		//for admins
+	//{"banip",		Cmd_BanIP_f},	//for admins
+	//{"banrem",	Cmd_BanRem_f},	//for admins
+
 	/*user interactions*/
 	{"sayone",		SV_SayOne_f},
 	{"say",			SV_Say_f},
@@ -6162,7 +6252,7 @@ ucmd_t ucmds[] =
 	{"fly",			Cmd_Fly_f},
 	{"notarget",	Cmd_Notarget_f},
 	{"setpos",		Cmd_SetPos_f},
-#ifdef SUBSERVERS
+#if defined(_DEBUG) && defined(SUBSERVERS)
 	{"ssvtransfer", Cmd_SSV_Transfer_f},//transfer the player to a different map/server
 	{"ssvsay",		Cmd_SSV_AllSay_f},	//says realm-wide
 	{"ssvjoin",		Cmd_SSV_Join_f},	//transfer the player to a different map/server
@@ -6581,7 +6671,7 @@ static qboolean AddEntityToPmove(world_t *w, wedict_t *player, wedict_t *check)
 		pe->forcecontentsmask = 0;
 		break;
 	}
-	if (solid == SOLID_PORTAL || solid == SOLID_BSP)
+	if (solid == SOLID_PORTAL || solid == SOLID_BSP || solid == SOLID_BSPTRIGGER)
 	{
 		if(progstype != PROG_H2)
 			pe->angles[0]*=r_meshpitch.value;	//quake is wierd. I guess someone fixed it hexen2... or my code is buggy or something...
@@ -6939,7 +7029,7 @@ size_t playertouchmax;
 
 void SV_PreRunCmd(void)
 {
-	size_t max = MAX_EDICTS;//(sv.world.num_edicts+7)&~7;
+	size_t max = (sv.world.num_edicts+512+7)&~7;
 	if (max > playertouchmax)
 	{
 		playertouchmax = max;
@@ -7524,7 +7614,7 @@ if (sv_player->v->health > 0 && before && !after )
 			n = pmove.physents[pmove.touchindex[i]].info;
 			ent = EDICT_NUM_PB(svprogfuncs, n);
 
-			if (n >= playertouchmax || playertouch[n>>3]&(1<<(n&7)))
+			if (n >= playertouchmax || (playertouch[n>>3]&(1<<(n&7))))
 				continue;
 			playertouch[n>>3] |= 1 << (n&7);
 
@@ -7697,6 +7787,10 @@ void SV_ReadQCRequest(void)
 			args[i] = 'f';
 			G_FLOAT(OFS_PARM0+i*3) = MSG_ReadFloat();
 			break;
+		case ev_double:
+			args[i] = 'F';
+			G_FLOAT(OFS_PARM0+i*3) = MSG_ReadDouble();
+			break;
 		case ev_vector:
 			args[i] = 'v';
 			G_FLOAT(OFS_PARM0+i*3+0) = MSG_ReadFloat();
@@ -7706,6 +7800,18 @@ void SV_ReadQCRequest(void)
 		case ev_integer:
 			args[i] = 'i';
 			G_INT(OFS_PARM0+i*3) = MSG_ReadLong();
+			break;
+		case ev_uint:
+			args[i] = 'u';
+			G_UINT(OFS_PARM0+i*3) = MSG_ReadLong();
+			break;
+		case ev_int64:
+			args[i] = 'I';
+			G_INT64(OFS_PARM0+i*3) = MSG_ReadInt64();
+			break;
+		case ev_uint64:
+			args[i] = 'U';
+			G_UINT64(OFS_PARM0+i*3) = MSG_ReadInt64();
 			break;
 		case ev_string:
 			args[i] = 's';
@@ -8077,8 +8183,16 @@ void SV_ExecuteClientMessage (client_t *cl)
 #endif
 		case clcdp_ackframe:
 			cl->delta_sequence = MSG_ReadLong();
-			if (cl->delta_sequence == -1 && cl->pendingdeltabits)
-				cl->pendingdeltabits[0] = UF_REMOVE;
+			if (cl->delta_sequence == -1)
+			{
+				unsigned int e;
+				if (cl->pendingdeltabits)
+					cl->pendingdeltabits[0] = UF_REMOVE;
+				if (host_client->pendingcsqcbits)
+					for (e = 1; e < host_client->max_net_ents; e++)
+						if (host_client->pendingcsqcbits[e] & SENDFLAGS_PRESENT)
+							host_client->pendingcsqcbits[e] |= SENDFLAGS_USABLE;
+			}
 			SV_AckEntityFrame(cl, cl->delta_sequence);
 			break;
 		}
@@ -8595,8 +8709,16 @@ void SVNQ_ExecuteClientMessage (client_t *cl)
 
 		case clcdp_ackframe:
 			cl->delta_sequence = MSG_ReadLong();
-			if (cl->delta_sequence == -1 && cl->pendingdeltabits)
-				cl->pendingdeltabits[0] = UF_REMOVE;
+			if (cl->delta_sequence == -1)
+			{
+				unsigned int e;
+				if (cl->pendingdeltabits)
+					cl->pendingdeltabits[0] = UF_REMOVE;
+				if (host_client->pendingcsqcbits)
+					for (e = 1; e < host_client->max_net_ents; e++)
+						if (host_client->pendingcsqcbits[e] & SENDFLAGS_PRESENT)
+							host_client->pendingcsqcbits[e] |= SENDFLAGS_USABLE;
+			}
 			SV_AckEntityFrame(cl, cl->delta_sequence);
 //			if (cl->frameunion.frames[cl->delta_sequence&UPDATE_MASK].sequence == cl->delta_sequence)
 //				if (cl->frameunion.frames[cl->delta_sequence&UPDATE_MASK].ping_time < 0)
@@ -8744,8 +8866,7 @@ void SV_UserInit (void)
 
 
 static vec3_t forward, right, up, wishdir;
-static float *origin, *velocity, *angles;
-static float wishspeed;
+static pvec_t *origin, *velocity, *angles;
 extern cvar_t sv_accelerate, sv_friction;
 static qboolean onground;
 
@@ -8801,7 +8922,7 @@ static void SV_UserFriction (void)
 	vel[2] = vel[2] * newspeed;
 }
 
-static void SV_Accelerate (void)
+static void SV_Accelerate (float wishspeed)
 {
 	int			i;
 	float		addspeed, accelspeed, currentspeed;
@@ -8818,7 +8939,7 @@ static void SV_Accelerate (void)
 		velocity[i] += accelspeed*wishdir[i];
 }
 
-static void SV_AirAccelerate (vec3_t wishveloc)
+static void SV_AirAccelerate (vec3_t wishveloc, float wishspeed)
 {
 	int			i;
 	float		addspeed, wishspd, accelspeed, currentspeed;
@@ -8851,6 +8972,7 @@ static void SV_AirMove (void)
 	vec3_t		wishvel;
 	float		fmove, smove;
 	float scale, maxspeed;
+	float wishspeed;
 
 	AngleVectors (sv_player->v->angles, forward, right, up);
 
@@ -8896,11 +9018,11 @@ static void SV_AirMove (void)
 	else if ( onground )
 	{
 		SV_UserFriction ();
-		SV_Accelerate ();
+		SV_Accelerate (wishspeed);
 	}
 	else
 	{	// not on ground, so little effect on velocity
-		SV_AirAccelerate (wishvel);
+		SV_AirAccelerate (wishvel, wishspeed);
 	}
 }
 
@@ -9131,7 +9253,7 @@ void SV_ClientThink (void)
 	VectorCopy (sv_player->v->v_angle, v_angle);
 //	VectorAdd (sv_player->v->v_angle, sv_player->v->punchangle, v_angle);
 	//FIXME: gravitydir stuff, the roll value gets destroyed for intents
-	angles[ROLL] = V_CalcRoll (sv_player->v->angles, sv_player->v->velocity)*4;
+	angles[ROLL] = V_CalcRoll (angles, velocity)*4;
 	if (!sv_player->v->fixangle)
 	{
 		angles[PITCH] = -v_angle[PITCH]/3;

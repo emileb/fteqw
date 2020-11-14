@@ -126,7 +126,7 @@ typedef struct serverdetailedinfo_s
 //hold minimum info.
 typedef struct serverinfo_s
 {
-	char name[64];	//hostname.
+	char name[80];	//hostname.
 	netadr_t adr;
 	char brokerid[64]; //'rtc[s]://adr//brokerid'
 
@@ -154,7 +154,7 @@ typedef struct serverinfo_s
 	char gamedir[8+1];
 	char map[16];
 
-	unsigned short gameversion;
+//	unsigned short gameversion;
 	unsigned short ping;
 
 	short tl;

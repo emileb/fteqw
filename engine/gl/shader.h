@@ -445,6 +445,7 @@ typedef struct {
 
 		SP_M_ENTBONES_PACKED,
 		SP_M_ENTBONES_MAT3X4,
+		SP_M_ENTBONES_MAT4,
 		SP_M_VIEW,
 		SP_M_MODEL,
 		SP_M_MODELVIEW,
@@ -452,6 +453,7 @@ typedef struct {
 		SP_M_MODELVIEWPROJECTION,
 		SP_M_INVVIEWPROJECTION,
 		SP_M_INVMODELVIEWPROJECTION,
+		SP_M_INVMODELVIEW,
 
 		SP_RENDERTEXTURESCALE,	/*multiplier for currentrender->texcoord*/
 		SP_SOURCESIZE,			/*size of $sourcecolour*/
@@ -470,17 +472,24 @@ typedef struct {
 
 		//things that are set immediatly
 		SP_FIRSTIMMEDIATE,	//never set
-		SP_CONSTI,
-		SP_CONSTF,
+		SP_TEXTURE,
+		SP_CONST1I,
+		SP_CONST2I,
+		SP_CONST3I,
+		SP_CONST4I,
+		SP_CONST1F,
+		SP_CONST2F,
+		SP_CONST3F,
+		SP_CONST4F,
 		SP_CVARI,
 		SP_CVARF,
 		SP_CVAR3F,
-		SP_TEXTURE
+		SP_CVAR4F,
 	} type;
 	union
 	{
-		int ival;
-		float fval;
+		int ival[4];
+		float fval[4];
 		void *pval;
 	};
 	unsigned int handle;
@@ -532,10 +541,11 @@ typedef struct programshared_s
 {
 	char *name;
 	int refs;
-	unsigned nofixedcompat:1;
-	unsigned tess:2;
-	unsigned geom:1;
-	unsigned warned:1;	//one of the permutations of this shader has already been warned about. don't warn about all of them because that's potentially spammy.
+	unsigned calcgens:1;		//calculate legacy rgb/alpha/tc gens
+	unsigned explicitsyms:1;	//avoid defining symbol names that'll conflict with other glsl (any fte-specific names must have an fte_ prefix)
+	unsigned tess:1;			//has a tessellation control+evaluation shader
+	unsigned geom:1;			//has a geometry shader
+	unsigned warned:1;			//one of the permutations of this shader has already been warned about. don't warn about all of them because that's potentially spammy.
 	unsigned short numsamplers;	//shader system can strip any passes above this
 	unsigned int defaulttextures;	//diffuse etc
 
@@ -719,7 +729,7 @@ shader_t *QDECL R_RegisterSkin  (const char *shadername, const char *modname);
 shader_t *R_RegisterCustom (const char *name, unsigned int usageflags, shader_gen_t *defaultgen, const void *args);
 //once loaded, most shaders should have one of the following two calls used upon it
 void QDECL R_BuildDefaultTexnums(texnums_t *tn, shader_t *shader, unsigned int imageflags);
-void QDECL R_BuildLegacyTexnums(shader_t *shader, const char *fallbackname, const char *subpath, unsigned int loadflags, unsigned int imageflags, uploadfmt_t basefmt, size_t width, size_t height, qbyte *mipdata[4], qbyte *palette);
+void QDECL R_BuildLegacyTexnums(shader_t *shader, const char *fallbackname, const char *subpath, unsigned int loadflags, unsigned int imageflags, uploadfmt_t basefmt, size_t width, size_t height, qbyte *mipdata, qbyte *palette);
 void R_RemapShader(const char *sourcename, const char *destname, float timeoffset);
 
 cin_t *R_ShaderGetCinematic(shader_t *s);
@@ -821,10 +831,37 @@ typedef struct
 	qboolean (*pLoadBlob)		(program_t *prog, unsigned int permu, vfsfile_t *blobfile);
 	qboolean (*pCreateProgram)	(program_t *prog, struct programpermu_s *permu, int ver, const char **precompilerconstants, const char *vert, const char *tcs, const char *tes, const char *geom, const char *frag, qboolean noerrors, vfsfile_t *blobfile);
 	qboolean (*pValidateProgram)(program_t *prog, struct programpermu_s *permu, qboolean noerrors, vfsfile_t *blobfile);
-	void	 (*pProgAutoFields)	(program_t *prog, struct programpermu_s *permu, cvar_t **cvars, char **cvarnames, int *cvartypes);
+	void	 (*pProgAutoFields)	(program_t *prog, struct programpermu_s *permu, char **cvarnames, int *cvartypes);
 } sh_config_t;
 extern sh_config_t sh_config;
 #endif
+
+enum
+{
+	S_SHADOWMAP		= 0,
+	S_PROJECTIONMAP	= 1,
+	S_DIFFUSE		= 2,
+	S_NORMALMAP		= 3,
+	S_SPECULAR		= 4,
+	S_UPPERMAP		= 5,
+	S_LOWERMAP		= 6,
+	S_FULLBRIGHT	= 7,
+	S_PALETTED		= 8,
+	S_REFLECTCUBE	= 9,
+	S_REFLECTMASK	= 10,
+	S_DISPLACEMENT	= 11,
+	S_OCCLUSION		= 12,
+	S_LIGHTMAP0		= 13,
+	S_DELUXEMAP0	= 14,
+#if MAXRLIGHTMAPS > 1
+	S_LIGHTMAP1		= 15,
+	S_LIGHTMAP2		= 16,
+	S_LIGHTMAP3		= 17,
+	S_DELUXEMAP1	= 18,
+	S_DELUXEMAP2	= 19,
+	S_DELUXEMAP3	= 20,
+#endif
+};
 extern const struct sh_defaultsamplers_s
 {
 	const char *name;
@@ -857,7 +894,7 @@ void GLBE_SubmitBatch(batch_t *batch);
 batch_t *GLBE_GetTempBatch(void);
 void GLBE_GenBrushModelVBO(model_t *mod);
 void GLBE_ClearVBO(vbo_t *vbo, qboolean dataonly);
-void GLBE_UploadAllLightmaps(void);
+void GLBE_UpdateLightmaps(void);
 void GLBE_DrawWorld (batch_t **worldbatches);
 qboolean GLBE_LightCullModel(vec3_t org, model_t *model);
 void GLBE_SelectEntity(entity_t *ent);

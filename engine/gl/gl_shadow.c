@@ -57,6 +57,7 @@ cvar_t r_shadow_scissor = CVARD("r_shadow_scissor", "1", "constrains stencil sha
 cvar_t r_shadow_realtime_world				= CVARFD ("r_shadow_realtime_world", "0", CVAR_ARCHIVE, "Enables the use of static/world realtime lights.");
 cvar_t r_shadow_realtime_world_shadows		= CVARF ("r_shadow_realtime_world_shadows", "1", CVAR_ARCHIVE);
 cvar_t r_shadow_realtime_world_lightmaps	= CVARFD ("r_shadow_realtime_world_lightmaps", "0", 0, "Specifies how much of the map's normal lightmap to retain when using world realtime lights. 0 completely replaces lighting.");
+cvar_t r_shadow_realtime_world_importlightentitiesfrommap = CVARFD ("r_shadow_realtime_world_importlightentitiesfrommap", "0", 0, "Controls default loading of map-based realtime lights.\n0: Load explicit .rtlight files only.\n1: Load explicit lights then try fallback to parsing the entities lump.\n2: Load only the entities lump.");
 cvar_t r_shadow_realtime_dlight				= CVARFD ("r_shadow_realtime_dlight", "1", CVAR_ARCHIVE, "Enables the use of dynamic realtime lights, allowing explosions to use bumpmaps etc properly.");
 cvar_t r_shadow_realtime_dlight_shadows		= CVARFD ("r_shadow_realtime_dlight_shadows", "1", CVAR_ARCHIVE, "Allows dynamic realtime lights to cast shadows as they move.");
 cvar_t r_shadow_realtime_dlight_ambient		= CVAR ("r_shadow_realtime_dlight_ambient", "0");
@@ -354,7 +355,7 @@ static void SHM_Shadow_Cache_Surface(msurface_t *surf)
 {
 	int i;
 
-	i = surf->sbatch->shadowbatch;
+	i = surf->sbatch->user.bmodel.shadowbatch;
 	if (i < 0)
 		return;
 
@@ -450,11 +451,11 @@ static void SH_CalcShadowBatches(model_t *mod)
 		{
 			if (!l || l->vbo != b->vbo || l->texture != b->texture)
 			{
-				b->shadowbatch = mod->numshadowbatches++;
+				b->user.bmodel.shadowbatch = mod->numshadowbatches++;
 				l = b;
 			}
 			else
-				b->shadowbatch = l->shadowbatch;
+				b->user.bmodel.shadowbatch = l->user.bmodel.shadowbatch;
 		}
 	}
 
@@ -2461,6 +2462,7 @@ qboolean Sh_GenShadowMap (dlight_t *l, int lighttype, vec3_t axis[3], qbyte *lvi
 		fmt = PTI_DEPTH24_8;
 	else
 		fmt = PTI_DEPTH16;
+	(void)fmt;
 
 	if (lighttype & (LSHADER_SPOT|LSHADER_ORTHO))
 	{	//spotlights only face forwards. which is side 4. which is annoying.
@@ -3667,7 +3669,7 @@ void Sh_DrawCrepuscularLight(dlight_t *dl, float *colours)
 			);
 
 		crepuscular_texture_id = Image_CreateTexture("***crepusculartexture***", NULL, IF_LINEAR|IF_NOMIPMAP|IF_CLAMP|IF_NOGAMMA);
-		Image_Upload(crepuscular_texture_id, TF_RGBA32, NULL, NULL, vid.pixelwidth, vid.pixelheight, IF_LINEAR|IF_NOMIPMAP|IF_CLAMP|IF_NOGAMMA);
+		Image_Upload(crepuscular_texture_id, TF_RGBA32, NULL, NULL, vid.pixelwidth, vid.pixelheight, 1, IF_LINEAR|IF_NOMIPMAP|IF_CLAMP|IF_NOGAMMA);
 	}
 
 	BE_Scissor(NULL);
@@ -3731,7 +3733,7 @@ void Sh_PreGenerateLights(void)
 	if ((r_shadow_realtime_dlight.ival || r_shadow_realtime_world.ival) && rtlights_max == RTL_FIRST)
 	{
 		qboolean okay = false;
-		if (!okay)
+		if (!okay && r_shadow_realtime_world_importlightentitiesfrommap.ival <= 1)
 			okay |= R_LoadRTLights();
 		if (!okay)
 		{
@@ -3739,9 +3741,9 @@ void Sh_PreGenerateLights(void)
 				R_StaticEntityToRTLight(i);
 			okay |= rtlights_max != RTL_FIRST;
 		}
-		if (!okay)
+		if (!okay && r_shadow_realtime_world_importlightentitiesfrommap.ival >= 1)
 			okay |= R_ImportRTLights(Mod_GetEntitiesString(cl.worldmodel));
-		if (!okay && r_shadow_realtime_world.ival && r_shadow_realtime_world_lightmaps.value != 1)
+		if (!okay && r_shadow_realtime_world.ival && r_shadow_realtime_world_lightmaps.value < 0.5)
 		{
 			r_shadow_realtime_world_lightmaps.value = 1;
 			Con_Printf(CON_WARNING "No lights detected in map.\n");
@@ -4176,8 +4178,8 @@ qboolean Sh_StencilShadowsActive(void)
 {
 #if defined(RTLIGHTS) && !defined(SERVERONLY)
 	//if shadowmapping is forced on all lights then we don't need special depth stuff
-//	if (r_shadow_shadowmapping.ival)
-//		return false;
+	if (r_shadow_shadowmapping.ival)
+		return false;
 	if (isDedicated)
 		return false;
 	return	(r_shadow_realtime_dlight.ival && r_shadow_realtime_dlight_shadows.ival) ||

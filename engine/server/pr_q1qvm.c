@@ -47,6 +47,7 @@ oh, wait, ktx no longer supports those properly.
 13: 2009/june gamecode no longer aware of edict_t data (just 'qc' fields).
 14: 2017/march gamedata_t.maxentities added
 15: 2017/june for-64bit string indirection changes. added GAME_CLEAR_EDICT.
+16: wasted_edict_t_size is finally 0
 */
 #define	GAME_API_VERSION		15
 #define	GAME_API_VERSION_MIN	8
@@ -559,7 +560,7 @@ static eval_t	*QDECL Q1QVMPF_FindGlobal		(pubprogfuncs_t *prinst, const char *na
 	return NULL;
 }
 
-static globalvars_t *QDECL Q1QVMPF_Globals(pubprogfuncs_t *prinst, int prnum)
+static globalvars_t *QDECL Q1QVMPF_Globals(pubprogfuncs_t *prinst, progsnum_t prnum)
 {
 	return NULL;
 }
@@ -984,8 +985,8 @@ static qintptr_t QVM_WalkMove (void *offset, quintptr_t mask, const qintptr_t *a
 static qintptr_t QVM_DropToFloor (void *offset, quintptr_t mask, const qintptr_t *arg)
 {
 	edict_t		*ent;
-	vec3_t		end;
-	vec3_t		start;
+	pvec3_t		end;
+	pvec3_t		start;
 	trace_t		trace;
 	extern cvar_t pr_droptofloorunits;
 
@@ -2160,12 +2161,12 @@ static qboolean QDECL Q1QVM_Event_ContentsTransition(world_t *w, wedict_t *ent, 
 
 qboolean PR_LoadQ1QVM(void)
 {
-	static int writable_int;
-	static float writable;
-	static float dimensionsend = 255;
-	static float dimensiondefault = 255;
-	static float physics_mode = 2;
-	static vec3_t defaultgravity = {0,0,-1};
+	static pint_t writable_int;
+	static pvec_t writable;
+	static pvec_t dimensionsend = 255;
+	static pvec_t dimensiondefault = 255;
+	static pvec_t physics_mode = 2;
+	static pvec3_t defaultgravity = {0,0,-1};
 	int i;
 	gameDataPrivate_t gd;
 	gameDataN_t *gdn;
@@ -2279,6 +2280,7 @@ qboolean PR_LoadQ1QVM(void)
 			gd.maxedicts = MAX_Q1QVM_EDICTS;
 	}
 	gd.maxedicts = bound(1, pr_maxedicts.ival, gd.maxedicts);
+	gd.maxedicts = bound(1, gd.maxedicts, MAX_EDICTS);
 
 	qvm_api_version = gd.APIversion;
 	if (!(GAME_API_VERSION_MIN <= qvm_api_version && qvm_api_version <= GAME_API_VERSION))

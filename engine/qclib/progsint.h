@@ -36,7 +36,7 @@
 	#endif
 //#define _inline inline
 #endif
-typedef unsigned char qbyte;
+typedef unsigned char pbyte;
 #include <stdio.h>
 
 #define DLL_PROG
@@ -86,15 +86,15 @@ typedef struct
 	prclocks_t		timestamp;
 } prstack_t;
 
+#if defined(QCGC) && defined(MULTITHREAD)
+	#define THREADEDGC
+#endif
+
 typedef struct
 {
-	unsigned int size;
-	char value[4];
+	unsigned int size;			//size of the data.
+	char value[4];				//contents of the tempstring (or really any binary data - but not tempstring references because we don't mark these!).
 } tempstr_t;
-
-#if defined(QCGC) && defined(MULTITHREAD)
-//	#define THREADEDGC
-#endif
 
 //FIXME: the defines hidden inside this structure are evil.
 typedef struct prinst_s
@@ -102,13 +102,12 @@ typedef struct prinst_s
 	//temp strings are GCed, and can be created by engine, builtins, or just by ent parsing code.
 	tempstr_t **tempstrings;
 	unsigned int maxtempstrings;
-#ifdef THREADEDGC
+#if defined(QCGC)
 	unsigned int nexttempstring;
 	unsigned int livetemps;	//increased on alloc, decremented after sweep
-	struct qcgccontext_s *gccontext;
-#elif defined(QCGC)
-	unsigned int numtempstrings;
-	unsigned int nexttempstring;
+	#ifdef THREADEDGC
+		struct qcgccontext_s *gccontext;
+	#endif
 #else
 	unsigned int numtempstrings;
 	unsigned int numtempstringsstack;
@@ -216,10 +215,13 @@ typedef struct
 	//ASSIGNS_IC
 } QCC_opcode_t;
 extern	QCC_opcode_t	pr_opcodes[];		// sized by initialization
-#define OPF_STD			0x1	//reads a+b, writes c.
-#define OPF_STORE		0x2	//b+=a or just b=a
-#define OPF_STOREPTR	0x4	//the form of c=(*b+=a)
-#define OPF_LOADPTR		0x8
+#define OPF_VALID		0x001	//we're allowed to use this opcode in the current target.
+#define OPF_STD			0x002	//reads a+b, writes c.
+#define OPF_STORE		0x010	//b+=a or just b=a
+#define OPF_STOREPTR	0x020	//the form of c=(*b+=a)
+#define OPF_STOREPTROFS	0x040	//a[c] <- b   (c must be 0 when QCC_OPCode_StorePOffset returns false)
+#define OPF_STOREFLD	0x080	//a.b <- c
+#define OPF_LOADPTR		0x100
 //FIXME: add jumps
 
 
@@ -235,8 +237,8 @@ extern	QCC_opcode_t	pr_opcodes[];		// sized by initialization
 #define min(a,b) ((a) < (b) ? (a) : (b))
 #endif
 
-#define sv_num_edicts (*externs->sv_num_edicts)
-#define sv_edicts (*externs->sv_edicts)
+#define sv_num_edicts (*externs->num_edicts)
+#define sv_edicts (*externs->edicts)
 
 #define PR_DPrintf externs->DPrintf
 //#define printf syntax error
@@ -327,6 +329,7 @@ typedef enum
 	PST_FTE32,	//everything 32bit
 	PST_KKQWSV, //32bit statements, 16bit globaldefs. NO SAVED GAMES.
 	PST_QTEST,	//16bit statements, 32bit globaldefs(other differences converted on load)
+	PST_UHEXEN2,//everything 32bit like fte's without a header, but with pre-padding rather than post-extended (little-endian) types.
 } progstructtype_t;
 
 #ifndef COMPILER
@@ -352,7 +355,7 @@ typedef struct progstate_s
 //	};
 //	void			*global_struct;
 	float			*globals;			// same as pr_global_struct
-	int				globals_size;	// in bytes
+	unsigned int	globals_bytes;	// in bytes
 
 	typeinfo_t	*types;
 
@@ -395,8 +398,8 @@ void PR_Init (void);
 pbool PR_RunWarning (pubprogfuncs_t *progfuncs, char *error, ...);
 
 void PDECL PR_ExecuteProgram (pubprogfuncs_t *progfuncs, func_t fnum);
-int PDECL PR_LoadProgs(pubprogfuncs_t *progfncs, const char *s);
-int PR_ReallyLoadProgs (progfuncs_t *progfuncs, const char *filename, progstate_t *progstate, pbool complain);
+progsnum_t PDECL PR_LoadProgs(pubprogfuncs_t *progfncs, const char *s);
+pbool PR_ReallyLoadProgs (progfuncs_t *progfuncs, const char *filename, progstate_t *progstate, pbool complain);
 
 void *PRHunkAlloc(progfuncs_t *progfuncs, int ammount, const char *name);
 
@@ -405,7 +408,12 @@ void PR_Profile_f (void);
 struct edict_s *PDECL ED_Alloc (pubprogfuncs_t *progfuncs, pbool object, size_t extrasize);
 void PDECL ED_Free (pubprogfuncs_t *progfuncs, struct edict_s *ed, pbool instant);
 
-pbool PR_RunGC			(progfuncs_t *progfuncs);
+#ifdef QCGC
+void PR_RunGC			(progfuncs_t *progfuncs);
+#else
+void PR_FreeTemps			(progfuncs_t *progfuncs, int depth);
+#endif
+
 string_t PDECL PR_AllocTempString			(pubprogfuncs_t *ppf, const char *str);
 char *PDECL ED_NewString (pubprogfuncs_t *ppf, const char *string, int minlength, pbool demarkup);
 // returns a copy of the string allocated from the server's string heap
@@ -442,9 +450,6 @@ unsigned int PDECL QC_NUM_FOR_EDICT(pubprogfuncs_t *progfuncs, struct edict_s *e
 #define G_EDICTNUM(o) NUM_FOR_EDICT(G_EDICT(o))
 #define	G_VECTOR(o) (&pr_globals[o])
 #define	G_STRING(o) (*(string_t *)&pr_globals[o])
-#define G_STRING2(o) ((char*)*(string_t *)&pr_globals[o])
-#define	GQ_STRING(o) (*(QCC_string_t *)&pr_globals[o])
-#define GQ_STRING2(o) ((char*)*(QCC_string_t *)&pr_globals[o])
 #define	G_FUNCTION(o) (*(func_t *)&pr_globals[o])
 #define G_PROG(o) G_FLOAT(o)	//simply so it's nice and easy to change...
 
@@ -453,7 +458,7 @@ unsigned int PDECL QC_NUM_FOR_EDICT(pubprogfuncs_t *progfuncs, struct edict_s *e
 #define	E_FLOAT(e,o) (((float*)&e->v)[o])
 #define	E_INT(e,o) (*(int *)&((float*)&e->v)[o])
 #define	E_VECTOR(e,o) (&((float*)&e->v)[o])
-#define	E_STRING(e,o) (*(string_t *)&((float*)(e+1))[o])
+//#define	E_STRING(e,o) (*(string_t *)&((float*)(e+1))[o])
 
 extern	const unsigned int		type_size[];
 
@@ -499,7 +504,7 @@ prclocks_t Sys_GetClockRate(void);
 
 //pr_multi.c
 
-extern vec3_t vec3_origin;
+extern pvec3_t pvec3_origin;
 
 struct qcthread_s *PDECL PR_ForkStack	(pubprogfuncs_t *progfuncs);
 void PDECL PR_ResumeThread			(pubprogfuncs_t *progfuncs, struct qcthread_s *thread);
@@ -531,9 +536,7 @@ ddef32_t *ED_GlobalAtOfs32 (progfuncs_t *progfuncs, unsigned int ofs);
 string_t PDECL PR_StringToProgs			(pubprogfuncs_t *inst, const char *str);
 const char *ASMCALL PR_StringToNative				(pubprogfuncs_t *inst, string_t str);
 
-void PR_FreeTemps			(progfuncs_t *progfuncs, int depth);
-
-char *PR_GlobalString (progfuncs_t *progfuncs, int ofs);
+char *PR_GlobalString (progfuncs_t *progfuncs, int ofs, struct QCC_type_s **typehint);
 char *PR_GlobalStringNoContents (progfuncs_t *progfuncs, int ofs);
 
 pbool CompileFile(progfuncs_t *progfuncs, const char *filename);

@@ -30,6 +30,7 @@ extern	cvar_t	cl_predict_players_latency;
 extern	cvar_t	cl_predict_players_nudge;
 extern	cvar_t	cl_lerp_players;
 extern  cvar_t	cl_lerp_maxinterval;
+extern	cvar_t	cl_lerp_maxdistance;
 extern	cvar_t	cl_solid_players;
 extern	cvar_t	cl_item_bobbing;
 
@@ -37,6 +38,9 @@ extern	cvar_t	r_rocketlight;
 extern	cvar_t	r_lightflicker;
 extern	cvar_t	r_dimlight_colour;
 extern	cvar_t	r_brightlight_colour;
+extern	cvar_t	r_redlight_colour;
+extern	cvar_t	r_greenlight_colour;
+extern	cvar_t	r_bluelight_colour;
 extern	cvar_t	cl_r2g;
 extern	cvar_t	r_powerupglow;
 extern	cvar_t	v_powerupshell;
@@ -50,6 +54,7 @@ float r_blobshadows;
 
 extern	cvar_t	cl_gibfilter, cl_deadbodyfilter;
 extern int cl_playerindex;
+static qboolean cl_expandvisents;
 
 extern world_t csqc_world;
 
@@ -2008,11 +2013,7 @@ void CL_RotateAroundTag(entity_t *ent, int entnum, int parenttagent, int parentt
 		else
 			model = NULL;
 		if (model && model->type == mod_alias)
-		{
-			ang[0]*=r_meshpitch.value;
-			AngleVectors(ang, axis[0], axis[1], axis[2]);
-			ang[0]*=r_meshpitch.value;
-		}
+			AngleVectorsMesh(ang, axis[0], axis[1], axis[2]);
 		else
 			AngleVectors(ang, axis[0], axis[1], axis[2]);
 		VectorInverse(axis[1]);
@@ -2155,10 +2156,8 @@ entity_t *V_AddEntity(entity_t *in)
 
 	*ent = *in;
 
-	ent->angles[0]*=r_meshpitch.value;
-	AngleVectors(ent->angles, ent->axis[0], ent->axis[1], ent->axis[2]);
+	AngleVectorsMesh(ent->angles, ent->axis[0], ent->axis[1], ent->axis[2]);
 	VectorInverse(ent->axis[1]);
-	ent->angles[0]*=r_meshpitch.value;
 
 	return ent;
 }
@@ -2185,10 +2184,8 @@ void VQ2_AddLerpEntity(entity_t *in)	//a convienience function
 
 	ent->framestate.g[FS_REG].lerpfrac = back;
 
-	ent->angles[0]*=r_meshpitch.value;
-	AngleVectors(ent->angles, ent->axis[0], ent->axis[1], ent->axis[2]);
+	AngleVectorsMesh(ent->angles, ent->axis[0], ent->axis[1], ent->axis[2]);
 	VectorInverse(ent->axis[1]);
-	ent->angles[0]*=r_meshpitch.value;
 }
 */
 int V_AddLight (int entsource, vec3_t org, float quant, float r, float g, float b)
@@ -3299,7 +3296,10 @@ void CL_LinkStaticEntities(void *pvs, int *areas)
 	for (i = 0; i < cl.num_statics; i++)
 	{
 		if (cl_numvisedicts == cl_maxvisedicts)
+		{
+			cl_expandvisents=true;
 			break;
+		}
 		stat = &cl_static_entities[i];
 
 		clmodel = stat->ent.model;
@@ -3325,10 +3325,8 @@ void CL_LinkStaticEntities(void *pvs, int *areas)
 
 			//figure out the correct axis for the model
 			if (clmodel && clmodel->type == mod_alias && (cls.protocol == CP_QUAKEWORLD || cls.protocol == CP_NETQUAKE))
-			{	//q2 is fixed, but q1 pitches the wrong way
-				stat->state.angles[0]*=r_meshpitch.value;
-				AngleVectors(stat->state.angles, stat->ent.axis[0], stat->ent.axis[1], stat->ent.axis[2]);
-				stat->state.angles[0]*=r_meshpitch.value;
+			{	//q2 is fixed, but q1 pitches the wrong way, and hexen2 rolls the wrong way too.
+				AngleVectorsMesh(stat->state.angles, stat->ent.axis[0], stat->ent.axis[1], stat->ent.axis[2]);
 			}
 			else
 				AngleVectors(stat->state.angles, stat->ent.axis[0], stat->ent.axis[1], stat->ent.axis[2]);
@@ -3445,6 +3443,7 @@ static void CL_TransitionPacketEntities(int newsequence, packet_entities_t *newp
 	vec3_t move;
 
 	float a1, a2;
+	float maxdist = cl_lerp_maxdistance.value*cl_lerp_maxdistance.value;
 
 	/*
 		seeing as how dropped packets cannot be filled in due to the reliable networking stuff,
@@ -3572,7 +3571,7 @@ static void CL_TransitionPacketEntities(int newsequence, packet_entities_t *newp
 		}
 
 		VectorSubtract(snew__origin, sold__origin, move);
-		if (DotProduct(move, move) > 200*200 || cos_theta < 0.707 || snew->modelindex != sold->modelindex || ((sold->effects ^ snew->effects) & EF_TELEPORT_BIT))
+		if (DotProduct(move, move) > maxdist || cos_theta < 0.707 || snew->modelindex != sold->modelindex || ((sold->effects ^ snew->effects) & EF_TELEPORT_BIT))
 		{
 			isnew = true;	//disable lerping (and indirectly trails)
 //			VectorClear(move);
@@ -3824,7 +3823,7 @@ void CL_TransitionEntities (void)
 		frac = (servertime-packold->servertime)/(packnew->servertime-packold->servertime);
 
 //	if (!cl.paused)
-//		Con_Printf("%f %f %f (%f) (%i) %f %f %f\n", packold->servertime, servertime, packnew->servertime, frac, newff, cl.oldgametime, servertime, cl.gametime);
+//		Con_DPrintf("%f %s%f^7 %f (%f) (%i) %f %s%f^7 %f\n", packold->servertime, (servertime<packold->servertime||packnew->servertime<servertime)?"^1":"",servertime, packnew->servertime, frac, newff, cl.oldgametime, (servertime<cl.oldgametime||cl.gametime<servertime)?"^3":"", servertime, cl.gametime);
 
 	CL_TransitionPacketEntities(newff, packnew, packold, frac, servertime);
 
@@ -4001,8 +4000,8 @@ void CL_LinkPacketEntities (void)
 
 			if (state->effects & EF_BRIGHTLIGHT)
 			{
-				radius = max(radius,r_dimlight_colour.vec4[3]);
-				VectorAdd(colour, r_dimlight_colour.vec4, colour);
+				radius = max(radius,r_brightlight_colour.vec4[3]);
+				VectorAdd(colour, r_brightlight_colour.vec4, colour);
 			}
 			if (state->effects & EF_DIMLIGHT)
 			{
@@ -4011,24 +4010,18 @@ void CL_LinkPacketEntities (void)
 			}
 			if (state->effects & EF_BLUE)
 			{
-				radius = max(radius,200);
-				colour[0] += 0.5;
-				colour[1] += 0.5;
-				colour[2] += 3.0;
+				radius = max(radius,r_bluelight_colour.vec4[3]);
+				VectorAdd(colour, r_bluelight_colour.vec4, colour);
 			}
 			if (state->effects & EF_RED)
 			{
-				radius = max(radius,200);
-				colour[0] += 3.0;
-				colour[1] += 0.5;
-				colour[2] += 0.5;
+				radius = max(radius,r_redlight_colour.vec4[3]);
+				VectorAdd(colour, r_redlight_colour.vec4, colour);
 			}
 			if (state->effects & EF_GREEN)
 			{
-				radius = max(radius,200);
-				colour[0] += 0.5;
-				colour[1] += 3.0;
-				colour[2] += 0.5;
+				radius = max(radius,r_greenlight_colour.vec4[3]);
+				VectorAdd(colour, r_greenlight_colour.vec4, colour);
 			}
 
 			if (radius)
@@ -4069,8 +4062,9 @@ void CL_LinkPacketEntities (void)
 			{
 				VectorCopy(le->angles, angles);
 				//if (model && model->type == mod_alias)
-					angles[0]*=r_meshpitch.value;	//pflags matches alias models.
-				AngleVectors(angles, dl->axis[0], dl->axis[1], dl->axis[2]);
+					AngleVectorsMesh(angles, dl->axis[0], dl->axis[1], dl->axis[2]);	//pflags matches alias models.
+				//else
+				//	AngleVectors(angles, dl->axis[0], dl->axis[1], dl->axis[2]);
 				VectorInverse(dl->axis[1]);
 				R_LoadNumberedLightTexture(dl, state->skinnum);
 			}
@@ -4078,7 +4072,7 @@ void CL_LinkPacketEntities (void)
 		}
 
 		// if set to invisible, skip
-		if (state->modelindex<1)
+		if (state->modelindex<1 || (state->effects & NQEF_NODRAW))
 		{
 			if (state->tagindex == 0xffff)
 			{
@@ -4330,10 +4324,8 @@ void CL_LinkPacketEntities (void)
 			}
 		}
 
-		if (model && model->type == mod_alias)
-			angles[0]*=r_meshpitch.value;	//carmack screwed up when he added alias models - they pitch the wrong way.
 		VectorCopy(angles, ent->angles);
-		AngleVectors(angles, ent->axis[0], ent->axis[1], ent->axis[2]);
+		AngleVectorsMesh(angles, ent->axis[0], ent->axis[1], ent->axis[2]);
 		VectorInverse(ent->axis[1]);
 
 		/*if this entity is in a player's slot...*/
@@ -4575,10 +4567,8 @@ void CL_LinkProjectiles (void)
 		VectorCopy (pr->origin, ent->origin);
 		VectorCopy (pr->angles, ent->angles);
 
-		ent->angles[0]*=r_meshpitch.value;
-		AngleVectors(ent->angles, ent->axis[0], ent->axis[1], ent->axis[2]);
+		AngleVectorsMesh(ent->angles, ent->axis[0], ent->axis[1], ent->axis[2]);
 		VectorInverse(ent->axis[1]);
-		ent->angles[0]*=r_meshpitch.value;
 	}
 }
 
@@ -4730,10 +4720,9 @@ void CLQW_ParsePlayerinfo (void)
 
 		state->pm_type = PM_NORMAL;
 
+#ifdef QUAKESTATS
 		TP_ParsePlayerInfo(oldstate, state, info);
 
-
-#ifdef QUAKESTATS
 		//can't CL_SetStatInt as we don't know if its actually us or not
 		cl.players[num].stats[STAT_WEAPONFRAME] = state->weaponframe;
 		cl.players[num].statsf[STAT_WEAPONFRAME] = state->weaponframe;
@@ -4997,9 +4986,9 @@ guess_pm_type:
 			state->pm_type = PM_NORMAL;
 	}
 
+#ifdef QUAKESTATS
 	TP_ParsePlayerInfo(oldstate, state, info);
 
-#ifdef QUAKESTATS
 	//can't CL_SetStatInt as we don't know if its actually us or not
 	for (i = 0; i < cl.splitclients; i++)
 	{
@@ -5108,8 +5097,7 @@ void CL_AddFlagModels (entity_t *ent, int team)
 	newent->angles[2] -= 45;
 
 	VectorCopy(newent->angles, angles);
-	angles[0]*=r_meshpitch.value;
-	AngleVectors(angles, newent->axis[0], newent->axis[1], newent->axis[2]);
+	AngleVectorsMesh(angles, newent->axis[0], newent->axis[1], newent->axis[2]);
 	VectorInverse(newent->axis[1]);
 }
 
@@ -5211,7 +5199,7 @@ void CL_LinkPlayers (void)
 			continue;
 #endif
 
-		if (info->spectator)
+		if (info->spectator || state->modelindex >= countof(cl.model_precache))
 			continue;
 
 		//the extra modelindex check is to stop lame mods from using vweps with rings
@@ -5232,7 +5220,7 @@ void CL_LinkPlayers (void)
 
 		// spawn light flashes, even ones coming from invisible objects
 		if (r_powerupglow.value && !(r_powerupglow.value == 2 && j == cl.playerview[0].playernum)
-			&& (state->effects & (EF_BLUE|EF_RED|EF_BRIGHTLIGHT|EF_DIMLIGHT)))
+			&& (state->effects & (EF_BLUE|EF_RED|EF_GREEN|EF_BRIGHTLIGHT|EF_DIMLIGHT)))
 		{
 			vec3_t colour;
 			float radius;
@@ -5243,31 +5231,28 @@ void CL_LinkPlayers (void)
 
 			if (state->effects & EF_BRIGHTLIGHT)
 			{
-				radius = max(radius,400);
-				colour[0] += 0.2;
-				colour[1] += 0.1;
-				colour[2] += 0.05;
+				radius = max(radius,r_brightlight_colour.vec4[3]);
+				VectorAdd(colour, r_brightlight_colour.vec4, colour);
 			}
 			if (state->effects & EF_DIMLIGHT)
 			{
-				radius = max(radius,200);
-				colour[0] += 2.0;
-				colour[1] += 1.0;
-				colour[2] += 0.5;
+				radius = max(radius,r_dimlight_colour.vec4[3]);
+				VectorAdd(colour, r_dimlight_colour.vec4, colour);
 			}
 			if (state->effects & EF_BLUE)
 			{
-				radius = max(radius,200);
-				colour[0] += 0.5;
-				colour[1] += 0.5;
-				colour[2] += 3.0;
+				radius = max(radius,r_bluelight_colour.vec4[3]);
+				VectorAdd(colour, r_bluelight_colour.vec4, colour);
 			}
 			if (state->effects & EF_RED)
 			{
-				radius = max(radius,200);
-				colour[0] += 5.0;
-				colour[1] += 0.5;
-				colour[2] += 0.5;
+				radius = max(radius,r_redlight_colour.vec4[3]);
+				VectorAdd(colour, r_redlight_colour.vec4, colour);
+			}
+			if (state->effects & EF_GREEN)
+			{
+				radius = max(radius,r_greenlight_colour.vec4[3]);
+				VectorAdd(colour, r_greenlight_colour.vec4, colour);
 			}
 
 			if (radius)
@@ -5370,7 +5355,10 @@ void CL_LinkPlayers (void)
 		}
 
 		if (model && model->type == mod_alias)
+		{
 			angles[0]*=r_meshpitch.value;	//carmack screwed up when he added alias models - they pitch the wrong way.
+			angles[2]*=r_meshroll.value;	//hexen2 screwed it up even more - they roll the wrong way.
+		}
 		VectorCopy(angles, ent->angles);
 		AngleVectors(angles, ent->axis[0], ent->axis[1], ent->axis[2]);
 		VectorInverse(ent->axis[1]);
@@ -5693,7 +5681,7 @@ void CL_SetSolidEntities (void)
 			if (state->modelindex <= 0)
 				continue;
 			mod = cl.model_precache[state->modelindex];
-			if (!mod)
+			if (!mod || mod->loadstate != MLS_LOADED)
 				continue;
 			/*vanilla protocols have no 'solid' information. all entities get assigned ES_SOLID_BSP, even if its not actually solid.
 			so we need to make sure that item pickups are not erroneously considered solid, but doors etc are.
@@ -5706,10 +5694,9 @@ void CL_SetSolidEntities (void)
 			pent = &pmove.physents[pmove.numphysent];
 			memset(pent, 0, sizeof(physent_t));
 			pent->model = mod;
-			if (pent->model->loadstate != MLS_LOADED)
-				continue;
 			VectorCopy (state->angles, pent->angles);
 			pent->angles[0]*=r_meshpitch.value;
+			pent->angles[2]*=r_meshroll.value;
 		}
 		else
 		{
@@ -5895,7 +5882,7 @@ Made up of: clients, packet_entities, nails, and tents
 void CL_ClearEntityLists(void)
 {
 	cl_framecount++;
-	if (cl_numvisedicts+128 >= cl_maxvisedicts)
+	if (cl_expandvisents || cl_numvisedicts+128 >= cl_maxvisedicts)
 	{
 		int newnum = cl_maxvisedicts + 256;
 		entity_t *n = BZ_Realloc(cl_visedicts, newnum * sizeof(*n));
@@ -5904,6 +5891,7 @@ void CL_ClearEntityLists(void)
 			cl_visedicts = n;
 			cl_maxvisedicts = newnum;
 		}
+		cl_expandvisents = false;
 	}
 	cl_numvisedicts = 0;
 	cl_numstrisidx = 0;

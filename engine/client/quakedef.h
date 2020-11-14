@@ -22,7 +22,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifndef __QUAKEDEF_H__
 #define __QUAKEDEF_H__
 
-#include "bothdefs.h"	//first thing included by ALL files.
+#include "../common/bothdefs.h"	//first thing included by ALL files.
 
 //for msvc #pragma message lines
 #if defined(_MSC_VER)
@@ -163,19 +163,19 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 extern "C" {
 #endif
 
-#include "common.h"
-#include "bspfile.h"
+#include "../common/common.h"
+#include "../common/bspfile.h"
 #include "vid.h"
-#include "sys.h"
-#include "zone.h"
-#include "mathlib.h"
-#include "cvar.h"
-#include "translate.h"
-#include "net.h"
+#include "../common/sys.h"
+#include "../common/zone.h"
+#include "../common/mathlib.h"
+#include "../common/cvar.h"
+#include "../common/translate.h"
+#include "../common/net.h"
 #ifndef WEBSVONLY
-#include "protocol.h"
-#include "cmd.h"
-#include "console.h"
+#include "../common/protocol.h"
+#include "../common/cmd.h"
+#include "../common/console.h"
 #include "screen.h"
 #include "wad.h"
 #include "sbar.h"
@@ -183,36 +183,41 @@ extern "C" {
 #include "merged.h"
 #include "render.h"
 #include "client.h"
-#include "gl_model.h"
+#include "../gl/gl_model.h"
 
-#include "vm.h"
+#include "../common/vm.h"
 
 #include "input.h"
 #include "keys.h"
 #include "view.h"
 #include "menu.h"
-#include "crc.h"
+#include "../common/crc.h"
 #include "cdaudio.h"
-#include "pmove.h"
+#include "../common/pmove.h"
 
-#include "progtype.h"
-#include "progdefs.h"
-#include "progs.h"
-#include "world.h"
-#include "q2game.h"
+#include "../qclib/progtype.h"
+#include "../server/progdefs.h"
+#include "../server/progs.h"
+#include "../common/world.h"
+#include "../server/q2game.h"
 #include "../http/iweb.h"
 #ifdef CLIENTONLY
 #define SSV_IsSubServer() false
 #else
-#include "server.h"
+#include "../server/server.h"
 #endif
 #endif
 
-#ifndef max
-#define max(a,b) ((a) > (b) ? (a) : (b))
-#define min(a,b) ((a) < (b) ? (a) : (b))
+#ifdef __cplusplus
+	#define q_max(a,b) ((a) > (b) ? (a) : (b))
+	#define q_min(a,b) ((a) < (b) ? (a) : (b))
+#else
+	#ifndef max
+		#define max(a,b) ((a) > (b) ? (a) : (b))
+		#define min(a,b) ((a) < (b) ? (a) : (b))
+	#endif
+	#define max3(a,b,c) max(max(a,b),c)
 #endif
-#define max3(a,b,c) max(max(a,b),c)
 
 //msvcrt lacks any and all c99 support.
 #if defined(_WIN32)
@@ -227,9 +232,9 @@ extern "C" {
 	#endif
 
 	#ifdef _WIN64
-		#define PRIxSIZE "Ix"
-		#define PRIuSIZE "Iu"
-		#define PRIiSIZE "Ii"
+		#define PRIxSIZE PRIx64
+		#define PRIuSIZE PRIu64
+		#define PRIiSIZE PRIi64
 	#else
 		//don't use I, for the sake of older libcs
 		#define PRIxSIZE "x"
@@ -314,8 +319,10 @@ extern qboolean noclip_anglehack;
 extern	quakeparms_t host_parms;
 
 extern	cvar_t		fs_gamename;
+#ifdef PACKAGEMANAGER
 extern	cvar_t		pkg_downloads_url;
 extern	cvar_t		pkg_autoupdate;
+#endif
 extern	cvar_t		com_protocolname;
 extern	cvar_t		com_protocolversion;
 extern	cvar_t		com_nogamedirnativecode;
@@ -326,6 +333,7 @@ extern	cvar_t		ezcompat_markup;
 extern	cvar_t		sys_ticrate;
 extern	cvar_t		sys_nostdout;
 extern	cvar_t		developer;
+extern	cvar_t		host_mapname;
 
 extern	cvar_t	password;
 
@@ -363,10 +371,12 @@ typedef enum
 	WG_LOADER	= 1,
 	WG_COUNT	= 2 //main and loaders
 } wgroup_t;
-void COM_AddWork(wgroup_t thread, void(*func)(void *ctx, void *data, size_t a, size_t b), void *ctx, void *data, size_t a, size_t b);
-void COM_InsertWork(wgroup_t tg, void(*func)(void *ctx, void *data, size_t a, size_t b), void *ctx, void *data, size_t a, size_t b);
+void COM_AddWork(wgroup_t thread, void(*func)(void *ctx, void *data, size_t a, size_t b), void *ctx, void *data, size_t a, size_t b);	//low priority
+void COM_InsertWork(wgroup_t tg, void(*func)(void *ctx, void *data, size_t a, size_t b), void *ctx, void *data, size_t a, size_t b);	//high priority
 qboolean COM_HasWork(void);
 void COM_WorkerFullSync(void);
+void COM_WorkerLock(void);	//callable on main thread to temporarily suspend workers (in a safe location)
+void COM_WorkerUnlock(void);
 void COM_DestroyWorkerThread(void);
 void COM_WorkerPartialSync(void *priorityctx, int *address, int value); //aka: while(*address==value)wait();
 extern void *com_resourcemutex;	//random mutex to simplify resource creation type stuff.
@@ -382,10 +392,12 @@ void COM_AssertMainThread(const char *msg);
 #define COM_InsertWork(t,f,a,b,c,d) (f)((a),(b),(c),(d))
 #define COM_WorkerPartialSync(c,a,v)
 #define COM_WorkerFullSync()
+#define COM_WorkerLock()
+#define COM_WorkerUnlock()
 #define COM_HasWork() false
 #define COM_DoWork(t,l) false
 #define COM_AssertMainThread(msg)
-#define COM_MainThreadWork()
+#define COM_MainThreadWork() while(0)
 #define COM_MainThreadFlush()
 #define COM_DestroyWorkerThread()
 #define COM_WorkerAbort(m)

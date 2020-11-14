@@ -60,10 +60,7 @@ qboolean	keydown[K_MAX];
 char *releasecommand[K_MAX][MAX_INDEVS];	//this is the console command to be invoked when the key is released. should free it.
 qbyte releasecommandlevel[K_MAX][MAX_INDEVS];	//and this is the cbuf level it is to be run at.
 
-static void QDECL Con_Selectioncolour_Callback(struct cvar_s *var, char *oldvalue);
-
 extern cvar_t con_displaypossibilities;
-cvar_t con_selectioncolour = CVARFC("con_selectioncolour", "0", CVAR_RENDERERCALLBACK, Con_Selectioncolour_Callback);
 cvar_t con_echochat = CVAR("con_echochat", "0");
 extern cvar_t cl_chatmode;
 
@@ -351,7 +348,7 @@ keyname_t keynames[] =
 
 #if defined(CSQC_DAT) || defined(MENU_DAT)
 int MP_TranslateFTEtoQCCodes(int code);
-void Key_PrintQCDefines(vfsfile_t *f)
+void Key_PrintQCDefines(vfsfile_t *f, qboolean defines)
 {
 	int i, j;
 	for (i = 0; keynames[i].name; i++)
@@ -360,7 +357,12 @@ void Key_PrintQCDefines(vfsfile_t *f)
 			if (keynames[j].keynum == keynames[i].keynum)
 				break;
 		if (j == i)
-			VFS_PRINTF(f, "#define K_%s\t%i\n", keynames[i].name, MP_TranslateFTEtoQCCodes(keynames[j].keynum));
+		{
+			if (defines)
+				VFS_PRINTF(f, "#define K_%s\t%i\n", keynames[i].name, MP_TranslateFTEtoQCCodes(keynames[j].keynum));
+			else
+				VFS_PRINTF(f, "const float K_%s = %i;\n", keynames[i].name, MP_TranslateFTEtoQCCodes(keynames[j].keynum));
+		}
 	}
 }
 #endif
@@ -435,14 +437,14 @@ void Key_UpdateCompletionDesc(void)
 		if (var)
 		{
 			if (desc)
-				Con_Footerf(NULL, false, "%s %s\n%s", cmd, var->string, desc);
+				Con_Footerf(NULL, false, "%s %s\n%s", cmd, var->string, localtext(desc));
 			else
 				Con_Footerf(NULL, false, "%s %s", cmd, var->string);
 		}
 		else
 		{
 			if (desc)
-				Con_Footerf(NULL, false, "%s: %s", cmd, desc);
+				Con_Footerf(NULL, false, "%s: %s", cmd, localtext(desc));
 			else
 				Con_Footerf(NULL, false, "");
 		}
@@ -511,7 +513,7 @@ void CompleteCommand (qboolean force, int direction)
 				con_commandmatch = 1;
 
 			if (desc)
-				Con_Footerf(NULL, false, "%s: %s", cmd, desc);
+				Con_Footerf(NULL, false, "%s: %s", cmd, localtext(desc));
 			else
 				Con_Footerf(NULL, false, "");
 			return;
@@ -657,14 +659,6 @@ int Con_ExecuteLine(console_t *con, const char *line)
 
 	free(deutf8);
 	return true;
-}
-
-vec3_t sccolor;
-
-static void QDECL Con_Selectioncolour_Callback(struct cvar_s *var, char *oldvalue)
-{
-	if (qrenderer != QR_NONE)
-		SCR_StringToRGB(var->string, sccolor, 1);
 }
 
 qboolean Key_GetConsoleSelectionBox(console_t *con, int *sx, int *sy, int *ex, int *ey)
@@ -889,6 +883,8 @@ void Key_DefaultLinkClicked(console_t *con, char *text, char *info)
 			}
 			return;
 		}
+		if (!con)
+			return;	//can't do footers
 
 		Con_Footerf(con, false, "^m#^m ^[%s\\player\\%i^]: %if %ims", cl.players[player].name, player, cl.players[player].frags, cl.players[player].ping);
 
@@ -1059,6 +1055,14 @@ void Key_DefaultLinkClicked(console_t *con, char *text, char *info)
 		return;
 	}
 #endif
+#ifdef SUBSERVERS
+	c = Info_ValueForKey(info, "ssv");
+	if (*c && !strchr(c, ';') && !strchr(c, '\n'))
+	{
+		Cbuf_AddText(va("\nssv \"%s\"\n", c), RESTRICT_LOCAL);
+		return;
+	}
+#endif
 	c = Info_ValueForKey(info, "impulse");
 	if (*c && !strchr(c, ';') && !strchr(c, '\n'))
 	{
@@ -1082,7 +1086,8 @@ void Key_DefaultLinkClicked(console_t *con, char *text, char *info)
 	c = Info_ValueForKey(info, "desc");
 	if (*c)
 	{
-		Con_Footerf(con, false, "%s", c);
+		if (con)
+			Con_Footerf(con, false, "%s", c);
 		return;
 	}
 
@@ -1133,8 +1138,8 @@ void Key_HandleConsoleLink(console_t *con, char *buffer)
 			{
 				//okay, its a valid link that they clicked
 				*end = 0;
-#ifdef PLUGINS
-				if (!Plug_ConsoleLink(buffer+2, info, con->name))
+#ifdef PLUGINS	//plugins can use these window things like popup menus.
+				if (con && !Plug_ConsoleLink(buffer+2, info, con->name))
 #endif
 #ifdef CSQC_DAT
 				if (!CSQC_ConsoleLink(buffer+2, info))
@@ -1206,7 +1211,7 @@ void Key_ConsoleRelease(console_t *con, int key, unsigned int unicode)
 		}
 		con->buttonsdown = CB_NONE;
 	}
-	if ((key == K_MOUSE1 && con->buttonsdown == CB_SCROLL) || (key == K_MOUSE2 && con->buttonsdown == CB_SCROLL_R))
+	if (key == K_MOUSE1 && con->buttonsdown == CB_SCROLL)// || (key == K_MOUSE2 && con->buttonsdown == CB_SCROLL_R))
 	{
 		con->buttonsdown = CB_NONE;
 		if (fabs(con->mousedown[0] - con->mousecursor[0]) < 5 && fabs(con->mousedown[1] - con->mousecursor[1]) < 5)
@@ -1566,7 +1571,7 @@ static unsigned char *utf_right(unsigned char *start, unsigned char *cursor, qbo
 	return cursor;
 }
 
-void Key_EntryInsert(unsigned char **line, int *linepos, char *instext)
+void Key_EntryInsert(unsigned char **line, int *linepos, const char *instext)
 {
 	int i;
 	int len, olen;
@@ -1593,7 +1598,7 @@ void Key_EntryInsert(unsigned char **line, int *linepos, char *instext)
 	*linepos += len;
 }
 
-static void Key_ConsolePaste(void *ctx, char *utf8)
+static void Key_ConsolePaste(void *ctx, const char *utf8)
 {
 	unsigned char **line = ctx;
 	int *linepos = ((line == &chat_buffer)?&chat_bufferpos:&key_linepos);
@@ -2855,13 +2860,12 @@ void Key_Init (void)
 //
 // register our functions
 //
-	Cmd_AddCommandAD ("bind",Key_Bind_f, Key_Bind_c, NULL);
+	Cmd_AddCommandAD ("bind",Key_Bind_f, Key_Bind_c, "Changes the action associated with each keyboard button. Use eg \"bind ctrl+shift+alt+k kill\" for special modifiers (should be used only after more basic modifiers).");
 	Cmd_AddCommand ("in_bind",Key_Bind_f);
 	Cmd_AddCommand ("bindlevel",Key_Bind_f);
 	Cmd_AddCommandAD ("unbind",Key_Unbind_f, Key_Bind_c, NULL);
-	Cmd_AddCommand ("unbindall",Key_Unbindall_f);
+	Cmd_AddCommandD ("unbindall",Key_Unbindall_f, "A dangerous command that forgets ALL your key settings. For use only in default.cfg.");
 
-	Cvar_Register (&con_selectioncolour, "Console variables");
 	Cvar_Register (&con_echochat, "Console variables");
 }
 
@@ -3200,10 +3204,10 @@ void Key_Event (unsigned int devid, int key, unsigned int unicode, qboolean down
 		//these may be redefined later...
 		case K_GP_LEFT_SHOULDER:	dc = "impulse 12";		goto defaultedbind;	//matches QS's default.cfg
 		case K_GP_RIGHT_SHOULDER:	dc = "impulse 10";		goto defaultedbind;	//matches QS's default.cfg
-		case K_GP_LEFT_TRIGGER:		dc = "+jump";			goto defaultedbind;	//matches QS's default.cfg
+		case K_GP_LEFT_TRIGGER:		dc = "+button3";		goto defaultedbind;	//matches QS's default.cfg
 		case K_GP_RIGHT_TRIGGER:	dc = "+attack";			goto defaultedbind;	//matches QS's default.cfg
 		case K_GP_START:			dc = "togglemenu";		goto defaultedbind;
-		case K_GP_A:				dc = "+button3";		goto defaultedbind;
+		case K_GP_A:				dc = "+jump";			goto defaultedbind;
 		case K_GP_B:				dc = "+button4";		goto defaultedbind;
 		case K_GP_X:				dc = "+button5";		goto defaultedbind;
 		case K_GP_Y:				dc = "+button6";		goto defaultedbind;

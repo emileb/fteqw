@@ -79,7 +79,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#define NO_JPEG
 	#define NO_OGG
 	#define NO_ZLIB
-	#define NO_FREETYPE
+	#ifndef NO_FREETYPE
+		#define NO_FREETYPE
+	#endif
 #endif
 
 #ifdef D3DQUAKE
@@ -121,7 +123,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#endif
 #endif
 
-#ifdef IMGTOOL
+#if defined(IMGTOOL) || defined(IQMTOOL)
 	#undef WEBCLIENT
 	#undef LOADERTHREAD
 #elif defined(MASTERONLY)
@@ -212,6 +214,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#undef AVAIL_DSOUND
 	#undef AVAIL_XAUDIO2
 	#undef AVAIL_WASAPI
+
+	#undef AUDIO_ALSA
+	#undef AUDIO_PULSE
 #endif
 
 
@@ -343,7 +348,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#define GLESONLY	//should reduce the conditions a little
 	//#define GLSLONLY
 //	#undef HEADLESSQUAKE
-	#define NO_FREETYPE
+	#ifndef NO_FREETYPE
+		#define NO_FREETYPE
+	#endif
 	#define NO_OPENAL
 #endif
 #if defined(NACL)
@@ -368,6 +375,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#undef AVAIL_WASAPI	//wasapi is available in the vista sdk, while that's compatible with earlier versions, its not really expected until 2008
 #endif
 
+#if !defined(HAVE_SERVER) && !defined(SV_MASTER)
+	#undef HAVE_HTTPSV
+#endif
+
 #ifdef NO_MULTITHREAD
 	#undef MULTITHREAD
 #endif
@@ -375,6 +386,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	//database code requires threads to do stuff async.
 	#undef USE_SQLITE
 	#undef USE_MYSQL
+	#undef AUDIO_PULSE
 #endif
 #ifdef NO_LIBRARIES //catch-all...
 #define NO_DIRECTX
@@ -578,6 +590,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#define VM_ANY
 #endif
 
+#if (defined(HAVE_CLIENT) || defined(HAVE_SERVER)) && defined(WEBCLIENT) && defined(PACKAGEMANAGER)
+	#define MANIFESTDOWNLOADS
+#endif
+
 #if (defined(D3D8QUAKE) || defined(D3D9QUAKE) || defined(D3D11QUAKE)) && !defined(D3DQUAKE)
 	#define D3DQUAKE	//shouldn't still matter
 #endif
@@ -700,8 +716,13 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #endif
 #if (__GNUC__ > 3 || (__GNUC__ == 3 && __GNUC_MINOR__ >= 1))
 	#define FTE_DEPRECATED  __attribute__((__deprecated__))	//no idea about the actual gcc version
-	#ifdef _WIN32
-		#define LIKEPRINTF(x) __attribute__((format(ms_printf,x,x+1)))
+	#if defined(_WIN32)
+		#include <stdio.h>
+		#ifdef __MINGW_PRINTF_FORMAT
+			#define LIKEPRINTF(x) __attribute__((format(__MINGW_PRINTF_FORMAT,x,x+1)))
+		#else
+			#define LIKEPRINTF(x) __attribute__((format(ms_printf,x,x+1)))
+		#endif
 	#else
 		#define LIKEPRINTF(x) __attribute__((format(printf,x,x+1)))
 	#endif
@@ -741,6 +762,21 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	#define fte_alignof(type) __alignof(qintptr_t)
 #else
 	#define fte_alignof(type) sizeof(qintptr_t)
+#endif
+
+//safeswitch(foo){safedefault: break;}
+//switch, but errors for any omitted enum values despite the presence of a default case.
+//(gcc will generally give warnings without the default, but sometimes you don't have control over the source of your enumeration values)
+#if (__GNUC__ >= 4)
+	#define safeswitch	\
+		_Pragma("GCC diagnostic push")	\
+		_Pragma("GCC diagnostic error \"-Wswitch-enum\"") \
+		_Pragma("GCC diagnostic error \"-Wswitch-default\"") \
+		switch
+	#define safedefault _Pragma("GCC diagnostic pop") default
+#else
+	#define safeswitch switch
+	#define safedefault default
 #endif
 
 //fte_inline must only be used in headers, and requires one and ONLY one fte_inlinebody elsewhere.
@@ -844,8 +880,13 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #define MAX_BACKBUFLEN	1200
 
+#ifdef Q1BSPS
 #define lightstyleindex_t unsigned short
+#else
+#define lightstyleindex_t qbyte
+#endif
 #define INVALID_LIGHTSTYLE ((lightstyleindex_t)(~0u))	//the style that's invalid, signifying to stop adding more.
+#define INVALID_VLIGHTSTYLE ((qbyte)(~0u))	//the style that's invalid for verticies, signifying to stop adding more.
 
 //
 // per-level limits
@@ -853,9 +894,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifdef FTE_TARGET_WEB
 #define MAX_EDICTS		((1<<15)-1)
 #else
-//#define	MAX_EDICTS		((1<<22)-1)			// expandable up to 22 bits
-#define	MAX_EDICTS		((1<<18)-1)			// expandable up to 22 bits
+#define	MAX_EDICTS		((1<<22)-1)			// expandable up to 22 bits
+//#define	MAX_EDICTS		((1<<18)-1)			// expandable up to 22 bits
 #endif
+
 #define	MAX_NET_LIGHTSTYLES		(INVALID_LIGHTSTYLE+1)		// 16bit. the last index MAY be used to signify an invalid lightmap in the bsp, but is still valid for rtlights.
 #define MAX_STANDARDLIGHTSTYLES 64
 #define	MAX_PRECACHE_MODELS		4096		// 14bit.

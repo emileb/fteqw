@@ -29,11 +29,11 @@
 //I guess noone can be arsed to write it themselves. :/
 //
 //This file is otherwise known as 'will the linux jokers please stop fucking over the open sound system please'
-#ifndef NO_ALSA
-#include <alsa/asoundlib.h>
+
 
 #include "quakedef.h"
-#ifdef HAVE_MIXER
+#ifdef AUDIO_ALSA
+#include <alsa/asoundlib.h>
 #include <dlfcn.h>
 
 static void *alsasharedobject;
@@ -306,13 +306,20 @@ static qboolean QDECL ALSA_InitCard (soundcardinfo_t *sc, const char *pcmname)
 
 #if 1
 	if (!sc->sn.sampleformat)
-		sc->sn.sampleformat = (sc->sn.samplebytes==1)?QSF_U8:QSF_S16;
+	{
+		if (sc->sn.samplebytes >= 4)
+			sc->sn.sampleformat = QSF_F32;
+		else if (sc->sn.samplebytes != 1)
+			sc->sn.sampleformat = QSF_S16;
+		else
+			sc->sn.sampleformat = QSF_U8;
+	}
 	switch(sc->sn.sampleformat)
 	{
-	case QSF_U8:	err = SND_PCM_FORMAT_U8;	break;
-	case QSF_S8:	err = SND_PCM_FORMAT_S8;	break;
-	case QSF_S16:	err = SND_PCM_FORMAT_S16;	break;
-	case QSF_F32:	err = SND_PCM_FORMAT_FLOAT;	break;
+	case QSF_U8:	err = SND_PCM_FORMAT_U8;	sc->sn.samplebytes=1; break;
+	case QSF_S8:	err = SND_PCM_FORMAT_S8;	sc->sn.samplebytes=1; break;
+	case QSF_S16:	err = SND_PCM_FORMAT_S16;	sc->sn.samplebytes=2; break;
+	case QSF_F32:	err = SND_PCM_FORMAT_FLOAT;	sc->sn.samplebytes=4; break;
 	default:
 		Con_Printf (CON_ERROR "ALSA: unsupported sample format %i\n", sc->sn.sampleformat);
 		goto error;
@@ -540,7 +547,7 @@ static qboolean QDECL ALSA_Enumerate(void (QDECL *cb) (const char *drivername, c
 					{
 						char *d = psnd_device_name_get_hint(hints[i], "DESC");
 						if (d)
-							cb(SDRVNAME, n, va("ALSA (%s)", d));
+							cb(SDRVNAME, n, va("ALSA:%s", d));
 						else
 							cb(SDRVNAME, n, n);
 						free(d);
@@ -562,5 +569,4 @@ sounddriver_t ALSA_Output =
 	ALSA_InitCard,
 	ALSA_Enumerate
 };
-#endif
 #endif
