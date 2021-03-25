@@ -4705,6 +4705,8 @@ void QCBUILTIN PF_applylightstyle(int style, const char *val, vec3_t rgb)
 
 	for (j=0, client = svs.clients ; j<sv.allocated_client_slots ; j++, client++)
 	{
+		if (client->protocol == SCP_BAD)
+			continue;
 		if (client->controller)
 			continue;
 		if (client->state == cs_spawned)
@@ -10329,7 +10331,7 @@ qboolean SV_RunFullQCMovement(client_t *client, usercmd_t *ucmd)
 		PR_ExecuteProgram(svprogfuncs, gfuncs.RunClientCommand);
 
 
-		if (!sv_player->v->fixangle)
+		if (!sv_player->v->fixangle && client->protocol != SCP_BAD)
 		{
 			int i;
 			vec3_t delta;
@@ -11149,6 +11151,7 @@ static BuiltinList_t BuiltinList[] = {				//nq	qw		h2		ebfs
 	"typedef struct\n{\n"	\
 		"\tvector dest;\n"	\
 		"\tint linkflags;\n"\
+		"\tfloat radius;\n"\
 	"} nodeslist_t;\n"
 	{"route_calculate",	PF_route_calculate,0,		0,		0,		0,		D(qcnodeslist "void(entity ent, vector dest, int denylinkflags, void(entity ent, vector dest, int numnodes, nodeslist_t *nodelist) callback)", "Begin calculating a route. The callback function will be called once the route has finished being calculated. The route must be memfreed once it is no longer needed. The route must be followed in reverse order (ie: the first node that must be reached is at index numnodes-1). If no route is available then the callback will be called with no nodes.")},
 #endif
@@ -13239,6 +13242,7 @@ void PR_DumpPlatform_f(void)
 		{"RF_USEAXIS",			"const float", CS, D("The entity will be oriented according to the current v_forward+v_right+v_up vector values instead of the entity's .angles field."), CSQCRF_USEAXIS},
 		{"RF_NOSHADOW",			"const float", CS, D("This entity will not cast shadows. Often useful on view models."), CSQCRF_NOSHADOW},
 		{"RF_FRAMETIMESARESTARTTIMES","const float", CS, D("Specifies that the frame1time, frame2time field are timestamps (denoting the start of the animation) rather than time into the animation."), CSQCRF_FRAMETIMESARESTARTTIMES},
+		{"RF_FIRSTPERSON","const float", CS, D("This is basically the opposite of RF_EXTERNALMODEL. Don't draw in third-person or mirrors."), CSQCRF_FIRSTPERSON},
 
 		{"IE_KEYDOWN",			"const float", CS|MENU, D("Specifies that a key was pressed. Second argument is the scan code. Third argument is the unicode (printable) char value. Fourth argument denotes which keyboard(or mouse, if its a mouse 'scan' key) the event came from. Note that some systems may completely separate scan codes and unicode values, with a 0 value for the unspecified argument."), CSIE_KEYDOWN},
 		{"IE_KEYUP",			"const float", CS|MENU, D("Specifies that a key was released. Arguments are the same as IE_KEYDOWN. On some systems, this may be fired instantly after IE_KEYDOWN was fired."), CSIE_KEYUP},

@@ -1129,8 +1129,6 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 		Con_Printf(CON_NOTICE "Mesa detected, disabling the use of glsl's invariant keyword."CON_DEFAULT" This will result in z-fighting. Use '+set gl_blacklist_mesa_invariant 0' on the commandline to reenable it (but you will probably get glsl compilation errors from your driver).\n");
 	}
 
-	if (gl_config.arb_shader_objects)
-		qglGetIntegerv(GL_MAX_VERTEX_ATTRIBS_ARB, &gl_config.maxattribs);
 #endif
 
 	qglGetProgramBinary = NULL;
@@ -1148,6 +1146,7 @@ static qboolean GL_CheckExtensions (void *(*getglfunction) (char *name))
 			qglGetProgramBinary = (void *)getglext("glGetProgramBinaryOES");
 			qglProgramBinary = (void *)getglext("glProgramBinaryOES");
 		}
+		qglGetIntegerv(GL_MAX_VERTEX_ATTRIBS_ARB, &gl_config.maxattribs);
 	}
 
 	if (gl_config.glversion >= 4.5)	//the core version
@@ -2651,11 +2650,7 @@ GLhandleARB GLSlang_CreateProgramObject (program_t *prog, const char *name, GLha
 	{
 		if (gl_config.maxattribs > shader_attr_names[i].ptype)
 		{
-#ifdef __ANDROID__ //EMILE, fix bug
-			if (!(!prog || !prog->explicitsyms))
-#else
-			if (prog->explicitsyms))
-#endif
+			if (prog && prog->explicitsyms)
 				qglBindAttribLocationARB(program, shader_attr_names[i].ptype, va("fte_%s", shader_attr_names[i].name));
 			else
 				qglBindAttribLocationARB(program, shader_attr_names[i].ptype, shader_attr_names[i].name);
@@ -2895,14 +2890,14 @@ static void GLSlang_ProgAutoFields(program_t *prog, struct programpermu_s *pp, c
 	GLSlang_UseProgram(pp->h.glsl.handle);
 	for (i = 0; shader_attr_names[i].name; i++)
 	{
-		if (prog->explicitsyms)
+		if (prog && prog->explicitsyms)
 			uniformloc = qglGetAttribLocationARB(pp->h.glsl.handle, va("fte_%s", shader_attr_names[i].name));
 		else
 			uniformloc = qglGetAttribLocationARB(pp->h.glsl.handle, shader_attr_names[i].name);
 		if (uniformloc != -1)
 		{
 			if (shader_attr_names[i].ptype != uniformloc)
-				Con_Printf("Bad attribute: %s\n", shader_attr_names[i].name);
+				Con_Printf("Bad attribute \"%s\" in glslprogram \"%s\" (%i should be %i)\n", shader_attr_names[i].name, prog?prog->name:"<NULL>", uniformloc, shader_attr_names[i].ptype);
 			else
 				pp->attrmask |= 1u<<uniformloc;
 		}

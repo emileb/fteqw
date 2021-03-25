@@ -420,6 +420,9 @@ void GL_ForceDepthWritable(void)
 		shaderstate.shaderbits |= SBITS_MISC_DEPTHWRITE;
 		qglDepthMask(GL_TRUE);
 	}
+
+	qglColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+	shaderstate.shaderbits |= SBITS_MASK_BITS;
 }
 
 void GL_SetShaderState2D(qboolean is2d)
@@ -2937,6 +2940,7 @@ static void BE_SendPassBlendDepthMask(unsigned int sbits)
 				sbits |= SBITS_MISC_DEPTHWRITE;
 		}
 	}
+	sbits |= r_refdef.colourmask;
 
 
 	delta = sbits^shaderstate.shaderbits;

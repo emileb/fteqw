@@ -647,6 +647,7 @@ struct waypointnetwork_s
 	{
 		vec3_t pos;
 		int linkflags;
+		float radius;
 	} *displaynode;
 	size_t displaynodes;
 
@@ -867,7 +868,13 @@ void Route_Calculated(void *ctx, void *data, size_t a, size_t b)
 //#define FLOODALL
 #define COST_INFINITE FLT_MAX
 
-static qboolean Route_Completed(struct routecalc_s *r, int *nodecamefrom)
+typedef struct
+{
+	int id;
+	int flags;
+} nodefrom_t;
+
+static qboolean Route_Completed(struct routecalc_s *r, nodefrom_t *nodecamefrom)
 {
 	size_t u;
 	struct waypointnetwork_s *n = r->waynet;
@@ -878,22 +885,25 @@ static qboolean Route_Completed(struct routecalc_s *r, int *nodecamefrom)
 	//target point is first. yay.
 	VectorCopy(r->end, r->resultnodes[0].pos);
 	r->resultnodes[0].linkflags = LF_DESTINATION;
+	r->resultnodes[0].radius = 32;
 	r->numresultnodes++;
 
 	u = r->endn;
 	for (;;)
 	{
 		VectorCopy(n->waypoints[u].org, r->resultnodes[r->numresultnodes].pos);
-		r->resultnodes[r->numresultnodes].linkflags = 0;
+		r->resultnodes[r->numresultnodes].linkflags = nodecamefrom[u].flags;
+		r->resultnodes[r->numresultnodes].radius = n->waypoints[u].radius;
 		r->numresultnodes++;
 		if (u == r->startn)
 			break;
-		u = nodecamefrom[u];
+		u = nodecamefrom[u].id;
 	}
 
 	//and include the start point, because we can
 	VectorCopy(r->start, r->resultnodes[r->numresultnodes].pos);
 	r->resultnodes[r->numresultnodes].linkflags = 0;
+	r->resultnodes[r->numresultnodes].radius = 32;
 	r->numresultnodes++;
 	return true;
 }
@@ -918,7 +928,7 @@ static qboolean Route_Process(struct routecalc_s *r)
 		float cost;
 	} *open = alloca(sizeof(*open)*n->numwaypoints);
 	float *nodecost = alloca(sizeof(*nodecost)*n->numwaypoints);
-	int *nodecamefrom = alloca(sizeof(*nodecamefrom)*n->numwaypoints);
+	nodefrom_t *nodecamefrom = alloca(sizeof(*nodecamefrom)*n->numwaypoints);
 
 	for(u = 0; u < n->numwaypoints; u++)
 		nodecost[u] = COST_INFINITE;
@@ -962,7 +972,8 @@ static qboolean Route_Process(struct routecalc_s *r)
 			if (realcost >= nodecost[linkidx])
 				continue;
 
-			nodecamefrom[linkidx] = nodeidx;
+			nodecamefrom[linkidx].id = nodeidx;
+			nodecamefrom[linkidx].flags = l->linkflags;
 			nodecost[linkidx] = realcost;
 
 			for (j = opennodes-1; j >= 0; j--)
@@ -1009,7 +1020,7 @@ static qboolean Route_Process(struct routecalc_s *r)
 	//we use an open list in a desperate attempt to avoid recursing the entire network
 	int *open = alloca(sizeof(*open)*n->numwaypoints);
 	float *nodecost = alloca(sizeof(*nodecost)*n->numwaypoints);
-	int *nodecamefrom = alloca(sizeof(*nodecamefrom)*n->numwaypoints);
+	nodefrom_t *nodecamefrom = alloca(sizeof(*nodecamefrom)*n->numwaypoints);
 
 	for(u = 0; u < n->numwaypoints; u++)
 		nodecost[u] = COST_INFINITE;
@@ -1035,7 +1046,8 @@ static qboolean Route_Process(struct routecalc_s *r)
 			if (realcost >= nodecost[linkidx])
 				continue;
 
-			nodecamefrom[linkidx] = nodeidx;
+			nodecamefrom[linkidx].id = nodeidx;
+			nodecamefrom[linkidx].flags = l->linkflags;
 			nodecost[linkidx] = realcost;
 
 			for (j = 0; j < opennodes; j++)

@@ -452,8 +452,9 @@ void VQ3_AddEntity(const q3refEntity_t *q3)
 
 	ent.forcedshader = VM_FROMSHANDLE(q3->customShader);
 	ent.shaderTime = q3->shaderTime;
+
 	if (q3->renderfx & Q3RF_FIRST_PERSON)
-		ent.flags |= RF_WEAPONMODEL;
+		ent.flags |= RF_FIRSTPERSON;
 	if (q3->renderfx & Q3RF_DEPTHHACK)
 		ent.flags |= RF_DEPTHHACK;
 	if (q3->renderfx & Q3RF_THIRD_PERSON)
