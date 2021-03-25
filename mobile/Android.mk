@@ -40,6 +40,7 @@ LOCAL_SRC_FILES := \
     mobile/game_interface.c \
     ../../Clibs_OpenTouch/quake/android_jni.cpp \
     ../../Clibs_OpenTouch/quake/touch_interface.cpp \
+    ../../Clibs_OpenTouch/touch_interface_base.cpp \
     engine/client/sys_sdl.c \
     engine/client/snd_al.c \
     engine/client/snd_sdl.c \
