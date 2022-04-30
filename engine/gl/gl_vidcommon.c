@@ -3393,6 +3393,10 @@ qboolean GL_Init(rendererstate_t *info, void *(*getglfunction) (char *name))
 	else
 		qglDrawBuffers = NULL;
 
+#ifdef __ANDROID__ // Always clear this on Android, fix Tegra crash
+	qglPolygonMode = NULL;
+#endif
+
 	if (gl_config.gles && gl_config.glversion >= 2)
 	{
 		/*these functions do not exist in gles2, they only exist on some platforms because they were provided for gl1*/
