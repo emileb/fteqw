@@ -471,7 +471,7 @@ extern snd_capture_driver_t OPENAL_Capture;
 #endif
 snd_capture_driver_t DSOUND_Capture;
 snd_capture_driver_t OSS_Capture;
-snd_capture_driver_t SDL_Capture;
+extern snd_capture_driver_t SDL_Capture;
 
 snd_capture_driver_t *capturedrivers[] =
 {
@@ -1746,7 +1746,7 @@ extern sounddriver_t XAUDIO2_Output;
 #ifdef AVAIL_DSOUND
 extern sounddriver_t DSOUND_Output;
 #endif
-sounddriver_t SDL_Output;
+extern sounddriver_t SDL_Output;
 #ifdef __linux__
 sounddriver_t ALSA_Output;
 sounddriver_t Pulse_Output;

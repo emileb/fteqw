@@ -16,7 +16,7 @@
 			#define VULKAN_SDL
 		#endif
 	#endif
-	SDL_Window *sdlwindow;
+	extern SDL_Window *sdlwindow;
 	#ifdef OPENGL_SDL
 		static SDL_GLContext *sdlcontext;
 	#endif
@@ -44,7 +44,7 @@ extern qboolean vid_isfullscreen;
 unsigned short intitialgammaramps[3][256];
 #endif
 
-qboolean mouseactive;
+extern qboolean mouseactive;
 extern qboolean mouseusedforgui;
 
 #ifdef OPENGL_SDL
@@ -242,6 +242,11 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 		SDL_GetWindowSize(sdlwindow, &vid.pixelwidth, &vid.pixelheight);
 		break;
 	}
+
+#ifdef __ANDROID__ // Force resolution to be that set
+	vid.pixelwidth = info->width;
+	vid.pixelheight = info->height;
+#endif
 
 #ifdef OPENGL_SDL
 	if (qrenderer == QR_OPENGL)
