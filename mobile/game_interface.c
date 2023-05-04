@@ -7,16 +7,24 @@
 #include "SDL.h"
 #include "SDL_keycode.h"
 
+#include <stdio.h>
 
 static float look_pitch_mouse,look_pitch_abs,look_pitch_joy;
 static float look_yaw_mouse,look_yaw_joy;;
 
 
 int main_android (int c, const char **v);
+
+extern const char *userFilesPath_c;
+
 void PortableInit(int argc,const char ** argv)
 {
 	LOGI("PortableInit");
-	setenv("FTEHOME","../user_files/fte",1);
+
+    char userpath[256];
+    snprintf(userpath, 256, "%s/fte_5411", userFilesPath_c);
+	setenv("FTEHOME", userpath, 1);
+
     main_android( argc, argv );
 }
 
@@ -25,14 +33,14 @@ extern int SDL_SendKeyboardKey(Uint8 state, SDL_Scancode scancode);
 
 int PortableKeyEvent(int state, int code ,int unitcode)
 {
-	LOGI("PortableKeyEvent %d %d",state,code);
+	//LOGI("PortableKeyEvent %d %d",state,code);
 
     if (state)
         SDL_SendKeyboardKey(SDL_PRESSED, (SDL_Scancode)code);
     else
         SDL_SendKeyboardKey(SDL_RELEASED, (SDL_Scancode) code);
 
-	return 0;
+    return 0;
 }
 
 static int scoresShown = 0;
