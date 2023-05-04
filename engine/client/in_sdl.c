@@ -1074,7 +1074,7 @@ static unsigned int tbl_sdltoquakemouse[] =
 
 #ifdef HAVE_SDL_TEXTINPUT
 #ifdef __linux__
-#include <SDL_misc.h>
+//#include <SDL_misc.h>
 static qboolean usesteamosk;
 #endif
 #endif
@@ -1107,7 +1107,7 @@ void Sys_SendKeyEvents(void)
 
 		if (!active)
 		{
-#ifdef __linux__
+#ifdef __linux__xx
 			if (usesteamosk)
 				SDL_OpenURL("steam://open/keyboard?Mode=1");
 			else
@@ -1121,7 +1121,7 @@ void Sys_SendKeyEvents(void)
 	{
 		if (active)
 		{
-#ifdef __linux__
+#ifdef __linux__xx
 			if (usesteamosk)
 				SDL_OpenURL("steam://close/keyboard?Mode=1");
 			else

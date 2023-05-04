@@ -549,6 +549,10 @@ void GLDraw_Init (void)
 	if (gl_config.gles && gl_config.glversion < 3.0)
 		r_softwarebanding = false;
 
+#ifdef __ANDROID__ // EMILE. Fix corrupt 2D textures on some devices
+    gl_load24bit.ival = 1;
+#endif
+
 	GL_SetupFormats();
 
 	R2D_Init();
@@ -1057,6 +1061,9 @@ qboolean GL_LoadTextureMips(texid_t tex, const struct pendingtextureinfo *mips)
 		{
 			for (i = 0; i < nummips; i++)
 			{
+#ifdef __ANDROID__ // Needed for GLES1, otherwise npot RGB textures can be read unaligned
+				glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
+#endif
 				if (gl_config.formatinfo[encoding].type)
 					qglTexImage2D				(targ, i, ifmt, mips->mip[i].width, mips->mip[i].height, 0, gl_config.formatinfo[encoding].format, gl_config.formatinfo[encoding].type,	mips->mip[i].data);
 				else
