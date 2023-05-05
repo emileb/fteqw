@@ -1252,6 +1252,8 @@ void Sys_SendKeyEvents(void)
 #endif
 
 #if SDL_MAJOR_VERSION >= 2
+
+#ifndef __ANDROID__ // I handle all touch input
 		case SDL_FINGERDOWN:
 		case SDL_FINGERUP:
 			{
@@ -1271,6 +1273,8 @@ void Sys_SendKeyEvents(void)
 			Host_RunFile(event.drop.file, strlen(event.drop.file), NULL);
 			SDL_free(event.drop.file);
 			break;
+#endif
+
 #endif
 
 		case SDL_MOUSEMOTION:
