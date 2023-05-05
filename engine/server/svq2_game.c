@@ -61,6 +61,24 @@ void *SVQ2_GetGameAPI (void *parms)
 	Con_DPrintf("Searching for %s\n", gamename[2]);
 #endif
 
+#ifdef __ANDROID__
+    extern const char *nativeLibsPath;
+
+    Q_snprintfz(name, sizeof(name), "%s/libq2game.so", nativeLibsPath);
+    q2gamedll = Sys_LoadLibrary(name, funcs);
+    if (q2gamedll)
+    {
+        ret = GetGameAPI(parms);
+        if (ret)
+        {
+            return ret;
+        }
+
+        Sys_CloseLibrary(q2gamedll);
+        q2gamedll = 0;
+    }
+#endif
+
 	iterator = NULL;
 	while(COM_IteratePaths(&iterator, syspath, sizeof(syspath), gamepath, sizeof(gamepath)))
 	{
