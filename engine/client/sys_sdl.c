@@ -143,6 +143,10 @@ void Sys_Printf (char *fmt, ...)
 	vsnprintf (text,sizeof(text)-1, fmt,argptr);
 	va_end (argptr);
 
+#ifdef __ANDROID__
+    LOGI("%s",text);
+    LogWritter_Write(text);
+#endif
 	if (strlen(text) > sizeof(text))
 		Sys_Error("memory overwrite in Sys_Printf");
 
@@ -944,7 +948,17 @@ void Sys_MainLoop(void)
 }
 #endif
 
+#ifdef __ANDROID__
+#ifndef FNDELAY
+#define FNDELAY		O_NDELAY
+#endif
+#endif
+
+#ifdef __ANDROID__
+int main_android (int argc, const char **argv)
+#else
 int QDECL main(int argc, char **argv)
+#endif
 {
 	float time, newtime, oldtime;
 	quakeparms_t	parms;

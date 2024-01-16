@@ -3000,7 +3000,7 @@ void M_Menu_Video_f (void)
 	static const char *srgbvalues[] = { "0", "1", "2", "-1", NULL};
 
 
-#ifdef ANDROID
+#ifdef ANDROIDxx
 	extern cvar_t sys_orientation;
 	static const char *orientationopts[] = {
 		"Auto",
@@ -3237,7 +3237,7 @@ void M_Menu_Video_f (void)
 			MB_TEXT("^Ue080^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue081^Ue082", true),
 			MB_CMD("Apply Settings", M_VideoApply, "Restart video and apply renderer, display, and 2D resolution options."),
 			MB_SPACING(4),
-#ifdef ANDROID
+#ifdef ANDROIDxx
 			MB_COMBOCVAR("Orientation", sys_orientation, orientationopts, orientationvalues, NULL),
 #else
 			MB_COMBOCVAR("Renderer", vid_renderer, rendererops, renderervalues, NULL),
