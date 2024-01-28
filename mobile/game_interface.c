@@ -385,18 +385,27 @@ void IN_Move_Android (float *movements, int pnum, float frametime)
 	if( !movements )
 		return;
 
-
     int blockGamepad( void );
     int blockMove = blockGamepad() & ANALOGUE_AXIS_FWD;
     int blockLook = blockGamepad() & ANALOGUE_AXIS_PITCH;
 
+    int fwdSpeed = 400;
+    int sideSpeed = 400;
+
+    int isPlayerRunning();
+    if(!isPlayerRunning())
+    {
+        fwdSpeed = fwdSpeed / 2;
+        sideSpeed = sideSpeed / 2;
+    }
 
     if( !blockMove )
     {
-	    movements[0]  += forwardmove * cl_forwardspeed.value * 2;
-	    movements[1]  += sidemove   * cl_forwardspeed.value * 2;
+        movements[0] += forwardmove * fwdSpeed;
+        movements[1] += sidemove * sideSpeed;
     }
-	//LOGI("movements[0] = %f, movements[1] = %f",movements[0],movements[1]);
+
+	LOGI("movements[0] = %f, movements[1] = %f",movements[0],movements[1]);
 
 	V_StopPitchDrift (&cl.playerview[pnum]);
     if( !blockLook )
