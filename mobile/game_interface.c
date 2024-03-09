@@ -405,7 +405,7 @@ void IN_Move_Android (float *movements, int pnum, float frametime)
         movements[1] += sidemove * sideSpeed;
     }
 
-	LOGI("movements[0] = %f, movements[1] = %f",movements[0],movements[1]);
+	// LOGI("movements[0] = %f, movements[1] = %f",movements[0],movements[1]);
 
 	V_StopPitchDrift (&cl.playerview[pnum]);
     if( !blockLook )
