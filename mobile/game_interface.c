@@ -6,11 +6,13 @@
 
 #include "SDL.h"
 #include "SDL_keycode.h"
+#include "CStringFifo.h"
 
 #include <stdio.h>
 
 static float look_pitch_mouse,look_pitch_abs,look_pitch_joy;
 static float look_yaw_mouse,look_yaw_joy;;
+static CStringFIFO m_CmdFifo;
 
 
 int main_android (int c, const char **v);
@@ -20,6 +22,7 @@ extern const char *userFilesPath_c;
 void PortableInit(int argc,const char ** argv)
 {
 	LOGI("PortableInit");
+    cstr_fifo_init(&m_CmdFifo);
 
     char userpath[256];
     snprintf(userpath, 256, "%s/fte_5411", userFilesPath_c);
@@ -279,12 +282,9 @@ void PortableAction(int state, int action)
 	}
 }
 
-static const char * quickCommand = 0;
 void PortableCommand(const char * cmd)
 {
-	static char cmdBuffer[256];
-	snprintf(cmdBuffer, 256, "%s", cmd);
-	quickCommand = cmdBuffer;
+    cstr_fifo_push(&m_CmdFifo, cmd);
 }
 
 
@@ -369,6 +369,20 @@ void PortableLookYaw(int mode, float yaw)
 		break;
 	}
 }
+bool PortableSetAlwaysRun(bool run)
+{
+    if(run)
+    {
+        Cvar_SetValue (&cl_forwardspeed, 400);
+        Cvar_SetValue (&cl_backspeed, 400);
+    }
+    else
+    {
+        Cvar_SetValue (&cl_forwardspeed, 200);
+        Cvar_SetValue (&cl_backspeed, 200);
+    }
+    return false;
+}
 
 /////////////////////
 // Movement handling
@@ -376,11 +390,12 @@ void PortableLookYaw(int mode, float yaw)
 
 void IN_Move_Android (float *movements, int pnum, float frametime)
 {
-	if (quickCommand)
-	{
-		Cmd_ExecuteString(quickCommand, RESTRICT_LOCAL);
-		quickCommand = 0;
-	}
+    char *consoleCmd;
+    while((consoleCmd = cstr_fifo_pop(&m_CmdFifo)))
+    {
+        Cmd_ExecuteString(consoleCmd, RESTRICT_LOCAL);
+        free(consoleCmd);
+    }
 
 	if( !movements )
 		return;
