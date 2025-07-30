@@ -185,6 +185,11 @@ void Sys_Printf (char *fmt, ...)
 	}
 #endif
 
+#ifdef __ANDROID__
+    LOGI("%s",text);
+    LogWritter_Write(text);
+#endif
+
 	if (strlen(text) > sizeof(text))
 		Sys_Error("memory overwrite in Sys_Printf");
 
@@ -1423,10 +1428,10 @@ static double oldtime;
 SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv)
 {
 #else
-int QDECL main(int argc, char **argv)
+int QDECL main_android(int argc, char **argv)
+#endif
 {
 	double time, newtime, oldtime, sleeptime;
-#endif
 	quakeparms_t	parms;
 
 	memset(&parms, 0, sizeof(parms));

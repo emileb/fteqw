@@ -145,14 +145,14 @@
 #define NQPROT					//act as an nq client/server, with nq gamecode.
 #define HAVE_PACKET				//we can send unreliable messages!
 #define HAVE_TCP				//we can create/accept TCP connections.
-#define HAVE_GNUTLS				//on linux
+//#define HAVE_GNUTLS				//on linux
 #define HAVE_WINSSPI			//on windows
 #define FTPSERVER				//sv_ftp cvar.
 #define WEBCLIENT				//uri_get+any internal downloads etc
 #define HAVE_HTTPSV				//net_enable_http/websocket
 #define TCPCONNECT				//support for playing over tcp sockets, instead of just udp. compatible with qizmo.
 //#define IRCCONNECT			//lame support for routing game packets via irc server. not a good idea.
-#define SUPPORT_ICE				//Internet Connectivity Establishment, for use by plugins to establish voice or game connections.
+//#define SUPPORT_ICE				//Internet Connectivity Establishment, for use by plugins to establish voice or game connections.
 #define CL_MASTER				//Clientside Server Browser functionality.
 #define PACKAGEMANAGER			//Allows the user to enable/disable/download(with WEBCLIENT) packages and plugins. Also handles map packages.
 

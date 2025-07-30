@@ -1522,9 +1522,13 @@ static unsigned int tbl_sdltoquakemouse[] =
 };
 
 #ifdef HAVE_SDL_TEXTINPUT
+
 #if SDL_VERSION_ATLEAST(3, 0, 0)
 #elif defined(__linux__)
+
+#ifndef __ANDROID__
 #include <SDL_misc.h>
+#endif
 static qboolean usesteamosk;
 #endif
 
@@ -1549,7 +1553,7 @@ void INS_SetOSK(int osk)
 #if SDL_VERSION_ATLEAST(3, 0, 0)
 			SDL_StartTextInput(sdlwindow);
 #else
-#ifdef __linux__
+#ifdef __linux__NOT_ANDROID
 			if (usesteamosk)
 				SDL_OpenURL("steam://open/keyboard?Mode=1");
 			else
@@ -1564,10 +1568,11 @@ void INS_SetOSK(int osk)
 	{
 		if (active)
 		{
+
 #if SDL_VERSION_ATLEAST(3, 0, 0)
 			SDL_StopTextInput(sdlwindow);
 #else
-#ifdef __linux__
+#ifdef __linux__NOT_ANDROID
 			if (usesteamosk)
 				SDL_OpenURL("steam://close/keyboard?Mode=1");
 			else
@@ -1960,7 +1965,10 @@ void Sys_SendKeyEvents(void)
 			break;
 #endif
 
+
 #if SDL_VERSION_ATLEAST(2,0,0)
+#ifndef __ANDROID__ // I handle all touch input
+
 		case SDL_FINGERDOWN:
 		case SDL_FINGERUP:
 			{
@@ -1980,6 +1988,8 @@ void Sys_SendKeyEvents(void)
 			Host_RunFile(event.drop.file, strlen(event.drop.file), NULL);
 			SDL_free(event.drop.file);
 			break;
+#endif
+
 #endif
 
 		case SDL_MOUSEMOTION:
