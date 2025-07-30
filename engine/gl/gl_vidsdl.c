@@ -336,7 +336,10 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 		return false;
 #ifdef OPENGL_SDL
 	case QR_OPENGL:
+
+#ifndef __ANDROID__ // Dont do this yet! otherwise it always loads GLES1
 		SDL_GL_LoadLibrary(NULL);
+#endif
 
 		if (info->bpp >= 32)
 		{
@@ -413,6 +416,11 @@ static qboolean SDLVID_Init (rendererstate_t *info, unsigned char *palette, r_qr
 	#if SDL_VERSION_ATLEAST(2,0,1)
 		flags |= SDL_WINDOW_ALLOW_HIGHDPI;
 	#endif
+
+#ifdef __ANDROID__
+    SDL_GL_LoadLibrary(NULL);
+    flags =  SDL_WINDOW_OPENGL;
+#endif
 
 	usemode = NULL;
 	if (SDLVID_GetVideoMode(info, &display, &modeinfo))
@@ -711,6 +719,13 @@ void GLVID_SwapBuffers (void)
 		}
 
 		SDL_GL_SwapWindow(sdlwindow);
+
+#ifdef __ANDROID__
+       // Reset state due to touch controls changing it
+       void resetGLState();
+       resetGLState();
+#endif
+
 #else
 		SDL_GL_SwapBuffers();
 #endif

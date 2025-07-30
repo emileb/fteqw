@@ -6651,7 +6651,7 @@ qboolean FS_ChangeGame(ftemanifest_t *man, qboolean allowreloadconfigs, qboolean
 			confpath[i] = NULL;
 	}
 
-#if defined(FTE_TARGET_WEB) || defined(ANDROID) || defined(WINRT)
+#if defined(FTE_TARGET_WEB) || defined(WINRT)
 	//these targets are considered to be sandboxed already, and have their own app-based base directory which they will always use.
 	Q_strncpyz (newbasedir, host_parms.basedir, sizeof(newbasedir));
 	fixedbasedir = true;
@@ -6913,7 +6913,7 @@ qboolean FS_ChangeGame(ftemanifest_t *man, qboolean allowreloadconfigs, qboolean
 		}
 	}
 
-#ifdef ANDROID
+#ifdef ANDROID_xx
 	{
 		//write a .nomedia file to avoid people from getting random explosion sounds etc interspersed with their music
 		vfsfile_t *f;
@@ -8296,7 +8296,7 @@ void FS_RegisterDefaultFileSystems(void)
 #endif
 #ifdef PACKAGE_Q1PAK
 	FS_RegisterFileSystemType(NULL, "pak", FSPAK_LoadArchive, true);
-#if !defined(_WIN32) && !defined(ANDROID)
+#if !defined(_WIN32) //&& !defined(ANDROID)
 	/*for systems that have case sensitive paths, also include *.PAK */
 	FS_RegisterFileSystemType(NULL, "PAK", FSPAK_LoadArchive, true);
 #endif

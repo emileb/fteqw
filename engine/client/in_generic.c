@@ -130,7 +130,7 @@ static cvar_t	joy_movethreshold[3] =
 
 static cvar_t joy_exponent = CVARD("joyexponent", "1", "Scales joystick/controller sensitivity non-linearly to increase precision in the center.\nA value of 1 is linear.");
 
-#if defined(__linux__) && defined(FTE_SDL)
+#if defined(__linux__) && defined(FTE_SDL)  && !defined(__ANDROID__)
 #include <SDL.h>
 void joy_radialdeadzone_cb(cvar_t *var, char *oldvalue)
 {
@@ -1073,6 +1073,10 @@ void IN_MoveJoystick(struct joy_s *joy, float *movements, int pnum, float framet
 	movements[2] += joy_movesens[2].value * mag*cl_upspeed.value * jstrafe[2];
 }
 
+#ifdef __ANDROID__
+void IN_Move_Android (float *movements, int pnum, float frametime);
+#endif
+
 void IN_Move (float *nudgemovements, float *absmovements, int pnum, float frametime)
 {
 	int i;
@@ -1081,6 +1085,9 @@ void IN_Move (float *nudgemovements, float *absmovements, int pnum, float framet
 
 	for (i = 0; i < MAXJOYSTICKS; i++)
 		IN_MoveJoystick(&joy[i], absmovements, pnum, frametime);
+#ifdef __ANDROID__
+	IN_Move_Android(absmovements, pnum, frametime);
+#endif
 }
 
 void IN_JoystickAxisEvent(unsigned int devid, int axis, float value)
