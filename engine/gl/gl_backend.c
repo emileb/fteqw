@@ -214,6 +214,14 @@ static struct {
 	batch_t *wbatches;
 } shaderstate;
 
+#ifdef __ANDROID__
+// Reset state due to touch controls changing it
+void resetGLState()
+{
+    GL_SelectProgram(0);
+}
+#endif
+
 #ifdef _DEBUG
 #define DRAWCALL(f) if (sh_config.showbatches) BE_PrintDrawCall(f)
 #include "pr_common.h"
@@ -588,6 +596,16 @@ static void GL_LazyBind(int tmu, texid_t texnum)
 		if (target)
 			qglBindTexture (target, glnum);
 	}
+}
+#endif
+
+#ifdef __ANDROID__ // Touch controls change shit, fit before next frame
+void BE_FixPointers()
+{
+	qglColorPointer(4, shaderstate.colourarraytype, 0, shaderstate.curcolourpointer);
+	qglVertexPointer(3, GL_FLOAT, VECV_STRIDE, shaderstate.curvertexpointer);
+    qglTexCoordPointer(shaderstate.pendingtexcoordparts[0], GL_FLOAT, 0, shaderstate.pendingtexcoordpointer[0]);
+    qglBindTexture(GL_TEXTURE_2D, shaderstate.currenttextures[0] );
 }
 #endif
 
@@ -1124,7 +1142,9 @@ qboolean GLBE_BeginShadowMap(int id, int w, int h, uploadfmt_t encoding, int *re
 		{
 			qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE_ARB, GL_COMPARE_R_TO_TEXTURE_ARB);
 			qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC_ARB, GL_LEQUAL);
-			//qglTexParameteri(GL_TEXTURE_2D, GL_DEPTH_TEXTURE_MODE_ARB, GL_LUMINANCE);
+#ifndef __ANDROID__
+			qglTexParameteri(GL_TEXTURE_2D, GL_DEPTH_TEXTURE_MODE_ARB, GL_LUMINANCE);
+#endif
 		}
 		tex->status = TEX_LOADED;
 	}
