@@ -6874,6 +6874,9 @@ static const char *PrettyHostFromURL(const char *origurl)
 
 qboolean PM_AreSourcesNew(qboolean doprompt)
 {
+#ifdef __ANDROID__
+    return false;
+#endif
 	qboolean ret = false;
 #ifdef WEBCLIENT
 	//only prompt if autoupdate is actually enabled.
